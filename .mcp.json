@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "codex": {
+      "command": "codex",
+      "args": ["mcp-server"],
+      "env": {}
+    },
+    "hermes": {
+      "command": "hermes",
+      "args": ["mcp", "serve"],
+      "env": {}
+    }
+  }
+}
