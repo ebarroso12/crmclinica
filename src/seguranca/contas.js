@@ -32,7 +32,9 @@ function erroDeSituacao(situacao) {
   return erro;
 }
 
-function criarContas({ repositorio, configuracao, remetente, google, agora = () => new Date() }) {
+function criarContas({
+  repositorio, configuracao, remetente, google, limitador = null, agora = () => new Date(),
+}) {
   const segredoDaAplicacao = configuracao.autenticacao.segredoJwt;
 
   function podeEntrar(usuario) {
@@ -196,6 +198,11 @@ function criarContas({ repositorio, configuracao, remetente, google, agora = () 
    * quem tem conta. O trabalho de verdade acontece só quando a conta existe.
    */
   async function pedirRecuperacao(email, { ip = null } = {}) {
+    // Limite antes de qualquer coisa: pedir link é barato para quem pede e caro
+    // para quem recebe. Sem teto, vira ferramenta de flood na caixa de outra pessoa.
+    if (limitador) await limitador.exigirDentroDoLimite({ ip, email, acao: 'recuperacao' });
+    if (limitador) await limitador.registrar({ ip, email, acao: 'recuperacao', sucesso: false });
+
     const usuario = await repositorio.obterUsuarioPorEmail(email);
 
     if (usuario && podeEntrar(usuario)) {
@@ -239,10 +246,15 @@ function criarContas({ repositorio, configuracao, remetente, google, agora = () 
   }
 
   /** Redefine a senha com o token recebido por e-mail. */
-  async function redefinirSenha(token, senhaNova) {
+  async function redefinirSenha(token, senhaNova, { ip = null } = {}) {
+    // O token tem 32 bytes, mas adivinhação por força bruta ainda merece teto.
+    if (limitador) await limitador.exigirDentroDoLimite({ ip, acao: 'redefinicao' });
+
     const recuperacao = await repositorio.obterRecuperacaoPorHash(hashDoToken(String(token || '')));
 
     if (!recuperacao || recuperacao.usado_em || new Date(recuperacao.expira_em) <= agora()) {
+      if (limitador) await limitador.registrar({ ip, acao: 'redefinicao', sucesso: false });
+
       const erro = new Error('link de recuperação inválido ou expirado');
       erro.status = 400;
       throw erro;

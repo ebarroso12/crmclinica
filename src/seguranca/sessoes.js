@@ -20,7 +20,9 @@ function hashDoRefresh(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function criarAutenticacao({ repositorio, configuracao, contas = null, agora = () => new Date() }) {
+function criarAutenticacao({
+  repositorio, configuracao, contas = null, limitador = null, agora = () => new Date(),
+}) {
   const segredo = configuracao.autenticacao.segredoJwt;
 
   function emitirAccess(usuario) {
@@ -74,6 +76,12 @@ function criarAutenticacao({ repositorio, configuracao, contas = null, agora = (
    * entregaria a lista de quem tem conta.
    */
   async function entrar(email, senha, contexto = {}) {
+    const ip = contexto.ip ?? null;
+
+    // O limite vem antes de tudo: assim quem está varrendo senhas não descobre
+    // nada com a resposta e não consome o scrypt, que é caro de propósito.
+    if (limitador) await limitador.exigirDentroDoLimite({ ip, email, acao: 'login' });
+
     const usuario = await repositorio.obterUsuarioPorEmail(email);
     const hashDeReferencia = usuario?.senha_hash
       ?? '$scrypt$16384$8$1$00$00'; // formato inválido de propósito: `conferir` devolve false
@@ -81,6 +89,8 @@ function criarAutenticacao({ repositorio, configuracao, contas = null, agora = (
     const senhaConfere = await conferir(senha, hashDeReferencia);
 
     if (!usuario || !senhaConfere) {
+      if (limitador) await limitador.registrar({ ip, email, acao: 'login', sucesso: false });
+
       await repositorio.registrarAuditoria({
         entidade: 'usuario',
         entidadeId: usuario?.id ?? null,
@@ -120,6 +130,10 @@ function criarAutenticacao({ repositorio, configuracao, contas = null, agora = (
         throw erro;
       }
       if (!(await contas.segundoFatorConfere(usuario, codigo))) {
+        // Código errado conta como falha: senão o segundo fator viraria o elo
+        // sem limite, testável à vontade por quem já tem a senha.
+        if (limitador) await limitador.registrar({ ip, email, acao: 'login', sucesso: false });
+
         await repositorio.registrarAuditoria({
           entidade: 'usuario', entidadeId: usuario.id, acao: 'segundo_fator_recusado',
         });
@@ -129,6 +143,8 @@ function criarAutenticacao({ repositorio, configuracao, contas = null, agora = (
         throw erro;
       }
     }
+
+    if (limitador) await limitador.registrar({ ip, email, acao: 'login', sucesso: true });
 
     await repositorio.registrarAuditoria({
       entidade: 'usuario',

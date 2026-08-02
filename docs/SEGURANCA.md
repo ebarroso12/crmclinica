@@ -105,6 +105,49 @@ revelaria quem tem conta. Redefinir a senha revoga todas as sessões.
 Sem SMTP configurado, o pedido é registrado em log e não sai — e a resposta ao
 solicitante continua a mesma, para não expor o estado do envio.
 
+### Limite de tentativas
+
+Sem teto, um atacante testa senhas à vontade. O scrypt torna cada tentativa cara
+para ele, mas "caro" não é "impossível": uma conta com senha fraca cai numa noite.
+
+Duas chaves independentes, porque protegem de coisas diferentes:
+
+| Chave | Limite | Janela | Protege de |
+| --- | --- | --- | --- |
+| conta (e-mail) | 5 falhas | 15 min | adivinhar **uma** senha |
+| IP | 30 falhas | 15 min | varrer **muitas** contas da mesma origem |
+| recuperação por conta | 3 | 1 h | flood de e-mail na caixa de outra pessoa |
+| recuperação por IP | 10 | 1 h | idem, em escala |
+| redefinição por IP | 20 | 1 h | força bruta no token do link |
+
+O limite do IP é mais alto de propósito: uma clínica inteira sai por um endereço
+só, e um teto apertado trancaria a recepção junto com o atacante.
+
+**Janela deslizante**, não fixa: com janela fixa, quem estoura às 10h14 recupera
+tudo às 10h15 e tenta o dobro na virada. A contagem é sempre "falhas nesta chave
+nos últimos N minutos", e o `Retry-After` diz quando a tentativa mais antiga sai
+da janela.
+
+Resposta **429** com `Retry-After` em segundos e `tentar_em_segundos` no corpo.
+
+#### O que o limite não pode estragar
+
+- **Não vira oráculo de existência.** O limite por conta vale exista ela ou não, e o e-mail entra em hash SHA-256. A sequência de códigos é idêntica para conta existente e inexistente — testado.
+- **Não engole o 403.** Conta pendente ou desativada continua respondendo 403 com a situação, e acertar a senha de uma conta na fila **não conta como falha**: quem espera liberação não é empurrado para 429 por insistir.
+- **Acerto limpa o contador da conta.** Quem errou e depois lembrou da senha não fica de castigo. Mas o contador do **IP não é limpo** por um acerto: senão um atacante com uma conta própria zeraria a varredura.
+- **O segundo fator também é limitado.** Sem isso ele seria o elo sem teto: só 10⁶ combinações, testáveis à vontade por quem já tem a senha.
+
+#### Onde o estado mora
+
+No **PostgreSQL** (`tentativas_autenticacao`), não em memória do processo. Com duas
+instâncias atrás de um balanceador, um contador local permitiria o dobro das
+tentativas e a proteção seria só aparente.
+
+A tabela guarda IP, hash da conta, ação, sucesso e instante — **nunca a senha**, e
+nunca o e-mail em claro. Registros fora de qualquer janela são apagados de hora em
+hora (`limpar_tentativas_vencidas`, retenção de 24 h): guardá-los para sempre
+transformaria a tabela num histórico de quem tentou entrar e quando.
+
 ### Detalhes que evitam ataques conhecidos
 
 - O algoritmo de verificação vem do nosso lado, **nunca do cabeçalho do token** — é o que impede `alg: none` e confusão de chave. Testado.
@@ -191,8 +234,8 @@ pode virar vazamento. Testado.
 
 ## Pendências conhecidas
 
-- **Sem limite de tentativa de login.** Um atacante pode tentar senhas à vontade. Antes de expor publicamente: limitar por IP e por conta, com atraso progressivo. É a lacuna mais séria da lista.
 - **A trilha de auditoria não tem rota de consulta** — existe a permissão `auditoria:ler`, mas nenhuma rota a usa ainda.
+- **O IP vem de `req.socket.remoteAddress`.** Atrás de um proxy reverso, isso é o IP do proxy, e o limite por IP passa a valer para todo mundo junto. Ao publicar: ler `X-Forwarded-For` **apenas** de proxies confiáveis — confiar no cabeçalho de qualquer origem permitiria forjar o IP e contornar o limite.
 - **RLS não foi verificado contra o banco real** — as migrations estão escritas, mas não foram aplicadas nem testadas aqui.
 - **O envio de e-mail não foi exercido contra um SMTP real** — o cliente foi escrito e testado com dublê.
 - **O login com Google não foi exercido contra o Google real** — a verificação do `id_token` foi testada com par de chaves gerado no teste, incluindo os casos de recusa.

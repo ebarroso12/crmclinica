@@ -20,6 +20,7 @@ const { carregarConfiguracao, validarConfiguracao, descreverConfiguracao } = req
 const { criarAplicacao, criarServidor } = require('./servidor/http');
 const { criarRepositorioEmMemoria } = require('./dados/repositorio-memoria');
 const { semearMaster } = require('./seguranca/semear-master');
+const { criarLimitador } = require('./seguranca/limite');
 
 const configuracao = carregarConfiguracao();
 
@@ -68,7 +69,18 @@ function iniciar() {
       .catch((erro) => console.error('[crmclinica] falha ao semear o admin master:', erro.message));
   }
 
-  const servidor = criarServidor({ configuracao, repositorio });
+  const limitador = criarLimitador({ repositorio });
+  const servidor = criarServidor({ configuracao, repositorio, limitador });
+
+  // Tentativa fora de qualquer janela não limita nada, e guardá-la para sempre
+  // transformaria a tabela num registro de quem tentou entrar e quando.
+  const limpezaPeriodica = setInterval(() => {
+    limitador.limpar().catch((erro) => {
+      console.error('[crmclinica] falha ao limpar tentativas antigas:', erro.message);
+    });
+  }, 60 * 60 * 1000);
+  // Não segura o processo aberto por causa do temporizador.
+  limpezaPeriodica.unref();
 
   servidor.listen(configuracao.porta, configuracao.endereco, () => {
     console.log(`[crmclinica] ouvindo em http://${configuracao.endereco}:${configuracao.porta}`);
@@ -76,6 +88,7 @@ function iniciar() {
   });
 
   const encerrar = () => {
+    clearInterval(limpezaPeriodica);
     servidor.close(async () => {
       await encerrarBanco();
       process.exit(0);

@@ -206,11 +206,11 @@ function criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, c
     },
 
     /** POST /api/auth/redefinir — usa o token do e-mail. */
-    async redefinirSenha(corpo) {
+    async redefinirSenha(corpo, contexto = {}) {
       const token = exigirTexto(corpo?.token, 'token', 500);
       const senhaNova = exigirSenhaNova(corpo?.senha_nova);
 
-      return contas.redefinirSenha(token, senhaNova);
+      return contas.redefinirSenha(token, senhaNova, contexto);
     },
 
     // ---------------------------------------------------------------- segundo fator

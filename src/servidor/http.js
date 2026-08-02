@@ -14,6 +14,7 @@ const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
 const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
+const { criarLimitador } = require('../seguranca/limite');
 const { criarClienteGoogle } = require('../seguranca/google');
 const { criarRemetente } = require('../seguranca/email');
 const { criarRotasDeConversas } = require('./rotas-conversas');
@@ -77,9 +78,13 @@ function criarAplicacao(dependencias = {}) {
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
-  const contas = dependencias.contas || criarContas({ repositorio, configuracao, remetente, google });
+  const limitador = dependencias.limitador === null
+    ? null
+    : dependencias.limitador || criarLimitador({ repositorio });
+  const contas = dependencias.contas
+    || criarContas({ repositorio, configuracao, remetente, google, limitador });
   const autenticacao = dependencias.autenticacao
-    || criarAutenticacao({ repositorio, configuracao, contas });
+    || criarAutenticacao({ repositorio, configuracao, contas, limitador });
 
   const conversas = criarRotasDeConversas({ repositorio, atendimento });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
@@ -171,7 +176,7 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/auth/google/retorno': () => auth.retornoGoogle(url.searchParams, contexto),
       'POST /api/auth/senha': async () => auth.trocarSenha(usuario, await lerJson(req)),
       'POST /api/auth/recuperar': async () => auth.pedirRecuperacao(await lerJson(req), contexto),
-      'POST /api/auth/redefinir': async () => auth.redefinirSenha(await lerJson(req)),
+      'POST /api/auth/redefinir': async () => auth.redefinirSenha(await lerJson(req), contexto),
       'POST /api/auth/segundo-fator': () => auth.prepararSegundoFator(usuario),
       'POST /api/auth/segundo-fator/confirmar': async () => auth.confirmarSegundoFator(usuario, await lerJson(req)),
       'POST /api/auth/segundo-fator/desativar': async () => auth.desativarSegundoFator(usuario, await lerJson(req)),
@@ -394,6 +399,17 @@ function criarAplicacao(dependencias = {}) {
       // 401 é "não sei quem você é"; 403 é "sei, e você não pode".
       if (erro instanceof ErroDeAutorizacao) {
         responderJson(res, 403, { erro: erro.message, permissao: erro.permissao });
+        return;
+      }
+      // Excesso de tentativas. `Retry-After` diz em quantos segundos vale tentar
+      // de novo — sem isso, a interface e os clientes ficam adivinhando.
+      if (erro.status === 429) {
+        responderJson(
+          res,
+          429,
+          { erro: erro.message, tentar_em_segundos: erro.retryAfter },
+          { 'retry-after': String(erro.retryAfter) },
+        );
         return;
       }
       if (erro.status === 401) {

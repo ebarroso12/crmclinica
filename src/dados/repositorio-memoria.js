@@ -31,6 +31,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const usuarios = new Map();
   const sessoes = new Map();
   const recuperacoes = new Map();
+  const tentativas = [];
 
   const proximoId = {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
@@ -438,6 +439,58 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         }
       }
       return total;
+    },
+
+    // ---------------------------------------------------------------- tentativas de autenticação
+
+    async registrarTentativa({ ip = null, hashConta = null, acao = 'login', sucesso = false }) {
+      tentativas.push({ ip, hash_conta: hashConta, acao, sucesso, criado_em: agora().toISOString() });
+    },
+
+    async contarFalhas({ ip = null, hashConta = null, acao = 'login', desde }) {
+      const chave = hashConta ? 'hash_conta' : 'ip';
+      const valor = hashConta ?? ip;
+      if (valor === null || valor === undefined) return { total: 0, maisAntigaEm: null };
+
+      const limite = new Date(desde).getTime();
+      const daJanela = tentativas.filter((tentativa) => tentativa[chave] === valor
+        && tentativa.acao === acao
+        && !tentativa.sucesso
+        && new Date(tentativa.criado_em).getTime() > limite);
+
+      if (daJanela.length === 0) return { total: 0, maisAntigaEm: null };
+
+      const maisAntiga = daJanela.reduce(
+        (menor, atual) => (new Date(atual.criado_em) < new Date(menor.criado_em) ? atual : menor),
+      );
+      return { total: daJanela.length, maisAntigaEm: maisAntiga.criado_em };
+    },
+
+    async limparFalhasDaConta(hashConta, acao = 'login') {
+      if (!hashConta) return 0;
+
+      let removidas = 0;
+      for (let indice = tentativas.length - 1; indice >= 0; indice -= 1) {
+        const tentativa = tentativas[indice];
+        if (tentativa.hash_conta === hashConta && tentativa.acao === acao && !tentativa.sucesso) {
+          tentativas.splice(indice, 1);
+          removidas += 1;
+        }
+      }
+      return removidas;
+    },
+
+    async limparTentativasVencidas(anteriorA) {
+      const limite = new Date(anteriorA).getTime();
+
+      let removidas = 0;
+      for (let indice = tentativas.length - 1; indice >= 0; indice -= 1) {
+        if (new Date(tentativas[indice].criado_em).getTime() < limite) {
+          tentativas.splice(indice, 1);
+          removidas += 1;
+        }
+      }
+      return removidas;
     },
 
     async criarSessao({ usuarioId, hashRefresh, expiraEm, agente = null, ip = null }) {

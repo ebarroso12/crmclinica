@@ -522,6 +522,51 @@ function criarRepositorio(pool) {
       return rowCount;
     },
 
+    // ---------------------------------------------------------------- tentativas de autenticação
+
+    async registrarTentativa({ ip = null, hashConta = null, acao = 'login', sucesso = false }) {
+      await consultar(
+        'INSERT INTO tentativas_autenticacao (ip, hash_conta, acao, sucesso) VALUES ($1, $2, $3, $4)',
+        [ip, hashConta, acao, sucesso],
+      );
+    },
+
+    /**
+     * Conta as falhas de uma chave dentro da janela e diz quando a mais antiga sai.
+     * É o que sustenta a janela deslizante: nada de zerar de hora em hora.
+     */
+    async contarFalhas({ ip = null, hashConta = null, acao = 'login', desde }) {
+      const coluna = hashConta ? 'hash_conta' : 'ip';
+      const valor = hashConta ?? ip;
+      if (valor === null || valor === undefined) return { total: 0, maisAntigaEm: null };
+
+      const { rows } = await consultar(`
+        SELECT count(*)::int AS total, min(criado_em) AS mais_antiga
+        FROM tentativas_autenticacao
+        WHERE ${coluna} = $1 AND acao = $2 AND NOT sucesso AND criado_em > $3
+      `, [valor, acao, desde]);
+
+      return { total: rows[0].total, maisAntigaEm: rows[0].mais_antiga };
+    },
+
+    /** Login bem-sucedido zera o contador da conta — quem provou ser quem é não fica de castigo. */
+    async limparFalhasDaConta(hashConta, acao = 'login') {
+      if (!hashConta) return 0;
+      const { rowCount } = await consultar(
+        'DELETE FROM tentativas_autenticacao WHERE hash_conta = $1 AND acao = $2 AND NOT sucesso',
+        [hashConta, acao],
+      );
+      return rowCount;
+    },
+
+    async limparTentativasVencidas(anteriorA) {
+      const { rowCount } = await consultar(
+        'DELETE FROM tentativas_autenticacao WHERE criado_em < $1',
+        [anteriorA],
+      );
+      return rowCount;
+    },
+
     async criarSessao({ usuarioId, hashRefresh, expiraEm, agente = null, ip = null }) {
       const { rows } = await consultar(
         'INSERT INTO sessoes (usuario_id, hash_refresh, expira_em, agente, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id',
