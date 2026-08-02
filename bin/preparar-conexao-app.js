@@ -110,7 +110,7 @@ async function main() {
     // parâmetro nesta primeira consulta, e `format(%L)` faz o escape com as
     // regras do servidor — não com uma tentativa de escapar aspas em JavaScript.
     const { rows: [{ comando }] } = await poolAdmin.query(
-      "SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', $1, $2) AS comando",
+      "SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', $1::text, $2::text) AS comando",
       [PAPEL, senha],
     );
     await poolAdmin.query(comando);

@@ -30,6 +30,9 @@ const INBOX_EXTERNO_PROIBIDO = `Chat${'woot'}`;
 function listarArquivos(diretorio = RAIZ, acumulado = []) {
   for (const entrada of fs.readdirSync(diretorio, { withFileTypes: true })) {
     if (PASTAS_IGNORADAS.has(entrada.name)) continue;
+    // O .env local contém a conexão real e é protegido pelo .gitignore.
+    // Apenas o modelo vazio .env.exemplo pode entrar na auditoria versionável.
+    if (entrada.name === '.env' || (entrada.name.startsWith('.env.') && entrada.name !== '.env.exemplo')) continue;
     const caminho = path.join(diretorio, entrada.name);
 
     if (entrada.isDirectory()) {
