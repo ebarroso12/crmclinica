@@ -37,10 +37,12 @@ function carregarConfiguracao(ambiente = process.env) {
     // Em produção o processo pode ficar atrás de um proxy; localmente ficamos presos ao loopback.
     endereco: texto(ambiente.HOST) || (producao ? '0.0.0.0' : '127.0.0.1'),
     limiteCorpoBytes: inteiro(ambiente.LIMITE_CORPO_BYTES, 64 * 1024),
+    // O banco é a fonte de verdade do inbox: contatos, conversas e mensagens vivem nele.
     banco: {
-      // A URL do banco só é consumida quando o CRM passar a persistir de verdade.
       configurado: Boolean(texto(ambiente.CRMCLINICA_DATABASE_URL)),
       url: texto(ambiente.CRMCLINICA_DATABASE_URL),
+      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, 10),
+      tempoLimiteMs: inteiro(ambiente.CRMCLINICA_DB_TIMEOUT_MS, 10000),
     },
     openclaw: {
       // `OPENCLAW_API_URL` tem prioridade quando a API fica em host distinto da interface.
@@ -53,17 +55,6 @@ function carregarConfiguracao(ambiente = process.env) {
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),
-    },
-    // Chatwoot é o inbox operacional da equipe humana. O crmclinica lê e escreve
-    // pela API oficial dele; não existe inbox paralelo aqui.
-    chatwoot: {
-      baseUrl: urlValida(ambiente.CHATWOOT_BASE_URL),
-      contaId: texto(ambiente.CHATWOOT_ACCOUNT_ID),
-      token: texto(ambiente.CHATWOOT_API_TOKEN),
-      inboxId: texto(ambiente.CHATWOOT_INBOX_ID),
-      timeId: texto(ambiente.CHATWOOT_TEAM_ID),
-      segredoWebhook: texto(ambiente.CHATWOOT_WEBHOOK_SECRET),
-      tempoLimiteMs: inteiro(ambiente.CHATWOOT_TIMEOUT_MS, 10000),
     },
     // Provedor de modelo é opcional e nunca controla o fluxo do produto.
     kimi: {
@@ -92,17 +83,9 @@ function validarConfiguracao(configuracao) {
     problemas.push('OPENCLAW_WEBHOOK_SECRET deve ter ao menos 32 caracteres');
   }
 
-  if (configuracao.chatwoot.baseUrl && configuracao.producao && !configuracao.chatwoot.baseUrl.startsWith('https://')) {
-    problemas.push('CHATWOOT_BASE_URL deve usar HTTPS em produção');
-  }
-  if (configuracao.chatwoot.baseUrl && !configuracao.chatwoot.contaId) {
-    problemas.push('CHATWOOT_ACCOUNT_ID é obrigatório quando o Chatwoot está configurado');
-  }
-  if (configuracao.chatwoot.baseUrl && !configuracao.chatwoot.token) {
-    problemas.push('CHATWOOT_API_TOKEN é obrigatório quando o Chatwoot está configurado');
-  }
-  if (configuracao.producao && configuracao.chatwoot.baseUrl && !configuracao.chatwoot.segredoWebhook) {
-    problemas.push('CHATWOOT_WEBHOOK_SECRET é obrigatório em produção');
+  // O inbox é o próprio produto: sem banco, ele não tem onde guardar conversa.
+  if (configuracao.producao && !configuracao.banco.configurado) {
+    problemas.push('CRMCLINICA_DATABASE_URL é obrigatório em produção');
   }
 
   return problemas;
@@ -123,10 +106,10 @@ function descreverConfiguracao(configuracao) {
       integracao: configuracao.serena.baseUrl ? 'configurada' : 'ausente',
     },
     inbox: {
-      nome: 'Chatwoot',
-      papel: 'inbox operacional da equipe humana',
-      integracao: configuracao.chatwoot.baseUrl && configuracao.chatwoot.token ? 'configurada' : 'ausente',
-      conta: configuracao.chatwoot.contaId || null,
+      nome: 'Inbox do crmclinica',
+      papel: 'atendimento da equipe, dentro do próprio produto',
+      // O inbox depende só do banco: não há serviço externo de conversas.
+      integracao: configuracao.banco.configurado ? 'configurada' : 'ausente',
     },
     provedorModelo: {
       nome: 'Kimi',

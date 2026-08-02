@@ -49,9 +49,19 @@ test('produção exige HTTPS e segredo de webhook forte', () => {
   assert.ok(problemas.some((problema) => /32 caracteres/.test(problema)));
 });
 
+test('produção sem banco é recusada — o inbox não teria onde guardar conversa', () => {
+  const problemas = validarConfiguracao(carregarConfiguracao({
+    NODE_ENV: 'production',
+    OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
+  }));
+
+  assert.ok(problemas.some((problema) => /CRMCLINICA_DATABASE_URL/.test(problema)));
+});
+
 test('produção bem configurada não acusa problema', () => {
   const problemas = validarConfiguracao(carregarConfiguracao({
     NODE_ENV: 'production',
+    CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
     OPENCLAW_BASE_URL: 'https://orquestrador.exemplo',
     SERENA_BASE_URL: 'https://serena.exemplo',
     OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),

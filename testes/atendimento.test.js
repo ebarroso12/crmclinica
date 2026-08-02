@@ -1,0 +1,224 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
+const { criarAtendimento } = require('../src/dominio/atendimento');
+
+// Orquestrador simulado: nenhuma rede, nenhuma credencial real.
+function orquestradorFalso(resposta = { resposta: 'Olá! Posso ajudar?' }) {
+  const despachos = [];
+  return {
+    disponivel: true,
+    despachos,
+    despacharEvento: async (carga) => {
+      despachos.push(carga);
+      if (resposta instanceof Error) throw resposta;
+      return resposta;
+    },
+  };
+}
+
+function montar(resposta) {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso(resposta);
+  return { repositorio, orquestrador, atendimento: criarAtendimento({ repositorio, orquestrador }) };
+}
+
+const EVENTO = Object.freeze({
+  canal: 'whatsapp',
+  id_externo: 'wa:1',
+  remetente: '5516999999999',
+  nome: 'Marina Souza',
+  texto: 'Quero saber sobre a primeira consulta',
+});
+
+test('mensagem recebida vira contato, conversa e linha no histórico', async () => {
+  const { repositorio, atendimento } = montar();
+
+  const resultado = await atendimento.receberMensagem(EVENTO);
+  assert.equal(resultado.acao, 'respondida_pela_automacao');
+
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 1);
+  assert.equal(conversas[0].contato.telefone, '5516999999999');
+  assert.equal(conversas[0].contato.nome, 'Marina Souza');
+});
+
+test('a resposta do orquestrador é gravada no mesmo histórico da equipe', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+
+  assert.equal(orquestrador.despachos.length, 1);
+  assert.equal(mensagens.length, 2, 'a mensagem do paciente e a resposta ficam juntas');
+  assert.equal(mensagens[1].conteudo, 'Olá! Posso ajudar?');
+  assert.equal(mensagens[1].autor_tipo, 'automacao');
+  assert.equal(mensagens[1].direcao, 'saida');
+});
+
+test('o orquestrador recebe só o contexto mínimo', async () => {
+  const { orquestrador, atendimento } = montar();
+
+  await atendimento.receberMensagem(EVENTO);
+  const [carga] = orquestrador.despachos;
+
+  assert.equal(carga.contexto.contato.telefone, '5516999999999');
+  assert.deepEqual(Object.keys(carga.contexto.contato).sort(), ['identificador', 'nome', 'telefone']);
+  assert.ok(!JSON.stringify(carga).includes('email'));
+});
+
+test('reentrega da mesma mensagem não gera segunda resposta', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+
+  await atendimento.receberMensagem(EVENTO);
+  const repetida = await atendimento.receberMensagem(EVENTO);
+
+  assert.equal(repetida.acao, 'mensagem_duplicada');
+  assert.equal(orquestrador.despachos.length, 1, 'o paciente não pode receber resposta dobrada');
+
+  const [conversa] = await repositorio.listarConversas({});
+  assert.equal((await repositorio.listarMensagens(conversa.id)).length, 2);
+});
+
+test('assumir a conversa pausa a automação', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, null);
+  const assumida = await repositorio.obterConversa(conversa.id);
+  assert.equal(assumida.assumida_por_humano, true);
+
+  // Nova mensagem do paciente na conversa assumida não aciona a IA.
+  const despachosAntes = orquestrador.despachos.length;
+  await atendimento.receberMensagem({ ...EVENTO, id_externo: 'wa:2', texto: 'Continuo aqui' });
+
+  assert.equal(orquestrador.despachos.length, despachosAntes, 'a IA precisa calar');
+});
+
+test('assumir deixa registro visível na conversa e na auditoria', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, null);
+
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  const sistema = mensagens.filter((mensagem) => mensagem.tipo === 'sistema');
+  assert.equal(sistema.length, 1);
+  assert.match(sistema[0].conteudo, /pausada/);
+
+  assert.ok(repositorio._auditoria.some((registro) => registro.acao === 'assumida_por_humano'));
+});
+
+test('responder como equipe assume a conversa sem precisar de outro clique', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.responderComoEquipe(conversa.id, 'Bom dia, Marina!', { autorNome: 'Recepção' });
+
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, true, 'responder é dizer "eu cuido deste"');
+
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  const daEquipe = mensagens.find((mensagem) => mensagem.autor_tipo === 'equipe');
+  assert.equal(daEquipe.conteudo, 'Bom dia, Marina!');
+});
+
+test('nota interna não assume a conversa nem cala a IA', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.responderComoEquipe(conversa.id, 'paciente já ligou antes', { privada: true });
+
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, false);
+});
+
+test('liberar devolve a conversa à automação', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, null);
+  await atendimento.liberar(conversa.id);
+
+  const liberada = await repositorio.obterConversa(conversa.id);
+  assert.equal(liberada.assumida_por_humano, false);
+  assert.equal(liberada.atribuido_a, null);
+  assert.equal(liberada.ia_pausada_ate, null);
+});
+
+test('falha do orquestrador escalona para a equipe em vez de travar', async () => {
+  const falha = Object.assign(new Error('fora do ar'), { codigo: 'openclaw_resposta_invalida' });
+  const { repositorio, atendimento } = montar(falha);
+
+  const resultado = await atendimento.receberMensagem(EVENTO);
+  assert.equal(resultado.acao, 'escalonada_por_falha');
+
+  const [conversa] = await repositorio.listarConversas({});
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, true, 'a conversa não pode ficar órfã');
+});
+
+test('sem orquestrador configurado, a conversa fica com a equipe', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({
+    repositorio,
+    orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não deveria'); } },
+  });
+
+  const resultado = await atendimento.receberMensagem(EVENTO);
+  assert.equal(resultado.acao, 'sem_orquestrador');
+
+  // A mensagem não se perde: está gravada e esperando.
+  const [conversa] = await repositorio.listarConversas({});
+  assert.equal((await repositorio.listarMensagens(conversa.id)).length, 1);
+});
+
+test('definir temperatura preserva as etiquetas da equipe e reflete no lead', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await repositorio.definirEtiquetasDaConversa(conversa.id, ['pagou_sinal', 'avaliacao']);
+  const resultado = await atendimento.definirTemperatura(conversa.id, 'frio');
+
+  assert.ok(resultado.etiquetas.includes('pagou_sinal'));
+  assert.ok(resultado.etiquetas.includes('avaliacao'));
+  assert.ok(resultado.etiquetas.includes('lead_frio'));
+
+  const [lead] = await repositorio.listarLeads();
+  assert.equal(lead.temperatura, 'frio', 'o lead não pode discordar da etiqueta');
+});
+
+test('a temperatura marcada pela equipe não é sobrescrita pela automação', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.definirTemperatura(conversa.id, 'frio');
+  const sugestao = await atendimento.sincronizarTemperatura(conversa.id);
+
+  assert.equal(sugestao.origem, 'etiqueta_da_equipe');
+  assert.deepEqual(await repositorio.listarEtiquetasDaConversa(conversa.id), ['lead_frio']);
+});
+
+test('conversa resolvida não recebe resposta automática', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await repositorio.atualizarConversa(conversa.id, { status: 'resolvida' });
+  const despachosAntes = orquestrador.despachos.length;
+
+  const resultado = await atendimento.responderSePossivel(conversa.id);
+  assert.equal(resultado.acao, 'aguardando_equipe');
+  assert.equal(resultado.motivo, 'conversa_resolvida');
+  assert.equal(orquestrador.despachos.length, despachosAntes);
+});

@@ -5,11 +5,16 @@
   "description": "CRM clínico da Clínica Dr. Edson Barroso, orquestrado pelo OpenClaw com atendimento da Serena",
   "type": "commonjs",
   "main": "src/index.js",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "iniciar": "node src/index.js",
     "start": "node src/index.js",
     "test": "node --test \"testes/**/*.test.js\"",
     "verificar": "node --check src/index.js && node --check src/servidor/http.js && node --check src/config.js && node --check src/contratos/evento.js && node --check src/integracoes/openclaw.js && node --check src/provedores/kimi.js && node --check api/index.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
   }
 }

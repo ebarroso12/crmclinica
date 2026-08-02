@@ -26,13 +26,13 @@
         <span id="saude-atendimento" class="estado">verificando…</span>
       </div>
       <div>
-        <small>INBOX DA EQUIPE</small>
-        <strong>Chatwoot</strong>
+        <small>INBOX</small>
+        <strong>Atendimento</strong>
         <span id="saude-inbox" class="estado">verificando…</span>
       </div>
       <div>
         <small>FONTE DE VERDADE</small>
-        <strong>CRM</strong>
+        <strong>Banco</strong>
         <span id="saude-crm" class="estado">verificando…</span>
       </div>
       <div>
@@ -179,21 +179,34 @@
 
           <div class="thread">
             <div class="thread-topo">
-              <b id="thread-nome">Selecione uma conversa</b>
+              <!-- Clicar no nome abre o histórico do contato. -->
+              <button type="button" id="thread-nome" class="nome-contato" disabled
+                      aria-expanded="false" aria-controls="historico-contato">
+                Selecione uma conversa
+              </button>
               <small id="thread-detalhe">A lista à esquerda mostra as conversas do inbox.</small>
             </div>
 
+            <section id="historico-contato" class="historico" hidden aria-label="Histórico do contato">
+              <div class="historico-topo">
+                <b>Histórico</b>
+                <button type="button" class="link" id="fechar-historico">Fechar</button>
+              </div>
+              <ul id="historico-lista" class="ficha-lista"></ul>
+            </section>
+
             <div class="acoes-conversa" role="group" aria-label="Ações da conversa">
               <button type="button" class="acao" data-acao="assumir" disabled>Assumir</button>
+              <button type="button" class="acao" data-acao="liberar" disabled hidden>Devolver à IA</button>
               <button type="button" class="acao" data-acao="resolver" disabled>Resolver</button>
               <button type="button" class="acao" data-acao="reabrir" disabled>Reabrir</button>
               <label class="oculto-visual" for="seletor-prioridade">Prioridade</label>
               <select id="seletor-prioridade" class="acao" disabled>
                 <option value="">Prioridade</option>
-                <option value="urgent">Urgente</option>
-                <option value="high">Alta</option>
-                <option value="medium">Média</option>
-                <option value="low">Baixa</option>
+                <option value="urgente">Urgente</option>
+                <option value="alta">Alta</option>
+                <option value="media">Média</option>
+                <option value="baixa">Baixa</option>
               </select>
               <label class="oculto-visual" for="seletor-temperatura">Temperatura do lead</label>
               <select id="seletor-temperatura" class="acao" disabled>
@@ -204,31 +217,66 @@
               </select>
             </div>
 
+            <p class="aviso-ia" id="aviso-ia" role="status" hidden></p>
+
             <ol class="mensagens" id="thread-mensagens" aria-live="polite"></ol>
 
             <form class="composer" id="form-resposta">
               <label class="oculto-visual" for="resposta">Escrever resposta</label>
               <input id="resposta" type="text" placeholder="Escreva uma resposta…" disabled>
               <button type="submit" class="primario" disabled>Enviar</button>
+              <button type="button" class="acao" id="botao-nota" disabled>Nota</button>
             </form>
           </div>
 
           <aside class="ficha" aria-label="Ficha do contato">
-            <small>FICHA DO CONTATO</small>
+            <div class="ficha-topo">
+              <small>FICHA DO CONTATO</small>
+              <button type="button" class="link" id="editar-ficha" hidden>Editar</button>
+            </div>
             <h3 id="ficha-nome">—</h3>
             <p id="ficha-canal">Selecione uma conversa</p>
-            <hr>
-            <small>TELEFONE</small>
-            <b id="ficha-telefone">—</b>
-            <small>IDENTIFICADOR</small>
-            <b id="ficha-identificador">—</b>
-            <hr>
-            <small>ETIQUETAS</small>
-            <p id="ficha-etiquetas">—</p>
-            <small>NOTAS</small>
-            <p id="ficha-notas">—</p>
-            <small>CONVERSAS ANTERIORES</small>
-            <p id="ficha-anteriores">—</p>
+
+            <form id="form-ficha" hidden>
+              <label for="ficha-campo-nome">Nome</label>
+              <input id="ficha-campo-nome" type="text">
+              <label for="ficha-campo-telefone">Telefone</label>
+              <input id="ficha-campo-telefone" type="text">
+              <label for="ficha-campo-email">E-mail</label>
+              <input id="ficha-campo-email" type="email">
+              <label for="ficha-campo-atributos">Atributos (um por linha: chave: valor)</label>
+              <textarea id="ficha-campo-atributos" rows="3"></textarea>
+              <div class="ficha-acoes">
+                <button type="submit" class="primario">Salvar</button>
+                <button type="button" class="acao" id="cancelar-ficha">Cancelar</button>
+              </div>
+            </form>
+
+            <div id="ficha-leitura">
+              <hr>
+              <small>TELEFONE</small>
+              <b id="ficha-telefone">—</b>
+              <small>IDENTIFICADOR</small>
+              <b id="ficha-identificador">—</b>
+              <small>E-MAIL</small>
+              <b id="ficha-email">—</b>
+
+              <hr>
+              <small>ATRIBUTOS</small>
+              <dl id="ficha-atributos"><dd>—</dd></dl>
+
+              <hr>
+              <small>ETIQUETAS</small>
+              <div id="ficha-etiquetas" class="etiquetas-lista"></div>
+
+              <hr>
+              <small>NOTAS</small>
+              <ul id="ficha-notas" class="ficha-lista"><li>—</li></ul>
+
+              <hr>
+              <small>CONVERSAS ANTERIORES</small>
+              <ul id="ficha-anteriores" class="ficha-lista"><li>—</li></ul>
+            </div>
           </aside>
         </div>
       </section>

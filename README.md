@@ -11,7 +11,7 @@ Cada peça tem uma responsabilidade só, e nenhuma invade a da outra:
 | --- | --- |
 | **OpenClaw** | Orquestrador de eventos, ferramentas e tarefas. Decide o que acontece e quando. |
 | **Serena** | Agente de atendimento. Acolhe, qualifica, encaminha e aplica as barreiras clínicas. |
-| **CRM** | Fonte de verdade de contatos, leads, conversas, mensagens, agenda e auditoria. |
+| **CRM** | Fonte de verdade de contatos, leads, conversas, mensagens, agenda e auditoria. O inbox é o próprio produto. |
 | **Prontuário** | Sistema clínico existente. Acessado só por ferramenta autorizada, com escopo mínimo. |
 | **Kimi** | Provedor opcional de modelo. Pode ser trocado ou desligado sem afetar o produto. |
 | **Canais** | WhatsApp, Instagram, site e formulário, como adaptadores independentes. |
@@ -26,31 +26,41 @@ fundido de provedor e orquestrador.
 
 ```text
 api/            ponte para a Vercel (mesma aplicação, como função)
+db/             migrations do PostgreSQL
 public/         interface web (HTML, CSS e JS sem dependência externa)
 src/
   config.js         leitura e validação do ambiente, sem expor segredo
   index.js          inicialização do processo
-  armazenamento/    registro de idempotência
+  armazenamento/    registro de idempotência em memória
   contratos/        contrato de eventos — a única porta de entrada de dado externo
-  dominio/          regras do CRM (resumo operacional)
+  dados/            pool e repositório do inbox (PostgreSQL e memória)
+  dominio/          regras do CRM: conversas, leads e ciclo de atendimento
   integracoes/      cliente isolado do OpenClaw
   provedores/       provedor opcional de modelo
   servidor/         HTTP: roteamento, leitura de corpo e cabeçalhos de segurança
-testes/         testes de contrato, HTTP, integração e auditoria
+testes/         testes de contrato, repositório, atendimento, HTTP e auditoria
 documentos/     material de referência do cliente (PRD, roadmap, schema)
 docs/           decisões e contratos deste repositório
 ```
 
 ## Como rodar
 
-Requer **Node.js 22 ou superior**. Não há dependências de terceiros.
+Requer **Node.js 22 ou superior**. Única dependência: `pg`, o driver do PostgreSQL.
 
 ```bash
+npm install
 cp .env.exemplo .env    # preencha só no ambiente local
+
+# Com banco (recomendado):
+psql "$CRMCLINICA_DATABASE_URL" -f db/001_inbox.sql
+
 npm run iniciar         # sobe em http://127.0.0.1:4100
-npm test                # suíte completa
+npm test                # suíte completa (roda sem banco)
 npm run verificar       # checagem de sintaxe de todos os arquivos
 ```
+
+Sem `CRMCLINICA_DATABASE_URL` o inbox roda em memória: útil para desenvolver, mas
+nada persiste. Em produção a variável é obrigatória.
 
 ## Rotas
 
@@ -59,7 +69,11 @@ npm run verificar       # checagem de sintaxe de todos os arquivos
 | `/` | GET | Interface web |
 | `/health` | GET | Identidade, versão e instante |
 | `/api/resumo` | GET | Indicadores do painel e saúde da plataforma |
-| `/api/eventos` | POST | Recepção de eventos do orquestrador, assinada e idempotente |
+| `/api/eventos` | POST | Recepção de mensagem de canal, assinada e idempotente |
+| `/api/conversas…` | GET/POST/PUT | Inbox: lista, thread, resposta, assumir, etiquetas, ficha |
+| `/api/leads` | GET | Kanban de leads |
+
+O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md).
 
 ## Segurança
 
@@ -73,8 +87,9 @@ npm run verificar       # checagem de sintaxe de todos os arquivos
 
 ## Estado
 
-Fundação. As rotas respondem, o contrato de eventos está fechado e testado, e a interface
-está montada — mas nenhum dado real de paciente é acessado ainda. Os números do painel
-são declaradamente de demonstração até o CRM ser ligado ao banco.
+O inbox funciona de ponta a ponta: mensagem recebida vira contato, conversa e histórico;
+a equipe responde, assume, resolve, etiqueta e edita a ficha; o kanban abre a conversa
+que originou cada lead. Falta autenticação — as rotas ainda não podem ser expostas
+publicamente. Nenhum dado real de paciente foi usado.
 
 Documentação detalhada em [`docs/`](docs/).

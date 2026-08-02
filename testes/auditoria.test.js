@@ -24,6 +24,8 @@ const EXTENSOES = new Set(['.js', '.json', '.md', '.html', '.css', '.sql', '.yml
 // não deve encontrar ocorrência nem dentro deste arquivo de auditoria.
 const ORQUESTRADOR_VISUAL_PROIBIDO = `n${'8'}n`;
 const NOME_FUNDIDO_PROIBIDO = `Kimi${'Claw'}`;
+// O inbox é o próprio produto: nenhum serviço externo de conversas no código.
+const INBOX_EXTERNO_PROIBIDO = `Chat${'woot'}`;
 
 function listarArquivos(diretorio = RAIZ, acumulado = []) {
   for (const entrada of fs.readdirSync(diretorio, { withFileTypes: true })) {
@@ -60,10 +62,30 @@ test('o nome fundido do provedor com o orquestrador não existe', () => {
   assert.deepEqual(encontrados.map(relativo), []);
 });
 
+test('nenhum serviço externo de conversas aparece no código, na documentação ou na interface', () => {
+  const padrao = new RegExp(INBOX_EXTERNO_PROIBIDO, 'i');
+  const encontrados = ARQUIVOS.filter((caminho) => padrao.test(fs.readFileSync(caminho, 'utf8')));
+  assert.deepEqual(encontrados.map(relativo), [], 'o inbox é o próprio produto');
+});
+
+test('não existe variável de ambiente de inbox externo', () => {
+  const padrao = new RegExp(`${INBOX_EXTERNO_PROIBIDO.toUpperCase()}_[A-Z_]+`, 'i');
+  const encontrados = ARQUIVOS.filter((caminho) => padrao.test(fs.readFileSync(caminho, 'utf8')));
+  assert.deepEqual(encontrados.map(relativo), []);
+});
+
+test('nenhuma dependência de terceiros além do driver do banco', () => {
+  const pacote = JSON.parse(fs.readFileSync(path.join(RAIZ, 'package.json'), 'utf8'));
+  assert.deepEqual(Object.keys(pacote.dependencies || {}), ['pg']);
+  assert.deepEqual(Object.keys(pacote.devDependencies || {}), []);
+});
+
 test('no material de referência, os termos proibidos só aparecem como proibição', () => {
   const pastaReferencia = path.join(RAIZ, PASTA_REFERENCIA);
   if (!fs.existsSync(pastaReferencia)) return;
 
+  // O inbox externo fica de fora aqui: no material do cliente ele é citado como
+  // referência visual, o que é legítimo. O que não pode é chegar ao código.
   const padrao = new RegExp(`${ORQUESTRADOR_VISUAL_PROIBIDO}|${NOME_FUNDIDO_PROIBIDO}`, 'i');
   // Uma linha só é aceita se negar o termo ("não existe", "sem", "nunca")
   // ou se for instrução de auditoria sobre ele ("procurar", "remover", "conferir").

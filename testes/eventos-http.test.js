@@ -4,7 +4,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 const { assinar } = require('../src/integracoes/openclaw');
-const { criarRegistroEmMemoria } = require('../src/armazenamento/idempotencia');
 
 // Segredo sintético de teste. Não corresponde a nenhum ambiente real.
 const SEGREDO_DE_TESTE = 'segredo-apenas-para-teste-com-32-caracteres';
@@ -37,12 +36,14 @@ test('aceita um evento válido e devolve recibo com a chave de idempotência', a
   assert.equal(recibo.duplicado, false);
   assert.equal(recibo.tipo, 'mensagem.recebida');
   assert.match(recibo.chave_idempotencia, /^[0-9a-f]{64}$/);
-  // Sem orquestrador configurado o evento é apenas registrado — nunca perdido em silêncio.
-  assert.equal(recibo.encaminhamento, 'apenas_registrado');
+  // A mensagem virou conversa no inbox — não ficou só registrada em lugar nenhum.
+  assert.equal(typeof recibo.conversa_id, 'number');
+  // Sem orquestrador configurado, a conversa fica esperando a equipe.
+  assert.equal(recibo.decisao, 'sem_orquestrador');
 });
 
 test('reenvio do mesmo evento é idempotente e não reprocessa', async (t) => {
-  const app = await subirServidor({ idempotencia: criarRegistroEmMemoria() });
+  const app = await subirServidor();
   t.after(() => app.encerrar());
 
   const primeira = await (await enviar(app, JSON.stringify(EVENTO))).json();

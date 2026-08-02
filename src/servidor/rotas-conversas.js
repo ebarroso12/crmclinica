@@ -1,15 +1,15 @@
 'use strict';
 
 const { ErroDeContrato } = require('../contratos/erros');
-const { validarEventoChatwoot } = require('../contratos/evento-chatwoot');
-const { webhookAutentico } = require('../integracoes/chatwoot');
-const { FILAS, PRIORIDADES, ESTADOS, TEMPERATURAS } = require('../dominio/conversas');
-const { projetarLead, agruparPorColuna } = require('../dominio/leads');
+const { FILAS, ESTADOS, PRIORIDADES, TEMPERATURAS, lerTemperatura } = require('../dominio/conversas');
+const { agruparPorColuna, sugerirTemperatura } = require('../dominio/leads');
 
-// Rotas da camada de conversas. Elas são uma fachada fina sobre o Chatwoot:
-// nenhuma mensagem é armazenada aqui, e o token do Chatwoot nunca chega ao navegador.
+// API do inbox local. O banco do crmclinica é a fonte de dados; não há
+// serviço externo de conversas por trás destas rotas.
 
-function exigirTexto(valor, campo, limite = 4000) {
+const LIMITE_TEXTO = 4000;
+
+function exigirTexto(valor, campo, limite = LIMITE_TEXTO) {
   const bruto = typeof valor === 'string' ? valor.trim() : '';
   if (!bruto) throw new ErroDeContrato(`campo "${campo}" é obrigatório`, campo);
   if (bruto.length > limite) throw new ErroDeContrato(`campo "${campo}" excede ${limite} caracteres`, campo);
@@ -32,205 +32,261 @@ function exigirIdentificador(valor, campo) {
   return numero;
 }
 
-/**
- * Monta as rotas de conversas.
- * `contexto` traz o cliente do Chatwoot, o sincronizador, o registro de idempotência
- * e a configuração — todos injetáveis para teste.
- */
-function criarRotasDeConversas(contexto) {
-  const { chatwoot, sincronizador, idempotencia, configuracao } = contexto;
-
-  function exigirChatwoot() {
-    if (!chatwoot?.disponivel) {
-      const erro = new Error('Integração com o Chatwoot não está configurada');
-      erro.codigo = 'chatwoot_nao_configurado';
-      throw erro;
-    }
+async function exigirConversa(repositorio, id) {
+  const conversa = await repositorio.obterConversa(id);
+  if (!conversa) {
+    const erro = new Error('conversa não encontrada');
+    erro.status = 404;
+    throw erro;
   }
+  return conversa;
+}
 
+function criarRotasDeConversas({ repositorio, atendimento }) {
   return {
-    /** GET /api/conversas/filas — as três filas que a equipe usa. */
+    /** GET /api/conversas/filas — vocabulário do inbox, para a interface montar os controles. */
     async listarFilas() {
+      const etiquetas = await repositorio.listarEtiquetas();
       return {
-        filas: Object.entries(FILAS).map(([chave, definicao]) => ({
-          chave,
-          rotulo: definicao.rotulo,
-        })),
-        prioridades: PRIORIDADES,
+        filas: Object.entries(FILAS).map(([chave, definicao]) => ({ chave, ...definicao })),
         estados: ESTADOS,
-        temperaturas: Object.keys(TEMPERATURAS),
+        prioridades: PRIORIDADES,
+        temperaturas: TEMPERATURAS,
+        etiquetas,
       };
     },
 
-    /** GET /api/conversas?fila=…&estado=… */
+    /** GET /api/conversas?fila=…&status=…&busca=…&contato=… */
     async listarConversas(parametros) {
-      exigirChatwoot();
-      const fila = parametros.get('fila') || 'nao_atribuidas';
+      const fila = parametros.get('fila') || 'todos';
       if (!FILAS[fila]) throw new ErroDeContrato(`fila desconhecida: ${fila}`, 'fila');
 
-      const estado = parametros.get('estado') || 'open';
-      if (!ESTADOS.includes(estado)) throw new ErroDeContrato(`estado desconhecido: ${estado}`, 'estado');
+      const status = parametros.get('status');
+      if (status && !ESTADOS.includes(status)) {
+        throw new ErroDeContrato(`status desconhecido: ${status}`, 'status');
+      }
 
-      return chatwoot.listarConversas({ fila, estado });
+      const contatoParam = parametros.get('contato');
+      const conversas = await repositorio.listarConversas({
+        status: status || null,
+        busca: parametros.get('busca') || null,
+        contatoId: contatoParam ? exigirIdentificador(contatoParam, 'contato') : null,
+        limite: 50,
+      });
+
+      // A fila é um recorte de quem responde, não um filtro do banco.
+      const filtradas = fila === 'minhas'
+        ? conversas.filter((conversa) => conversa.assumida_por_humano || conversa.atribuido_a)
+        : fila === 'nao_atribuidas'
+          ? conversas.filter((conversa) => !conversa.assumida_por_humano && !conversa.atribuido_a)
+          : conversas;
+
+      return { fila, rotulo: FILAS[fila].rotulo, total: filtradas.length, conversas: filtradas };
     },
 
-    /** GET /api/conversas/:id — conversa, thread e ficha do contato juntas. */
+    /** GET /api/conversas/:id — conversa, ficha, notas e conversas anteriores. */
     async obterConversa(conversaId) {
-      exigirChatwoot();
       const id = exigirIdentificador(conversaId, 'conversa_id');
+      const conversa = await exigirConversa(repositorio, id);
 
-      const conversa = await chatwoot.obterConversa(id);
-      const mensagens = await chatwoot.listarMensagens(id);
+      const [contato, notas, anteriores] = await Promise.all([
+        repositorio.obterContato(conversa.contato_id),
+        repositorio.listarNotas(conversa.contato_id),
+        repositorio.listarConversas({ contatoId: conversa.contato_id, limite: 20 }),
+      ]);
 
-      let ficha = null;
-      if (conversa.contato?.id) {
-        const [contato, anteriores, notas] = await Promise.all([
-          chatwoot.obterContato(conversa.contato.id),
-          chatwoot.listarConversasDoContato(conversa.contato.id),
-          chatwoot.listarNotas(conversa.contato.id),
-        ]);
-        ficha = {
+      return {
+        conversa,
+        ficha: {
           ...contato,
           notas,
           conversas_anteriores: anteriores
             .filter((anterior) => anterior.id !== id)
-            .map((anterior) => ({ id: anterior.id, estado: anterior.estado, em: anterior.ultimaAtividadeEm })),
-        };
-      }
-
-      return { conversa, mensagens, ficha, lead: projetarLead(conversa) };
+            .map((anterior) => ({
+              id: anterior.id,
+              status: anterior.status,
+              canal: anterior.canal,
+              em: anterior.ultima_msg_em || anterior.criado_em,
+            })),
+        },
+        temperatura: lerTemperatura(conversa.etiquetas),
+      };
     },
 
-    /** POST /api/conversas/:id/mensagens — resposta humana da equipe. */
-    async responder(conversaId, corpo) {
-      exigirChatwoot();
+    /** GET /api/conversas/:id/mensagens — a thread. */
+    async listarMensagens(conversaId) {
       const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
+      return repositorio.listarMensagens(id);
+    },
+
+    /** POST /api/conversas/:id/mensagens — resposta humana; assumir vem junto. */
+    async responder(conversaId, corpo) {
+      const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
+
       const texto = exigirTexto(corpo?.texto, 'texto');
       const privada = Boolean(corpo?.privada);
 
-      return chatwoot.responder(id, texto, { privada });
+      const mensagem = await atendimento.responderComoEquipe(id, texto, {
+        usuarioId: corpo?.usuario_id ?? null,
+        autorNome: corpo?.autor ?? null,
+        privada,
+      });
+
+      return {
+        mensagem,
+        // Responder assume a conversa: é o gesto que diz "eu cuido deste".
+        detalhe: privada ? 'Nota interna registrada.' : 'Mensagem enviada. A resposta automática está pausada.',
+      };
     },
 
-    /** POST /api/conversas/:id/atribuicao — agente ou time. */
-    async atribuir(conversaId, corpo) {
-      exigirChatwoot();
+    /** POST /api/conversas/:id/assumir — assume e pausa a IA. */
+    async assumir(conversaId, corpo) {
       const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
 
-      if (corpo?.agente_id !== undefined) {
-        return chatwoot.atribuirAgente(id, exigirIdentificador(corpo.agente_id, 'agente_id'));
+      if (corpo?.liberar === true) {
+        return { conversa: await atendimento.liberar(id), detalhe: 'Conversa devolvida à automação.' };
       }
-      if (corpo?.time_id !== undefined) {
-        return chatwoot.atribuirTime(id, exigirIdentificador(corpo.time_id, 'time_id'));
+
+      const conversa = await atendimento.assumir(id, corpo?.usuario_id ?? null, {
+        pausarMinutos: corpo?.pausar_minutos ?? null,
+      });
+      return { conversa, detalhe: 'Conversa assumida. A resposta automática está pausada.' };
+    },
+
+    /** POST /api/conversas/:id/etiquetas — substitui o conjunto de etiquetas. */
+    async definirEtiquetas(conversaId, corpo) {
+      const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
+
+      if (!Array.isArray(corpo?.etiquetas)) {
+        throw new ErroDeContrato('campo "etiquetas" deve ser uma lista', 'etiquetas');
       }
-      throw new ErroDeContrato('informe agente_id ou time_id', 'agente_id');
+
+      const nomes = corpo.etiquetas.map((nome) => String(nome).trim()).filter(Boolean);
+      const aplicadas = await repositorio.definirEtiquetasDaConversa(id, nomes);
+
+      // A temperatura vive nas etiquetas; o lead precisa refletir a mesma verdade.
+      const temperatura = lerTemperatura(aplicadas);
+      const conversa = await repositorio.obterConversa(id);
+      if (temperatura) await repositorio.salvarLead(conversa.contato_id, { conversaId: id, temperatura });
+
+      const ignoradas = nomes.filter((nome) => !aplicadas.includes(nome));
+      return { conversa_id: id, etiquetas: aplicadas, temperatura, ignoradas };
+    },
+
+    /** PUT /api/conversas/:id/ficha — dados do contato e atributos livres. */
+    async atualizarFicha(conversaId, corpo) {
+      const id = exigirIdentificador(conversaId, 'conversa_id');
+      const conversa = await exigirConversa(repositorio, id);
+
+      const campos = {};
+      for (const campo of ['nome', 'telefone', 'email', 'identificador', 'observacoes']) {
+        if (corpo?.[campo] !== undefined) {
+          campos[campo] = corpo[campo] === null ? null : String(corpo[campo]).trim().slice(0, 300);
+        }
+      }
+      if (corpo?.atributos !== undefined) {
+        if (typeof corpo.atributos !== 'object' || corpo.atributos === null || Array.isArray(corpo.atributos)) {
+          throw new ErroDeContrato('campo "atributos" deve ser um objeto', 'atributos');
+        }
+        campos.atributos = corpo.atributos;
+      }
+      if (Object.keys(campos).length === 0) {
+        throw new ErroDeContrato('informe ao menos um campo da ficha');
+      }
+
+      const contato = await repositorio.atualizarContato(conversa.contato_id, campos);
+      await repositorio.registrarAuditoria({
+        entidade: 'contato',
+        entidadeId: conversa.contato_id,
+        acao: 'ficha_atualizada',
+        detalhe: { campos: Object.keys(campos) },
+      });
+
+      return { ficha: contato };
     },
 
     /** POST /api/conversas/:id/prioridade */
     async definirPrioridade(conversaId, corpo) {
-      exigirChatwoot();
       const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
       const prioridade = exigirEnum(corpo?.prioridade, 'prioridade', PRIORIDADES);
 
-      return chatwoot.definirPrioridade(id, prioridade);
+      return { conversa: await repositorio.atualizarConversa(id, { prioridade }) };
     },
 
-    /** POST /api/conversas/:id/estado — resolver, reabrir ou deixar pendente. */
+    /** POST /api/conversas/:id/estado — resolver e reabrir. */
     async definirEstado(conversaId, corpo) {
-      exigirChatwoot();
       const id = exigirIdentificador(conversaId, 'conversa_id');
-      const estado = exigirEnum(corpo?.estado, 'estado', ESTADOS);
+      await exigirConversa(repositorio, id);
+      const status = exigirEnum(corpo?.status, 'status', ESTADOS);
 
-      return chatwoot.definirEstado(id, estado);
+      const conversa = await repositorio.atualizarConversa(id, { status });
+      await repositorio.registrarAuditoria({
+        entidade: 'conversa',
+        entidadeId: id,
+        acao: status === 'resolvida' ? 'resolvida' : 'reaberta',
+      });
+
+      return { conversa };
     },
 
-    /** POST /api/conversas/:id/temperatura — preserva as demais etiquetas. */
+    /** POST /api/conversas/:id/temperatura */
     async definirTemperatura(conversaId, corpo) {
-      exigirChatwoot();
       const id = exigirIdentificador(conversaId, 'conversa_id');
-      const temperatura = exigirEnum(corpo?.temperatura, 'temperatura', Object.keys(TEMPERATURAS));
+      await exigirConversa(repositorio, id);
+      const temperatura = exigirEnum(corpo?.temperatura, 'temperatura', TEMPERATURAS);
 
-      return sincronizador.definirTemperatura(id, temperatura);
+      return atendimento.definirTemperatura(id, temperatura);
     },
 
     /** POST /api/conversas/:id/notas — nota na ficha do contato. */
     async criarNota(conversaId, corpo) {
-      exigirChatwoot();
       const id = exigirIdentificador(conversaId, 'conversa_id');
+      const conversa = await exigirConversa(repositorio, id);
       const texto = exigirTexto(corpo?.texto, 'texto');
 
-      const conversa = await chatwoot.obterConversa(id);
-      if (!conversa.contato?.id) throw new ErroDeContrato('conversa sem contato associado', 'conversa_id');
-
-      await chatwoot.criarNota(conversa.contato.id, texto);
-      return { contato_id: conversa.contato.id, registrada: true };
+      const nota = await repositorio.criarNota(conversa.contato_id, texto, corpo?.usuario_id ?? null);
+      return { nota, contato_id: conversa.contato_id };
     },
 
-    /** GET /api/leads — kanban montado a partir das conversas do inbox. */
-    async listarLeads(parametros) {
-      exigirChatwoot();
-      const estado = parametros.get('estado') || 'open';
-      const { conversas } = await chatwoot.listarConversas({ fila: 'todos', estado });
-      const leads = conversas.map(projetarLead);
-
+    /** GET /api/leads — kanban; cada card sabe qual conversa abrir. */
+    async listarLeads() {
+      const leads = await repositorio.listarLeads();
       return { total: leads.length, colunas: agruparPorColuna(leads) };
     },
 
-    /** POST /api/integracoes/chatwoot/etiquetas — cria as etiquetas de temperatura. */
-    async garantirEtiquetas() {
-      exigirChatwoot();
-      return chatwoot.garantirEtiquetasDeTemperatura();
-    },
-
-    /**
-     * POST /api/webhooks/chatwoot — recepção dos eventos do inbox.
-     * Autenticidade primeiro, contrato depois, idempotência por último.
-     */
-    async receberWebhook({ corpoBruto, cabecalhos }) {
-      const segredo = configuracao.chatwoot.segredoWebhook;
-
-      if (segredo) {
-        const autentico = webhookAutentico({
-          corpoBruto,
-          assinaturaRecebida: cabecalhos['x-chatwoot-assinatura'] || cabecalhos['x-chatwoot-signature'],
-          tokenRecebido: cabecalhos['x-crmclinica-token'],
-          segredo,
-        });
-        if (!autentico) {
-          const erro = new Error('webhook não autenticado');
-          erro.status = 401;
-          throw erro;
-        }
-      } else if (configuracao.producao) {
-        const erro = new Error('recepção indisponível sem segredo configurado');
-        erro.status = 503;
+    /** GET /api/contatos/:id/conversas — histórico ao clicar no nome. */
+    async historicoDoContato(contatoId) {
+      const id = exigirIdentificador(contatoId, 'contato_id');
+      const contato = await repositorio.obterContato(id);
+      if (!contato) {
+        const erro = new Error('contato não encontrado');
+        erro.status = 404;
         throw erro;
       }
 
-      let entrada;
-      try {
-        entrada = JSON.parse(corpoBruto);
-      } catch {
-        throw new ErroDeContrato('corpo não é JSON válido');
-      }
+      const [conversas, notas] = await Promise.all([
+        repositorio.listarConversas({ contatoId: id, limite: 50 }),
+        repositorio.listarNotas(id),
+      ]);
 
-      const evento = validarEventoChatwoot(entrada);
+      return { contato, notas, conversas };
+    },
 
-      const jaProcessado = idempotencia.consultar(evento.chave_idempotencia);
-      if (jaProcessado) return { ...jaProcessado, duplicado: true, status: 200 };
+    /** Usado pelo webhook de canal: grava a mensagem e roda o ciclo de atendimento. */
+    async receberMensagemDeCanal(evento) {
+      return atendimento.receberMensagem(evento);
+    },
 
-      const decisao = await sincronizador.tratarEvento(evento);
-      const recibo = {
-        aceito: true,
-        duplicado: false,
-        chave_idempotencia: evento.chave_idempotencia,
-        evento: evento.evento,
-        conversa_id: evento.conversa_id,
-        decisao: decisao.acao,
-        recebido_em: new Date().toISOString(),
-      };
-
-      idempotencia.registrar(evento.chave_idempotencia, recibo);
-      return { ...recibo, status: 202 };
+    /** Diagnóstico: o que a automação faria com esta conversa agora. */
+    async sugerir(conversaId) {
+      const id = exigirIdentificador(conversaId, 'conversa_id');
+      const conversa = await exigirConversa(repositorio, id);
+      return { conversa_id: id, sugestao: sugerirTemperatura(conversa) };
     },
   };
 }

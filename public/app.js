@@ -1,7 +1,7 @@
 'use strict';
 
-// Interface do crmclinica. Só lê a API pública do próprio domínio (/api/resumo);
-// nenhuma credencial trafega pelo navegador e nenhum dado de paciente é carregado aqui.
+// Interface do crmclinica. Fala só com a API do próprio domínio; nenhuma credencial
+// trafega pelo navegador. O inbox é local: conversa e mensagem vêm do banco do produto.
 
 const TITULOS = {
   painel: 'Hoje',
@@ -11,6 +11,8 @@ const TITULOS = {
   serena: 'Serena',
   auditoria: 'Auditoria',
 };
+
+const seletor = (alvo) => document.querySelector(alvo);
 
 function abrirTela(tela) {
   if (!TITULOS[tela]) return;
@@ -24,23 +26,27 @@ function abrirTela(tela) {
     else botao.removeAttribute('aria-current');
   }
 
-  document.querySelector('#titulo').textContent = TITULOS[tela];
+  seletor('#titulo').textContent = TITULOS[tela];
   document.title = `${TITULOS[tela]} · crmclinica`;
+
+  if (tela === 'conversas') carregarConversas();
+  if (tela === 'leads') carregarLeads();
 }
 
-for (const gatilho of document.querySelectorAll('[data-tela]')) {
+for (const gatilho of document.querySelectorAll('nav [data-tela]')) {
   gatilho.addEventListener('click', () => abrirTela(gatilho.dataset.tela));
 }
 
 function atualizarRelogio() {
-  document.querySelector('#hora').textContent = new Intl.DateTimeFormat('pt-BR', {
+  seletor('#hora').textContent = new Intl.DateTimeFormat('pt-BR', {
     hour: '2-digit',
     minute: '2-digit',
     timeZone: 'America/Sao_Paulo',
   }).format(new Date());
 }
 
-// Traduz o estado técnico devolvido pela API em algo que a equipe entende de relance.
+// --- Estado de leitura da API ---
+
 const LEGENDAS = {
   operacional: ['Operacional', 'ok'],
   configurada: ['Configurada', 'ok'],
@@ -52,62 +58,22 @@ const LEGENDAS = {
   indisponivel: ['Indisponível', 'ruim'],
 };
 
-function aplicarEstado(seletor, chave) {
-  const alvo = document.querySelector(seletor);
-  if (!alvo) return;
+function aplicarEstado(alvo, chave) {
+  const elemento = seletor(alvo);
+  if (!elemento) return;
   const [rotulo, classe] = LEGENDAS[chave] || [String(chave), ''];
-  alvo.textContent = rotulo;
-  alvo.className = `estado ${classe}`.trim();
+  elemento.textContent = rotulo;
+  elemento.className = `estado ${classe}`.trim();
 }
 
-function definirTexto(seletor, valor) {
-  const alvo = document.querySelector(seletor);
-  if (alvo) alvo.textContent = valor;
+function definirTexto(alvo, valor) {
+  const elemento = seletor(alvo);
+  if (elemento) elemento.textContent = valor;
 }
-
-async function carregarResumo() {
-  try {
-    const resposta = await fetch('/api/resumo', { headers: { accept: 'application/json' } });
-    if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
-    const resumo = await resposta.json();
-
-    const { pendentes, leadsHoje, consultasHoje, escalonamentos } = resumo.indicadores;
-    definirTexto('#metrica-pendentes', pendentes);
-    definirTexto('#metrica-leads', leadsHoje);
-    definirTexto('#metrica-consultas', consultasHoje);
-    definirTexto('#metrica-escalonamentos', escalonamentos);
-    definirTexto('#fila-topo', `${pendentes} pendentes`);
-    definirTexto('#contador-conversas', pendentes);
-
-    const { orquestrador, atendimento, inbox, fonteDeVerdade } = resumo.plataforma;
-    aplicarEstado('#saude-orquestrador', orquestrador.saude);
-    aplicarEstado('#saude-atendimento', atendimento.integracao);
-    aplicarEstado('#saude-inbox', inbox?.saude ?? 'ausente');
-    aplicarEstado('#saude-crm', fonteDeVerdade.banco === 'configurado' ? 'operacional' : 'ausente');
-
-    const pilula = document.querySelector('#estado-serena');
-    if (pilula) {
-      pilula.textContent = atendimento.integracao === 'configurada' ? 'Ativa' : 'Aguardando integração';
-    }
-  } catch {
-    for (const seletor of ['#saude-orquestrador', '#saude-atendimento', '#saude-inbox', '#saude-crm']) {
-      aplicarEstado(seletor, 'indisponivel');
-    }
-    definirTexto('#fila-topo', 'sem dados');
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Inbox: as conversas vivem no Chatwoot. A interface só fala com a API do
-// crmclinica — nenhum token do Chatwoot chega ao navegador.
-// ---------------------------------------------------------------------------
-
-let filaAtual = 'nao_atribuidas';
-let conversaAberta = null;
 
 async function pedirJson(caminho, opcoes = {}) {
   const resposta = await fetch(caminho, {
-    ...opcoes,
+    method: opcoes.metodo || 'GET',
     headers: { accept: 'application/json', ...(opcoes.corpo ? { 'content-type': 'application/json' } : {}) },
     body: opcoes.corpo ? JSON.stringify(opcoes.corpo) : undefined,
   });
@@ -119,6 +85,40 @@ async function pedirJson(caminho, opcoes = {}) {
   return resposta.json();
 }
 
+async function carregarResumo() {
+  try {
+    const resumo = await pedirJson('/api/resumo');
+
+    const { pendentes, leadsHoje, consultasHoje, escalonamentos } = resumo.indicadores;
+    definirTexto('#metrica-pendentes', pendentes);
+    definirTexto('#metrica-leads', leadsHoje);
+    definirTexto('#metrica-consultas', consultasHoje);
+    definirTexto('#metrica-escalonamentos', escalonamentos);
+
+    const { orquestrador, atendimento, inbox, fonteDeVerdade } = resumo.plataforma;
+    aplicarEstado('#saude-orquestrador', orquestrador.saude);
+    aplicarEstado('#saude-atendimento', atendimento.integracao);
+    aplicarEstado('#saude-inbox', inbox?.saude ?? 'ausente');
+    aplicarEstado('#saude-crm', fonteDeVerdade.banco === 'configurado' ? 'operacional' : 'ausente');
+
+    const pilula = seletor('#estado-serena');
+    if (pilula) pilula.textContent = atendimento.integracao === 'configurada' ? 'Ativa' : 'Aguardando integração';
+  } catch {
+    for (const alvo of ['#saude-orquestrador', '#saude-atendimento', '#saude-inbox', '#saude-crm']) {
+      aplicarEstado(alvo, 'indisponivel');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inbox: lista à esquerda, thread no centro, ficha à direita.
+// ---------------------------------------------------------------------------
+
+let filaAtual = 'todos';
+let conversaAberta = null;
+let contatoAberto = null;
+let etiquetasDisponiveis = [];
+
 function iniciais(nome) {
   return (nome || '?')
     .split(/\s+/)
@@ -128,20 +128,51 @@ function iniciais(nome) {
     .toUpperCase();
 }
 
-function avisar(elemento, mensagem) {
+function haQuanto(instante) {
+  if (!instante) return '';
+  const minutos = Math.floor((Date.now() - new Date(instante).getTime()) / 60000);
+  if (minutos < 1) return 'agora';
+  if (minutos < 60) return `há ${minutos} min`;
+  const horas = Math.floor(minutos / 60);
+  if (horas < 24) return `há ${horas} h`;
+  return `há ${Math.floor(horas / 24)} d`;
+}
+
+function hora(instante) {
+  if (!instante) return '';
+  return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(new Date(instante));
+}
+
+function avisar(elemento, mensagem, marcador = 'li') {
   elemento.innerHTML = '';
-  const linha = document.createElement('li');
+  const linha = document.createElement(marcador);
   linha.className = 'vazio';
   linha.textContent = mensagem;
   elemento.append(linha);
 }
 
+async function carregarEtiquetas() {
+  try {
+    const dados = await pedirJson('/api/conversas/filas');
+    etiquetasDisponiveis = dados.etiquetas || [];
+  } catch {
+    etiquetasDisponiveis = [];
+  }
+}
+
 async function carregarConversas() {
-  const lista = document.querySelector('#lista-conversas');
+  const lista = seletor('#lista-conversas');
   if (!lista) return;
 
+  const parametros = new URLSearchParams({ fila: filaAtual });
+  const busca = seletor('#busca-conversas')?.value.trim();
+  if (busca) parametros.set('busca', busca);
+
   try {
-    const dados = await pedirJson(`/api/conversas?fila=${encodeURIComponent(filaAtual)}`);
+    const dados = await pedirJson(`/api/conversas?${parametros}`);
+    definirTexto('#fila-topo', `${dados.total} conversa(s)`);
+    definirTexto('#contador-conversas', dados.total);
+
     if (dados.conversas.length === 0) {
       avisar(lista, 'Nenhuma conversa nesta fila.');
       return;
@@ -149,106 +180,305 @@ async function carregarConversas() {
 
     lista.innerHTML = '';
     for (const conversa of dados.conversas) {
-      const linha = document.createElement('li');
-      linha.dataset.conversa = conversa.id;
-      linha.tabIndex = 0;
-      linha.setAttribute('role', 'button');
-
-      const avatar = document.createElement('span');
-      avatar.className = 'avatar';
-      avatar.setAttribute('aria-hidden', 'true');
-      avatar.textContent = iniciais(conversa.contato?.nome);
-
-      const texto = document.createElement('span');
-      texto.className = 'linha-texto';
-      const nome = document.createElement('b');
-      nome.textContent = conversa.contato?.nome || conversa.contato?.telefone || `Conversa ${conversa.id}`;
-      const previa = document.createElement('small');
-      previa.textContent = conversa.ultimaMensagem || 'Sem mensagens';
-      texto.append(nome, previa);
-
-      linha.append(avatar, texto);
-
-      if (conversa.responsavel) {
-        const etiqueta = document.createElement('span');
-        etiqueta.className = 'etiqueta amarela';
-        etiqueta.textContent = 'Humano';
-        linha.append(etiqueta);
-      }
-
-      const abrir = () => abrirConversa(conversa.id);
-      linha.addEventListener('click', abrir);
-      linha.addEventListener('keydown', (evento) => {
-        if (evento.key === 'Enter' || evento.key === ' ') { evento.preventDefault(); abrir(); }
-      });
-
-      lista.append(linha);
+      lista.append(montarLinhaDaLista(conversa));
     }
   } catch (erro) {
-    avisar(lista, erro.status === 503 ? 'Inbox ainda não configurado.' : 'Não foi possível carregar as conversas.');
+    avisar(lista, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar as conversas.');
   }
 }
 
-function alternarAcoes(habilitado) {
-  for (const controle of document.querySelectorAll('.acoes-conversa .acao, #form-resposta input, #form-resposta button')) {
-    controle.disabled = !habilitado;
+function montarLinhaDaLista(conversa) {
+  const linha = document.createElement('li');
+  linha.dataset.conversa = conversa.id;
+  linha.tabIndex = 0;
+  linha.setAttribute('role', 'button');
+  if (conversa.id === conversaAberta) linha.classList.add('ativa');
+
+  const avatar = document.createElement('span');
+  avatar.className = 'avatar';
+  avatar.setAttribute('aria-hidden', 'true');
+  avatar.textContent = iniciais(conversa.contato?.nome);
+
+  const texto = document.createElement('span');
+  texto.className = 'linha-texto';
+  const nome = document.createElement('b');
+  nome.textContent = conversa.contato?.nome || conversa.contato?.telefone || `Conversa ${conversa.id}`;
+  const previa = document.createElement('small');
+  previa.textContent = conversa.previa || 'Sem mensagens';
+  texto.append(nome, previa);
+
+  const quando = document.createElement('span');
+  quando.className = 'quando';
+  quando.textContent = haQuanto(conversa.ultima_msg_em);
+
+  linha.append(avatar, texto, quando);
+
+  const selos = document.createElement('span');
+  selos.className = 'selos';
+
+  if (conversa.assumida_por_humano) {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta amarela';
+    selo.textContent = 'Humano';
+    selos.append(selo);
   }
+  if (conversa.temperatura) {
+    const selo = document.createElement('span');
+    selo.className = `etiqueta temp-${conversa.temperatura}`;
+    selo.textContent = conversa.temperatura;
+    selos.append(selo);
+  }
+  if (conversa.status === 'resolvida') {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta';
+    selo.textContent = 'resolvida';
+    selos.append(selo);
+  }
+  if (selos.childElementCount > 0) linha.append(selos);
+
+  const abrir = () => abrirConversa(conversa.id);
+  linha.addEventListener('click', abrir);
+  linha.addEventListener('keydown', (evento) => {
+    if (evento.key === 'Enter' || evento.key === ' ') { evento.preventDefault(); abrir(); }
+  });
+
+  return linha;
+}
+
+function alternarAcoes(habilitado) {
+  const controles = document.querySelectorAll(
+    '.acoes-conversa .acao, #form-resposta input, #form-resposta button, #botao-nota',
+  );
+  for (const controle of controles) controle.disabled = !habilitado;
+  seletor('#thread-nome').disabled = !habilitado;
 }
 
 async function abrirConversa(conversaId) {
   conversaAberta = conversaId;
-  const thread = document.querySelector('#thread-mensagens');
+  fecharHistorico();
+
+  for (const linha of document.querySelectorAll('#lista-conversas li[data-conversa]')) {
+    linha.classList.toggle('ativa', Number(linha.dataset.conversa) === Number(conversaId));
+  }
 
   try {
-    const { conversa, mensagens, ficha, lead } = await pedirJson(`/api/conversas/${conversaId}`);
+    const [detalhe, mensagens] = await Promise.all([
+      pedirJson(`/api/conversas/${conversaId}`),
+      pedirJson(`/api/conversas/${conversaId}/mensagens`),
+    ]);
+
+    const { conversa, ficha } = detalhe;
+    contatoAberto = conversa.contato_id;
 
     definirTexto('#thread-nome', conversa.contato?.nome || `Conversa ${conversa.id}`);
-    definirTexto('#thread-detalhe', `${lead.origem} · ${conversa.estado} · lead ${lead.temperatura}`);
+    definirTexto(
+      '#thread-detalhe',
+      `${conversa.canal} · ${conversa.status}${conversa.prioridade ? ` · ${conversa.prioridade}` : ''}`,
+    );
 
-    thread.innerHTML = '';
-    for (const mensagem of mensagens) {
-      if (mensagem.privada) continue;
-      const item = document.createElement('li');
-      item.className = mensagem.autor === 'contato' ? 'recebida' : 'enviada';
-      item.textContent = mensagem.texto;
-      thread.append(item);
-    }
+    // A pausa da IA é a informação mais importante da tela: quem responde agora?
+    const aviso = seletor('#aviso-ia');
+    aviso.hidden = !conversa.assumida_por_humano;
+    aviso.textContent = conversa.assumida_por_humano
+      ? 'Conversa assumida pela equipe. A resposta automática está pausada.'
+      : '';
+    seletor('.acao[data-acao="assumir"]').hidden = conversa.assumida_por_humano;
+    seletor('.acao[data-acao="liberar"]').hidden = !conversa.assumida_por_humano;
 
-    definirTexto('#ficha-nome', ficha?.nome || '—');
-    definirTexto('#ficha-canal', `${lead.origem} · ${conversa.estado}`);
-    definirTexto('#ficha-telefone', ficha?.telefone || '—');
-    definirTexto('#ficha-identificador', ficha?.identificador || '—');
-    definirTexto('#ficha-etiquetas', conversa.etiquetas?.join(', ') || 'sem etiquetas');
-    definirTexto('#ficha-notas', ficha?.notas?.map((nota) => nota.texto).join(' · ') || 'sem notas');
-    definirTexto('#ficha-anteriores', ficha?.conversas_anteriores?.length
-      ? `${ficha.conversas_anteriores.length} conversa(s)`
-      : 'nenhuma');
+    desenharThread(mensagens);
+    desenharFicha(conversa, ficha, detalhe.temperatura);
 
-    const seletorTemperatura = document.querySelector('#seletor-temperatura');
-    if (seletorTemperatura) seletorTemperatura.value = lead.temperatura || '';
-
+    seletor('#seletor-prioridade').value = conversa.prioridade || '';
+    seletor('#seletor-temperatura').value = detalhe.temperatura || '';
     alternarAcoes(true);
   } catch (erro) {
-    thread.innerHTML = '';
+    seletor('#thread-mensagens').innerHTML = '';
     definirTexto('#thread-nome', 'Não foi possível abrir');
-    definirTexto('#thread-detalhe', erro.status === 503 ? 'Inbox não configurado.' : 'Tente novamente.');
+    definirTexto('#thread-detalhe', erro.status === 404 ? 'Conversa não encontrada.' : 'Tente novamente.');
     alternarAcoes(false);
   }
 }
 
-async function agirNaConversa(caminho, corpo) {
+function desenharThread(mensagens) {
+  const thread = seletor('#thread-mensagens');
+  thread.innerHTML = '';
+
+  for (const mensagem of mensagens) {
+    const item = document.createElement('li');
+
+    if (mensagem.tipo === 'sistema') {
+      item.className = 'balao-sistema';
+      item.textContent = mensagem.conteudo || '';
+      thread.append(item);
+      continue;
+    }
+
+    item.className = mensagem.direcao === 'entrada' ? 'recebida' : 'enviada';
+    if (mensagem.privada) item.classList.add('privada');
+
+    const corpo = document.createElement('span');
+    corpo.textContent = mensagem.conteudo || '';
+
+    const rodape = document.createElement('small');
+    const autor = mensagem.autor_tipo === 'automacao' ? 'Serena' : mensagem.autor_nome || '';
+    rodape.textContent = [mensagem.privada ? 'nota interna' : autor, hora(mensagem.criado_em)]
+      .filter(Boolean)
+      .join(' · ');
+
+    item.append(corpo, rodape);
+    thread.append(item);
+  }
+
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function desenharFicha(conversa, ficha, temperatura) {
+  definirTexto('#ficha-nome', ficha?.nome || 'Sem nome');
+  definirTexto('#ficha-canal', `${conversa.canal}${temperatura ? ` · lead ${temperatura}` : ''}`);
+  definirTexto('#ficha-telefone', ficha?.telefone || '—');
+  definirTexto('#ficha-identificador', ficha?.identificador || '—');
+  definirTexto('#ficha-email', ficha?.email || '—');
+  seletor('#editar-ficha').hidden = false;
+
+  // Atributos livres da ficha.
+  const atributos = seletor('#ficha-atributos');
+  atributos.innerHTML = '';
+  const pares = Object.entries(ficha?.atributos || {});
+  if (pares.length === 0) {
+    const vazio = document.createElement('dd');
+    vazio.textContent = '—';
+    atributos.append(vazio);
+  } else {
+    for (const [chave, valor] of pares) {
+      const rotulo = document.createElement('dt');
+      rotulo.textContent = chave;
+      const conteudo = document.createElement('dd');
+      conteudo.textContent = String(valor);
+      atributos.append(rotulo, conteudo);
+    }
+  }
+
+  desenharEtiquetas(conversa.etiquetas || []);
+
+  const notas = seletor('#ficha-notas');
+  notas.innerHTML = '';
+  if (!ficha?.notas?.length) avisar(notas, 'Nenhuma nota.');
+  else {
+    for (const nota of ficha.notas) {
+      const item = document.createElement('li');
+      item.textContent = nota.texto;
+      notas.append(item);
+    }
+  }
+
+  const anteriores = seletor('#ficha-anteriores');
+  anteriores.innerHTML = '';
+  if (!ficha?.conversas_anteriores?.length) avisar(anteriores, 'Nenhuma conversa anterior.');
+  else {
+    for (const anterior of ficha.conversas_anteriores) {
+      const item = document.createElement('li');
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = 'link';
+      botao.textContent = `#${anterior.id} · ${anterior.status} · ${haQuanto(anterior.em)}`;
+      botao.addEventListener('click', () => abrirConversa(anterior.id));
+      item.append(botao);
+      anteriores.append(item);
+    }
+  }
+}
+
+/** Etiquetas como caixas: marcar e desmarcar substitui o conjunto da conversa. */
+function desenharEtiquetas(aplicadas) {
+  const area = seletor('#ficha-etiquetas');
+  area.innerHTML = '';
+
+  for (const etiqueta of etiquetasDisponiveis) {
+    const rotulo = document.createElement('label');
+    rotulo.className = 'etiqueta-opcao';
+
+    const caixa = document.createElement('input');
+    caixa.type = 'checkbox';
+    caixa.value = etiqueta.nome;
+    caixa.checked = aplicadas.includes(etiqueta.nome);
+    caixa.addEventListener('change', salvarEtiquetas);
+
+    const texto = document.createElement('span');
+    texto.textContent = etiqueta.nome;
+
+    rotulo.append(caixa, texto);
+    area.append(rotulo);
+  }
+}
+
+async function salvarEtiquetas() {
+  if (!conversaAberta) return;
+  const marcadas = [...document.querySelectorAll('#ficha-etiquetas input:checked')].map((caixa) => caixa.value);
+  await agir('etiquetas', { etiquetas: marcadas });
+}
+
+async function agir(caminho, corpo, metodo = 'POST') {
   if (!conversaAberta) return;
   try {
-    await pedirJson(`/api/conversas/${conversaAberta}/${caminho}`, { method: 'POST', corpo });
+    await pedirJson(`/api/conversas/${conversaAberta}/${caminho}`, { metodo, corpo });
     await abrirConversa(conversaAberta);
     await carregarConversas();
+    await carregarLeads();
   } catch {
     definirTexto('#thread-detalhe', 'A ação não pôde ser concluída.');
   }
 }
 
+// --- Histórico do contato, ao clicar no nome ---
+
+function fecharHistorico() {
+  const painel = seletor('#historico-contato');
+  if (!painel) return;
+  painel.hidden = true;
+  seletor('#thread-nome').setAttribute('aria-expanded', 'false');
+}
+
+async function abrirHistorico() {
+  if (!contatoAberto) return;
+  const painel = seletor('#historico-contato');
+  const lista = seletor('#historico-lista');
+
+  if (!painel.hidden) return fecharHistorico();
+
+  painel.hidden = false;
+  seletor('#thread-nome').setAttribute('aria-expanded', 'true');
+  avisar(lista, 'Carregando…');
+
+  try {
+    const { conversas, notas } = await pedirJson(`/api/contatos/${contatoAberto}/conversas`);
+    lista.innerHTML = '';
+
+    for (const conversa of conversas) {
+      const item = document.createElement('li');
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = 'link';
+      botao.textContent = `#${conversa.id} · ${conversa.status} · ${haQuanto(conversa.ultima_msg_em)}`;
+      botao.addEventListener('click', () => { fecharHistorico(); abrirConversa(conversa.id); });
+      item.append(botao);
+      lista.append(item);
+    }
+
+    if (notas.length > 0) {
+      const titulo = document.createElement('li');
+      titulo.className = 'vazio';
+      titulo.textContent = `${notas.length} nota(s) na ficha`;
+      lista.append(titulo);
+    }
+  } catch {
+    avisar(lista, 'Não foi possível carregar o histórico.');
+  }
+}
+
+// --- Kanban de leads ---
+
 async function carregarLeads() {
-  const kanban = document.querySelector('#kanban-leads');
+  const kanban = seletor('#kanban-leads');
   if (!kanban) return;
 
   try {
@@ -266,10 +496,27 @@ async function carregarLeads() {
       const lista = document.createElement('ul');
       for (const lead of coluna.leads) {
         const item = document.createElement('li');
-        item.textContent = lead.nome || lead.telefone || 'Lead sem nome';
+
+        // Clicar no lead abre a conversa que o originou.
+        const botao = document.createElement('button');
+        botao.type = 'button';
+        botao.className = 'card-lead';
+        botao.textContent = lead.nome || lead.telefone || 'Lead sem nome';
+
         const detalhe = document.createElement('small');
         detalhe.textContent = `${lead.origem} · ${lead.temperatura}`;
-        item.append(detalhe);
+        botao.append(detalhe);
+
+        if (lead.conversa_id) {
+          botao.addEventListener('click', () => {
+            abrirTela('conversas');
+            abrirConversa(lead.conversa_id);
+          });
+        } else {
+          botao.disabled = true;
+        }
+
+        item.append(botao);
         lista.append(item);
       }
 
@@ -277,9 +524,8 @@ async function carregarLeads() {
       kanban.append(secao);
     }
   } catch (erro) {
-    kanban.textContent = erro.status === 503
-      ? 'Inbox ainda não configurado.'
-      : 'Não foi possível carregar os leads.';
+    kanban.innerHTML = '';
+    avisar(kanban, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar os leads.', 'p');
   }
 }
 
@@ -297,35 +543,110 @@ for (const aba of document.querySelectorAll('.aba[data-fila]')) {
   });
 }
 
-document.querySelector('#form-resposta')?.addEventListener('submit', async (evento) => {
+let buscaAgendada = null;
+seletor('#busca-conversas')?.addEventListener('input', () => {
+  clearTimeout(buscaAgendada);
+  buscaAgendada = setTimeout(carregarConversas, 300);
+});
+
+seletor('#form-resposta')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
-  const campo = document.querySelector('#resposta');
+  const campo = seletor('#resposta');
   const texto = campo.value.trim();
   if (!texto) return;
 
   campo.value = '';
-  await agirNaConversa('mensagens', { texto });
+  await agir('mensagens', { texto });
+});
+
+seletor('#botao-nota')?.addEventListener('click', async () => {
+  const campo = seletor('#resposta');
+  const texto = campo.value.trim();
+  if (!texto) return;
+
+  campo.value = '';
+  await agir('notas', { texto });
 });
 
 for (const botao of document.querySelectorAll('.acoes-conversa .acao[data-acao]')) {
   botao.addEventListener('click', () => {
     const acoes = {
-      // "Assumir" entrega a conversa ao time da clínica — e a automação para.
-      assumir: () => agirNaConversa('atribuicao', { time_id: Number(botao.dataset.timeId) || undefined }),
-      resolver: () => agirNaConversa('estado', { estado: 'resolved' }),
-      reabrir: () => agirNaConversa('estado', { estado: 'open' }),
+      assumir: () => agir('assumir', {}),
+      liberar: () => agir('assumir', { liberar: true }),
+      resolver: () => agir('estado', { status: 'resolvida' }),
+      reabrir: () => agir('estado', { status: 'aberta' }),
     };
     acoes[botao.dataset.acao]?.();
   });
 }
 
-document.querySelector('#seletor-prioridade')?.addEventListener('change', (evento) => {
-  if (evento.target.value) agirNaConversa('prioridade', { prioridade: evento.target.value });
+seletor('#seletor-prioridade')?.addEventListener('change', (evento) => {
+  if (evento.target.value) agir('prioridade', { prioridade: evento.target.value });
 });
 
-document.querySelector('#seletor-temperatura')?.addEventListener('change', (evento) => {
-  if (evento.target.value) agirNaConversa('temperatura', { temperatura: evento.target.value });
+seletor('#seletor-temperatura')?.addEventListener('change', (evento) => {
+  if (evento.target.value) agir('temperatura', { temperatura: evento.target.value });
 });
+
+seletor('#thread-nome')?.addEventListener('click', abrirHistorico);
+seletor('#fechar-historico')?.addEventListener('click', fecharHistorico);
+
+// --- Edição da ficha ---
+
+function alternarEdicaoDaFicha(editando) {
+  seletor('#form-ficha').hidden = !editando;
+  seletor('#ficha-leitura').hidden = editando;
+  seletor('#editar-ficha').textContent = editando ? 'Cancelar' : 'Editar';
+}
+
+seletor('#editar-ficha')?.addEventListener('click', () => {
+  const editando = seletor('#form-ficha').hidden;
+  if (editando) {
+    seletor('#ficha-campo-nome').value = seletor('#ficha-nome').textContent.replace('Sem nome', '');
+    seletor('#ficha-campo-telefone').value = seletor('#ficha-telefone').textContent.replace('—', '');
+    seletor('#ficha-campo-email').value = seletor('#ficha-email').textContent.replace('—', '');
+
+    const pares = [...document.querySelectorAll('#ficha-atributos dt')].map((rotulo) => {
+      const valor = rotulo.nextElementSibling?.textContent ?? '';
+      return `${rotulo.textContent}: ${valor}`;
+    });
+    seletor('#ficha-campo-atributos').value = pares.join('\n');
+  }
+  alternarEdicaoDaFicha(editando);
+});
+
+seletor('#cancelar-ficha')?.addEventListener('click', () => alternarEdicaoDaFicha(false));
+
+seletor('#form-ficha')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!conversaAberta) return;
+
+  // "chave: valor" por linha — formato simples o bastante para a recepção usar.
+  const atributos = {};
+  for (const linha of seletor('#ficha-campo-atributos').value.split('\n')) {
+    const separador = linha.indexOf(':');
+    if (separador <= 0) continue;
+    atributos[linha.slice(0, separador).trim()] = linha.slice(separador + 1).trim();
+  }
+
+  const corpo = {
+    nome: seletor('#ficha-campo-nome').value.trim() || null,
+    telefone: seletor('#ficha-campo-telefone').value.trim() || null,
+    email: seletor('#ficha-campo-email').value.trim() || null,
+    atributos,
+  };
+
+  try {
+    await pedirJson(`/api/conversas/${conversaAberta}/ficha`, { metodo: 'PUT', corpo });
+    alternarEdicaoDaFicha(false);
+    await abrirConversa(conversaAberta);
+    await carregarConversas();
+  } catch {
+    definirTexto('#thread-detalhe', 'Não foi possível salvar a ficha.');
+  }
+});
+
+// --- Início ---
 
 atualizarRelogio();
 setInterval(atualizarRelogio, 30000);
@@ -333,6 +654,8 @@ setInterval(atualizarRelogio, 30000);
 carregarResumo();
 setInterval(carregarResumo, 60000);
 
-carregarConversas();
-carregarLeads();
+carregarEtiquetas().then(() => {
+  carregarConversas();
+  carregarLeads();
+});
 setInterval(carregarConversas, 30000);

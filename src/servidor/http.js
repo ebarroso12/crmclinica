@@ -9,9 +9,9 @@ const { validarEvento } = require('../contratos/evento');
 const { ErroDeContrato } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
-const { criarClienteChatwoot } = require('../integracoes/chatwoot');
+const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
-const { criarSincronizador } = require('../dominio/sincronizacao');
+const { criarAtendimento } = require('../dominio/atendimento');
 const { criarRotasDeConversas } = require('./rotas-conversas');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -64,11 +64,12 @@ function servirArquivo(res, arquivo, tipo) {
 function criarAplicacao(dependencias = {}) {
   const configuracao = dependencias.configuracao || carregarConfiguracao();
   const orquestrador = dependencias.orquestrador || criarClienteOpenClaw(configuracao.openclaw, dependencias);
-  const chatwoot = dependencias.chatwoot || criarClienteChatwoot(configuracao.chatwoot, dependencias);
-  const idempotencia = dependencias.idempotencia || criarRegistroEmMemoria();
-  const sincronizador = dependencias.sincronizador || criarSincronizador({ chatwoot, orquestrador });
+  // Sem banco configurado o inbox roda em memória: dá para desenvolver e testar,
+  // mas nada sobrevive ao reinício — e `/api/resumo` diz isso na cara.
+  const repositorio = dependencias.repositorio || criarRepositorioEmMemoria();
+  const atendimento = dependencias.atendimento || criarAtendimento({ repositorio, orquestrador });
 
-  const conversas = criarRotasDeConversas({ chatwoot, sincronizador, idempotencia, configuracao });
+  const conversas = criarRotasDeConversas({ repositorio, atendimento });
 
   async function receberEventoDoOrquestrador(req, res) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
@@ -89,11 +90,14 @@ function criarAplicacao(dependencias = {}) {
     const evento = validarEvento(interpretarJson(corpoBruto));
 
     // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
-    const jaProcessado = idempotencia.consultar(evento.chave_idempotencia);
+    const jaProcessado = await repositorio.consultarEvento(evento.chave_idempotencia);
     if (jaProcessado) {
       responderJson(res, 200, { ...jaProcessado, duplicado: true });
       return;
     }
+
+    // A mensagem entra no inbox: vira contato, conversa e linha no histórico.
+    const resultado = await conversas.receberMensagemDeCanal(evento);
 
     const recibo = {
       aceito: true,
@@ -101,12 +105,12 @@ function criarAplicacao(dependencias = {}) {
       chave_idempotencia: evento.chave_idempotencia,
       tipo: evento.tipo,
       canal: evento.canal,
+      conversa_id: resultado.conversa_id ?? null,
+      decisao: resultado.acao,
       recebido_em: new Date().toISOString(),
-      // Sem banco ligado, o evento é aceito e registrado, mas ainda não vira conversa no CRM.
-      encaminhamento: orquestrador.disponivel ? 'orquestrador' : 'apenas_registrado',
     };
 
-    idempotencia.registrar(evento.chave_idempotencia, recibo);
+    await repositorio.registrarEvento(evento.chave_idempotencia, recibo);
     responderJson(res, 202, recibo);
   }
 
@@ -127,28 +131,23 @@ function criarAplicacao(dependencias = {}) {
     }
 
     if (rota === '/api/leads' && metodo === 'GET') {
-      responderJson(res, 200, await conversas.listarLeads(url.searchParams), { 'cache-control': 'no-store' });
+      responderJson(res, 200, await conversas.listarLeads(), { 'cache-control': 'no-store' });
       return true;
     }
 
-    if (rota === '/api/webhooks/chatwoot') {
-      if (metodo !== 'POST') {
-        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+    const partes = rota.split('/').filter(Boolean);
+
+    // GET /api/contatos/:id/conversas — histórico ao clicar no nome do contato.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes[3] === 'conversas' && partes.length === 4) {
+      if (metodo !== 'GET') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
         return true;
       }
-      const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
-      const { status, ...recibo } = await conversas.receberWebhook({ corpoBruto, cabecalhos: req.headers });
-      responderJson(res, status, recibo);
-      return true;
-    }
-
-    if (rota === '/api/integracoes/chatwoot/etiquetas' && metodo === 'POST') {
-      responderJson(res, 200, await conversas.garantirEtiquetas());
+      responderJson(res, 200, await conversas.historicoDoContato(partes[2]), { 'cache-control': 'no-store' });
       return true;
     }
 
     // /api/conversas/:id e suas ações.
-    const partes = rota.split('/').filter(Boolean);
     if (partes[0] !== 'api' || partes[1] !== 'conversas' || partes.length < 3) return false;
 
     const conversaId = partes[2];
@@ -161,10 +160,28 @@ function criarAplicacao(dependencias = {}) {
       responderJson(res, 200, await conversas.obterConversa(conversaId), { 'cache-control': 'no-store' });
       return true;
     }
+    if (partes.length !== 4) return false;
+
+    // A thread é a única sub-rota que também responde a GET.
+    if (partes[3] === 'mensagens' && metodo === 'GET') {
+      responderJson(res, 200, await conversas.listarMensagens(conversaId), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // A ficha é substituição de dado do contato, por isso PUT.
+    if (partes[3] === 'ficha') {
+      if (metodo !== 'PUT') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'PUT' });
+        return true;
+      }
+      responderJson(res, 200, await conversas.atualizarFicha(conversaId, await lerJson(req)));
+      return true;
+    }
 
     const acoes = {
       mensagens: (corpo) => conversas.responder(conversaId, corpo),
-      atribuicao: (corpo) => conversas.atribuir(conversaId, corpo),
+      assumir: (corpo) => conversas.assumir(conversaId, corpo),
+      etiquetas: (corpo) => conversas.definirEtiquetas(conversaId, corpo),
       prioridade: (corpo) => conversas.definirPrioridade(conversaId, corpo),
       estado: (corpo) => conversas.definirEstado(conversaId, corpo),
       temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
@@ -172,7 +189,7 @@ function criarAplicacao(dependencias = {}) {
     };
 
     const acao = acoes[partes[3]];
-    if (!acao || partes.length !== 4) return false;
+    if (!acao) return false;
 
     if (metodo !== 'POST') {
       responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
@@ -209,7 +226,7 @@ function criarAplicacao(dependencias = {}) {
         }
         const [saudeOrquestrador, saudeInbox] = await Promise.all([
           orquestrador.verificarSaude(),
-          chatwoot.verificarSaude(),
+          repositorio.verificarSaude(),
         ]);
         responderJson(res, 200, montarResumo(configuracao, saudeOrquestrador, saudeInbox), {
           'cache-control': 'no-store',
@@ -251,15 +268,11 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
       // Integração ausente é estado previsto, não falha: 503 diz "ainda não ligado".
-      if (erro.codigo === 'chatwoot_nao_configurado' || erro.codigo === 'openclaw_nao_configurado') {
+      if (erro.codigo === 'openclaw_nao_configurado') {
         responderJson(res, 503, { erro: erro.message, codigo: erro.codigo });
         return;
       }
-      if (erro.codigo === 'chatwoot_resposta_invalida') {
-        responderJson(res, 502, { erro: 'o Chatwoot recusou a operação', status_origem: erro.status });
-        return;
-      }
-      if (erro.status === 401 || erro.status === 503) {
+      if (erro.status === 401 || erro.status === 404 || erro.status === 503) {
         responderJson(res, erro.status, { erro: erro.message });
         return;
       }
