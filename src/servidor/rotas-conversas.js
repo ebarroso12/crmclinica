@@ -3,6 +3,7 @@
 const { ErroDeContrato } = require('../contratos/erros');
 const { FILAS, ESTADOS, PRIORIDADES, TEMPERATURAS, lerTemperatura } = require('../dominio/conversas');
 const { agruparPorColuna, sugerirTemperatura } = require('../dominio/leads');
+const { proximaAcao } = require('../dominio/qualificacao');
 
 // API do inbox local. O banco do crmclinica é a fonte de dados; não há
 // serviço externo de conversas por trás destas rotas.
@@ -81,7 +82,13 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
           ? conversas.filter((conversa) => !conversa.assumida_por_humano && !conversa.atribuido_a)
           : conversas;
 
-      return { fila, rotulo: FILAS[fila].rotulo, total: filtradas.length, conversas: filtradas };
+      // A próxima ação vai junto: é o que a recepção lê sem abrir a conversa.
+      const comAcao = filtradas.map((conversa) => ({
+        ...conversa,
+        proxima_acao: conversa.lead_id ? proximaAcao(conversa) : null,
+      }));
+
+      return { fila, rotulo: FILAS[fila].rotulo, total: comAcao.length, conversas: comAcao };
     },
 
     /** GET /api/conversas/:id — conversa, ficha, notas e conversas anteriores. */
@@ -96,7 +103,12 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
       ]);
 
       return {
-        conversa,
+        // A próxima ação acompanha a conversa aberta, não só a lista: quem já
+        // está na thread precisa ver o que perguntar sem voltar para a esquerda.
+        conversa: {
+          ...conversa,
+          proxima_acao: conversa.lead_id ? proximaAcao(conversa) : null,
+        },
         ficha: {
           ...contato,
           notas,
@@ -253,9 +265,12 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
       return { nota, contato_id: conversa.contato_id };
     },
 
-    /** GET /api/leads — kanban; cada card sabe qual conversa abrir. */
-    async listarLeads() {
-      const leads = await repositorio.listarLeads();
+    /**
+     * GET /api/leads — kanban; cada card sabe qual conversa abrir.
+     * Aceita a lista já enriquecida com score e próxima ação.
+     */
+    async listarLeads(jaEnriquecidos = null) {
+      const leads = jaEnriquecidos ?? await repositorio.listarLeads();
       return { total: leads.length, colunas: agruparPorColuna(leads) };
     },
 

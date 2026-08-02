@@ -72,6 +72,12 @@ function carregarConfiguracao(ambiente = process.env) {
       // Endereço público da aplicação, usado nos links de recuperação por e-mail.
       urlPublica: urlValida(ambiente.CRMCLINICA_URL_PUBLICA) || `http://127.0.0.1:${inteiro(ambiente.PORT, 4100)}`,
     },
+    // Proxies cujo `X-Forwarded-For` é aceito. Vazio por padrão: confiar no
+    // cabeçalho de qualquer origem permitiria forjar o IP e burlar o rate limit.
+    proxiesConfiaveis: texto(ambiente.CRMCLINICA_PROXIES_CONFIAVEIS)
+      .split(',')
+      .map((entrada) => entrada.trim())
+      .filter(Boolean),
     // Admin master: conta única que libera as demais. As credenciais iniciais só
     // são usadas para semear a conta; a troca é obrigatória no primeiro acesso.
     master: {

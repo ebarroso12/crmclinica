@@ -2,6 +2,7 @@
 
 const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('./conversas');
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
+const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
 
 // O ciclo de atendimento do crmclinica.
 //
@@ -13,7 +14,7 @@ const { sugerirTemperatura, origemDoCanal } = require('./leads');
 //   2. quando um humano assume, a automação cala;
 //   3. só o contexto mínimo autorizado atravessa para o orquestrador.
 
-function criarAtendimento({ repositorio, orquestrador }) {
+function criarAtendimento({ repositorio, orquestrador, leads = null }) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -45,13 +46,28 @@ function criarAtendimento({ repositorio, orquestrador }) {
 
     // O lead nasce junto da conversa e guarda o vínculo: é o que faz o card do
     // kanban abrir a conversa certa.
-    await repositorio.salvarLead(contato.id, {
+    const lead = await repositorio.salvarLead(contato.id, {
       conversaId: conversa.id,
       origem: origemDoCanal(evento.canal),
     });
+
+    // Origem e UTM chegam com o evento quando vêm de formulário ou campanha.
+    if (leads && temDadosDeOrigem(evento)) {
+      await leads.qualificar(lead.id, evento, { conversaId: conversa.id, origem: 'contato' });
+    }
+    if (leads) {
+      await leads.registrarPrimeiroContato(lead.id, { conversaId: conversa.id, canal: evento.canal });
+      await leads.recalcular(await repositorio.obterLead(lead.id), { conversaId: conversa.id });
+    }
+
     await sincronizarTemperatura(conversa.id);
 
     return responderSePossivel(conversa.id);
+  }
+
+  function temDadosDeOrigem(evento) {
+    return ['origem_detalhe', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content']
+      .some((campo) => Boolean(evento[campo]));
   }
 
   /** Aplica a regra da pausa e, quando permitido, aciona o orquestrador. */
@@ -76,12 +92,45 @@ function criarAtendimento({ repositorio, orquestrador }) {
     const mensagens = await repositorio.listarMensagens(conversaId, { incluirPrivadas: false });
     const contexto = montarContextoMinimo(conversa, mensagens);
 
+    // A qualificação vai junto para o orquestrador saber o que já foi perguntado
+    // e o que falta — sem isso ele repetiria perguntas já respondidas.
+    //
+    // Só o que é **comercial**: o que a pessoa procura, se é primeira consulta,
+    // forma de pagamento, urgência e horário. Nada clínico atravessa esta linha.
+    const lead = await repositorio.obterLeadPorContato(conversa.contato_id);
+    if (lead) {
+      const pendentes = camposPendentes(lead);
+      contexto.qualificacao = {
+        interesse: lead.interesse ?? null,
+        primeira_consulta: lead.primeira_consulta ?? null,
+        pagamento: lead.pagamento ?? null,
+        urgencia: lead.urgencia ?? null,
+        disponibilidade: lead.disponibilidade ?? null,
+        pendentes,
+        proxima_pergunta: proximaPergunta(lead)?.pergunta ?? null,
+      };
+      contexto.lead = {
+        estagio: lead.estagio,
+        temperatura: lead.temperatura,
+        score: lead.score,
+      };
+    }
+
     try {
       const resposta = await orquestrador.despacharEvento({
         chave_idempotencia: `conversa:${conversaId}:${mensagens.at(-1)?.id ?? 0}`,
         tipo: 'conversa.mensagem_recebida',
         contexto,
       });
+
+      // O orquestrador pode devolver o que apurou na conversa. Gravar aqui é o
+      // que torna a qualificação gradual: uma resposta por vez, sem formulário.
+      if (leads && lead && resposta?.qualificacao) {
+        await leads.qualificar(lead.id, resposta.qualificacao, {
+          conversaId,
+          origem: 'automacao',
+        });
+      }
 
       const texto = resposta?.resposta || resposta?.texto;
       if (texto) {

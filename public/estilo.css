@@ -383,7 +383,18 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   padding: 12px 0;
   border-bottom: 1px solid var(--linha);
 }
-.selos { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
+.selos { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+
+/* O que fazer agora, legível sem abrir a conversa. */
+.proxima-acao {
+  font-size: 11px;
+  color: var(--apoio);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
 .fila li:last-child { border-bottom: 0; }
 .linha-texto { flex: 1 1 auto; display: grid; gap: 3px; min-width: 0; }
 .linha-texto b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -517,9 +528,19 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   width: 100%;
 }
 
-#ficha-atributos { margin: 6px 0 0; font-size: 13px; }
-#ficha-atributos dt { color: var(--apoio); font-size: 11px; text-transform: uppercase; }
-#ficha-atributos dd { margin: 0 0 6px; }
+#ficha-atributos, #ficha-qualificacao { margin: 6px 0 0; font-size: 13px; }
+#ficha-atributos dt, #ficha-qualificacao dt { color: var(--apoio); font-size: 11px; text-transform: uppercase; }
+#ficha-atributos dd, #ficha-qualificacao dd { margin: 0 0 6px; }
+
+.proxima-acao-ficha {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  background: #eef7f9;
+  border-left: 3px solid var(--ciano);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #0a5570;
+}
 
 .etiquetas-lista { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .etiqueta-opcao {

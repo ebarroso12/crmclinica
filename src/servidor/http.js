@@ -15,10 +15,13 @@ const { criarAtendimento } = require('../dominio/atendimento');
 const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
 const { criarLimitador } = require('../seguranca/limite');
+const { descobrirIp } = require('./ip');
 const { criarClienteGoogle } = require('../seguranca/google');
 const { criarRemetente } = require('../seguranca/email');
 const { criarRotasDeConversas } = require('./rotas-conversas');
 const { criarRotasDeAutenticacao } = require('./rotas-autenticacao');
+const { criarRotasDeLeads } = require('./rotas-leads');
+const { criarServicoDeLeads } = require('../dominio/leads-servico');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -74,7 +77,9 @@ function criarAplicacao(dependencias = {}) {
   // Sem banco configurado o inbox roda em memória: dá para desenvolver e testar,
   // mas nada sobrevive ao reinício — e `/api/resumo` diz isso na cara.
   const repositorio = dependencias.repositorio || criarRepositorioEmMemoria();
-  const atendimento = dependencias.atendimento || criarAtendimento({ repositorio, orquestrador });
+  const servicoDeLeads = dependencias.servicoDeLeads || criarServicoDeLeads({ repositorio });
+  const atendimento = dependencias.atendimento
+    || criarAtendimento({ repositorio, orquestrador, leads: servicoDeLeads });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
@@ -88,6 +93,7 @@ function criarAplicacao(dependencias = {}) {
 
   const conversas = criarRotasDeConversas({ repositorio, atendimento });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
+  const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
 
   // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
   // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
@@ -160,7 +166,9 @@ function criarAplicacao(dependencias = {}) {
 
     const contexto = {
       agente: (req.headers['user-agent'] || '').slice(0, 300) || null,
-      ip: req.socket.remoteAddress || null,
+      // Atrás de proxy, o IP da conexão é o do proxy — e o limite valeria para
+      // todo mundo junto. `descobrirIp` só lê `X-Forwarded-For` de proxy declarado.
+      ip: descobrirIp(req, configuracao.proxiesConfiaveis),
     };
     const semCache = { 'cache-control': 'no-store' };
 
@@ -232,11 +240,52 @@ function criarAplicacao(dependencias = {}) {
 
     if (rota === '/api/leads' && metodo === 'GET') {
       exigirPermissao(usuario, 'leads:ler');
-      responderJson(res, 200, await conversas.listarLeads(), { 'cache-control': 'no-store' });
+      const kanban = await conversas.listarLeads(await rotasDeLeads.listarParaKanban());
+      responderJson(res, 200, kanban, { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    if (rota === '/api/leads/vocabulario' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeLeads.vocabulario(usuario));
       return true;
     }
 
     const partes = rota.split('/').filter(Boolean);
+
+    // /api/leads/:id e suas ações.
+    if (partes[0] === 'api' && partes[1] === 'leads' && partes.length >= 3 && partes[2] !== 'vocabulario') {
+      const leadId = partes[2];
+
+      if (partes.length === 3) {
+        if (metodo !== 'GET') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+          return true;
+        }
+        responderJson(res, 200, await rotasDeLeads.obter(usuario, leadId), { 'cache-control': 'no-store' });
+        return true;
+      }
+
+      if (partes.length === 4 && partes[3] === 'jornada' && metodo === 'GET') {
+        responderJson(res, 200, await rotasDeLeads.jornada(usuario, leadId), { 'cache-control': 'no-store' });
+        return true;
+      }
+
+      const acoesDeLead = {
+        qualificacao: (corpo) => rotasDeLeads.qualificar(usuario, leadId, corpo),
+        estagio: (corpo) => rotasDeLeads.moverEstagio(usuario, leadId, corpo),
+        temperatura: (corpo) => rotasDeLeads.definirTemperatura(usuario, leadId, corpo),
+      };
+
+      const acaoDeLead = partes.length === 4 ? acoesDeLead[partes[3]] : null;
+      if (acaoDeLead) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        responderJson(res, 200, await acaoDeLead(await lerJson(req)));
+        return true;
+      }
+    }
 
     // GET /api/contatos/:id/conversas — histórico ao clicar no nome do contato.
     if (partes[0] === 'api' && partes[1] === 'contatos' && partes[3] === 'conversas' && partes.length === 4) {

@@ -344,7 +344,10 @@ function montarLinhaDaLista(conversa) {
   if (conversa.temperatura) {
     const selo = document.createElement('span');
     selo.className = `etiqueta temp-${conversa.temperatura}`;
-    selo.textContent = conversa.temperatura;
+    // O score ao lado da temperatura explica de onde ela veio.
+    selo.textContent = conversa.score
+      ? `${conversa.temperatura} ${conversa.score}`
+      : conversa.temperatura;
     selos.append(selo);
   }
   if (conversa.status === 'resolvida') {
@@ -353,6 +356,14 @@ function montarLinhaDaLista(conversa) {
     selo.textContent = 'resolvida';
     selos.append(selo);
   }
+  // A próxima ação é o que a recepção precisa ler sem abrir a conversa.
+  if (conversa.proxima_acao) {
+    const acao = document.createElement('span');
+    acao.className = 'proxima-acao';
+    acao.textContent = conversa.proxima_acao;
+    selos.append(acao);
+  }
+
   if (selos.childElementCount > 0) linha.append(selos);
 
   const abrir = () => abrirConversa(conversa.id);
@@ -477,6 +488,7 @@ function desenharFicha(conversa, ficha, temperatura) {
     }
   }
 
+  desenharQualificacao(conversa);
   desenharEtiquetas(conversa.etiquetas || []);
 
   const notas = seletor('#ficha-notas');
@@ -504,6 +516,48 @@ function desenharFicha(conversa, ficha, temperatura) {
       item.append(botao);
       anteriores.append(item);
     }
+  }
+}
+
+const ROTULOS_DE_QUALIFICACAO = {
+  interesse: 'Interesse',
+  primeira_consulta: 'Primeira consulta',
+  pagamento: 'Pagamento',
+  urgencia: 'Urgência',
+  disponibilidade: 'Horário',
+};
+
+/** Mostra o que já se sabe do lead e o que fazer agora. */
+function desenharQualificacao(conversa) {
+  definirTexto('#ficha-proxima-acao', conversa.proxima_acao || '—');
+
+  const area = seletor('#ficha-qualificacao');
+  if (!area) return;
+  area.innerHTML = '';
+
+  const respondidos = Object.entries(ROTULOS_DE_QUALIFICACAO)
+    .filter(([campo]) => {
+      const valor = conversa[campo];
+      return valor !== null && valor !== undefined && valor !== '' && !String(valor).startsWith('indefinid');
+    });
+
+  if (respondidos.length === 0) {
+    const vazio = document.createElement('dd');
+    vazio.textContent = 'Nada perguntado ainda.';
+    area.append(vazio);
+    return;
+  }
+
+  for (const [campo, rotulo] of respondidos) {
+    const chave = document.createElement('dt');
+    chave.textContent = rotulo;
+
+    const valor = document.createElement('dd');
+    valor.textContent = campo === 'primeira_consulta'
+      ? (conversa[campo] ? 'sim' : 'retorno')
+      : String(conversa[campo]);
+
+    area.append(chave, valor);
   }
 }
 

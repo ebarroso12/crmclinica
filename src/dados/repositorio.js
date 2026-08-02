@@ -12,7 +12,10 @@ const SELECAO_CONVERSA = `
   ct.nome AS contato_nome, ct.telefone AS contato_telefone,
   ct.email AS contato_email, ct.identificador AS contato_identificador,
   u.nome AS responsavel_nome,
-  l.temperatura, l.estagio
+  l.id AS lead_id, l.temperatura, l.estagio, l.score,
+  -- Campos de qualificação: é com eles que a lista mostra a próxima ação sem
+  -- precisar de uma segunda consulta por conversa.
+  l.interesse, l.primeira_consulta, l.pagamento, l.urgencia, l.disponibilidade, l.perdido_motivo
 `;
 
 const JUNCOES_CONVERSA = `
@@ -49,8 +52,17 @@ function montarConversa(linha) {
     ultima_msg_em: linha.ultima_msg_em,
     criado_em: linha.criado_em,
     previa: linha.previa || null,
+    lead_id: linha.lead_id ? Number(linha.lead_id) : null,
     temperatura: linha.temperatura || null,
     estagio: linha.estagio || null,
+    score: linha.score ?? null,
+    // Só os campos que a lista usa para calcular a próxima ação.
+    interesse: linha.interesse ?? null,
+    primeira_consulta: linha.primeira_consulta ?? null,
+    pagamento: linha.pagamento ?? null,
+    urgencia: linha.urgencia ?? null,
+    disponibilidade: linha.disponibilidade ?? null,
+    perdido_motivo: linha.perdido_motivo ?? null,
     etiquetas: linha.etiquetas || [],
     contato: {
       id: Number(linha.contato_id),
@@ -68,6 +80,18 @@ const CAMPOS_USUARIO = `
   id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
   telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em
 `;
+
+function montarLead(linha) {
+  if (!linha) return null;
+  return {
+    ...linha,
+    id: Number(linha.id),
+    contato_id: Number(linha.contato_id),
+    conversa_id: linha.conversa_id ? Number(linha.conversa_id) : null,
+    score: Number(linha.score ?? 0),
+    score_motivos: linha.score_motivos ?? [],
+  };
+}
 
 function montarMensagem(linha) {
   return {
@@ -351,17 +375,102 @@ function criarRepositorio(pool) {
 
     async listarLeads() {
       const { rows } = await consultar(`
-        SELECT l.id, l.contato_id, l.conversa_id, l.temperatura, l.estagio, l.origem, l.proximo_passo,
-               ct.nome, ct.telefone
+        SELECT l.*, ct.nome, ct.telefone,
+               (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id) AS ultima_msg_em
         FROM leads l JOIN contatos ct ON ct.id = l.contato_id
-        ORDER BY l.atualizado_em DESC
+        -- Score maior primeiro: é quem a equipe deve olhar antes.
+        ORDER BY l.score DESC, l.atualizado_em DESC
       `);
-      return rows.map((linha) => ({
-        ...linha,
-        id: Number(linha.id),
-        contato_id: Number(linha.contato_id),
-        conversa_id: linha.conversa_id ? Number(linha.conversa_id) : null,
-      }));
+      return rows.map(montarLead);
+    },
+
+    async obterLead(id) {
+      const { rows } = await consultar(`
+        SELECT l.*, ct.nome, ct.telefone,
+               (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id) AS ultima_msg_em
+        FROM leads l JOIN contatos ct ON ct.id = l.contato_id
+        WHERE l.id = $1
+      `, [id]);
+      return rows[0] ? montarLead(rows[0]) : null;
+    },
+
+    async obterLeadPorContato(contatoId) {
+      const { rows } = await consultar(`
+        SELECT l.*, ct.nome, ct.telefone,
+               (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id) AS ultima_msg_em
+        FROM leads l JOIN contatos ct ON ct.id = l.contato_id
+        WHERE l.contato_id = $1
+      `, [contatoId]);
+      return rows[0] ? montarLead(rows[0]) : null;
+    },
+
+    /** Atualiza o lead. Só os campos da lista permitida entram. */
+    async atualizarLead(id, campos) {
+      const permitidos = new Map([
+        ['interesse', 'interesse'], ['especialidade', 'especialidade'],
+        ['primeira_consulta', 'primeira_consulta'], ['pagamento', 'pagamento'],
+        ['convenio_nome', 'convenio_nome'], ['urgencia', 'urgencia'],
+        ['disponibilidade', 'disponibilidade'], ['origem_detalhe', 'origem_detalhe'],
+        ['utm_source', 'utm_source'], ['utm_medium', 'utm_medium'],
+        ['utm_campaign', 'utm_campaign'], ['utm_term', 'utm_term'], ['utm_content', 'utm_content'],
+        ['estagio', 'estagio'], ['temperatura', 'temperatura'],
+        ['temperaturaManual', 'temperatura_manual'], ['score', 'score'],
+        ['scoreMotivos', 'score_motivos'], ['scoreCalculadoEm', 'score_calculado_em'],
+        ['qualificadoEm', 'qualificado_em'], ['perdidoMotivo', 'perdido_motivo'],
+        ['proximoPasso', 'proximo_passo'], ['conversaId', 'conversa_id'],
+      ]);
+
+      const partes = [];
+      const valores = [];
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+
+        valores.push(coluna === 'score_motivos' ? JSON.stringify(valor) : valor);
+        partes.push(`${coluna} = $${valores.length}${coluna === 'score_motivos' ? '::jsonb' : ''}`);
+      }
+      if (partes.length === 0) return this.obterLead(id);
+
+      valores.push(id);
+      await consultar(`UPDATE leads SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
+      return this.obterLead(id);
+    },
+
+    // ---------------------------------------------------------------- jornada
+
+    async registrarEventoDeLead(evento) {
+      const { rows } = await consultar(`
+        INSERT INTO lead_eventos (lead_id, conversa_id, tipo, de, para, detalhe, origem, usuario_id)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+        RETURNING id, lead_id, conversa_id, tipo, de, para, detalhe, origem, criado_em
+      `, [
+        evento.lead_id, evento.conversa_id, evento.tipo, evento.de, evento.para,
+        evento.detalhe ? JSON.stringify(evento.detalhe) : null,
+        evento.origem, evento.usuario_id,
+      ]);
+
+      return { ...rows[0], id: Number(rows[0].id), lead_id: Number(rows[0].lead_id) };
+    },
+
+    async listarEventosDoLead(leadId, { tipo = null, limite = 100 } = {}) {
+      const valores = [leadId];
+      let filtro = '';
+      if (tipo) {
+        valores.push(tipo);
+        filtro = `AND e.tipo = $${valores.length}`;
+      }
+      valores.push(limite);
+
+      const { rows } = await consultar(`
+        SELECT e.id, e.lead_id, e.conversa_id, e.tipo, e.de, e.para, e.detalhe, e.origem, e.criado_em,
+               u.nome AS usuario_nome
+        FROM lead_eventos e LEFT JOIN usuarios u ON u.id = e.usuario_id
+        WHERE e.lead_id = $1 ${filtro}
+        ORDER BY e.criado_em DESC, e.id DESC
+        LIMIT $${valores.length}
+      `, valores);
+
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id), lead_id: Number(linha.lead_id) }));
     },
 
     /** Cria ou atualiza o lead do contato, mantendo o vínculo com a conversa. */

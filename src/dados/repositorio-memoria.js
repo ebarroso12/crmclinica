@@ -32,10 +32,27 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const sessoes = new Map();
   const recuperacoes = new Map();
   const tentativas = [];
+  const leadEventos = [];
+
+  /** Espelha o que o PostgreSQL devolve: dados do contato e a última mensagem. */
+  function enriquecerLead(lead) {
+    const contato = contatos.get(lead.contato_id);
+    const daConversa = mensagens
+      .filter((mensagem) => mensagem.conversa_id === lead.conversa_id)
+      .map((mensagem) => mensagem.criado_em)
+      .sort();
+
+    return {
+      ...lead,
+      nome: contato?.nome ?? null,
+      telefone: contato?.telefone ?? null,
+      ultima_msg_em: daConversa.at(-1) ?? null,
+    };
+  }
 
   const proximoId = {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
-    lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1,
+    lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
   };
 
   // Espelha o que o PostgreSQL devolve: o hash da senha e o segredo do segundo
@@ -60,8 +77,17 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       ...conversa,
       responsavel_nome: responsavel?.nome ?? null,
       previa: daConversa.at(-1)?.conteudo ?? null,
+      lead_id: lead?.id ?? null,
       temperatura: lead?.temperatura ?? null,
       estagio: lead?.estagio ?? null,
+      score: lead?.score ?? null,
+      // Só os campos que a lista usa para calcular a próxima ação.
+      interesse: lead?.interesse ?? null,
+      primeira_consulta: lead?.primeira_consulta ?? null,
+      pagamento: lead?.pagamento ?? null,
+      urgencia: lead?.urgencia ?? null,
+      disponibilidade: lead?.disponibilidade ?? null,
+      perdido_motivo: lead?.perdido_motivo ?? null,
       etiquetas: [...(etiquetasDaConversa.get(conversa.id) ?? [])].sort(),
       contato: {
         id: contato.id,
@@ -261,10 +287,75 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     // ---------------------------------------------------------------- leads
 
     async listarLeads() {
-      return [...leads.values()].map((lead) => {
-        const contato = contatos.get(lead.contato_id);
-        return { ...lead, nome: contato?.nome ?? null, telefone: contato?.telefone ?? null };
-      });
+      return [...leads.values()]
+        .map(enriquecerLead)
+        // Score maior primeiro: é quem a equipe deve olhar antes.
+        .sort((a, b) => (b.score ?? 0) - (a.score ?? 0)
+          || new Date(b.atualizado_em) - new Date(a.atualizado_em));
+    },
+
+    async obterLead(id) {
+      const lead = leads.get(Number(id));
+      return lead ? enriquecerLead(lead) : null;
+    },
+
+    async obterLeadPorContato(contatoId) {
+      const lead = [...leads.values()].find((item) => item.contato_id === Number(contatoId));
+      return lead ? enriquecerLead(lead) : null;
+    },
+
+    async atualizarLead(id, campos) {
+      const lead = leads.get(Number(id));
+      if (!lead) return null;
+
+      const permitidos = new Map([
+        ['interesse', 'interesse'], ['especialidade', 'especialidade'],
+        ['primeira_consulta', 'primeira_consulta'], ['pagamento', 'pagamento'],
+        ['convenio_nome', 'convenio_nome'], ['urgencia', 'urgencia'],
+        ['disponibilidade', 'disponibilidade'], ['origem_detalhe', 'origem_detalhe'],
+        ['utm_source', 'utm_source'], ['utm_medium', 'utm_medium'],
+        ['utm_campaign', 'utm_campaign'], ['utm_term', 'utm_term'], ['utm_content', 'utm_content'],
+        ['estagio', 'estagio'], ['temperatura', 'temperatura'],
+        ['temperaturaManual', 'temperatura_manual'], ['score', 'score'],
+        ['scoreMotivos', 'score_motivos'], ['scoreCalculadoEm', 'score_calculado_em'],
+        ['qualificadoEm', 'qualificado_em'], ['perdidoMotivo', 'perdido_motivo'],
+        ['proximoPasso', 'proximo_passo'], ['conversaId', 'conversa_id'],
+      ]);
+
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (coluna) lead[coluna] = valor;
+      }
+      lead.atualizado_em = agora().toISOString();
+      return enriquecerLead(lead);
+    },
+
+    // ---------------------------------------------------------------- jornada
+
+    async registrarEventoDeLead(evento) {
+      const registro = {
+        id: proximoId.leadEvento++,
+        lead_id: Number(evento.lead_id),
+        conversa_id: evento.conversa_id ? Number(evento.conversa_id) : null,
+        tipo: evento.tipo,
+        de: evento.de ?? null,
+        para: evento.para ?? null,
+        detalhe: evento.detalhe ?? null,
+        origem: evento.origem ?? 'sistema',
+        usuario_id: evento.usuario_id ?? null,
+        usuario_nome: evento.usuario_id ? usuarios.get(evento.usuario_id)?.nome ?? null : null,
+        criado_em: agora().toISOString(),
+      };
+      leadEventos.push(registro);
+      return registro;
+    },
+
+    async listarEventosDoLead(leadId, { tipo = null, limite = 100 } = {}) {
+      return leadEventos
+        .filter((evento) => evento.lead_id === Number(leadId))
+        .filter((evento) => !tipo || evento.tipo === tipo)
+        .sort((a, b) => new Date(b.criado_em) - new Date(a.criado_em) || b.id - a.id)
+        .slice(0, limite);
     },
 
     async salvarLead(contatoId, { conversaId = null, temperatura = null, estagio = null, origem = null } = {}) {
@@ -272,10 +363,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
 
       if (existente) {
         if (conversaId) existente.conversa_id = Number(conversaId);
-        if (temperatura) existente.temperatura = temperatura;
+        // Temperatura fixada pela equipe não é sobrescrita pela sincronização.
+        if (temperatura && !existente.temperatura_manual) existente.temperatura = temperatura;
         if (estagio) existente.estagio = estagio;
         existente.atualizado_em = agora().toISOString();
-        return existente;
+        return enriquecerLead(existente);
       }
 
       const lead = {
@@ -283,13 +375,35 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         contato_id: Number(contatoId),
         conversa_id: conversaId ? Number(conversaId) : null,
         temperatura: temperatura || 'frio',
+        temperatura_manual: false,
         estagio: estagio || 'novo',
         origem: origem || 'WHATSAPP',
         proximo_passo: null,
+        // Campos de qualificação começam vazios: `null` é "não perguntado",
+        // que é diferente de "respondeu que não".
+        interesse: null,
+        especialidade: null,
+        primeira_consulta: null,
+        pagamento: null,
+        convenio_nome: null,
+        urgencia: null,
+        disponibilidade: null,
+        origem_detalhe: null,
+        utm_source: null,
+        utm_medium: null,
+        utm_campaign: null,
+        utm_term: null,
+        utm_content: null,
+        score: 0,
+        score_motivos: [],
+        score_calculado_em: null,
+        qualificado_em: null,
+        perdido_motivo: null,
+        criado_em: agora().toISOString(),
         atualizado_em: agora().toISOString(),
       };
       leads.set(lead.id, lead);
-      return lead;
+      return enriquecerLead(lead);
     },
 
     // ---------------------------------------------------------------- idempotência e auditoria
