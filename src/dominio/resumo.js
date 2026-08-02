@@ -18,7 +18,11 @@ const DEMONSTRACAO = Object.freeze({
  * @param {object} configuracao configuração já carregada
  * @param {object} saudeOrquestrador estado devolvido pelo cliente OpenClaw
  */
-function montarResumo(configuracao, saudeOrquestrador = { estado: 'nao_configurado' }) {
+function montarResumo(
+  configuracao,
+  saudeOrquestrador = { estado: 'nao_configurado' },
+  saudeInbox = { estado: 'nao_configurado' },
+) {
   const descricao = descreverConfiguracao(configuracao);
 
   return {
@@ -33,6 +37,7 @@ function montarResumo(configuracao, saudeOrquestrador = { estado: 'nao_configura
     plataforma: {
       orquestrador: { ...descricao.orquestrador, saude: saudeOrquestrador.estado },
       atendimento: descricao.atendimento,
+      inbox: { ...descricao.inbox, saude: saudeInbox.estado },
       provedorModelo: descricao.provedorModelo,
       fonteDeVerdade: { nome: 'CRM', banco: descricao.banco },
     },

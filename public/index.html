@@ -26,6 +26,11 @@
         <span id="saude-atendimento" class="estado">verificando…</span>
       </div>
       <div>
+        <small>INBOX DA EQUIPE</small>
+        <strong>Chatwoot</strong>
+        <span id="saude-inbox" class="estado">verificando…</span>
+      </div>
+      <div>
         <small>FONTE DE VERDADE</small>
         <strong>CRM</strong>
         <span id="saude-crm" class="estado">verificando…</span>
@@ -162,48 +167,68 @@
           <div class="lista">
             <label class="oculto-visual" for="busca-conversas">Buscar conversa</label>
             <input id="busca-conversas" type="search" placeholder="Buscar nome, telefone ou mensagem">
-            <div class="abas" role="tablist" aria-label="Filtro de conversas">
-              <button type="button" class="aba selecionada" role="tab" aria-selected="true">Não respondidas</button>
-              <button type="button" class="aba" role="tab" aria-selected="false">Todas</button>
+            <div class="abas" role="tablist" aria-label="Filas do inbox">
+              <button type="button" class="aba" role="tab" data-fila="minhas" aria-selected="false">Minhas</button>
+              <button type="button" class="aba selecionada" role="tab" data-fila="nao_atribuidas" aria-selected="true">Não atribuídas</button>
+              <button type="button" class="aba" role="tab" data-fila="todos" aria-selected="false">Todos</button>
             </div>
-            <ul class="fila">
-              <li>
-                <span class="avatar rosa" aria-hidden="true">MS</span>
-                <span class="linha-texto"><b>Marina Souza</b><small>Quero saber sobre a primeira consulta…</small></span>
-                <span class="etiqueta">Nova</span>
-              </li>
-              <li>
-                <span class="avatar roxo" aria-hidden="true">JL</span>
-                <span class="linha-texto"><b>João Lima</b><small>Posso remarcar minha consulta?</small></span>
-                <span class="etiqueta">Nova</span>
-              </li>
+            <ul class="fila" id="lista-conversas" aria-live="polite">
+              <li class="vazio">Carregando conversas…</li>
             </ul>
           </div>
 
           <div class="thread">
             <div class="thread-topo">
-              <b>Marina Souza</b>
-              <small>WhatsApp · lead novo</small>
+              <b id="thread-nome">Selecione uma conversa</b>
+              <small id="thread-detalhe">A lista à esquerda mostra as conversas do inbox.</small>
             </div>
-            <ol class="mensagens">
-              <li class="recebida">Olá! Quero saber como funciona a primeira consulta.</li>
-              <li class="enviada">Olá, Marina! Vou te ajudar. Qual procedimento você gostaria de conhecer?</li>
-            </ol>
-            <form class="composer" onsubmit="return false">
+
+            <div class="acoes-conversa" role="group" aria-label="Ações da conversa">
+              <button type="button" class="acao" data-acao="assumir" disabled>Assumir</button>
+              <button type="button" class="acao" data-acao="resolver" disabled>Resolver</button>
+              <button type="button" class="acao" data-acao="reabrir" disabled>Reabrir</button>
+              <label class="oculto-visual" for="seletor-prioridade">Prioridade</label>
+              <select id="seletor-prioridade" class="acao" disabled>
+                <option value="">Prioridade</option>
+                <option value="urgent">Urgente</option>
+                <option value="high">Alta</option>
+                <option value="medium">Média</option>
+                <option value="low">Baixa</option>
+              </select>
+              <label class="oculto-visual" for="seletor-temperatura">Temperatura do lead</label>
+              <select id="seletor-temperatura" class="acao" disabled>
+                <option value="">Temperatura</option>
+                <option value="quente">Quente</option>
+                <option value="morno">Morno</option>
+                <option value="frio">Frio</option>
+              </select>
+            </div>
+
+            <ol class="mensagens" id="thread-mensagens" aria-live="polite"></ol>
+
+            <form class="composer" id="form-resposta">
               <label class="oculto-visual" for="resposta">Escrever resposta</label>
-              <input id="resposta" type="text" placeholder="Escreva uma resposta…">
-              <button type="submit" class="primario">Enviar</button>
+              <input id="resposta" type="text" placeholder="Escreva uma resposta…" disabled>
+              <button type="submit" class="primario" disabled>Enviar</button>
             </form>
           </div>
 
           <aside class="ficha" aria-label="Ficha do contato">
             <small>FICHA DO CONTATO</small>
-            <h3>Marina Souza</h3>
-            <p>Lead novo · WhatsApp</p>
+            <h3 id="ficha-nome">—</h3>
+            <p id="ficha-canal">Selecione uma conversa</p>
             <hr>
-            <small>PRÓXIMA AÇÃO</small>
-            <b>Qualificar interesse</b>
-            <button type="button" class="secundario">Ver histórico</button>
+            <small>TELEFONE</small>
+            <b id="ficha-telefone">—</b>
+            <small>IDENTIFICADOR</small>
+            <b id="ficha-identificador">—</b>
+            <hr>
+            <small>ETIQUETAS</small>
+            <p id="ficha-etiquetas">—</p>
+            <small>NOTAS</small>
+            <p id="ficha-notas">—</p>
+            <small>CONVERSAS ANTERIORES</small>
+            <p id="ficha-anteriores">—</p>
           </aside>
         </div>
       </section>
@@ -217,22 +242,8 @@
           </div>
           <button type="button" class="primario">Novo lead</button>
         </div>
-        <div class="kanban">
-          <section aria-labelledby="coluna-novos">
-            <h3 id="coluna-novos">Novos <b>4</b></h3>
-            <ul>
-              <li>Marina Souza<small>WhatsApp · há 4 min</small></li>
-              <li>Rafael Costa<small>Site · há 28 min</small></li>
-            </ul>
-          </section>
-          <section aria-labelledby="coluna-qualificando">
-            <h3 id="coluna-qualificando">Qualificando <b>3</b></h3>
-            <ul><li>João Lima<small>Primeira consulta</small></li></ul>
-          </section>
-          <section aria-labelledby="coluna-agendados">
-            <h3 id="coluna-agendados">Agendados <b>5</b></h3>
-            <ul><li>Camila Alves<small>Consulta em 08/08</small></li></ul>
-          </section>
+        <div class="kanban" id="kanban-leads" aria-live="polite">
+          <p class="vazio">Carregando leads do inbox…</p>
         </div>
       </section>
 

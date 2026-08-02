@@ -9,7 +9,10 @@ const { validarEvento } = require('../contratos/evento');
 const { ErroDeContrato } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
+const { criarClienteChatwoot } = require('../integracoes/chatwoot');
 const { montarResumo } = require('../dominio/resumo');
+const { criarSincronizador } = require('../dominio/sincronizacao');
+const { criarRotasDeConversas } = require('./rotas-conversas');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
 const PASTA_PUBLICA = path.join(__dirname, '..', '..', 'public');
@@ -61,7 +64,11 @@ function servirArquivo(res, arquivo, tipo) {
 function criarAplicacao(dependencias = {}) {
   const configuracao = dependencias.configuracao || carregarConfiguracao();
   const orquestrador = dependencias.orquestrador || criarClienteOpenClaw(configuracao.openclaw, dependencias);
+  const chatwoot = dependencias.chatwoot || criarClienteChatwoot(configuracao.chatwoot, dependencias);
   const idempotencia = dependencias.idempotencia || criarRegistroEmMemoria();
+  const sincronizador = dependencias.sincronizador || criarSincronizador({ chatwoot, orquestrador });
+
+  const conversas = criarRotasDeConversas({ chatwoot, sincronizador, idempotencia, configuracao });
 
   async function receberEventoDoOrquestrador(req, res) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
@@ -103,6 +110,78 @@ function criarAplicacao(dependencias = {}) {
     responderJson(res, 202, recibo);
   }
 
+  async function lerJson(req) {
+    return interpretarJson(await lerCorpoBruto(req, configuracao.limiteCorpoBytes));
+  }
+
+  // Rotas da camada de conversas. Devolve `true` quando tratou a requisição.
+  async function tratarRotasDeConversas(req, res, rota, metodo, url) {
+    if (rota === '/api/conversas/filas' && metodo === 'GET') {
+      responderJson(res, 200, await conversas.listarFilas());
+      return true;
+    }
+
+    if (rota === '/api/conversas' && metodo === 'GET') {
+      responderJson(res, 200, await conversas.listarConversas(url.searchParams), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    if (rota === '/api/leads' && metodo === 'GET') {
+      responderJson(res, 200, await conversas.listarLeads(url.searchParams), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    if (rota === '/api/webhooks/chatwoot') {
+      if (metodo !== 'POST') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+        return true;
+      }
+      const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
+      const { status, ...recibo } = await conversas.receberWebhook({ corpoBruto, cabecalhos: req.headers });
+      responderJson(res, status, recibo);
+      return true;
+    }
+
+    if (rota === '/api/integracoes/chatwoot/etiquetas' && metodo === 'POST') {
+      responderJson(res, 200, await conversas.garantirEtiquetas());
+      return true;
+    }
+
+    // /api/conversas/:id e suas ações.
+    const partes = rota.split('/').filter(Boolean);
+    if (partes[0] !== 'api' || partes[1] !== 'conversas' || partes.length < 3) return false;
+
+    const conversaId = partes[2];
+
+    if (partes.length === 3) {
+      if (metodo !== 'GET') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+        return true;
+      }
+      responderJson(res, 200, await conversas.obterConversa(conversaId), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    const acoes = {
+      mensagens: (corpo) => conversas.responder(conversaId, corpo),
+      atribuicao: (corpo) => conversas.atribuir(conversaId, corpo),
+      prioridade: (corpo) => conversas.definirPrioridade(conversaId, corpo),
+      estado: (corpo) => conversas.definirEstado(conversaId, corpo),
+      temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
+      notas: (corpo) => conversas.criarNota(conversaId, corpo),
+    };
+
+    const acao = acoes[partes[3]];
+    if (!acao || partes.length !== 4) return false;
+
+    if (metodo !== 'POST') {
+      responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+      return true;
+    }
+    responderJson(res, 200, await acao(await lerJson(req)));
+    return true;
+  }
+
   return async function tratarRequisicao(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const rota = url.pathname;
@@ -128,8 +207,13 @@ function criarAplicacao(dependencias = {}) {
           responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
           return;
         }
-        const saude = await orquestrador.verificarSaude();
-        responderJson(res, 200, montarResumo(configuracao, saude), { 'cache-control': 'no-store' });
+        const [saudeOrquestrador, saudeInbox] = await Promise.all([
+          orquestrador.verificarSaude(),
+          chatwoot.verificarSaude(),
+        ]);
+        responderJson(res, 200, montarResumo(configuracao, saudeOrquestrador, saudeInbox), {
+          'cache-control': 'no-store',
+        });
         return;
       }
 
@@ -141,6 +225,8 @@ function criarAplicacao(dependencias = {}) {
         await receberEventoDoOrquestrador(req, res);
         return;
       }
+
+      if (await tratarRotasDeConversas(req, res, rota, metodo, url)) return;
 
       const arquivo = ARQUIVOS_PUBLICOS.get(rota);
       if (arquivo) {
@@ -162,6 +248,19 @@ function criarAplicacao(dependencias = {}) {
       }
       if (erro instanceof ErroDeContrato) {
         responderJson(res, 400, { erro: erro.message, campo: erro.campo });
+        return;
+      }
+      // Integração ausente é estado previsto, não falha: 503 diz "ainda não ligado".
+      if (erro.codigo === 'chatwoot_nao_configurado' || erro.codigo === 'openclaw_nao_configurado') {
+        responderJson(res, 503, { erro: erro.message, codigo: erro.codigo });
+        return;
+      }
+      if (erro.codigo === 'chatwoot_resposta_invalida') {
+        responderJson(res, 502, { erro: 'o Chatwoot recusou a operação', status_origem: erro.status });
+        return;
+      }
+      if (erro.status === 401 || erro.status === 503) {
+        responderJson(res, erro.status, { erro: erro.message });
         return;
       }
       // Falha inesperada nunca vaza detalhe interno para o cliente.

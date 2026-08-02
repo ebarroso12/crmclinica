@@ -74,7 +74,7 @@ h1, h2, h3 { line-height: 1.25; }
 .plantao {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   background: var(--navy);
   color: #fff;
   padding: 12px 28px;
@@ -342,7 +342,32 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 }
 .aba.selecionada { color: #0a6f7e; border-bottom-color: var(--ciano); font-weight: 600; }
 
+/* Ações que a equipe executa direto na conversa — refletem no Chatwoot. */
+.acoes-conversa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--linha);
+}
+.acao {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  background: var(--superficie);
+  color: var(--texto);
+  cursor: pointer;
+}
+.acao:hover:not(:disabled) { background: #eef7f9; border-color: var(--ciano); color: #0a6f7e; }
+.acao:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.vazio { color: var(--apoio); font-size: 13px; padding: 14px 0; list-style: none; }
+
 .thread { display: flex; flex-direction: column; }
+.fila li[role="button"] { cursor: pointer; border-radius: 8px; padding-left: 6px; padding-right: 6px; }
+.fila li[role="button"]:hover { background: #f3f8fa; }
 .thread-topo { display: grid; gap: 3px; padding-bottom: 14px; border-bottom: 1px solid var(--linha); }
 .thread-topo small { color: var(--apoio); font-size: 12px; }
 .mensagens { list-style: none; flex: 1; margin: 0; padding: 22px 0 0; display: grid; gap: 10px; align-content: start; }
@@ -360,7 +385,8 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 
 /* ---------- Leads ---------- */
 
-.kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+/* O número de colunas vem do pipeline, então o grid se adapta em vez de fixar a contagem. */
+.kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
 .kanban > section { background: #edf1f7; border-radius: 10px; padding: 14px; min-height: 240px; }
 .kanban h3 { font-size: 12px; color: var(--apoio); letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 10px; }
 .kanban h3 b { float: right; color: var(--texto); }
