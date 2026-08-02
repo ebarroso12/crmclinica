@@ -22,6 +22,8 @@ const { criarRotasDeConversas } = require('./rotas-conversas');
 const { criarRotasDeAutenticacao } = require('./rotas-autenticacao');
 const { criarRotasDeLeads } = require('./rotas-leads');
 const { criarServicoDeLeads } = require('../dominio/leads-servico');
+const { criarRotasDeAgenda } = require('./rotas-agenda');
+const { criarServicoDeAgenda } = require('../dominio/agenda-servico');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -94,6 +96,8 @@ function criarAplicacao(dependencias = {}) {
   const conversas = criarRotasDeConversas({ repositorio, atendimento });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
+  const servicoDeAgenda = dependencias.servicoDeAgenda || criarServicoDeAgenda({ repositorio });
+  const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
 
   // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
   // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
@@ -223,6 +227,75 @@ function criarAplicacao(dependencias = {}) {
     return true;
   }
 
+  // Rotas da agenda. Devolve `true` quando tratou a requisição.
+  async function tratarRotasDeAgenda(req, res, rota, metodo, url, usuario) {
+    if (!rota.startsWith('/api/agenda')) return false;
+    const semCache = { 'cache-control': 'no-store' };
+
+    const simples = {
+      'GET /api/agenda': () => rotasDeAgenda.listar(usuario, url.searchParams),
+      'GET /api/agenda/vocabulario': () => rotasDeAgenda.vocabulario(usuario),
+      'GET /api/agenda/horarios': () => rotasDeAgenda.horariosLivres(usuario, url.searchParams),
+      'GET /api/agenda/profissionais': () => rotasDeAgenda.listarProfissionais(usuario),
+      'POST /api/agenda/profissionais': async () => rotasDeAgenda.criarProfissional(usuario, await lerJson(req)),
+      'POST /api/agenda/bloqueios': async () => rotasDeAgenda.criarBloqueio(usuario, await lerJson(req)),
+      // Propor não grava; confirmar grava. Os dois passos são a proteção contra
+      // marcar consulta que a pessoa não pediu.
+      'POST /api/agenda/propor': async () => rotasDeAgenda.propor(usuario, await lerJson(req)),
+      'POST /api/agenda/confirmar': async () => rotasDeAgenda.confirmar(usuario, await lerJson(req)),
+    };
+
+    const acao = simples[`${metodo} ${rota}`];
+    if (acao) {
+      responderJson(res, 200, await acao(), semCache);
+      return true;
+    }
+
+    const partes = rota.split('/').filter(Boolean);
+
+    // /api/agenda/profissionais/:id/disponibilidade
+    if (partes[2] === 'profissionais' && partes[4] === 'disponibilidade' && partes.length === 5) {
+      if (metodo !== 'PUT') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'PUT' });
+        return true;
+      }
+      responderJson(res, 200, await rotasDeAgenda.definirDisponibilidade(usuario, partes[3], await lerJson(req)));
+      return true;
+    }
+
+    // /api/agenda/bloqueios/:id
+    if (partes[2] === 'bloqueios' && partes.length === 4) {
+      if (metodo !== 'DELETE') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'DELETE' });
+        return true;
+      }
+      responderJson(res, 200, await rotasDeAgenda.removerBloqueio(usuario, partes[3]));
+      return true;
+    }
+
+    // /api/agenda/:id/remarcar | /cancelar | /status
+    if (partes.length === 4) {
+      const acoes = {
+        remarcar: (corpo) => rotasDeAgenda.remarcar(usuario, partes[2], corpo),
+        cancelar: (corpo) => rotasDeAgenda.cancelar(usuario, partes[2], corpo),
+        status: (corpo) => rotasDeAgenda.definirStatus(usuario, partes[2], corpo),
+      };
+      const sobre = acoes[partes[3]];
+
+      if (sobre) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        responderJson(res, 200, await sobre(await lerJson(req)), semCache);
+        return true;
+      }
+    }
+
+    responderJson(res, 404, { erro: 'rota não encontrada' });
+    return true;
+  }
+
   // Rotas da camada de conversas. Devolve `true` quando tratou a requisição.
   // Toda rota daqui exige autenticação e a permissão declarada.
   async function tratarRotasDeConversas(req, res, rota, metodo, url, usuario) {
@@ -249,6 +322,8 @@ function criarAplicacao(dependencias = {}) {
       responderJson(res, 200, await rotasDeLeads.vocabulario(usuario));
       return true;
     }
+
+    if (await tratarRotasDeAgenda(req, res, rota, metodo, url, usuario)) return true;
 
     const partes = rota.split('/').filter(Boolean);
 
@@ -287,6 +362,24 @@ function criarAplicacao(dependencias = {}) {
       }
     }
 
+    // GET /api/contatos?busca= — escolher o paciente ao marcar na agenda.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes.length === 2) {
+      if (metodo !== 'GET') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+        return true;
+      }
+      exigirPermissao(usuario, 'contatos:ler');
+
+      // Sem termo devolve lista vazia em vez de despejar a base inteira: a rota
+      // serve para achar alguém, não para exportar contatos.
+      const contatos = await repositorio.buscarContatos({
+        termo: url.searchParams.get('busca') ?? '',
+        limite: 10,
+      });
+      responderJson(res, 200, { contatos }, { 'cache-control': 'no-store' });
+      return true;
+    }
+
     // GET /api/contatos/:id/conversas — histórico ao clicar no nome do contato.
     if (partes[0] === 'api' && partes[1] === 'contatos' && partes[3] === 'conversas' && partes.length === 4) {
       if (metodo !== 'GET') {
@@ -313,6 +406,12 @@ function criarAplicacao(dependencias = {}) {
       return true;
     }
     if (partes.length !== 4) return false;
+
+    // A agenda vista de dentro da conversa: é como a recepção marca sem sair da thread.
+    if (partes[3] === 'agenda' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeAgenda.daConversa(usuario, conversaId), { 'cache-control': 'no-store' });
+      return true;
+    }
 
     // A thread é a única sub-rota que também responde a GET.
     if (partes[3] === 'mensagens' && metodo === 'GET') {
@@ -473,8 +572,17 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 403, { erro: erro.message, situacao: erro.situacao });
         return;
       }
+      // Conflito de agenda leva o horário que atrapalhou: a recepção precisa
+      // saber com o quê bateu, não só que "deu erro".
+      if (erro.status === 409 && erro.codigo === 'conflito_de_agenda') {
+        responderJson(res, 409, { erro: erro.message, codigo: erro.codigo, conflito: erro.conflito ?? null });
+        return;
+      }
       if ([400, 403, 404, 409, 503].includes(erro.status)) {
-        responderJson(res, erro.status, { erro: erro.message });
+        responderJson(res, erro.status, {
+          erro: erro.message,
+          ...(erro.codigo ? { codigo: erro.codigo } : {}),
+        });
         return;
       }
       // Falha inesperada nunca vaza detalhe interno para o cliente.

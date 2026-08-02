@@ -67,6 +67,30 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(segundo.nome, 'Marina', 'nome já registrado não é sobrescrito');
     });
 
+    await t.test('busca de contato acha por nome e por telefone digitado', async () => {
+      await repositorio.encontrarOuCriarContato({ telefone: '5516988887777', nome: 'Joana Ribeiro' });
+      await repositorio.encontrarOuCriarContato({ telefone: '5511955554444', nome: 'Carlos Menezes' });
+
+      const porNome = await repositorio.buscarContatos({ termo: 'joana' });
+      assert.equal(porNome.length, 1);
+      assert.equal(porNome[0].nome, 'Joana Ribeiro');
+      assert.equal(typeof porNome[0].id, 'number');
+
+      // Quem atende digita o telefone como está na tela do paciente. A busca
+      // precisa achar o mesmo contato com ou sem máscara.
+      const comMascara = await repositorio.buscarContatos({ termo: '(16) 98888' });
+      assert.equal(comMascara.length, 1, 'pontuação no telefone não pode atrapalhar');
+      assert.equal(comMascara[0].telefone, '5516988887777');
+
+      const semTermo = await repositorio.buscarContatos({ termo: '  ' });
+      assert.deepEqual(semTermo, [], 'busca vazia não despeja a base inteira');
+
+      // Um ou dois dígitos casariam com quase todo mundo: melhor não achar nada
+      // do que devolver a agenda de contatos inteira para "1".
+      const curtaDemais = await repositorio.buscarContatos({ termo: '55' });
+      assert.deepEqual(curtaDemais, []);
+    });
+
     await t.test('conversa aberta é reaproveitada; resolvida abre outra', async () => {
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900000001', nome: 'Teste A' });
 

@@ -366,6 +366,10 @@
               <hr>
               <small>CONVERSAS ANTERIORES</small>
               <ul id="ficha-anteriores" class="ficha-lista"><li>—</li></ul>
+
+              <!-- Marcar sem sair da conversa: a recepção está com o paciente na
+                   linha, e trocar de tela é onde o horário combinado se perde. -->
+              <div class="agenda-da-conversa" id="agenda-da-conversa" hidden></div>
             </div>
           </aside>
         </div>
@@ -392,17 +396,101 @@
             <h2 id="titulo-agenda">Agenda</h2>
             <p>Compromissos e confirmações da equipe.</p>
           </div>
-          <button type="button" class="primario">Novo compromisso</button>
+          <div class="acoes-agenda">
+            <label class="campo-inline">
+              <span>Profissional</span>
+              <select id="agenda-profissional">
+                <option value="">Carregando…</option>
+              </select>
+            </label>
+            <div class="navegacao-semana" role="group" aria-label="Navegação de semana">
+              <button type="button" id="semana-anterior" aria-label="Semana anterior">‹</button>
+              <button type="button" id="semana-hoje">Hoje</button>
+              <button type="button" id="semana-proxima" aria-label="Próxima semana">›</button>
+            </div>
+          </div>
         </div>
-        <article class="card estreito">
-          <h3>Hoje</h3>
-          <!-- A agenda ainda não tem banco nem rota: mostrar horário inventado
-               aqui seria a tela mentindo para quem confia nela. -->
-          <p class="vazio">
-            A agenda ainda não foi implementada. Nenhum compromisso é lido ou gravado por esta tela.
-          </p>
-        </article>
+
+        <p class="periodo-agenda" id="agenda-periodo" aria-live="polite">Carregando agenda…</p>
+
+        <!-- Grade semanal. Clicar num espaço livre abre a proposta; nada é gravado
+             antes da confirmação explícita. -->
+        <div class="grade-agenda" id="grade-agenda">
+          <div class="coluna-horas" id="agenda-horas" aria-hidden="true"></div>
+          <div class="dias-agenda" id="agenda-dias"></div>
+        </div>
+
+        <p class="legenda-agenda">
+          <span class="marca agendado"></span> agendado
+          <span class="marca confirmado"></span> confirmado
+          <span class="marca compareceu"></span> compareceu
+          <span class="marca faltou"></span> faltou
+          <span class="marca bloqueio"></span> bloqueio
+        </p>
       </section>
+
+      <!-- Proposta de horário: o passo que existe para que ninguém marque consulta
+           sem alguém ter lido em voz alta o que vai ser gravado. -->
+      <div class="cortina" id="cortina-agenda" hidden>
+        <div class="painel-agenda" role="dialog" aria-modal="true" aria-labelledby="titulo-proposta">
+          <header>
+            <h3 id="titulo-proposta">Novo compromisso</h3>
+            <button type="button" class="fechar" id="fechar-proposta" aria-label="Fechar">×</button>
+          </header>
+
+          <form id="forma-proposta">
+            <p class="resumo-horario" id="proposta-horario"></p>
+
+            <label>
+              <span>Paciente</span>
+              <input type="text" id="proposta-busca" placeholder="Nome ou telefone" autocomplete="off" />
+            </label>
+            <ul class="sugestoes" id="proposta-sugestoes" hidden></ul>
+            <p class="escolhido" id="proposta-escolhido" hidden></p>
+
+            <label>
+              <span>Tipo</span>
+              <select id="proposta-tipo"></select>
+            </label>
+
+            <label>
+              <span>Observações</span>
+              <textarea id="proposta-observacoes" rows="2" placeholder="Opcional"></textarea>
+            </label>
+
+            <p class="erro-proposta" id="proposta-erro" hidden role="alert"></p>
+
+            <!-- Passo 2: só aparece depois de propor, com o texto exato do que será gravado. -->
+            <div class="confirmacao" id="proposta-confirmacao" hidden>
+              <p id="proposta-frase"></p>
+              <div class="botoes">
+                <button type="button" class="secundario" id="proposta-voltar">Voltar</button>
+                <button type="button" class="primario" id="proposta-confirmar">Confirmar e gravar</button>
+              </div>
+            </div>
+
+            <div class="botoes" id="proposta-botoes">
+              <button type="button" class="secundario" id="proposta-cancelar">Cancelar</button>
+              <button type="submit" class="primario">Revisar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Compromisso já gravado: remarcar, cancelar, marcar presença. -->
+      <div class="cortina" id="cortina-compromisso" hidden>
+        <div class="painel-agenda" role="dialog" aria-modal="true" aria-labelledby="titulo-compromisso">
+          <header>
+            <h3 id="titulo-compromisso">Compromisso</h3>
+            <button type="button" class="fechar" id="fechar-compromisso" aria-label="Fechar">×</button>
+          </header>
+
+          <dl class="detalhe-compromisso" id="detalhe-compromisso"></dl>
+          <p class="erro-proposta" id="compromisso-erro" hidden role="alert"></p>
+
+          <div class="acoes-compromisso" id="acoes-compromisso"></div>
+        </div>
+      </div>
 
       <!-- Serena -->
       <section id="serena" class="tela" hidden aria-labelledby="titulo-serena">

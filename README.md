@@ -51,13 +51,19 @@ Requer **Node.js 22 ou superior**. Única dependência: `pg`, o driver do Postgr
 npm install
 cp .env.exemplo .env    # preencha só no ambiente local
 
-# Com banco (recomendado):
-psql "$CRMCLINICA_DATABASE_URL" -f db/001_inbox.sql
+# Com banco (recomendado) — as migrations são cumulativas, aplique em ordem:
+for m in db/0*.sql; do psql "$CRMCLINICA_DATABASE_URL" -f "$m"; done
 
-npm run iniciar         # sobe em http://127.0.0.1:4100
-npm test                # suíte completa (roda sem banco)
-npm run verificar       # checagem de sintaxe de todos os arquivos
+npm run iniciar          # sobe em http://127.0.0.1:4100
+npm test                 # suíte completa (roda sem banco)
+npm run verificar        # checagem de sintaxe de todos os arquivos
+npm run verificar-banco  # o que está de fato aplicado: tabelas, RLS, papéis
 ```
+
+`npm run verificar-banco` responde à pergunta que só o banco pode responder — se
+as migrations foram aplicadas e se o RLS está ligado. Rode antes de expor
+qualquer ambiente: uma tabela sem RLS num projeto Supabase fica legível pela API
+REST automática com a chave anônima, que é pública por definição.
 
 Sem `CRMCLINICA_DATABASE_URL` o inbox roda em memória: útil para desenvolver, mas
 nada persiste. Em produção a variável é obrigatória.
@@ -71,9 +77,13 @@ nada persiste. Em produção a variável é obrigatória.
 | `/api/resumo` | GET | Indicadores do painel e saúde da plataforma |
 | `/api/eventos` | POST | Recepção de mensagem de canal, assinada e idempotente |
 | `/api/conversas…` | GET/POST/PUT | Inbox: lista, thread, resposta, assumir, etiquetas, ficha |
+| `/api/contatos?busca=` | GET | Busca por nome ou telefone, para escolher o paciente |
 | `/api/leads` | GET | Kanban de leads |
+| `/api/agenda…` | GET/POST | Agenda: grade, horários livres, propor, confirmar, remarcar, cancelar |
+| `/api/conversas/:id/agenda` | GET | A agenda do paciente vista de dentro da conversa |
 
-O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md).
+O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md) e a
+agenda em [`docs/AGENDA.md`](docs/AGENDA.md).
 
 ## Segurança
 
@@ -89,7 +99,12 @@ O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md).
 
 O inbox funciona de ponta a ponta: mensagem recebida vira contato, conversa e histórico;
 a equipe responde, assume, resolve, etiqueta e edita a ficha; o kanban abre a conversa
-que originou cada lead. Falta autenticação — as rotas ainda não podem ser expostas
-publicamente. Nenhum dado real de paciente foi usado.
+que originou cada lead. Autenticação, RBAC, rate limit e qualificação de lead estão
+implementados. A agenda marca, remarca e cancela, com o conflito de horário impedido
+pelo banco. Nenhum dado real de paciente foi usado.
+
+Pendente: a régua de confirmação e lembretes (24h e 2h), o follow-up de leads frios,
+as métricas e o copiloto. O envio de mensagem depende do OpenClaw, cujo protocolo
+ainda não foi confirmado — ver [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
 
 Documentação detalhada em [`docs/`](docs/).

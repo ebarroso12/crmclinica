@@ -33,6 +33,24 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const recuperacoes = new Map();
   const tentativas = [];
   const leadEventos = [];
+  const profissionais = new Map();
+  const disponibilidades = [];
+  const bloqueios = [];
+  const agendamentos = [];
+
+  /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
+  function enriquecerAgendamento(agendamento) {
+    const profissional = profissionais.get(agendamento.profissional_id);
+    const contato = contatos.get(agendamento.contato_id);
+
+    return {
+      ...agendamento,
+      profissional_nome: profissional?.nome ?? null,
+      profissional_cor: profissional?.cor ?? null,
+      contato_nome: contato?.nome ?? null,
+      contato_telefone: contato?.telefone ?? null,
+    };
+  }
 
   /** Espelha o que o PostgreSQL devolve: dados do contato e a última mensagem. */
   function enriquecerLead(lead) {
@@ -53,6 +71,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const proximoId = {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
+    profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1,
   };
 
   // Espelha o que o PostgreSQL devolve: o hash da senha e o segredo do segundo
@@ -188,6 +207,33 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
 
     async obterContato(id) {
       return contatos.get(Number(id)) ?? null;
+    },
+
+    /**
+     * Busca por nome ou telefone, para escolher o paciente ao marcar.
+     *
+     * O termo é comparado contra o telefone só pelos dígitos: quem atende digita
+     * "(11) 99999" olhando para a tela do paciente, e isso precisa achar o mesmo
+     * contato que "11999990000" acha.
+     */
+    async buscarContatos({ termo, limite = 10 }) {
+      const alvo = String(termo ?? '').trim().toLowerCase();
+      if (!alvo) return [];
+
+      const digitos = alvo.replace(/\D/g, '');
+      return [...contatos.values()]
+        .filter((contato) => {
+          const nome = (contato.nome ?? '').toLowerCase();
+          const telefone = (contato.telefone ?? '').replace(/\D/g, '');
+          return nome.includes(alvo) || (digitos.length >= 3 && telefone.includes(digitos));
+        })
+        .sort((a, b) => (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'))
+        .slice(0, Number(limite))
+        .map((contato) => ({
+          id: contato.id,
+          nome: contato.nome,
+          telefone: contato.telefone,
+        }));
     },
 
     async atualizarContato(id, campos) {
@@ -553,6 +599,204 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         }
       }
       return total;
+    },
+
+    // ---------------------------------------------------------------- agenda
+
+    async listarProfissionais({ apenasAtivos = true } = {}) {
+      return [...profissionais.values()]
+        .filter((profissional) => !apenasAtivos || profissional.ativo)
+        .sort((a, b) => a.nome.localeCompare(b.nome));
+    },
+
+    async obterProfissional(id) {
+      return profissionais.get(Number(id)) ?? null;
+    },
+
+    async criarProfissional({ nome, especialidade = null, registro = null, cor = null, duracaoMin = 30, usuarioId = null }) {
+      const profissional = {
+        id: proximoId.profissional++,
+        nome,
+        especialidade,
+        registro,
+        cor: cor || '#0e8fa1',
+        duracao_min: duracaoMin,
+        usuario_id: usuarioId,
+        ativo: true,
+      };
+      profissionais.set(profissional.id, profissional);
+      return profissional;
+    },
+
+    async definirDisponibilidades(profissionalId, janelas) {
+      for (let indice = disponibilidades.length - 1; indice >= 0; indice -= 1) {
+        if (disponibilidades[indice].profissional_id === Number(profissionalId)) disponibilidades.splice(indice, 1);
+      }
+      for (const janela of janelas) {
+        disponibilidades.push({
+          id: proximoId.disponibilidade++,
+          profissional_id: Number(profissionalId),
+          dia_semana: janela.dia_semana,
+          hora_inicio: janela.hora_inicio,
+          hora_fim: janela.hora_fim,
+        });
+      }
+      return this.listarDisponibilidades(profissionalId);
+    },
+
+    async listarDisponibilidades(profissionalId) {
+      return disponibilidades
+        .filter((janela) => janela.profissional_id === Number(profissionalId))
+        .sort((a, b) => a.dia_semana - b.dia_semana || a.hora_inicio.localeCompare(b.hora_inicio));
+    },
+
+    async criarBloqueio({ profissionalId = null, inicio, fim, motivo = null, criadoPor = null }) {
+      const bloqueio = {
+        id: proximoId.bloqueio++,
+        profissional_id: profissionalId ? Number(profissionalId) : null,
+        inicio,
+        fim,
+        motivo,
+        criado_por: criadoPor,
+      };
+      bloqueios.push(bloqueio);
+      return bloqueio;
+    },
+
+    async listarBloqueios({ profissionalId = null, inicio, fim }) {
+      const de = new Date(inicio).getTime();
+      const ate = new Date(fim).getTime();
+
+      return bloqueios
+        .filter((bloqueio) => bloqueio.profissional_id === null
+          || bloqueio.profissional_id === Number(profissionalId))
+        .filter((bloqueio) => new Date(bloqueio.inicio).getTime() < ate
+          && new Date(bloqueio.fim).getTime() > de)
+        .sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
+    },
+
+    async removerBloqueio(id) {
+      const indice = bloqueios.findIndex((bloqueio) => bloqueio.id === Number(id));
+      if (indice === -1) return 0;
+      bloqueios.splice(indice, 1);
+      return 1;
+    },
+
+    /**
+     * Cria o agendamento imitando a constraint de exclusão do PostgreSQL.
+     *
+     * A verificação e a inserção acontecem **sem `await` entre elas**: como o
+     * JavaScript é de thread única, isso as torna atômicas — o mesmo que a
+     * constraint garante no banco. Sem esse cuidado, o teste de concorrência
+     * passaria aqui e falharia em produção, que é o pior dos mundos.
+     */
+    async criarAgendamento({
+      profissionalId, contatoId, leadId = null, conversaId = null,
+      inicio, fim, tipo = 'consulta', observacoes = null, local = null, criadoPor = null,
+    }) {
+      const de = new Date(inicio).getTime();
+      const ate = new Date(fim).getTime();
+
+      const conflito = agendamentos.find((existente) => existente.profissional_id === Number(profissionalId)
+        && existente.status !== 'cancelado'
+        && de < new Date(existente.fim).getTime()
+        && new Date(existente.inicio).getTime() < ate);
+
+      if (conflito) {
+        // Mesmos sinais do PostgreSQL, para o tratamento ser o mesmo dos dois lados.
+        const erro = new Error('conflicting key value violates exclusion constraint');
+        erro.code = '23P01';
+        erro.constraint = 'agendamentos_sem_conflito';
+        throw erro;
+      }
+
+      const agendamento = {
+        id: proximoId.agendamento++,
+        profissional_id: Number(profissionalId),
+        contato_id: Number(contatoId),
+        lead_id: leadId ? Number(leadId) : null,
+        conversa_id: conversaId ? Number(conversaId) : null,
+        inicio,
+        fim,
+        status: 'agendado',
+        tipo,
+        observacoes,
+        local,
+        confirmado_em: null,
+        cancelado_em: null,
+        cancelado_motivo: null,
+        criado_por: criadoPor,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      agendamentos.push(agendamento);
+      return enriquecerAgendamento(agendamento);
+    },
+
+    async obterAgendamento(id) {
+      const agendamento = agendamentos.find((item) => item.id === Number(id));
+      return agendamento ? enriquecerAgendamento(agendamento) : null;
+    },
+
+    async listarAgendamentos({ profissionalId = null, contatoId = null, conversaId = null, inicio, fim, incluirCancelados = false } = {}) {
+      let lista = [...agendamentos];
+
+      if (profissionalId) lista = lista.filter((item) => item.profissional_id === Number(profissionalId));
+      if (contatoId) lista = lista.filter((item) => item.contato_id === Number(contatoId));
+      if (conversaId) lista = lista.filter((item) => item.conversa_id === Number(conversaId));
+      if (inicio && fim) {
+        const de = new Date(inicio).getTime();
+        const ate = new Date(fim).getTime();
+        lista = lista.filter((item) => new Date(item.inicio).getTime() < ate
+          && new Date(item.fim).getTime() > de);
+      }
+      if (!incluirCancelados) lista = lista.filter((item) => item.status !== 'cancelado');
+
+      return lista
+        .sort((a, b) => new Date(a.inicio) - new Date(b.inicio))
+        .map(enriquecerAgendamento);
+    },
+
+    async atualizarAgendamento(id, campos) {
+      const agendamento = agendamentos.find((item) => item.id === Number(id));
+      if (!agendamento) return null;
+
+      const permitidos = new Map([
+        ['inicio', 'inicio'], ['fim', 'fim'], ['status', 'status'], ['tipo', 'tipo'],
+        ['observacoes', 'observacoes'], ['local', 'local'],
+        ['confirmadoEm', 'confirmado_em'], ['canceladoEm', 'cancelado_em'],
+        ['canceladoMotivo', 'cancelado_motivo'], ['profissionalId', 'profissional_id'],
+      ]);
+
+      // Mudar o horário passa pela mesma regra de conflito do insert.
+      const novoInicio = campos.inicio ?? agendamento.inicio;
+      const novoFim = campos.fim ?? agendamento.fim;
+      const novoStatus = campos.status ?? agendamento.status;
+
+      if ((campos.inicio || campos.fim) && novoStatus !== 'cancelado') {
+        const de = new Date(novoInicio).getTime();
+        const ate = new Date(novoFim).getTime();
+
+        const conflito = agendamentos.find((existente) => existente.id !== agendamento.id
+          && existente.profissional_id === agendamento.profissional_id
+          && existente.status !== 'cancelado'
+          && de < new Date(existente.fim).getTime()
+          && new Date(existente.inicio).getTime() < ate);
+
+        if (conflito) {
+          const erro = new Error('conflicting key value violates exclusion constraint');
+          erro.code = '23P01';
+          erro.constraint = 'agendamentos_sem_conflito';
+          throw erro;
+        }
+      }
+
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (coluna) agendamento[coluna] = valor;
+      }
+      agendamento.atualizado_em = agora().toISOString();
+      return enriquecerAgendamento(agendamento);
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

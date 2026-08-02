@@ -93,6 +93,18 @@ function montarLead(linha) {
   };
 }
 
+function montarAgendamento(linha) {
+  if (!linha) return null;
+  return {
+    ...linha,
+    id: Number(linha.id),
+    profissional_id: Number(linha.profissional_id),
+    contato_id: Number(linha.contato_id),
+    lead_id: linha.lead_id ? Number(linha.lead_id) : null,
+    conversa_id: linha.conversa_id ? Number(linha.conversa_id) : null,
+  };
+}
+
 function montarMensagem(linha) {
   return {
     id: Number(linha.id),
@@ -241,6 +253,36 @@ function criarRepositorio(pool) {
     },
 
     // ---------------------------------------------------------------- contatos
+
+    /**
+     * Busca por nome ou telefone, para escolher o paciente ao marcar.
+     *
+     * O telefone é comparado só pelos dígitos: quem atende digita "(11) 99999"
+     * olhando para a tela do paciente, e isso precisa achar o mesmo contato que
+     * "11999990000" acha. Por isso o `regexp_replace` dos dois lados.
+     */
+    async buscarContatos({ termo, limite = 10 }) {
+      const alvo = String(termo ?? '').trim();
+      if (!alvo) return [];
+
+      const digitos = alvo.replace(/\D/g, '');
+      const { rows } = await consultar(
+        `SELECT id, nome, telefone
+           FROM contatos
+          WHERE nome ILIKE '%' || $1 || '%'
+             OR ($2 <> '' AND length($2) >= 3
+                 AND regexp_replace(COALESCE(telefone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
+          ORDER BY nome NULLS LAST
+          LIMIT $3`,
+        [alvo, digitos, Number(limite)],
+      );
+
+      return rows.map((linha) => ({
+        id: Number(linha.id),
+        nome: linha.nome,
+        telefone: linha.telefone,
+      }));
+    },
 
     async obterContato(id) {
       const { rows } = await consultar('SELECT * FROM contatos WHERE id = $1', [id]);
@@ -629,6 +671,175 @@ function criarRepositorio(pool) {
         [usuarioId],
       );
       return rowCount;
+    },
+
+    // ---------------------------------------------------------------- agenda
+
+    async listarProfissionais({ apenasAtivos = true } = {}) {
+      const { rows } = await consultar(`
+        SELECT id, nome, especialidade, registro, cor, duracao_min, usuario_id, ativo
+        FROM profissionais ${apenasAtivos ? 'WHERE ativo' : ''}
+        ORDER BY nome
+      `);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async obterProfissional(id) {
+      const { rows } = await consultar(
+        'SELECT id, nome, especialidade, registro, cor, duracao_min, usuario_id, ativo FROM profissionais WHERE id = $1',
+        [id],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    async criarProfissional({ nome, especialidade = null, registro = null, cor = null, duracaoMin = 30, usuarioId = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO profissionais (nome, especialidade, registro, cor, duracao_min, usuario_id)
+        VALUES ($1, $2, $3, COALESCE($4, '#0e8fa1'), $5, $6)
+        RETURNING id, nome, especialidade, registro, cor, duracao_min, usuario_id, ativo
+      `, [nome, especialidade, registro, cor, duracaoMin, usuarioId]);
+
+      return { ...rows[0], id: Number(rows[0].id) };
+    },
+
+    async definirDisponibilidades(profissionalId, janelas) {
+      const cliente = await pool.connect();
+      try {
+        await cliente.query('BEGIN');
+        await cliente.query('DELETE FROM disponibilidades WHERE profissional_id = $1', [profissionalId]);
+
+        for (const janela of janelas) {
+          await cliente.query(
+            'INSERT INTO disponibilidades (profissional_id, dia_semana, hora_inicio, hora_fim) VALUES ($1, $2, $3, $4)',
+            [profissionalId, janela.dia_semana, janela.hora_inicio, janela.hora_fim],
+          );
+        }
+        await cliente.query('COMMIT');
+      } catch (erro) {
+        await cliente.query('ROLLBACK');
+        throw erro;
+      } finally {
+        cliente.release();
+      }
+
+      return this.listarDisponibilidades(profissionalId);
+    },
+
+    async listarDisponibilidades(profissionalId) {
+      const { rows } = await consultar(`
+        SELECT id, profissional_id, dia_semana, to_char(hora_inicio, 'HH24:MI') AS hora_inicio,
+               to_char(hora_fim, 'HH24:MI') AS hora_fim
+        FROM disponibilidades WHERE profissional_id = $1
+        ORDER BY dia_semana, hora_inicio
+      `, [profissionalId]);
+
+      return rows.map((linha) => ({
+        ...linha, id: Number(linha.id), profissional_id: Number(linha.profissional_id),
+      }));
+    },
+
+    async criarBloqueio({ profissionalId = null, inicio, fim, motivo = null, criadoPor = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO agenda_bloqueios (profissional_id, inicio, fim, motivo, criado_por)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, profissional_id, inicio, fim, motivo
+      `, [profissionalId, inicio, fim, motivo, criadoPor]);
+
+      return { ...rows[0], id: Number(rows[0].id) };
+    },
+
+    /** Bloqueio sem profissional vale para a clínica inteira (feriado). */
+    async listarBloqueios({ profissionalId = null, inicio, fim }) {
+      const { rows } = await consultar(`
+        SELECT id, profissional_id, inicio, fim, motivo
+        FROM agenda_bloqueios
+        WHERE (profissional_id = $1 OR profissional_id IS NULL)
+          AND inicio < $3 AND fim > $2
+        ORDER BY inicio
+      `, [profissionalId, inicio, fim]);
+
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async removerBloqueio(id) {
+      const { rowCount } = await consultar('DELETE FROM agenda_bloqueios WHERE id = $1', [id]);
+      return rowCount;
+    },
+
+    async criarAgendamento({
+      profissionalId, contatoId, leadId = null, conversaId = null,
+      inicio, fim, tipo = 'consulta', observacoes = null, local = null, criadoPor = null,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO agendamentos
+          (profissional_id, contato_id, lead_id, conversa_id, inicio, fim, tipo, observacoes, local, criado_por)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *
+      `, [profissionalId, contatoId, leadId, conversaId, inicio, fim, tipo, observacoes, local, criadoPor]);
+
+      return montarAgendamento(rows[0]);
+    },
+
+    async obterAgendamento(id) {
+      const { rows } = await consultar(`
+        SELECT a.*, p.nome AS profissional_nome, p.cor AS profissional_cor,
+               ct.nome AS contato_nome, ct.telefone AS contato_telefone
+        FROM agendamentos a
+        JOIN profissionais p ON p.id = a.profissional_id
+        JOIN contatos ct ON ct.id = a.contato_id
+        WHERE a.id = $1
+      `, [id]);
+
+      return rows[0] ? montarAgendamento(rows[0]) : null;
+    },
+
+    async listarAgendamentos({ profissionalId = null, contatoId = null, conversaId = null, inicio, fim, incluirCancelados = false } = {}) {
+      const condicoes = [];
+      const valores = [];
+
+      if (profissionalId) { valores.push(profissionalId); condicoes.push(`a.profissional_id = $${valores.length}`); }
+      if (contatoId) { valores.push(contatoId); condicoes.push(`a.contato_id = $${valores.length}`); }
+      if (conversaId) { valores.push(conversaId); condicoes.push(`a.conversa_id = $${valores.length}`); }
+      if (inicio && fim) {
+        valores.push(inicio, fim);
+        condicoes.push(`a.inicio < $${valores.length} AND a.fim > $${valores.length - 1}`);
+      }
+      if (!incluirCancelados) condicoes.push("a.status <> 'cancelado'");
+
+      const { rows } = await consultar(`
+        SELECT a.*, p.nome AS profissional_nome, p.cor AS profissional_cor,
+               ct.nome AS contato_nome, ct.telefone AS contato_telefone
+        FROM agendamentos a
+        JOIN profissionais p ON p.id = a.profissional_id
+        JOIN contatos ct ON ct.id = a.contato_id
+        ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
+        ORDER BY a.inicio
+      `, valores);
+
+      return rows.map(montarAgendamento);
+    },
+
+    async atualizarAgendamento(id, campos) {
+      const permitidos = new Map([
+        ['inicio', 'inicio'], ['fim', 'fim'], ['status', 'status'], ['tipo', 'tipo'],
+        ['observacoes', 'observacoes'], ['local', 'local'],
+        ['confirmadoEm', 'confirmado_em'], ['canceladoEm', 'cancelado_em'],
+        ['canceladoMotivo', 'cancelado_motivo'], ['profissionalId', 'profissional_id'],
+      ]);
+
+      const partes = [];
+      const valores = [];
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}`);
+      }
+      if (partes.length === 0) return this.obterAgendamento(id);
+
+      valores.push(id);
+      await consultar(`UPDATE agendamentos SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
+      return this.obterAgendamento(id);
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

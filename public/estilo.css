@@ -747,3 +747,407 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------------------------------------------------------------------------
+   Agenda
+
+   Grade semanal desenhada à mão. Cada dia é uma coluna com posicionamento
+   proporcional ao horário: um compromisso das 14h às 15h ocupa exatamente a
+   altura de uma hora, então "quanto tempo isso toma" se lê de relance, sem
+   precisar ler o texto.
+   --------------------------------------------------------------------------- */
+
+/* Altura de uma hora na grade. Fica aqui, e o JS lê daqui: enquanto eram dois
+   números em dois arquivos, a régua de horas e os compromissos desalinhavam. */
+:root { --altura-hora: 56px; }
+
+.acoes-agenda {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.campo-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--apoio);
+}
+.campo-inline select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--texto);
+  padding: 8px 10px;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  background: var(--superficie);
+  min-width: 200px;
+}
+
+.navegacao-semana { display: flex; gap: 4px; }
+.navegacao-semana button {
+  font: inherit;
+  padding: 8px 14px;
+  border: 1px solid var(--linha);
+  background: var(--superficie);
+  color: var(--texto);
+  cursor: pointer;
+  border-radius: 8px;
+}
+.navegacao-semana button:hover { background: var(--fundo); }
+
+.periodo-agenda {
+  margin: 4px 0 12px;
+  font-weight: 600;
+  color: var(--apoio);
+}
+
+.grade-agenda {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  background: var(--superficie);
+  border: 1px solid var(--linha);
+  border-radius: var(--raio);
+  box-shadow: var(--sombra);
+  overflow: hidden;
+}
+
+.coluna-horas {
+  border-right: 1px solid var(--linha);
+  padding-top: 34px; /* alinha com a faixa de cabeçalho dos dias */
+}
+.coluna-horas span {
+  display: block;
+  height: var(--altura-hora);
+  font-size: 11px;
+  color: var(--apoio);
+  text-align: right;
+  padding-right: 6px;
+  transform: translateY(-6px);
+}
+
+.dias-agenda {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  overflow-x: auto;
+}
+
+.dia-agenda { border-left: 1px solid var(--linha); }
+.dia-agenda:first-child { border-left: none; }
+
+.dia-agenda > .titulo-dia {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--linha);
+  background: var(--fundo);
+  text-transform: capitalize;
+}
+.dia-agenda.hoje > .titulo-dia { background: #e6f4f7; color: var(--ciano); }
+
+/* Altura definida pelo JS conforme a janela de horas exibida. */
+.faixa-dia { position: relative; }
+
+/* Linhas de meia hora: referência de leitura, não interativas. */
+.linha-hora {
+  position: absolute;
+  left: 0; right: 0;
+  border-top: 1px solid var(--linha);
+  pointer-events: none;
+}
+.linha-hora.meia { border-top-style: dotted; }
+
+.vaga {
+  position: absolute;
+  left: 0; right: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.vaga:hover { background: rgba(14, 143, 161, 0.09); }
+
+.compromisso {
+  position: absolute;
+  left: 3px; right: 3px;
+  border-radius: 6px;
+  border-left: 3px solid var(--ciano);
+  background: #e6f4f7;
+  color: var(--texto);
+  padding: 3px 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.compromisso strong { display: block; font-size: 11px; font-weight: 600; }
+.compromisso span { color: var(--apoio); }
+
+/* Consulta curta não tem altura para duas linhas: nome e horário passam a
+   dividir a mesma, com o nome cedendo espaço primeiro. */
+.compromisso.curto {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding-top: 1px;
+}
+.compromisso.curto strong {
+  display: inline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compromisso.curto span { flex: none; }
+
+.compromisso.confirmado { border-left-color: var(--verde); background: #e4f3ed; }
+.compromisso.compareceu { border-left-color: var(--verde); background: #d8efe5; }
+.compromisso.faltou     { border-left-color: #b3261e; background: #fbe9e7; }
+.compromisso.cancelado  {
+  border-left-color: var(--apoio);
+  background: var(--fundo);
+  opacity: .65;
+  text-decoration: line-through;
+}
+
+.bloqueio-agenda {
+  position: absolute;
+  left: 0; right: 0;
+  background: repeating-linear-gradient(
+    45deg, rgba(90, 100, 120, .12), rgba(90, 100, 120, .12) 6px,
+    transparent 6px, transparent 12px
+  );
+  border-top: 1px solid rgba(90, 100, 120, .25);
+  border-bottom: 1px solid rgba(90, 100, 120, .25);
+  font-size: 10px;
+  color: var(--apoio);
+  padding: 2px 5px;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.legenda-agenda {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--apoio);
+  margin-top: 12px;
+}
+.legenda-agenda .marca {
+  width: 11px; height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+  margin-left: 10px;
+}
+.legenda-agenda .marca:first-child { margin-left: 0; }
+.marca.agendado   { background: #e6f4f7; border-left: 3px solid var(--ciano); }
+.marca.confirmado { background: #e4f3ed; border-left: 3px solid var(--verde); }
+.marca.compareceu { background: #d8efe5; border-left: 3px solid var(--verde); }
+.marca.faltou     { background: #fbe9e7; border-left: 3px solid #b3261e; }
+.marca.bloqueio   {
+  background: repeating-linear-gradient(
+    45deg, rgba(90,100,120,.2), rgba(90,100,120,.2) 3px,
+    transparent 3px, transparent 6px
+  );
+}
+
+/* --- Painéis de proposta e de compromisso --- */
+
+.cortina {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 25, 48, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 20;
+}
+
+.painel-agenda {
+  background: var(--superficie);
+  border-radius: var(--raio);
+  box-shadow: 0 24px 60px rgba(16, 35, 68, .25);
+  width: min(460px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 20px 22px 22px;
+}
+.painel-agenda header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.painel-agenda header h3 { margin: 0; }
+.painel-agenda .fechar {
+  border: none;
+  background: none;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--apoio);
+  padding: 0 4px;
+}
+.painel-agenda label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--apoio);
+}
+.painel-agenda label span { display: block; margin-bottom: 4px; }
+.painel-agenda input,
+.painel-agenda select,
+.painel-agenda textarea {
+  font: inherit;
+  font-size: 14px;
+  color: var(--texto);
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  background: var(--superficie);
+  resize: vertical;
+}
+
+.resumo-horario {
+  background: var(--fundo);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  font-weight: 600;
+}
+
+.sugestoes {
+  list-style: none;
+  margin: -8px 0 12px;
+  padding: 0;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.sugestoes li { border-top: 1px solid var(--linha); }
+.sugestoes li:first-child { border-top: none; }
+.sugestoes button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  font: inherit;
+  padding: 8px 11px;
+  cursor: pointer;
+}
+.sugestoes button:hover { background: var(--fundo); }
+.sugestoes small { display: block; color: var(--apoio); }
+
+.escolhido {
+  background: #e6f4f7;
+  border-radius: 8px;
+  padding: 8px 11px;
+  margin: -4px 0 12px;
+  font-size: 14px;
+}
+
+.erro-proposta {
+  background: #fbe9e7;
+  color: #8c1d18;
+  border-radius: 8px;
+  padding: 9px 11px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+/* O passo de confirmação repete por extenso o que vai ser gravado. */
+.confirmacao {
+  background: var(--fundo);
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.confirmacao p { margin: 0 0 12px; }
+
+.painel-agenda .botoes {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.painel-agenda .botoes button {
+  font: inherit;
+  padding: 9px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.painel-agenda .secundario {
+  border: 1px solid var(--linha);
+  background: var(--superficie);
+  color: var(--texto);
+}
+.painel-agenda .primario {
+  border: 1px solid var(--navy);
+  background: var(--navy);
+  color: #fff;
+}
+.painel-agenda button[disabled] { opacity: .55; cursor: progress; }
+
+.detalhe-compromisso {
+  margin: 0 0 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  font-size: 14px;
+}
+.detalhe-compromisso dt { color: var(--apoio); font-size: 13px; }
+.detalhe-compromisso dd { margin: 0; }
+
+.acoes-compromisso {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.acoes-compromisso button {
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--linha);
+  background: var(--superficie);
+  color: var(--texto);
+  cursor: pointer;
+}
+.acoes-compromisso button:hover { background: var(--fundo); }
+.acoes-compromisso .perigo { border-color: #e5c3bf; color: #8c1d18; }
+
+/* Atalho para abrir a agenda de dentro da conversa. */
+.agenda-da-conversa {
+  border-top: 1px solid var(--linha);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.agenda-da-conversa h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--apoio);
+}
+.agenda-da-conversa ul { list-style: none; margin: 0 0 10px; padding: 0; }
+.agenda-da-conversa li {
+  font-size: 13px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--linha);
+}
+.agenda-da-conversa li:last-child { border-bottom: none; }
+.agenda-da-conversa .quando { font-weight: 600; }
+
+@media (max-width: 780px) {
+  .grade-agenda { grid-template-columns: 44px minmax(0, 1fr); }
+  .dias-agenda { grid-template-columns: repeat(7, minmax(92px, 1fr)); }
+}

@@ -33,6 +33,7 @@ function abrirTela(tela) {
 
   if (tela === 'conversas') carregarConversas();
   if (tela === 'leads') carregarLeads();
+  if (tela === 'agenda') carregarAgenda();
   if (tela === 'usuarios') carregarUsuarios();
   if (tela === 'perfil') desenharPerfil();
 }
@@ -421,6 +422,10 @@ async function abrirConversa(conversaId) {
     seletor('#seletor-prioridade').value = conversa.prioridade || '';
     seletor('#seletor-temperatura').value = detalhe.temperatura || '';
     alternarAcoes(true);
+
+    // Sem `await`: a agenda do paciente é apoio, e a thread não deve esperar
+    // por ela para aparecer.
+    carregarAgendaDaConversa(conversaId);
   } catch (erro) {
     seletor('#thread-mensagens').innerHTML = '';
     definirTexto('#thread-nome', 'Não foi possível abrir');
@@ -1407,3 +1412,705 @@ setInterval(atualizarRelogio, 30000);
   if (lerRefresh() && await renovarSessao()) mostrarAplicacao();
   else mostrarPortao();
 })();
+
+// ---------------------------------------------------------------------------
+// Agenda
+//
+// Grade semanal desenhada aqui mesmo, sem biblioteca de calendário. A tela lê
+// e escreve pela API do próprio domínio; o conflito de horário quem impede é o
+// banco, então esta camada trata 409 como resposta esperada, não como falha.
+//
+// Marcar tem dois passos de propósito: "Revisar" pede uma proposta (nada é
+// gravado) e só "Confirmar e gravar" escreve. Oferecer e marcar na mesma ação é
+// como a clínica acaba com consulta que o paciente não pediu.
+// ---------------------------------------------------------------------------
+
+const HORA_INICIAL = 7;   // a grade cobre 07h–20h: fora disso a clínica não atende
+const HORA_FINAL = 20;
+
+/**
+ * Altura de uma hora, em px.
+ *
+ * Lida do CSS (`--altura-hora`) de propósito. Quando este número existia nos
+ * dois lugares, a régua de horas à esquerda e os blocos de compromisso usavam
+ * escalas diferentes: uma consulta das 10h aparecia na linha das 13h.
+ */
+function alturaDaHora() {
+  const declarado = getComputedStyle(document.documentElement).getPropertyValue('--altura-hora');
+  return Number.parseFloat(declarado) || 56;
+}
+
+const agendaEstado = {
+  profissionais: [],
+  profissionalId: null,
+  inicioDaSemana: null,
+  tipos: ['consulta'],
+  proposta: null,        // token + resumo devolvidos por /api/agenda/propor
+  contatoEscolhido: null,
+  compromissoAberto: null,
+  origemConversa: null,  // preenchido ao abrir a agenda de dentro de uma conversa
+  paraMarcar: null,      // paciente trazido da conversa, aguardando escolha de horário
+};
+
+const DIAS_CURTOS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+
+function segundaDaSemana(data) {
+  const inicio = new Date(data);
+  inicio.setHours(0, 0, 0, 0);
+  // getDay(): 0 = domingo. Recuar até segunda, tratando domingo como fim da semana.
+  const recuo = (inicio.getDay() + 6) % 7;
+  inicio.setDate(inicio.getDate() - recuo);
+  return inicio;
+}
+
+function mesmoDia(a, b) {
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate();
+}
+
+const horaCurta = (data) => new Intl.DateTimeFormat('pt-BR', {
+  hour: '2-digit', minute: '2-digit',
+}).format(data);
+
+const dataPorExtenso = (data) => new Intl.DateTimeFormat('pt-BR', {
+  weekday: 'long', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit',
+}).format(data);
+
+/** Só o dia, para quando o horário aparece separado ao lado. */
+const diaPorExtenso = (data) => new Intl.DateTimeFormat('pt-BR', {
+  weekday: 'long', day: '2-digit', month: 'long',
+}).format(data);
+
+/** Posição vertical em px de um instante dentro da faixa do dia. */
+function alturaDe(data) {
+  const minutos = (data.getHours() - HORA_INICIAL) * 60 + data.getMinutes();
+  return (minutos / 60) * alturaDaHora();
+}
+
+async function carregarAgenda() {
+  if (!agendaEstado.inicioDaSemana) agendaEstado.inicioDaSemana = segundaDaSemana(new Date());
+
+  if (!agendaEstado.profissionais.length) {
+    try {
+      const [dadosProfissionais, vocabulario] = await Promise.all([
+        pedirJson('/api/agenda/profissionais'),
+        pedirJson('/api/agenda/vocabulario'),
+      ]);
+      agendaEstado.profissionais = dadosProfissionais.profissionais;
+      agendaEstado.tipos = vocabulario.tipos;
+      desenharSeletorDeProfissionais();
+      preencherTiposDaProposta();
+    } catch (erro) {
+      seletor('#agenda-periodo').textContent = erro.status === 403
+        ? 'Seu perfil não tem acesso à agenda.'
+        : 'Não foi possível carregar a agenda.';
+      return;
+    }
+  }
+
+  await desenharSemana();
+}
+
+function desenharSeletorDeProfissionais() {
+  const campo = seletor('#agenda-profissional');
+  campo.textContent = '';
+
+  if (!agendaEstado.profissionais.length) {
+    campo.append(new Option('Nenhum profissional cadastrado', ''));
+    return;
+  }
+
+  for (const profissional of agendaEstado.profissionais) {
+    const rotulo = profissional.especialidade
+      ? `${profissional.nome} · ${profissional.especialidade}`
+      : profissional.nome;
+    campo.append(new Option(rotulo + (profissional.ativo ? '' : ' (inativo)'), String(profissional.id)));
+  }
+
+  agendaEstado.profissionalId = agendaEstado.profissionalId ?? agendaEstado.profissionais[0].id;
+  campo.value = String(agendaEstado.profissionalId);
+}
+
+async function desenharSemana() {
+  const inicio = agendaEstado.inicioDaSemana;
+  const fim = new Date(inicio);
+  fim.setDate(fim.getDate() + 7);
+
+  const periodo = seletor('#agenda-periodo');
+  const ultimoDia = new Date(fim);
+  ultimoDia.setDate(ultimoDia.getDate() - 1);
+  periodo.textContent = `${inicio.toLocaleDateString('pt-BR')} a ${ultimoDia.toLocaleDateString('pt-BR')}`;
+
+  // Quem chegou aqui pela conversa precisa saber por que a tela mudou.
+  if (agendaEstado.paraMarcar) {
+    const nome = agendaEstado.paraMarcar.contato?.nome || 'o paciente';
+    periodo.textContent += ` · escolha o horário para ${nome}`;
+  }
+
+  desenharColunaDeHoras();
+
+  if (!agendaEstado.profissionalId) {
+    seletor('#agenda-dias').textContent = '';
+    periodo.textContent += ' · cadastre um profissional para usar a agenda';
+    return;
+  }
+
+  let dados = { agendamentos: [], bloqueios: [] };
+  try {
+    const parametros = new URLSearchParams({
+      inicio: inicio.toISOString(),
+      fim: fim.toISOString(),
+      profissional: String(agendaEstado.profissionalId),
+    });
+    dados = await pedirJson(`/api/agenda?${parametros}`);
+  } catch {
+    periodo.textContent += ' · não foi possível carregar os compromissos';
+  }
+
+  const colunas = seletor('#agenda-dias');
+  colunas.textContent = '';
+  const hoje = new Date();
+
+  for (let indice = 0; indice < 7; indice += 1) {
+    const dia = new Date(inicio);
+    dia.setDate(dia.getDate() + indice);
+    colunas.append(desenharDia(dia, dados, mesmoDia(dia, hoje)));
+  }
+}
+
+function desenharColunaDeHoras() {
+  const coluna = seletor('#agenda-horas');
+  coluna.textContent = '';
+  for (let hora = HORA_INICIAL; hora < HORA_FINAL; hora += 1) {
+    const marca = document.createElement('span');
+    marca.textContent = `${String(hora).padStart(2, '0')}:00`;
+    coluna.append(marca);
+  }
+}
+
+function desenharDia(dia, dados, ehHoje) {
+  const coluna = document.createElement('div');
+  coluna.className = `dia-agenda${ehHoje ? ' hoje' : ''}`;
+
+  const titulo = document.createElement('div');
+  titulo.className = 'titulo-dia';
+  titulo.textContent = `${DIAS_CURTOS[dia.getDay()]} ${dia.getDate()}`;
+  coluna.append(titulo);
+
+  const altura = alturaDaHora();
+  const faixa = document.createElement('div');
+  faixa.className = 'faixa-dia';
+  faixa.style.height = `${(HORA_FINAL - HORA_INICIAL) * altura}px`;
+
+  // Linhas de hora e meia hora, e uma vaga clicável a cada 30 minutos.
+  for (let meia = 0; meia < (HORA_FINAL - HORA_INICIAL) * 2; meia += 1) {
+    const topo = (meia / 2) * altura;
+
+    const linha = document.createElement('div');
+    linha.className = `linha-hora${meia % 2 ? ' meia' : ''}`;
+    linha.style.top = `${topo}px`;
+    faixa.append(linha);
+
+    const inicioDaVaga = new Date(dia);
+    inicioDaVaga.setHours(HORA_INICIAL + Math.floor(meia / 2), (meia % 2) * 30, 0, 0);
+
+    const vaga = document.createElement('button');
+    vaga.type = 'button';
+    vaga.className = 'vaga';
+    vaga.style.top = `${topo}px`;
+    vaga.style.height = `${altura / 2}px`;
+    vaga.setAttribute('aria-label', `Marcar em ${dataPorExtenso(inicioDaVaga)}`);
+    // `paraMarcar` vem de "Marcar horário" dentro de uma conversa: traz o
+    // paciente e o vínculo. Ele sobrevive a cancelar o painel — quem clicou na
+    // vaga errada volta, clica na certa e continua marcando para a mesma pessoa.
+    // Só sai do estado quando algo é de fato gravado.
+    vaga.addEventListener('click', () => abrirProposta(inicioDaVaga, agendaEstado.paraMarcar ?? {}));
+    faixa.append(vaga);
+  }
+
+  for (const bloqueio of dados.bloqueios ?? []) {
+    const desenho = desenharBloqueio(bloqueio, dia);
+    if (desenho) faixa.append(desenho);
+  }
+  for (const agendamento of dados.agendamentos ?? []) {
+    const desenho = desenharCompromisso(agendamento, dia);
+    if (desenho) faixa.append(desenho);
+  }
+
+  coluna.append(faixa);
+  return coluna;
+}
+
+/** Recorta um período ao dia da coluna; devolve null se não o toca. */
+function recortarAoDia(inicioBruto, fimBruto, dia) {
+  const inicioDoDia = new Date(dia);
+  inicioDoDia.setHours(HORA_INICIAL, 0, 0, 0);
+  const fimDoDia = new Date(dia);
+  fimDoDia.setHours(HORA_FINAL, 0, 0, 0);
+
+  const inicio = new Date(inicioBruto);
+  const fim = new Date(fimBruto);
+  if (fim <= inicioDoDia || inicio >= fimDoDia) return null;
+
+  return {
+    inicio: inicio < inicioDoDia ? inicioDoDia : inicio,
+    fim: fim > fimDoDia ? fimDoDia : fim,
+    inicioReal: inicio,
+    fimReal: fim,
+  };
+}
+
+function desenharCompromisso(agendamento, dia) {
+  const recorte = recortarAoDia(agendamento.inicio, agendamento.fim, dia);
+  if (!recorte) return null;
+
+  // Piso de 20px: uma consulta de 15 minutos ainda precisa ser clicável.
+  const altura = Math.max(20, alturaDe(recorte.fim) - alturaDe(recorte.inicio) - 2);
+
+  const bloco = document.createElement('button');
+  bloco.type = 'button';
+  // Abaixo de 34px não cabem duas linhas de texto; o layout muda para uma só.
+  bloco.className = `compromisso ${agendamento.status}${altura < 34 ? ' curto' : ''}`;
+  bloco.style.top = `${alturaDe(recorte.inicio)}px`;
+  bloco.style.height = `${altura}px`;
+
+  const nome = document.createElement('strong');
+  nome.textContent = agendamento.contato_nome ?? 'Paciente';
+  const quando = document.createElement('span');
+  quando.textContent = altura < 34
+    ? horaCurta(recorte.inicioReal)
+    : `${horaCurta(recorte.inicioReal)} · ${agendamento.tipo}`;
+  bloco.append(nome, quando);
+
+  bloco.addEventListener('click', () => abrirCompromisso(agendamento));
+  return bloco;
+}
+
+function desenharBloqueio(bloqueio, dia) {
+  const recorte = recortarAoDia(bloqueio.inicio, bloqueio.fim, dia);
+  if (!recorte) return null;
+
+  const bloco = document.createElement('div');
+  bloco.className = 'bloqueio-agenda';
+  bloco.style.top = `${alturaDe(recorte.inicio)}px`;
+  bloco.style.height = `${Math.max(12, alturaDe(recorte.fim) - alturaDe(recorte.inicio))}px`;
+  bloco.textContent = bloqueio.motivo ?? 'Bloqueado';
+  return bloco;
+}
+
+// --- Proposta -------------------------------------------------------------
+
+function preencherTiposDaProposta() {
+  const campo = seletor('#proposta-tipo');
+  campo.textContent = '';
+
+  // "bloqueio" existe no vocabulário do domínio, mas aqui se marca consulta para
+  // um paciente: oferecê-lo nesta lista só serviria para alguém marcar a Marina
+  // como bloqueio de agenda. Bloqueio se cria pela rota própria, sem contato.
+  for (const tipo of agendaEstado.tipos.filter((item) => item !== 'bloqueio')) {
+    campo.append(new Option(tipo, tipo));
+  }
+}
+
+function abrirProposta(inicio, { contato = null, conversaId = null, leadId = null } = {}) {
+  const profissional = agendaEstado.profissionais.find((p) => p.id === Number(agendaEstado.profissionalId));
+  const duracao = profissional?.duracao_min ?? 30;
+
+  const fim = new Date(inicio);
+  fim.setMinutes(fim.getMinutes() + duracao);
+
+  agendaEstado.proposta = null;
+  agendaEstado.contatoEscolhido = contato;
+  agendaEstado.origemConversa = conversaId ? { conversaId, leadId } : null;
+  agendaEstado.horarioProposto = { inicio, fim };
+
+  seletor('#proposta-horario').textContent =
+    `${diaPorExtenso(inicio)} · ${horaCurta(inicio)} às ${horaCurta(fim)}`
+    + ` · ${profissional?.nome ?? 'profissional'}`;
+  seletor('#proposta-busca').value = contato ? (contato.nome ?? contato.telefone ?? '') : '';
+  seletor('#proposta-observacoes').value = '';
+  seletor('#proposta-sugestoes').hidden = true;
+  seletor('#proposta-confirmacao').hidden = true;
+  seletor('#proposta-botoes').hidden = false;
+  esconderErroDaProposta();
+  mostrarContatoEscolhido();
+
+  seletor('#cortina-agenda').hidden = false;
+  seletor(contato ? '#proposta-tipo' : '#proposta-busca').focus();
+}
+
+function fecharProposta() {
+  seletor('#cortina-agenda').hidden = true;
+  agendaEstado.proposta = null;
+  agendaEstado.contatoEscolhido = null;
+}
+
+function mostrarContatoEscolhido() {
+  const alvo = seletor('#proposta-escolhido');
+  const contato = agendaEstado.contatoEscolhido;
+  if (!contato) {
+    alvo.hidden = true;
+    return;
+  }
+  alvo.hidden = false;
+  alvo.textContent = `${contato.nome ?? 'Sem nome'} · ${contato.telefone ?? 'sem telefone'}`;
+}
+
+function mostrarErroDaProposta(mensagem) {
+  const alvo = seletor('#proposta-erro');
+  alvo.textContent = mensagem;
+  alvo.hidden = false;
+}
+
+function esconderErroDaProposta() {
+  seletor('#proposta-erro').hidden = true;
+}
+
+let buscaEmEspera = null;
+
+async function buscarContatosDaProposta(termo) {
+  const lista = seletor('#proposta-sugestoes');
+  if (termo.trim().length < 2) {
+    lista.hidden = true;
+    return;
+  }
+
+  try {
+    const { contatos } = await pedirJson(`/api/contatos?busca=${encodeURIComponent(termo)}`);
+    lista.textContent = '';
+
+    if (!contatos.length) {
+      lista.hidden = true;
+      return;
+    }
+
+    for (const contato of contatos) {
+      const item = document.createElement('li');
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.textContent = contato.nome ?? 'Sem nome';
+      const telefone = document.createElement('small');
+      telefone.textContent = contato.telefone ?? 'sem telefone';
+      botao.append(telefone);
+      botao.addEventListener('click', () => {
+        agendaEstado.contatoEscolhido = contato;
+        seletor('#proposta-busca').value = contato.nome ?? contato.telefone ?? '';
+        lista.hidden = true;
+        mostrarContatoEscolhido();
+      });
+      item.append(botao);
+      lista.append(item);
+    }
+    lista.hidden = false;
+  } catch {
+    lista.hidden = true;
+  }
+}
+
+/** Passo 1: pede a proposta. Nada é gravado — só o servidor valida e reserva o texto. */
+async function pedirProposta(evento) {
+  evento.preventDefault();
+  esconderErroDaProposta();
+
+  if (!agendaEstado.contatoEscolhido) {
+    mostrarErroDaProposta('Escolha o paciente na lista antes de continuar.');
+    return;
+  }
+
+  const { inicio, fim } = agendaEstado.horarioProposto;
+  const corpo = {
+    profissional_id: Number(agendaEstado.profissionalId),
+    contato_id: agendaEstado.contatoEscolhido.id,
+    inicio: inicio.toISOString(),
+    fim: fim.toISOString(),
+    tipo: seletor('#proposta-tipo').value,
+  };
+  if (agendaEstado.origemConversa) {
+    corpo.conversa_id = agendaEstado.origemConversa.conversaId;
+    corpo.lead_id = agendaEstado.origemConversa.leadId ?? null;
+  }
+
+  try {
+    agendaEstado.proposta = await pedirJson('/api/agenda/propor', { metodo: 'POST', corpo });
+
+    seletor('#proposta-frase').textContent = agendaEstado.proposta.confirmar;
+    seletor('#proposta-confirmacao').hidden = false;
+    seletor('#proposta-botoes').hidden = true;
+    seletor('#proposta-confirmar').focus();
+  } catch (erro) {
+    mostrarErroDaProposta(explicarErroDeAgenda(erro));
+  }
+}
+
+/** Passo 2: grava. Só o que foi proposto, e só depois de alguém ler a frase. */
+async function confirmarProposta() {
+  const botao = seletor('#proposta-confirmar');
+  botao.disabled = true;
+
+  try {
+    await pedirJson('/api/agenda/confirmar', {
+      metodo: 'POST',
+      corpo: {
+        token: agendaEstado.proposta.token,
+        observacoes: seletor('#proposta-observacoes').value.trim() || null,
+      },
+    });
+
+    const conversaDeOrigem = agendaEstado.origemConversa?.conversaId ?? null;
+
+    // Gravou: o contexto trazido da conversa cumpriu seu papel.
+    agendaEstado.paraMarcar = null;
+    fecharProposta();
+
+    await desenharSemana();
+    if (conversaDeOrigem) await carregarAgendaDaConversa(conversaDeOrigem);
+  } catch (erro) {
+    seletor('#proposta-confirmacao').hidden = true;
+    seletor('#proposta-botoes').hidden = false;
+    mostrarErroDaProposta(explicarErroDeAgenda(erro));
+  } finally {
+    botao.disabled = false;
+  }
+}
+
+/**
+ * Traduz o erro da API.
+ *
+ * 409 é resposta esperada, não falha: significa que alguém marcou o mesmo
+ * horário no intervalo entre a tela carregar e a confirmação chegar.
+ */
+function explicarErroDeAgenda(erro) {
+  if (erro.status === 409) return 'Esse horário acabou de ser ocupado. Escolha outro.';
+  if (erro.status === 403) return 'Seu perfil não pode marcar compromissos.';
+  if (erro.detalhe) return erro.detalhe;
+  return 'Não foi possível concluir. Tente de novo.';
+}
+
+// --- Compromisso já gravado -----------------------------------------------
+
+function abrirCompromisso(agendamento) {
+  agendaEstado.compromissoAberto = agendamento;
+
+  const inicio = new Date(agendamento.inicio);
+  const fim = new Date(agendamento.fim);
+  const detalhe = seletor('#detalhe-compromisso');
+  detalhe.textContent = '';
+
+  const linhas = [
+    ['Paciente', agendamento.contato_nome ?? '—'],
+    ['Quando', `${dataPorExtenso(inicio)} às ${horaCurta(fim)}`],
+    ['Tipo', agendamento.tipo],
+    ['Situação', agendamento.status],
+  ];
+  if (agendamento.observacoes) linhas.push(['Observações', agendamento.observacoes]);
+  if (agendamento.cancelado_motivo) linhas.push(['Motivo do cancelamento', agendamento.cancelado_motivo]);
+
+  for (const [rotulo, valor] of linhas) {
+    const chave = document.createElement('dt');
+    chave.textContent = rotulo;
+    const dado = document.createElement('dd');
+    dado.textContent = valor;
+    detalhe.append(chave, dado);
+  }
+
+  seletor('#compromisso-erro').hidden = true;
+  desenharAcoesDoCompromisso(agendamento);
+  seletor('#cortina-compromisso').hidden = false;
+  seletor('#fechar-compromisso').focus();
+}
+
+function desenharAcoesDoCompromisso(agendamento) {
+  const area = seletor('#acoes-compromisso');
+  area.textContent = '';
+
+  if (agendamento.status === 'cancelado') {
+    const aviso = document.createElement('p');
+    aviso.className = 'vazio';
+    aviso.textContent = 'Compromisso cancelado. O horário está livre de novo.';
+    area.append(aviso);
+    return;
+  }
+
+  const acoes = [];
+  if (agendamento.status === 'agendado') acoes.push(['Marcar confirmado', () => mudarStatus('confirmado')]);
+  if (['agendado', 'confirmado'].includes(agendamento.status)) {
+    acoes.push(['Compareceu', () => mudarStatus('compareceu')]);
+    acoes.push(['Faltou', () => mudarStatus('faltou')]);
+  }
+  acoes.push(['Ver conversa', abrirConversaDoCompromisso]);
+
+  for (const [rotulo, acao] of acoes) {
+    const botao = document.createElement('button');
+    botao.type = 'button';
+    botao.textContent = rotulo;
+    botao.addEventListener('click', acao);
+    area.append(botao);
+  }
+
+  // Cancelar fica por último e destacado: é a ação que a pessoa não deve
+  // acertar por engano ao mirar em outra.
+  const cancelar = document.createElement('button');
+  cancelar.type = 'button';
+  cancelar.className = 'perigo';
+  cancelar.textContent = 'Cancelar compromisso';
+  cancelar.addEventListener('click', cancelarCompromisso);
+  area.append(cancelar);
+}
+
+async function mudarStatus(status) {
+  const { id } = agendaEstado.compromissoAberto;
+  try {
+    await pedirJson(`/api/agenda/${id}/status`, { metodo: 'POST', corpo: { status } });
+    seletor('#cortina-compromisso').hidden = true;
+    await desenharSemana();
+  } catch (erro) {
+    const alvo = seletor('#compromisso-erro');
+    alvo.textContent = explicarErroDeAgenda(erro);
+    alvo.hidden = false;
+  }
+}
+
+async function cancelarCompromisso() {
+  const { id } = agendaEstado.compromissoAberto;
+  const motivo = seletor('#proposta-observacoes')?.value || null;
+
+  try {
+    await pedirJson(`/api/agenda/${id}/cancelar`, { metodo: 'POST', corpo: { motivo } });
+    seletor('#cortina-compromisso').hidden = true;
+    await desenharSemana();
+  } catch (erro) {
+    const alvo = seletor('#compromisso-erro');
+    alvo.textContent = explicarErroDeAgenda(erro);
+    alvo.hidden = false;
+  }
+}
+
+function abrirConversaDoCompromisso() {
+  const { conversa_id: conversaId } = agendaEstado.compromissoAberto;
+  seletor('#cortina-compromisso').hidden = true;
+
+  if (!conversaId) return;
+  abrirTela('conversas');
+  abrirConversa(conversaId);
+}
+
+// --- Agenda vista de dentro da conversa -----------------------------------
+
+async function carregarAgendaDaConversa(conversaId) {
+  const area = seletor('#agenda-da-conversa');
+  if (!area) return;
+
+  try {
+    const dados = await pedirJson(`/api/conversas/${conversaId}/agenda`);
+    area.textContent = '';
+
+    const titulo = document.createElement('h4');
+    titulo.textContent = 'Agenda deste paciente';
+    area.append(titulo);
+
+    const futuros = dados.agendamentos
+      .filter((item) => item.status !== 'cancelado' && new Date(item.fim) >= new Date())
+      .sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
+
+    if (!futuros.length) {
+      const vazio = document.createElement('p');
+      vazio.className = 'vazio';
+      vazio.textContent = 'Nenhum compromisso futuro.';
+      area.append(vazio);
+    } else {
+      const lista = document.createElement('ul');
+      for (const item of futuros) {
+        const linha = document.createElement('li');
+        const quando = document.createElement('span');
+        quando.className = 'quando';
+        quando.textContent = dataPorExtenso(new Date(item.inicio));
+        linha.append(quando, document.createTextNode(` · ${item.tipo} · ${item.status}`));
+        lista.append(linha);
+      }
+      area.append(lista);
+    }
+
+    const marcar = document.createElement('button');
+    marcar.type = 'button';
+    marcar.className = 'secundario';
+    marcar.textContent = 'Marcar horário';
+    marcar.addEventListener('click', () => {
+      // Abre a agenda com o paciente já escolhido, em vez de propor um horário
+      // arbitrário: "agora + 30 minutos" quase sempre cai fora do atendimento, e
+      // a pessoa levaria uma recusa antes de conseguir escolher.
+      agendaEstado.paraMarcar = {
+        contato: dados.contato ?? { id: dados.contato_id, nome: null, telefone: null },
+        conversaId,
+        leadId: dados.lead_id,
+      };
+      abrirTela('agenda');
+    });
+    area.append(marcar);
+    area.hidden = false;
+  } catch {
+    area.hidden = true;
+  }
+}
+
+// --- Ligações da tela ------------------------------------------------------
+
+seletor('#agenda-profissional').addEventListener('change', (evento) => {
+  agendaEstado.profissionalId = Number(evento.target.value) || null;
+  desenharSemana();
+});
+
+seletor('#semana-anterior').addEventListener('click', () => {
+  agendaEstado.inicioDaSemana.setDate(agendaEstado.inicioDaSemana.getDate() - 7);
+  desenharSemana();
+});
+
+seletor('#semana-proxima').addEventListener('click', () => {
+  agendaEstado.inicioDaSemana.setDate(agendaEstado.inicioDaSemana.getDate() + 7);
+  desenharSemana();
+});
+
+seletor('#semana-hoje').addEventListener('click', () => {
+  agendaEstado.inicioDaSemana = segundaDaSemana(new Date());
+  desenharSemana();
+});
+
+seletor('#forma-proposta').addEventListener('submit', pedirProposta);
+seletor('#proposta-confirmar').addEventListener('click', confirmarProposta);
+seletor('#proposta-cancelar').addEventListener('click', fecharProposta);
+seletor('#fechar-proposta').addEventListener('click', fecharProposta);
+seletor('#fechar-compromisso').addEventListener('click', () => {
+  seletor('#cortina-compromisso').hidden = true;
+});
+
+seletor('#proposta-voltar').addEventListener('click', () => {
+  // Voltar descarta a proposta: o token vale para aquele horário, e mexer nos
+  // campos depois de propor deixaria a frase confirmada divergindo do que grava.
+  agendaEstado.proposta = null;
+  seletor('#proposta-confirmacao').hidden = true;
+  seletor('#proposta-botoes').hidden = false;
+});
+
+seletor('#proposta-busca').addEventListener('input', (evento) => {
+  agendaEstado.contatoEscolhido = null;
+  mostrarContatoEscolhido();
+  clearTimeout(buscaEmEspera);
+  const termo = evento.target.value;
+  buscaEmEspera = setTimeout(() => buscarContatosDaProposta(termo), 250);
+});
+
+// Esc fecha o painel aberto: quem atende usa teclado com o telefone na mão.
+document.addEventListener('keydown', (evento) => {
+  if (evento.key !== 'Escape') return;
+  if (!seletor('#cortina-agenda').hidden) fecharProposta();
+  if (!seletor('#cortina-compromisso').hidden) seletor('#cortina-compromisso').hidden = true;
+});
+
+// Clicar fora do painel fecha, como em qualquer modal.
+for (const id of ['#cortina-agenda', '#cortina-compromisso']) {
+  seletor(id).addEventListener('click', (evento) => {
+    if (evento.target !== evento.currentTarget) return;
+    if (id === '#cortina-agenda') fecharProposta();
+    else seletor('#cortina-compromisso').hidden = true;
+  });
+}

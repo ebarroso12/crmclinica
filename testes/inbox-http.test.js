@@ -366,3 +366,61 @@ test('GET /api/conversas/filas descreve o vocabulário e as etiquetas', async (t
   assert.ok(dados.etiquetas.some((etiqueta) => etiqueta.nome === 'pagou_sinal'));
   assert.ok(dados.etiquetas.some((etiqueta) => etiqueta.nome === 'lead_quente'));
 });
+
+// ---------------------------------------------------------------- busca de contato
+
+test('GET /api/contatos?busca= encontra o paciente para marcar na agenda', async (t) => {
+  const { app } = await subirInbox();
+  t.after(() => app.encerrar());
+
+  const resposta = await app.pedir('/api/contatos?busca=Marina');
+  assert.equal(resposta.status, 200);
+  assert.equal(resposta.headers.get('cache-control'), 'no-store');
+
+  const { contatos } = await resposta.json();
+  assert.equal(contatos.length, 1);
+  assert.equal(contatos[0].nome, 'Marina Souza');
+  assert.equal(typeof contatos[0].id, 'number');
+});
+
+test('a busca sem termo devolve vazio em vez da base inteira', async (t) => {
+  const { app } = await subirInbox();
+  t.after(() => app.encerrar());
+
+  const { contatos } = await (await app.pedir('/api/contatos')).json();
+  assert.deepEqual(contatos, [], 'a rota serve para achar alguém, não para exportar contatos');
+});
+
+test('a busca de contato devolve só o necessário para escolher', async (t) => {
+  const { app } = await subirInbox();
+  t.after(() => app.encerrar());
+
+  const { contatos } = await (await app.pedir('/api/contatos?busca=Marina')).json();
+
+  // Escolher um paciente pede nome e telefone. Observações e atributos são
+  // dados de ficha e não têm por que trafegar num autocompletar.
+  assert.deepEqual(Object.keys(contatos[0]).sort(), ['id', 'nome', 'telefone']);
+});
+
+test('atendente busca contato; quem não pode ler contatos recebe 403', async (t) => {
+  const { app } = await subirInbox();
+  t.after(() => app.encerrar());
+
+  const atendente = await app.entrarComo('atendente');
+  const resposta = await app.pedirSemAuth('/api/contatos?busca=Marina', {
+    headers: { authorization: `Bearer ${atendente.access_token}` },
+  });
+  assert.equal(resposta.status, 200, 'quem atende precisa achar o paciente para marcar');
+
+  const semSessao = await app.pedirSemAuth('/api/contatos?busca=Marina');
+  assert.equal(semSessao.status, 401);
+});
+
+test('POST em /api/contatos é recusado', async (t) => {
+  const { app } = await subirInbox();
+  t.after(() => app.encerrar());
+
+  const resposta = await enviar(app, '/api/contatos', { nome: 'X' });
+  assert.equal(resposta.status, 405);
+  assert.equal(resposta.headers.get('allow'), 'GET');
+});
