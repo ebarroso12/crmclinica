@@ -65,7 +65,28 @@ const ESPERADO = {
       ['leads', 'utm_source'], ['lead_eventos', 'tipo'],
     ],
   },
+  '006_agenda': {
+    tabelas: ['profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos'],
+    colunas: [
+      ['agendamentos', 'conversa_id'], ['agendamentos', 'confirmado_em'],
+      ['disponibilidades', 'dia_semana'],
+    ],
+  },
+  '007_hardening': {
+    funcoes: ['app_usuario_atual'],
+  },
 };
+
+// Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
+// caminho de quem chama decide qual tabela a função enxerga.
+const FUNCOES_COM_SEARCH_PATH = [
+  'set_atualizado_em', 'limpar_sessoes_vencidas', 'limpar_recuperacoes_vencidas',
+  'limpar_tentativas_vencidas', 'app_usuario_atual',
+];
+
+// Tabelas cujo histórico não se reescreve. A aplicação não deve ter privilégio
+// de apagá-las — nem depender de a policy segurar.
+const SEM_DELETE = ['audit_log', 'lead_eventos', 'usuarios'];
 
 // Toda tabela do produto precisa de RLS. A lista é explícita para que uma tabela
 // nova sem RLS apareça como falta, não passe despercebida.
@@ -73,6 +94,7 @@ const TABELAS_COM_RLS = [
   'usuarios', 'contatos', 'conversas', 'mensagens', 'etiquetas', 'conversa_etiquetas',
   'leads', 'notas_internas', 'audit_log', 'eventos_recebidos', 'sessoes',
   'recuperacoes_senha', 'tentativas_autenticacao', 'lead_eventos',
+  'profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
@@ -190,6 +212,121 @@ async function main() {
           + ` (${linha.privilegios})${comRls ? ' — contido por RLS' : ' — SEM RLS'}`,
         );
       }
+    }
+
+    // ---------------------------------------------------------------- storage
+    //
+    // A verificação que faltava. `anon` tinha TRUNCATE em storage.objects, e
+    // TRUNCATE não passa pelo RLS: é privilégio de tabela, e não há linha para o
+    // RLS filtrar quando o comando apaga tudo. RLS ligado não protege disso.
+
+    console.log('\nStorage');
+    const { rows: [temStorage] } = await pool.query(
+      "SELECT count(*)::int AS n FROM information_schema.schemata WHERE schema_name = 'storage'",
+    );
+
+    if (!temStorage.n) {
+      console.log(`  ${amarelo('—')}    projeto sem schema storage`);
+    } else {
+      const { rows: expostas } = await pool.query(`
+        SELECT t.tabela, r.papel,
+               has_table_privilege(r.papel, 'storage.' || t.tabela, 'TRUNCATE') AS truncate,
+               has_table_privilege(r.papel, 'storage.' || t.tabela, 'DELETE')   AS delete,
+               has_table_privilege(r.papel, 'storage.' || t.tabela, 'INSERT')   AS insert
+          FROM unnest(ARRAY['objects','buckets']) AS t(tabela)
+         CROSS JOIN unnest(ARRAY['anon','authenticated']) AS r(papel)
+         WHERE to_regclass('storage.' || t.tabela) IS NOT NULL
+      `);
+
+      const perigosas = expostas.filter((linha) => linha.truncate || linha.delete || linha.insert);
+      if (perigosas.length === 0) {
+        console.log(`  ${verde('ok  ')} anon e authenticated não escrevem no storage`);
+      } else {
+        for (const linha of perigosas) {
+          const quais = [
+            linha.truncate ? 'TRUNCATE' : null,
+            linha.delete ? 'DELETE' : null,
+            linha.insert ? 'INSERT' : null,
+          ].filter(Boolean).join(', ');
+
+          falhas += 1;
+          console.log(
+            `  ${vermelho('RISCO')} ${linha.papel} → storage.${linha.tabela} (${quais})`
+            + (linha.truncate ? ' — TRUNCATE ignora o RLS' : ''),
+          );
+        }
+        console.log(`  ${amarelo('→')}    corrija pelo SQL Editor do painel: `
+          + 'REVOKE ALL ON storage.objects, storage.buckets FROM anon, authenticated;');
+        console.log(`  ${amarelo('→')}    não dá para fazer daqui: as tabelas pertencem a `
+          + 'supabase_storage_admin, e postgres não é superuser.');
+      }
+    }
+
+    // ---------------------------------------------------------------- funções
+
+    console.log('\nsearch_path das funções');
+    const { rows: configs } = await pool.query(`
+      SELECT p.proname, p.proconfig
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND p.proname = ANY($1)
+    `, [FUNCOES_COM_SEARCH_PATH]);
+
+    const configPorNome = new Map(configs.map((linha) => [linha.proname, linha.proconfig]));
+    for (const nome of FUNCOES_COM_SEARCH_PATH) {
+      if (!configPorNome.has(nome)) {
+        console.log(`  ${amarelo('—')}    ${nome}() (função ausente)`);
+        continue;
+      }
+      const fixo = (configPorNome.get(nome) ?? []).some((item) => item.startsWith('search_path='));
+      marcar(fixo, `${nome}()`, fixo ? '' : 'search_path MUTÁVEL');
+    }
+
+    // ---------------------------------------------------------------- privilégios da app
+
+    console.log('\nPrivilégios de crmclinica_app');
+    const { rows: [papel] } = await pool.query(`
+      SELECT COALESCE(bool_or(rolcanlogin), false) AS pode_logar
+        FROM pg_roles WHERE rolname = 'crmclinica_app'
+    `);
+    marcar(papel.pode_logar, 'crmclinica_app pode conectar');
+
+    for (const tabela of SEM_DELETE) {
+      if (!porNome.has(tabela)) continue;
+      const { rows: [priv] } = await pool.query(
+        "SELECT has_table_privilege('crmclinica_app', $1, 'DELETE') AS pode",
+        [`public.${tabela}`],
+      );
+      marcar(!priv.pode, `sem DELETE em ${tabela}`, priv.pode ? 'a aplicação pode apagar histórico' : '');
+    }
+
+    const { rows: sobraram } = await pool.query(
+      "SELECT policyname FROM pg_policies WHERE schemaname='public' AND policyname LIKE 'app_total%'",
+    );
+    marcar(sobraram.length === 0, 'policies app_total_* substituídas',
+      sobraram.length ? `${sobraram.length} restante(s)` : '');
+
+    // ---------------------------------------------------------------- quem conecta
+    //
+    // O achado que reordena todos os outros: enquanto a aplicação conectar como
+    // dono das tabelas, o RLS não é avaliado para ela e nenhuma policy vale.
+
+    console.log('\nConexão desta verificação');
+    const { rows: [quem] } = await pool.query(`
+      SELECT current_user AS usuario,
+             (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user) AS ignora_rls,
+             (SELECT count(*) FROM pg_tables
+               WHERE schemaname='public' AND tableowner = current_user) AS tabelas_proprias
+    `);
+
+    if (quem.ignora_rls || Number(quem.tabelas_proprias) > 0) {
+      falhas += 1;
+      console.log(`  ${vermelho('RISCO')} conectado como "${quem.usuario}"`
+        + `${quem.ignora_rls ? ', que tem BYPASSRLS' : ''}`
+        + `${Number(quem.tabelas_proprias) > 0 ? ` e é dono de ${quem.tabelas_proprias} tabela(s)` : ''}`);
+      console.log(`  ${amarelo('→')}    o RLS não é avaliado para esta conexão: as policies são decoração.`);
+      console.log(`  ${amarelo('→')}    aponte CRMCLINICA_DATABASE_URL para crmclinica_app.`);
+    } else {
+      console.log(`  ${verde('ok  ')} conectado como "${quem.usuario}" — o RLS vale para esta conexão`);
     }
 
     console.log('');

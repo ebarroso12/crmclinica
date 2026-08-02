@@ -196,19 +196,98 @@ para depurar e para não vazar existência de recurso.
 
 O Supabase expõe uma API REST automática sobre o schema `public`. Mesmo que a
 aplicação nunca a use, **a porta existe** — e sem RLS a chave anônima leria conversas
-de pacientes. `db/002_autenticacao_e_rls.sql`:
+de pacientes. `db/002_autenticacao_e_rls.sql` liga RLS em todas as tabelas, cria
+política para o papel `crmclinica_app` e revoga `anon` e `authenticated` do schema,
+incluindo privilégios padrão futuros.
 
-1. liga RLS em **todas** as tabelas;
-2. cria uma política por tabela para o papel `crmclinica_app`;
-3. **revoga** `anon` e `authenticated` de tudo no schema, incluindo privilégios padrão futuros.
+### O que uma auditoria encontrou, e por que importa
 
-Sem política que case, esses papéis não leem nenhuma linha.
+Uma revisão do banco em produção mostrou uma coisa que muda a leitura de tudo acima:
 
-RLS é ligado **sem `FORCE`** de propósito: o backend conecta com a connection string
-do projeto, cujo papel é dono das tabelas, e dono ignora RLS. Forçar aqui trancaria a
-própria aplicação para fora — a segurança viraria indisponibilidade. O endurecimento
-com `FORCE` está documentado no fim daquele arquivo e depende de dar `LOGIN` ao papel
-da aplicação.
+> As tabelas pertencem a `postgres`, e é como `postgres` que a aplicação conecta.
+> Essa role tem `BYPASSRLS`. **O RLS nunca é avaliado para ela.**
+
+Ou seja: enquanto `CRMCLINICA_DATABASE_URL` apontar para o dono, as políticas não
+são frouxas nem apertadas — elas simplesmente não rodam. Discutir se uma policy
+deveria usar `USING (true)` ou algo mais fino é discutir a cor de uma porta que
+não está no batente.
+
+A ordem correta de endurecimento é:
+
+1. **A aplicação conectar como `crmclinica_app`.** Só a partir daí o RLS existe
+   para ela. `db/007_hardening.sql` dá `LOGIN` à role e concede privilégios
+   precisos; a senha fica fora do repositório e a connection string precisa ser
+   trocada. Sem este passo, os dois seguintes não mudam nada em runtime.
+2. **Privilégios que negam o que não deve existir.** `audit_log` e `lead_eventos`
+   não têm `DELETE` nem `UPDATE`; `usuarios` não tem `DELETE` — conta se desativa
+   pela coluna `situacao`. Privilégio ausente é negado antes de a policy ser
+   consultada, e são exatamente as tabelas cuja perda não tem volta.
+3. **`FORCE ROW LEVEL SECURITY`**, que faz o RLS valer até para o dono. Só depois
+   de (1), porque antes disso ele tranca a própria aplicação para fora.
+
+### Storage: o risco que não dá para corrigir por migration
+
+`anon` e `authenticated` têm `SELECT`, `INSERT`, `UPDATE`, `DELETE` e **`TRUNCATE`**
+em `storage.objects` e `storage.buckets`, mais `USAGE` no schema.
+
+Para acesso linha a linha o RLS segura: está ligado e não há policy, e RLS sem
+policy nega. Mas **`TRUNCATE` não passa pelo RLS** — é privilégio de tabela, e não
+há linha para filtrar quando o comando apaga tudo de uma vez. Verificado neste
+projeto: com `SET ROLE anon`, o `TRUNCATE` é aceito.
+
+Hoje não há dano porque não existe bucket nem objeto. No dia do primeiro upload,
+qualquer pessoa com a chave anônima — que é pública por definição, vai no
+front-end — apaga todos os arquivos da clínica com um comando.
+
+**A correção não cabe numa migration.** `storage.objects` pertence a
+`supabase_storage_admin`; a role `postgres` do Supabase não é superuser e não pode
+assumir essa role. Um `REVOKE` de dentro de uma migration emite `WARNING` e não faz
+nada — pior que não tentar, porque a migration passaria aparentando ter resolvido.
+
+Execute pelo SQL Editor do painel (que conecta com mais privilégio) ou por ticket:
+
+```sql
+REVOKE ALL ON storage.objects, storage.buckets FROM anon, authenticated;
+```
+
+Sem tocar em `s3_multipart_uploads*`: são internas do Storage e mexer nelas quebra
+upload grande. Elas só têm `SELECT`, que o RLS neutraliza.
+
+`npm run verificar-banco` falha enquanto isso não for feito.
+
+### Por que não existe vínculo com `auth.users`
+
+Uma recomendação comum de hardening no Supabase é ligar `public.usuarios` a
+`auth.users`. Aqui isso não se aplica: **este produto não usa o Supabase Auth.**
+
+A autenticação é própria — JWT HS256 assinado pela aplicação, senha com scrypt,
+TOTP opcional, e Google verificado por JWKS no servidor. `auth.users` está vazia e
+continuará vazia. Criar a chave estrangeira produziria um vínculo decorativo para
+uma tabela sem linhas; migrar para o GoTrue seria reescrever a autenticação inteira
+e adicionar uma superfície que hoje não existe.
+
+O objetivo por trás da recomendação — **o banco saber quem é o usuário** — é
+legítimo, e o caminho para ele aqui é outro: `db/007_hardening.sql` cria
+`app_usuario_atual()`, que lê `app.usuario_id` da sessão. Quando a aplicação passar
+a declarar esse valor por transação, as políticas podem decidir por usuário sem
+depender do GoTrue. Isso exige que toda consulta rode dentro de uma transação com
+`SET LOCAL` — mudança na camada de dados que ainda não foi feita.
+
+### Migrations aplicadas fora da CLI
+
+O ledger `supabase_migrations.schema_migrations` só registra o que passa pela CLI
+do Supabase. SQL aplicado por outro caminho — painel, API de query — deixa o schema
+correto e o ledger em branco, e quem olhar só o ledger conclui que nada foi
+aplicado. Ao aplicar por fora, registre também:
+
+```sql
+INSERT INTO supabase_migrations.schema_migrations (version, name)
+VALUES ('<timestamp>', '<nome_da_migration>') ON CONFLICT DO NOTHING;
+```
+
+Na dúvida entre ledger e schema, **o schema manda**. É por isso que
+`db/verificar.sql` e `npm run verificar-banco` checam objetos — tabela, coluna,
+função, policy — e não o registro.
 
 ### Chaves do Supabase
 
