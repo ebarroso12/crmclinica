@@ -20,12 +20,18 @@ function hashDoRefresh(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function criarAutenticacao({ repositorio, configuracao, agora = () => new Date() }) {
+function criarAutenticacao({ repositorio, configuracao, contas = null, agora = () => new Date() }) {
   const segredo = configuracao.autenticacao.segredoJwt;
 
   function emitirAccess(usuario) {
     return emitir(
-      { sub: String(usuario.id), nome: usuario.nome, papel: usuario.papel },
+      {
+        sub: String(usuario.id),
+        nome: usuario.nome,
+        papel: usuario.papel,
+        // `master` no token evita uma ida ao banco a cada checagem de privilégio.
+        master: Boolean(usuario.master),
+      },
       segredo,
       DURACAO_ACCESS_SEGUNDOS,
     );
@@ -43,16 +49,20 @@ function criarAutenticacao({ repositorio, configuracao, agora = () => new Date()
       ip,
     });
 
+    await repositorio.atualizarUsuario(usuario.id, { ultimoLoginEm: agora().toISOString() });
+
     return {
       access_token: emitirAccess(usuario),
       refresh_token: refresh,
       expira_em: DURACAO_ACCESS_SEGUNDOS,
-      usuario: {
-        id: usuario.id,
-        nome: usuario.nome,
-        papel: usuario.papel,
-        permissoes: permissoesDoPapel(usuario.papel),
-      },
+      usuario: contas
+        ? contas.retratoDoUsuario(usuario)
+        : {
+          id: usuario.id,
+          nome: usuario.nome,
+          papel: usuario.papel,
+          permissoes: permissoesDoPapel(usuario.papel),
+        },
     };
   }
 
@@ -70,7 +80,7 @@ function criarAutenticacao({ repositorio, configuracao, agora = () => new Date()
 
     const senhaConfere = await conferir(senha, hashDeReferencia);
 
-    if (!usuario || !usuario.ativo || !senhaConfere) {
+    if (!usuario || !senhaConfere) {
       await repositorio.registrarAuditoria({
         entidade: 'usuario',
         entidadeId: usuario?.id ?? null,
@@ -83,6 +93,43 @@ function criarAutenticacao({ repositorio, configuracao, agora = () => new Date()
       throw erro;
     }
 
+    // Credencial certa, mas conta não liberada: a pessoa merece saber que está na
+    // fila em vez de achar que errou a senha. Só chega aqui quem provou ser quem diz.
+    if (contas && !contas.podeEntrar(usuario)) {
+      await repositorio.registrarAuditoria({
+        entidade: 'usuario',
+        entidadeId: usuario.id,
+        acao: 'login_bloqueado',
+        detalhe: { situacao: usuario.situacao },
+      });
+      throw contas.erroDeSituacao(usuario.situacao);
+    }
+    if (!contas && !usuario.ativo) {
+      const erro = new Error('credenciais inválidas');
+      erro.status = 401;
+      throw erro;
+    }
+
+    // Segundo fator, quando a pessoa ativou.
+    if (contas && usuario.totp_ativo) {
+      const codigo = contexto.codigo ?? null;
+      if (!codigo) {
+        const erro = new Error('código do segundo fator é obrigatório');
+        erro.status = 401;
+        erro.segundoFator = 'obrigatorio';
+        throw erro;
+      }
+      if (!(await contas.segundoFatorConfere(usuario, codigo))) {
+        await repositorio.registrarAuditoria({
+          entidade: 'usuario', entidadeId: usuario.id, acao: 'segundo_fator_recusado',
+        });
+        const erro = new Error('código do segundo fator incorreto');
+        erro.status = 401;
+        erro.segundoFator = 'incorreto';
+        throw erro;
+      }
+    }
+
     await repositorio.registrarAuditoria({
       entidade: 'usuario',
       entidadeId: usuario.id,
@@ -90,6 +137,14 @@ function criarAutenticacao({ repositorio, configuracao, agora = () => new Date()
       usuarioId: usuario.id,
     });
 
+    return abrirSessao(usuario, contexto);
+  }
+
+  /** Abre sessão para quem já teve a identidade confirmada por outro caminho (Google). */
+  async function abrirSessaoDireta(usuario, contexto = {}) {
+    await repositorio.registrarAuditoria({
+      entidade: 'usuario', entidadeId: usuario.id, acao: 'login_google', usuarioId: usuario.id,
+    });
     return abrirSessao(usuario, contexto);
   }
 
@@ -114,7 +169,10 @@ function criarAutenticacao({ repositorio, configuracao, agora = () => new Date()
     }
 
     const usuario = await repositorio.obterUsuarioPorId(sessao.usuario_id);
-    if (!usuario || !usuario.ativo) {
+    const aindaPode = contas ? contas.podeEntrar(usuario) : Boolean(usuario?.ativo);
+    if (!aindaPode) {
+      // Quem foi desativado depois de entrar não renova: a revogação alcança
+      // a sessão em curso, não só os logins futuros.
       await repositorio.revogarSessao(sessao.id);
       const erro = new Error('usuário inativo');
       erro.status = 401;
@@ -155,12 +213,14 @@ function criarAutenticacao({ repositorio, configuracao, agora = () => new Date()
       id: Number(conteudo.sub),
       nome: conteudo.nome,
       papel: conteudo.papel,
+      master: Boolean(conteudo.master),
       permissoes: permissoesDoPapel(conteudo.papel),
     };
   }
 
   return {
     entrar,
+    abrirSessaoDireta,
     renovar,
     sair,
     identificar,

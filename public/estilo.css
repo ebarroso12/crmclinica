@@ -91,15 +91,67 @@ h1, h2, h3 { line-height: 1.25; }
   font: inherit;
 }
 .cartao-login .primario { margin-top: 18px; padding: 11px; }
-.erro-login {
+.cartao-login .subtitulo { margin: 0 0 16px; color: var(--apoio); font-size: 13px; }
+.cartao-login h2 { margin: 0 0 4px; font-size: 17px; }
+.painel-portao { display: grid; gap: 6px; }
+.painel-portao .nota { margin: 0 0 8px; color: var(--apoio); font-size: 12px; }
+/* O bloco do segundo fator é um contêiner dentro do grid: sem gap próprio, o
+   rótulo encostaria no campo de senha acima. */
+#bloco-codigo { display: grid; gap: 6px; margin-top: 8px; }
+
+.erro-login, .aviso-portao {
   margin: 12px 0 0;
   padding: 9px 12px;
-  background: #fdeaea;
-  border-left: 3px solid #b02a2a;
   border-radius: 6px;
-  color: #8a1f1f;
   font-size: 13px;
 }
+.erro-login { background: #fdeaea; border-left: 3px solid #b02a2a; color: #8a1f1f; }
+.aviso-portao { background: #eaf4fb; border-left: 3px solid var(--ciano); color: #0a5570; }
+
+.rodape-portao {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.rodape-portao .link { font-size: 13px; padding: 2px; }
+
+/* O olho fica dentro do campo, sem cobrir o texto digitado. */
+.campo-senha { position: relative; display: flex; }
+.campo-senha input { flex: 1; padding-right: 42px !important; }
+.olho {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 6px;
+  opacity: 0.65;
+}
+.olho:hover, .olho[aria-pressed="true"] { opacity: 1; background: #eef1f7; }
+
+.google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  background: var(--superficie);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.google:hover { background: #f3f6fb; }
+.google span { font-weight: 700; color: var(--ciano); }
 
 /* `minmax(0, 1fr)` em vez de `1fr` em toda coluna flexível: `1fr` equivale a
    `minmax(auto, 1fr)` e se recusa a encolher abaixo do conteúdo, o que empurra
@@ -515,6 +567,84 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 .mensagens li small { display: block; margin-top: 5px; font-size: 11px; color: var(--apoio); }
 
 .fila li.ativa { background: #e4f5f8; }
+
+/* ---------- Usuários e perfil ---------- */
+
+.formulario { display: grid; gap: 12px; margin-top: 14px; }
+.formulario > div { display: grid; gap: 4px; }
+.formulario label { font-size: 12px; color: var(--apoio); }
+.formulario input, .formulario select {
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  padding: 9px;
+  font: inherit;
+  font-size: 14px;
+  width: 100%;
+}
+.formulario-acoes { display: flex; gap: 8px; flex-wrap: wrap; }
+.formulario-linha { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.formulario-linha input {
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  padding: 9px;
+  font: inherit;
+  max-width: 140px;
+  letter-spacing: 0.2em;
+}
+
+.nota { color: var(--apoio); font-size: 12px; margin: 10px 0 0; }
+.retorno {
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  background: #e6f5ee;
+  border-left: 3px solid var(--verde);
+  border-radius: 6px;
+  color: #0d5a41;
+  font-size: 13px;
+}
+.retorno-erro { background: #fdeaea; border-left-color: #b02a2a; color: #8a1f1f; }
+
+.segredo-2fa { margin: 10px 0; }
+.segredo-2fa code {
+  display: inline-block;
+  padding: 9px 12px;
+  background: #f3f6fb;
+  border-radius: 8px;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  word-break: break-all;
+}
+
+.perfil-leitura { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 4px 0 0; font-size: 13px; }
+.perfil-leitura dt { color: var(--apoio); font-size: 12px; }
+.perfil-leitura dd { margin: 0; }
+
+.lista-usuarios { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 2px; }
+.usuario {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--linha);
+}
+.usuario:last-child { border-bottom: 0; }
+.usuario-identidade { display: grid; gap: 3px; min-width: 0; }
+.usuario-identidade small { color: var(--apoio); font-size: 12px; overflow-wrap: anywhere; }
+.usuario .selos { grid-column: 1; }
+.usuario-acoes { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.usuario-acoes .primario { padding: 7px 12px; font-size: 13px; }
+
+/* Situação vira cor: quem espera decisão precisa saltar aos olhos. */
+.sit-pendente { background: #fdf0d2; color: #7a5100; }
+.sit-ativo { background: #ddf5ec; color: #0d6349; }
+.sit-recusado, .sit-desativado { background: #fdeaea; color: #8a1f1f; }
+.situacao-pendente { background: #fffdf6; }
+
+@media (max-width: 720px) {
+  .usuario { grid-template-columns: minmax(0, 1fr); }
+  .usuario-acoes { justify-content: flex-start; }
+}
 
 .thread { display: flex; flex-direction: column; }
 .fila li[role="button"] { cursor: pointer; border-radius: 8px; padding-left: 6px; padding-right: 6px; }

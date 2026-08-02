@@ -30,11 +30,19 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const auditoria = [];
   const usuarios = new Map();
   const sessoes = new Map();
+  const recuperacoes = new Map();
 
   const proximoId = {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
-    lead: 1, usuario: 1, etiqueta: 1, sessao: 1,
+    lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1,
   };
+
+  // Espelha o que o PostgreSQL devolve: o hash da senha e o segredo do segundo
+  // fator só saem pelas consultas que os pedem explicitamente.
+  function semSegredos(usuario) {
+    const { senha_hash: _senha, totp_segredo_cifrado: _totp, ...resto } = usuario;
+    return resto;
+  }
 
   for (const etiqueta of ETIQUETAS_INICIAIS) {
     etiquetas.set(etiqueta.nome, { id: proximoId.etiqueta++, ativa: true, ...etiqueta });
@@ -304,20 +312,27 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     async obterUsuarioPorEmail(email) {
       if (!email) return null;
       const alvo = String(email).toLowerCase();
-      return [...usuarios.values()].find((usuario) => (usuario.email || '').toLowerCase() === alvo) ?? null;
+      const usuario = [...usuarios.values()].find((item) => (item.email || '').toLowerCase() === alvo);
+      return usuario ? { ...usuario } : null;
     },
 
     async obterUsuarioPorId(id) {
       const usuario = usuarios.get(Number(id));
-      if (!usuario) return null;
-      // Sem o hash: quem pede por id não precisa da senha.
-      const { senha_hash: _ignorado, ...semHash } = usuario;
-      return semHash;
+      return usuario ? semSegredos(usuario) : null;
     },
 
-    async criarUsuario({ nome, email, senhaHash, papel = 'atendente' }) {
-      const existente = await this.obterUsuarioPorEmail(email);
-      if (existente) {
+    async obterUsuarioPorGoogleSub(sub) {
+      if (!sub) return null;
+      const usuario = [...usuarios.values()].find((item) => item.google_sub === sub);
+      return usuario ? semSegredos(usuario) : null;
+    },
+
+    async criarUsuario({
+      nome, email, senhaHash = null, papel = 'atendente',
+      situacao = 'pendente', master = false, precisaTrocarSenha = false,
+      googleSub = null, telefone = null,
+    }) {
+      if (await this.obterUsuarioPorEmail(email)) {
         const erro = new Error('e-mail já cadastrado');
         erro.codigo = 'usuario_duplicado';
         throw erro;
@@ -330,17 +345,99 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         senha_hash: senhaHash,
         papel,
         ativo: true,
+        situacao,
+        master,
+        precisa_trocar_senha: precisaTrocarSenha,
+        telefone,
+        avatar_url: null,
+        google_sub: googleSub,
+        totp_segredo_cifrado: null,
+        totp_ativo: false,
+        totp_confirmado_em: null,
+        aprovado_por: null,
+        aprovado_em: null,
+        ultimo_login_em: null,
+        criado_em: agora().toISOString(),
       };
       usuarios.set(usuario.id, usuario);
-
-      const { senha_hash: _ignorado, ...semHash } = usuario;
-      return semHash;
+      return semSegredos(usuario);
     },
 
-    async listarUsuarios() {
+    async atualizarUsuario(id, campos) {
+      const usuario = usuarios.get(Number(id));
+      if (!usuario) return null;
+
+      const permitidos = new Map([
+        ['nome', 'nome'], ['telefone', 'telefone'], ['papel', 'papel'],
+        // `master` só é escrito pela semeadura do administrador: nenhuma rota HTTP
+        // passa este campo, e promover a si mesmo não é um caminho existente.
+        ['master', 'master'],
+        ['situacao', 'situacao'], ['ativo', 'ativo'], ['senhaHash', 'senha_hash'],
+        ['precisaTrocarSenha', 'precisa_trocar_senha'], ['googleSub', 'google_sub'],
+        ['totpSegredoCifrado', 'totp_segredo_cifrado'], ['totpAtivo', 'totp_ativo'],
+        ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
+        ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
+        ['avatarUrl', 'avatar_url'],
+      ]);
+
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (coluna) usuario[coluna] = valor;
+      }
+      return semSegredos(usuario);
+    },
+
+    async listarUsuarios({ situacao = null } = {}) {
       return [...usuarios.values()]
-        .map(({ senha_hash: _ignorado, ...resto }) => resto)
-        .sort((a, b) => a.nome.localeCompare(b.nome));
+        .filter((usuario) => !situacao || usuario.situacao === situacao)
+        .map(semSegredos)
+        // Pendentes primeiro: é quem espera uma decisão do master.
+        .sort((a, b) => {
+          const pesoA = a.situacao === 'pendente' ? 0 : 1;
+          const pesoB = b.situacao === 'pendente' ? 0 : 1;
+          return pesoA - pesoB || a.nome.localeCompare(b.nome);
+        });
+    },
+
+    async obterSegredoTotp(id) {
+      return usuarios.get(Number(id))?.totp_segredo_cifrado ?? null;
+    },
+
+    // ---------------------------------------------------------------- recuperação de senha
+
+    async criarRecuperacao({ usuarioId, hashToken, expiraEm, ip = null }) {
+      const recuperacao = {
+        id: proximoId.recuperacao++,
+        usuario_id: Number(usuarioId),
+        hash_token: hashToken,
+        expira_em: expiraEm,
+        usado_em: null,
+        solicitado_ip: ip,
+        criado_em: agora().toISOString(),
+      };
+      recuperacoes.set(recuperacao.id, recuperacao);
+      return { id: recuperacao.id };
+    },
+
+    async obterRecuperacaoPorHash(hashToken) {
+      const encontrada = [...recuperacoes.values()].find((item) => item.hash_token === hashToken);
+      return encontrada ? { ...encontrada } : null;
+    },
+
+    async marcarRecuperacaoUsada(id) {
+      const recuperacao = recuperacoes.get(Number(id));
+      if (recuperacao && !recuperacao.usado_em) recuperacao.usado_em = agora().toISOString();
+    },
+
+    async invalidarRecuperacoesDoUsuario(usuarioId) {
+      let total = 0;
+      for (const recuperacao of recuperacoes.values()) {
+        if (recuperacao.usuario_id === Number(usuarioId) && !recuperacao.usado_em) {
+          recuperacao.usado_em = agora().toISOString();
+          total += 1;
+        }
+      }
+      return total;
     },
 
     async criarSessao({ usuarioId, hashRefresh, expiraEm, agente = null, ip = null }) {

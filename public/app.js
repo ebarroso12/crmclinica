@@ -10,6 +10,8 @@ const TITULOS = {
   agenda: 'Agenda',
   serena: 'Serena',
   auditoria: 'Auditoria',
+  usuarios: 'Usuários',
+  perfil: 'Meu perfil',
 };
 
 const seletor = (alvo) => document.querySelector(alvo);
@@ -31,6 +33,8 @@ function abrirTela(tela) {
 
   if (tela === 'conversas') carregarConversas();
   if (tela === 'leads') carregarLeads();
+  if (tela === 'usuarios') carregarUsuarios();
+  if (tela === 'perfil') desenharPerfil();
 }
 
 for (const gatilho of document.querySelectorAll('nav [data-tela]')) {
@@ -762,15 +766,61 @@ seletor('#form-ficha')?.addEventListener('submit', async (evento) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Campos de senha: o botão de olho.
+//
+// Ele mostra o que a pessoa está digitando, para conferir antes de enviar.
+// Não "descriptografa" nada: a senha guardada é hash, e hash não tem volta —
+// nem para nós. É essa a razão de o sistema não conseguir dizer qual é a sua
+// senha, só se a que você digitou confere.
+// ---------------------------------------------------------------------------
+
+for (const botao of document.querySelectorAll('.olho[data-olho]')) {
+  botao.addEventListener('click', () => {
+    const campo = document.getElementById(botao.dataset.olho);
+    if (!campo) return;
+
+    const mostrando = campo.type === 'text';
+    campo.type = mostrando ? 'password' : 'text';
+    botao.setAttribute('aria-pressed', String(!mostrando));
+    botao.setAttribute('aria-label', mostrando ? 'Mostrar senha' : 'Ocultar senha');
+    campo.focus();
+  });
+}
+
 // --- Portão de entrada ---
+
+const PAINEIS_DO_PORTAO = ['login', 'cadastro', 'recuperar', 'redefinir'];
+let tokenDeRecuperacao = null;
+
+function mostrarPainelDoPortao(nome) {
+  for (const painel of PAINEIS_DO_PORTAO) {
+    const elemento = seletor(`#form-${painel}`);
+    if (elemento) elemento.hidden = painel !== nome;
+  }
+  limparRetornoDoPortao();
+}
+
+function limparRetornoDoPortao() {
+  for (const alvo of ['#erro-login', '#aviso-portao']) {
+    const elemento = seletor(alvo);
+    if (elemento) { elemento.hidden = true; elemento.textContent = ''; }
+  }
+}
+
+function avisarNoPortao(mensagem, tipo = 'erro') {
+  const elemento = seletor(tipo === 'erro' ? '#erro-login' : '#aviso-portao');
+  if (!elemento) return;
+  elemento.hidden = false;
+  elemento.textContent = mensagem;
+}
 
 function mostrarPortao(mensagem = '') {
   seletor('#portao').hidden = false;
   seletor('#aplicacao').hidden = true;
 
-  const erro = seletor('#erro-login');
-  erro.hidden = !mensagem;
-  erro.textContent = mensagem;
+  if (mensagem) avisarNoPortao(mensagem);
+  else limparRetornoDoPortao();
 
   seletor('#login-email')?.focus();
 }
@@ -789,7 +839,22 @@ function mostrarAplicacao() {
   const editarFicha = seletor('#editar-ficha');
   if (editarFicha) editarFicha.dataset.permitido = String(podeFazer('contatos:editar'));
 
+  // A aba de usuários é do administrador master.
+  const itemUsuarios = seletor('#item-usuarios');
+  if (itemUsuarios) itemUsuarios.hidden = !usuarioAtual?.master;
+
+  // O inbox começa a carregar de qualquer forma: a faixa de saúde não pode ficar
+  // em "verificando…" só porque a pessoa foi levada ao perfil.
   iniciarInbox();
+
+  // Senha provisória: leva direto ao perfil, e o aviso fica visível até trocar.
+  const precisaTrocar = Boolean(usuarioAtual?.precisa_trocar_senha);
+  const aviso = seletor('#aviso-trocar-senha');
+  if (aviso) aviso.hidden = !precisaTrocar;
+
+  if (precisaTrocar) abrirTela('perfil');
+
+  if (usuarioAtual?.master) carregarUsuarios();
 }
 
 let inboxIniciado = false;
@@ -807,29 +872,153 @@ function iniciarInbox() {
   setInterval(carregarConversas, 30000);
 }
 
+for (const gatilho of document.querySelectorAll('[data-portao]')) {
+  gatilho.addEventListener('click', () => mostrarPainelDoPortao(gatilho.dataset.portao));
+}
+
 seletor('#form-login')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
+  limparRetornoDoPortao();
 
   const email = seletor('#login-email').value.trim();
   const senha = seletor('#login-senha').value;
+  const codigo = seletor('#login-codigo')?.value.trim() || null;
   if (!email || !senha) return;
 
   try {
     const resposta = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, senha }),
+      body: JSON.stringify({ email, senha, codigo }),
     });
-    if (!resposta.ok) throw new Error('credenciais inválidas');
+
+    if (!resposta.ok) {
+      const detalhe = await resposta.json().catch(() => ({}));
+
+      // Falta o código do segundo fator: mostrar o campo em vez de dizer
+      // "senha errada", que mandaria a pessoa procurar o problema no lugar errado.
+      if (detalhe.segundo_fator) {
+        seletor('#bloco-codigo').hidden = false;
+        seletor('#login-codigo').focus();
+        avisarNoPortao(
+          detalhe.segundo_fator === 'incorreto'
+            ? 'Código incorreto. Tente o número atual do aplicativo.'
+            : 'Digite o código do seu aplicativo autenticador.',
+          detalhe.segundo_fator === 'incorreto' ? 'erro' : 'aviso',
+        );
+        return;
+      }
+      // Conta na fila ou recusada: a pessoa precisa saber que não é a senha.
+      if (resposta.status === 403 && detalhe.situacao) {
+        avisarNoPortao(detalhe.erro);
+        return;
+      }
+      throw new Error('credenciais inválidas');
+    }
 
     guardarSessao(await resposta.json());
     seletor('#login-senha').value = '';
+    if (seletor('#login-codigo')) seletor('#login-codigo').value = '';
     mostrarAplicacao();
   } catch {
     // Mensagem única: dizer "e-mail não existe" entregaria quem tem conta.
-    mostrarPortao('E-mail ou senha incorretos.');
+    avisarNoPortao('E-mail ou senha incorretos.');
   }
 });
+
+seletor('#form-cadastro')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  limparRetornoDoPortao();
+
+  const corpo = {
+    nome: seletor('#cadastro-nome').value.trim(),
+    email: seletor('#cadastro-email').value.trim(),
+    senha: seletor('#cadastro-senha').value,
+  };
+
+  try {
+    const resposta = await fetch('/api/auth/cadastro', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(corpo),
+    });
+    const dados = await resposta.json();
+    if (!resposta.ok) throw new Error(dados.erro || 'não foi possível cadastrar');
+
+    mostrarPainelDoPortao('login');
+    avisarNoPortao(dados.detalhe, 'aviso');
+  } catch (erro) {
+    avisarNoPortao(erro.message);
+  }
+});
+
+seletor('#form-recuperar')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  limparRetornoDoPortao();
+
+  try {
+    const resposta = await fetch('/api/auth/recuperar', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: seletor('#recuperar-email').value.trim() }),
+    });
+    const dados = await resposta.json();
+
+    mostrarPainelDoPortao('login');
+    // Resposta idêntica com ou sem conta: a tela não pode revelar quem tem cadastro.
+    avisarNoPortao(dados.detalhe || 'Se houver uma conta com esse e-mail, o link foi enviado.', 'aviso');
+  } catch {
+    avisarNoPortao('Não foi possível enviar o link agora.');
+  }
+});
+
+seletor('#form-redefinir')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  limparRetornoDoPortao();
+
+  try {
+    const resposta = await fetch('/api/auth/redefinir', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        token: tokenDeRecuperacao,
+        senha_nova: seletor('#redefinir-senha').value,
+      }),
+    });
+    const dados = await resposta.json();
+    if (!resposta.ok) throw new Error(dados.erro || 'link inválido ou expirado');
+
+    tokenDeRecuperacao = null;
+    mostrarPainelDoPortao('login');
+    avisarNoPortao('Senha alterada. Entre com a senha nova.', 'aviso');
+  } catch (erro) {
+    avisarNoPortao(erro.message);
+  }
+});
+
+seletor('#entrar-google')?.addEventListener('click', async () => {
+  try {
+    const { url } = await pedirJson('/api/auth/google');
+    window.location.href = url;
+  } catch {
+    avisarNoPortao('O login com Google não está disponível agora.');
+  }
+});
+
+/** Descobre o que a tela de entrada deve oferecer. */
+async function carregarOpcoesDeEntrada() {
+  try {
+    const opcoes = await pedirJson('/api/auth/opcoes');
+
+    const botaoGoogle = seletor('#entrar-google');
+    if (botaoGoogle) botaoGoogle.hidden = !opcoes.google;
+
+    const recuperar = document.querySelector('[data-portao="recuperar"]');
+    if (recuperar) recuperar.hidden = !opcoes.recuperacao_por_email;
+  } catch {
+    // Sem as opções, a entrada por e-mail e senha continua funcionando.
+  }
+}
 
 seletor('#sair')?.addEventListener('click', async () => {
   const refresh = lerRefresh();
@@ -846,13 +1035,321 @@ seletor('#sair')?.addEventListener('click', async () => {
   mostrarPortao();
 });
 
+// ---------------------------------------------------------------------------
+// Usuários — liberação de acesso pelo administrador master.
+// ---------------------------------------------------------------------------
+
+const ROTULOS_DE_SITUACAO = {
+  pendente: 'Aguardando liberação',
+  ativo: 'Ativo',
+  recusado: 'Recusado',
+  desativado: 'Desativado',
+};
+
+const ROTULOS_DE_PAPEL = { admin: 'Administrador', gestor: 'Gestor', atendente: 'Atendente' };
+
+async function carregarUsuarios() {
+  const lista = seletor('#lista-usuarios');
+  if (!lista || !usuarioAtual?.master) return;
+
+  try {
+    const { usuarios, pendentes } = await pedirJson('/api/usuarios');
+
+    definirTexto(
+      '#resumo-usuarios',
+      `${usuarios.length} conta(s)${pendentes ? ` · ${pendentes} aguardando liberação` : ''}`,
+    );
+
+    const contador = seletor('#contador-pendentes');
+    if (contador) {
+      contador.hidden = pendentes === 0;
+      contador.textContent = pendentes;
+    }
+
+    lista.innerHTML = '';
+    if (usuarios.length === 0) { avisar(lista, 'Nenhuma conta cadastrada.'); return; }
+
+    for (const usuario of usuarios) lista.append(montarLinhaDeUsuario(usuario));
+  } catch (erro) {
+    avisar(lista, erro.status === 403 ? 'Apenas o administrador master vê esta lista.' : 'Não foi possível carregar.');
+  }
+}
+
+function montarLinhaDeUsuario(usuario) {
+  const linha = document.createElement('li');
+  linha.className = `usuario situacao-${usuario.situacao}`;
+
+  const identidade = document.createElement('div');
+  identidade.className = 'usuario-identidade';
+
+  const nome = document.createElement('b');
+  nome.textContent = usuario.nome + (usuario.master ? ' · master' : '');
+  const email = document.createElement('small');
+  email.textContent = usuario.email;
+  identidade.append(nome, email);
+
+  const selos = document.createElement('div');
+  selos.className = 'selos';
+
+  const situacao = document.createElement('span');
+  situacao.className = `etiqueta sit-${usuario.situacao}`;
+  situacao.textContent = ROTULOS_DE_SITUACAO[usuario.situacao] || usuario.situacao;
+  selos.append(situacao);
+
+  if (usuario.totp_ativo) {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta';
+    selo.textContent = '2FA';
+    selos.append(selo);
+  }
+  if (usuario.google_vinculado) {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta';
+    selo.textContent = 'Google';
+    selos.append(selo);
+  }
+
+  const acoes = document.createElement('div');
+  acoes.className = 'usuario-acoes';
+
+  // A conta do master não é alterável — nem por ele mesmo.
+  if (!usuario.master) {
+    const papel = document.createElement('select');
+    papel.className = 'acao';
+    papel.setAttribute('aria-label', `Papel de ${usuario.nome}`);
+    for (const [valor, rotulo] of Object.entries(ROTULOS_DE_PAPEL)) {
+      const opcao = document.createElement('option');
+      opcao.value = valor;
+      opcao.textContent = rotulo;
+      opcao.selected = usuario.papel === valor;
+      papel.append(opcao);
+    }
+    papel.addEventListener('change', () => agirNoUsuario(usuario.id, 'papel', { papel: papel.value }));
+    acoes.append(papel);
+
+    const botoes = usuario.situacao === 'pendente'
+      ? [['Liberar', 'ativo', 'primario'], ['Recusar', 'recusado', 'acao']]
+      : usuario.situacao === 'ativo'
+        ? [['Desativar', 'desativado', 'acao']]
+        : [['Liberar', 'ativo', 'primario']];
+
+    for (const [rotulo, situacaoNova, classe] of botoes) {
+      const botao = document.createElement('button');
+      botao.type = 'button';
+      botao.className = classe;
+      botao.textContent = rotulo;
+      botao.addEventListener('click', () => agirNoUsuario(usuario.id, 'situacao', { situacao: situacaoNova }));
+      acoes.append(botao);
+    }
+  }
+
+  linha.append(identidade, selos, acoes);
+  return linha;
+}
+
+async function agirNoUsuario(id, caminho, corpo) {
+  try {
+    await pedirJson(`/api/usuarios/${id}/${caminho}`, { metodo: 'POST', corpo });
+    await carregarUsuarios();
+  } catch (erro) {
+    definirTexto('#resumo-usuarios', erro.detalhe || 'A ação não pôde ser concluída.');
+  }
+}
+
+seletor('#abrir-novo-usuario')?.addEventListener('click', () => {
+  const cartao = seletor('#cartao-novo-usuario');
+  cartao.hidden = !cartao.hidden;
+  if (!cartao.hidden) seletor('#novo-nome').focus();
+});
+
+seletor('#cancelar-novo-usuario')?.addEventListener('click', () => {
+  seletor('#cartao-novo-usuario').hidden = true;
+});
+
+seletor('#form-novo-usuario')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  const corpo = {
+    nome: seletor('#novo-nome').value.trim(),
+    email: seletor('#novo-email').value.trim(),
+    senha: seletor('#novo-senha').value,
+    papel: seletor('#novo-papel').value,
+  };
+
+  try {
+    await pedirJson('/api/usuarios', { metodo: 'POST', corpo });
+    evento.target.reset();
+    seletor('#cartao-novo-usuario').hidden = true;
+    await carregarUsuarios();
+  } catch (erro) {
+    definirTexto('#resumo-usuarios', erro.detalhe || 'Não foi possível criar a conta.');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Perfil — dados, senha e segundo fator.
+// ---------------------------------------------------------------------------
+
+function desenharPerfil() {
+  if (!usuarioAtual) return;
+
+  const nome = seletor('#perfil-nome');
+  const telefone = seletor('#perfil-telefone');
+  if (nome) nome.value = usuarioAtual.nome || '';
+  if (telefone) telefone.value = usuarioAtual.telefone || '';
+
+  definirTexto('#perfil-email', usuarioAtual.email || '—');
+  definirTexto('#perfil-papel', ROTULOS_DE_PAPEL[usuarioAtual.papel] || usuarioAtual.papel);
+  definirTexto('#perfil-google', usuarioAtual.google_vinculado ? 'Vinculada' : 'Não vinculada');
+
+  const ativo = Boolean(usuarioAtual.totp_ativo);
+  definirTexto(
+    '#estado-2fa',
+    ativo
+      ? 'Ativo. O login pede um código do seu aplicativo autenticador.'
+      : 'Desativado. Ative para exigir um código além da senha.',
+  );
+  seletor('#ativar-2fa').hidden = ativo;
+  seletor('#desativar-2fa').hidden = !ativo;
+  seletor('#bloco-ativar-2fa').hidden = true;
+
+  const aviso = seletor('#aviso-trocar-senha');
+  if (aviso) aviso.hidden = !usuarioAtual.precisa_trocar_senha;
+}
+
+function retornar(alvo, mensagem, erro = false) {
+  const elemento = seletor(alvo);
+  if (!elemento) return;
+  elemento.hidden = false;
+  elemento.textContent = mensagem;
+  elemento.classList.toggle('retorno-erro', erro);
+}
+
+/** Relê a sessão do servidor: papel, 2FA e situação podem ter mudado. */
+async function recarregarSessao() {
+  try {
+    const { usuario } = await pedirJson('/api/auth/sessao');
+    usuarioAtual = usuario;
+    desenharPerfil();
+  } catch {
+    // Sessão inválida: o interceptador de 401 já cuida do portão.
+  }
+}
+
+seletor('#form-perfil')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  try {
+    const { usuario } = await pedirJson('/api/perfil', {
+      metodo: 'PUT',
+      corpo: {
+        nome: seletor('#perfil-nome').value.trim(),
+        telefone: seletor('#perfil-telefone').value.trim() || null,
+      },
+    });
+    usuarioAtual = usuario;
+    definirTexto('#nome-usuario', usuario.nome);
+    definirTexto('#avatar-usuario', iniciais(usuario.nome));
+    retornar('#retorno-senha', 'Perfil atualizado.');
+  } catch (erro) {
+    retornar('#retorno-senha', erro.detalhe || 'Não foi possível salvar o perfil.', true);
+  }
+});
+
+seletor('#form-trocar-senha')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  try {
+    await pedirJson('/api/auth/senha', {
+      metodo: 'POST',
+      corpo: {
+        senha_atual: seletor('#senha-atual').value,
+        senha_nova: seletor('#senha-nova').value,
+      },
+    });
+
+    evento.target.reset();
+    retornar('#retorno-senha', 'Senha alterada. Entre novamente com a senha nova.');
+
+    // Trocar a senha derruba as sessões, inclusive esta: voltar ao portão é o
+    // comportamento honesto, em vez de deixar a tela quebrar na próxima ação.
+    setTimeout(() => {
+      limparSessao();
+      mostrarPortao('Senha alterada. Entre com a senha nova.');
+    }, 1500);
+  } catch (erro) {
+    retornar('#retorno-senha', erro.status === 401
+      ? 'Senha atual incorreta.'
+      : erro.detalhe || 'Não foi possível trocar a senha.', true);
+  }
+});
+
+seletor('#ativar-2fa')?.addEventListener('click', async () => {
+  try {
+    const { segredo } = await pedirJson('/api/auth/segundo-fator', { metodo: 'POST', corpo: {} });
+    definirTexto('#segredo-2fa', segredo);
+    seletor('#bloco-ativar-2fa').hidden = false;
+    seletor('#codigo-2fa').focus();
+  } catch (erro) {
+    retornar('#retorno-2fa', erro.detalhe || 'Não foi possível preparar o segundo fator.', true);
+  }
+});
+
+seletor('#form-confirmar-2fa')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  try {
+    await pedirJson('/api/auth/segundo-fator/confirmar', {
+      metodo: 'POST',
+      corpo: { codigo: seletor('#codigo-2fa').value.trim() },
+    });
+    evento.target.reset();
+    retornar('#retorno-2fa', 'Segundo fator ativado.');
+    await recarregarSessao();
+  } catch (erro) {
+    retornar('#retorno-2fa', erro.detalhe || 'Código incorreto.', true);
+  }
+});
+
+seletor('#desativar-2fa')?.addEventListener('click', async () => {
+  const senha = seletor('#senha-atual')?.value;
+  if (!senha) {
+    retornar('#retorno-2fa', 'Digite sua senha no campo "Senha atual" para desativar.', true);
+    return;
+  }
+
+  try {
+    await pedirJson('/api/auth/segundo-fator/desativar', { metodo: 'POST', corpo: { senha } });
+    retornar('#retorno-2fa', 'Segundo fator desativado.');
+    await recarregarSessao();
+  } catch (erro) {
+    retornar('#retorno-2fa', erro.status === 401 ? 'Senha incorreta.' : 'Não foi possível desativar.', true);
+  }
+});
+
 // --- Início ---
 
 atualizarRelogio();
 setInterval(atualizarRelogio, 30000);
 
-// Um F5 no meio do plantão não deve pedir senha de novo.
 (async () => {
+  await carregarOpcoesDeEntrada();
+
+  // Link de recuperação vindo do e-mail: abre direto o painel de senha nova.
+  const parametros = new URLSearchParams(window.location.search);
+  const token = parametros.get('recuperar');
+  if (token) {
+    tokenDeRecuperacao = token;
+    // Tira o token da barra de endereços: ele não precisa ficar no histórico.
+    window.history.replaceState({}, '', window.location.pathname);
+
+    mostrarPortao();
+    mostrarPainelDoPortao('redefinir');
+    seletor('#redefinir-senha')?.focus();
+    return;
+  }
+
+  // Um F5 no meio do plantão não deve pedir senha de novo.
   if (lerRefresh() && await renovarSessao()) mostrarAplicacao();
   else mostrarPortao();
 })();

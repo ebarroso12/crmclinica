@@ -1,8 +1,25 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Carrega o `.env` antes de qualquer leitura de configuração.
+// Sem isto, `.env.exemplo` seria uma instrução vazia: copiar o arquivo não teria
+// efeito nenhum. Variável já presente no ambiente vence a do arquivo — é o que
+// permite sobrescrever um valor sem editar o arquivo.
+const CAMINHO_ENV = path.join(__dirname, '..', '.env');
+if (fs.existsSync(CAMINHO_ENV) && typeof process.loadEnvFile === 'function') {
+  try {
+    process.loadEnvFile(CAMINHO_ENV);
+  } catch (erro) {
+    console.error(`[crmclinica] não foi possível ler o .env: ${erro.message}`);
+  }
+}
+
 const { carregarConfiguracao, validarConfiguracao, descreverConfiguracao } = require('./config');
 const { criarAplicacao, criarServidor } = require('./servidor/http');
 const { criarRepositorioEmMemoria } = require('./dados/repositorio-memoria');
+const { semearMaster } = require('./seguranca/semear-master');
 
 const configuracao = carregarConfiguracao();
 
@@ -35,6 +52,22 @@ function iniciar() {
   }
 
   const { repositorio, encerrar: encerrarBanco } = montarRepositorio();
+
+  // Sem banco, o admin master é semeado a cada subida — do contrário não haveria
+  // como entrar em desenvolvimento. Com banco, use `npm run criar-admin`, para
+  // que a criação seja um ato deliberado e não um efeito de reiniciar o processo.
+  if (!configuracao.banco.configurado && configuracao.master.email) {
+    semearMaster(repositorio, configuracao.master)
+      .then((resultado) => {
+        if (resultado.criado) {
+          console.log(`[crmclinica] admin master em memória: ${configuracao.master.email}`);
+        } else if (resultado.motivo) {
+          console.warn(`[crmclinica] admin master não criado: ${resultado.motivo}`);
+        }
+      })
+      .catch((erro) => console.error('[crmclinica] falha ao semear o admin master:', erro.message));
+  }
+
   const servidor = criarServidor({ configuracao, repositorio });
 
   servidor.listen(configuracao.porta, configuracao.endereco, () => {

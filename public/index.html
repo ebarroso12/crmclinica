@@ -14,20 +14,100 @@
 
   <!-- Entrada da equipe. Sem sessão válida, o inbox nem é montado. -->
   <div class="portao" id="portao" hidden>
-    <form class="cartao-login" id="form-login">
+    <div class="cartao-login">
       <span class="marca-icone" aria-hidden="true">+</span>
       <h1>crmclinica</h1>
-      <p>Atendimento da Clínica Dr. Edson Barroso</p>
+      <p class="subtitulo">Atendimento da Clínica Dr. Edson Barroso</p>
 
-      <label for="login-email">E-mail</label>
-      <input id="login-email" type="email" autocomplete="username" required>
+      <!-- Entrar -->
+      <form id="form-login" class="painel-portao">
+        <label for="login-email">E-mail</label>
+        <input id="login-email" type="email" autocomplete="username" required>
 
-      <label for="login-senha">Senha</label>
-      <input id="login-senha" type="password" autocomplete="current-password" required>
+        <label for="login-senha">Senha</label>
+        <div class="campo-senha">
+          <input id="login-senha" type="password" autocomplete="current-password" required>
+          <button type="button" class="olho" data-olho="login-senha"
+                  aria-label="Mostrar senha" aria-pressed="false">👁</button>
+        </div>
 
-      <button type="submit" class="primario">Entrar</button>
+        <!-- Só aparece quando a conta tem segundo fator ativo. -->
+        <div id="bloco-codigo" hidden>
+          <label for="login-codigo">Código do aplicativo autenticador</label>
+          <input id="login-codigo" type="text" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="6" placeholder="000000">
+        </div>
+
+        <button type="submit" class="primario">Entrar</button>
+
+        <button type="button" class="google" id="entrar-google" hidden>
+          <span aria-hidden="true">G</span> Entrar com a conta Google
+        </button>
+
+        <div class="rodape-portao">
+          <button type="button" class="link" data-portao="recuperar">Esqueci minha senha</button>
+          <button type="button" class="link" data-portao="cadastro">Criar conta</button>
+        </div>
+      </form>
+
+      <!-- Criar conta -->
+      <form id="form-cadastro" class="painel-portao" hidden>
+        <h2>Criar conta</h2>
+        <p class="nota">Seu acesso precisa ser liberado pelo administrador antes do primeiro uso.</p>
+
+        <label for="cadastro-nome">Nome</label>
+        <input id="cadastro-nome" type="text" autocomplete="name" required>
+
+        <label for="cadastro-email">E-mail</label>
+        <input id="cadastro-email" type="email" autocomplete="username" required>
+
+        <label for="cadastro-senha">Senha</label>
+        <div class="campo-senha">
+          <input id="cadastro-senha" type="password" autocomplete="new-password" minlength="8" required>
+          <button type="button" class="olho" data-olho="cadastro-senha"
+                  aria-label="Mostrar senha" aria-pressed="false">👁</button>
+        </div>
+
+        <button type="submit" class="primario">Enviar cadastro</button>
+        <div class="rodape-portao">
+          <button type="button" class="link" data-portao="login">Voltar para a entrada</button>
+        </div>
+      </form>
+
+      <!-- Recuperar senha -->
+      <form id="form-recuperar" class="painel-portao" hidden>
+        <h2>Recuperar senha</h2>
+        <p class="nota">Enviaremos um link para o e-mail cadastrado.</p>
+
+        <label for="recuperar-email">E-mail</label>
+        <input id="recuperar-email" type="email" autocomplete="username" required>
+
+        <button type="submit" class="primario">Enviar link</button>
+        <div class="rodape-portao">
+          <button type="button" class="link" data-portao="login">Voltar para a entrada</button>
+        </div>
+      </form>
+
+      <!-- Redefinir senha (aberto pelo link do e-mail) -->
+      <form id="form-redefinir" class="painel-portao" hidden>
+        <h2>Escolher senha nova</h2>
+
+        <label for="redefinir-senha">Senha nova</label>
+        <div class="campo-senha">
+          <input id="redefinir-senha" type="password" autocomplete="new-password" minlength="8" required>
+          <button type="button" class="olho" data-olho="redefinir-senha"
+                  aria-label="Mostrar senha" aria-pressed="false">👁</button>
+        </div>
+
+        <button type="submit" class="primario">Salvar senha</button>
+        <div class="rodape-portao">
+          <button type="button" class="link" data-portao="login">Voltar para a entrada</button>
+        </div>
+      </form>
+
       <p class="erro-login" id="erro-login" role="alert" hidden></p>
-    </form>
+      <p class="aviso-portao" id="aviso-portao" role="status" hidden></p>
+    </div>
   </div>
 
   <div class="app" id="aplicacao" hidden>
@@ -83,6 +163,13 @@
         <ul aria-labelledby="grupo-controle">
           <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
+          <li id="item-usuarios" hidden>
+            <button type="button" data-tela="usuarios">
+              <span class="icone-menu" aria-hidden="true">◍</span> Usuários
+              <b class="contador" id="contador-pendentes" hidden>0</b>
+            </button>
+          </li>
+          <li><button type="button" data-tela="perfil"><span class="icone-menu" aria-hidden="true">☺</span> Meu perfil</button></li>
         </ul>
       </nav>
 
@@ -346,11 +433,154 @@
           </div>
         </div>
         <article class="card estreito">
-          <ul class="eventos">
-            <li><span class="bolinha ok" aria-hidden="true">●</span><span><b>Evento recebido e aceito</b><small>WhatsApp · há 4 min · chave de idempotência registrada</small></span></li>
-            <li><span class="bolinha alerta" aria-hidden="true">●</span><span><b>Conversa escalonada para a equipe</b><small>Serena · há 18 min · motivo: dúvida clínica</small></span></li>
-            <li><span class="bolinha ok" aria-hidden="true">●</span><span><b>Evento duplicado ignorado</b><small>WhatsApp · há 22 min · reenvio do mesmo id externo</small></span></li>
+          <!-- A trilha é gravada no banco, mas ainda não há rota de consulta. -->
+          <p class="vazio">A consulta da trilha de auditoria ainda não foi implementada.</p>
+        </article>
+      </section>
+
+      <!-- Usuários (só o administrador master) -->
+      <section id="usuarios" class="tela" hidden aria-labelledby="titulo-usuarios">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-usuarios">Usuários</h2>
+            <p>Libere o acesso de quem se cadastrou e defina o papel de cada pessoa.</p>
+          </div>
+          <button type="button" class="primario" id="abrir-novo-usuario">Novo usuário</button>
+        </div>
+
+        <article class="card" id="cartao-novo-usuario" hidden>
+          <h3>Criar usuário</h3>
+          <form id="form-novo-usuario" class="formulario">
+            <div>
+              <label for="novo-nome">Nome</label>
+              <input id="novo-nome" type="text" required>
+            </div>
+            <div>
+              <label for="novo-email">E-mail</label>
+              <input id="novo-email" type="email" required>
+            </div>
+            <div>
+              <label for="novo-senha">Senha provisória</label>
+              <div class="campo-senha">
+                <input id="novo-senha" type="password" minlength="8" required>
+                <button type="button" class="olho" data-olho="novo-senha"
+                        aria-label="Mostrar senha" aria-pressed="false">👁</button>
+              </div>
+            </div>
+            <div>
+              <label for="novo-papel">Papel</label>
+              <select id="novo-papel">
+                <option value="atendente">Atendente</option>
+                <option value="gestor">Gestor</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </div>
+            <div class="formulario-acoes">
+              <button type="submit" class="primario">Criar</button>
+              <button type="button" class="acao" id="cancelar-novo-usuario">Cancelar</button>
+            </div>
+          </form>
+          <p class="nota">A pessoa entra com essa senha e é obrigada a trocá-la no primeiro acesso.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Contas</h3>
+              <p id="resumo-usuarios">Carregando…</p>
+            </div>
+          </div>
+          <ul class="lista-usuarios" id="lista-usuarios" aria-live="polite">
+            <li class="vazio">Carregando…</li>
           </ul>
+        </article>
+      </section>
+
+      <!-- Meu perfil -->
+      <section id="perfil" class="tela" hidden aria-labelledby="titulo-perfil">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-perfil">Meu perfil</h2>
+            <p>Seus dados, sua senha e o segundo fator de autenticação.</p>
+          </div>
+        </div>
+
+        <p class="aviso" id="aviso-trocar-senha" role="status" hidden>
+          Sua senha é provisória. Escolha uma senha nova para continuar usando o sistema.
+        </p>
+
+        <div class="grade">
+          <article class="card">
+            <h3>Dados</h3>
+            <form id="form-perfil" class="formulario">
+              <div>
+                <label for="perfil-nome">Nome</label>
+                <input id="perfil-nome" type="text" required>
+              </div>
+              <div>
+                <label for="perfil-telefone">Telefone</label>
+                <input id="perfil-telefone" type="text" inputmode="tel">
+              </div>
+              <dl class="perfil-leitura">
+                <dt>E-mail</dt><dd id="perfil-email">—</dd>
+                <dt>Papel</dt><dd id="perfil-papel">—</dd>
+                <dt>Conta Google</dt><dd id="perfil-google">—</dd>
+              </dl>
+              <div class="formulario-acoes">
+                <button type="submit" class="primario">Salvar</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>Trocar senha</h3>
+            <form id="form-trocar-senha" class="formulario">
+              <div>
+                <label for="senha-atual">Senha atual</label>
+                <div class="campo-senha">
+                  <input id="senha-atual" type="password" autocomplete="current-password" required>
+                  <button type="button" class="olho" data-olho="senha-atual"
+                          aria-label="Mostrar senha" aria-pressed="false">👁</button>
+                </div>
+              </div>
+              <div>
+                <label for="senha-nova">Senha nova</label>
+                <div class="campo-senha">
+                  <input id="senha-nova" type="password" autocomplete="new-password" minlength="8" required>
+                  <button type="button" class="olho" data-olho="senha-nova"
+                          aria-label="Mostrar senha" aria-pressed="false">👁</button>
+                </div>
+              </div>
+              <div class="formulario-acoes">
+                <button type="submit" class="primario">Trocar senha</button>
+              </div>
+            </form>
+            <p class="nota">Trocar a senha encerra suas outras sessões abertas.</p>
+            <p class="retorno" id="retorno-senha" role="status" hidden></p>
+          </article>
+        </div>
+
+        <article class="card estreito">
+          <h3>Segundo fator de autenticação</h3>
+          <p class="nota" id="estado-2fa">Carregando…</p>
+
+          <div id="bloco-ativar-2fa" hidden>
+            <p class="nota">
+              Cadastre este código no seu aplicativo autenticador e confirme com o número que ele mostrar.
+            </p>
+            <p class="segredo-2fa"><code id="segredo-2fa">—</code></p>
+            <form id="form-confirmar-2fa" class="formulario-linha">
+              <label class="oculto-visual" for="codigo-2fa">Código do aplicativo</label>
+              <input id="codigo-2fa" type="text" inputmode="numeric" maxlength="6" placeholder="000000" required>
+              <button type="submit" class="primario">Confirmar</button>
+            </form>
+          </div>
+
+          <div class="formulario-acoes">
+            <button type="button" class="acao" id="ativar-2fa">Ativar segundo fator</button>
+            <button type="button" class="acao" id="desativar-2fa" hidden>Desativar</button>
+          </div>
+          <p class="retorno" id="retorno-2fa" role="status" hidden></p>
         </article>
       </section>
     </main>

@@ -13,6 +13,9 @@ const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
 const { criarAutenticacao } = require('../seguranca/sessoes');
+const { criarContas } = require('../seguranca/contas');
+const { criarClienteGoogle } = require('../seguranca/google');
+const { criarRemetente } = require('../seguranca/email');
 const { criarRotasDeConversas } = require('./rotas-conversas');
 const { criarRotasDeAutenticacao } = require('./rotas-autenticacao');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
@@ -72,10 +75,14 @@ function criarAplicacao(dependencias = {}) {
   const repositorio = dependencias.repositorio || criarRepositorioEmMemoria();
   const atendimento = dependencias.atendimento || criarAtendimento({ repositorio, orquestrador });
 
-  const autenticacao = dependencias.autenticacao || criarAutenticacao({ repositorio, configuracao });
+  const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
+  const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
+  const contas = dependencias.contas || criarContas({ repositorio, configuracao, remetente, google });
+  const autenticacao = dependencias.autenticacao
+    || criarAutenticacao({ repositorio, configuracao, contas });
 
   const conversas = criarRotasDeConversas({ repositorio, atendimento });
-  const auth = criarRotasDeAutenticacao({ repositorio, autenticacao });
+  const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
 
   // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
   // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
@@ -138,38 +145,65 @@ function criarAplicacao(dependencias = {}) {
     return interpretarJson(await lerCorpoBruto(req, configuracao.limiteCorpoBytes));
   }
 
-  // Rotas de sessão. Ficam fora do RBAC por definição: é aqui que a identidade nasce.
-  async function tratarRotasDeAutenticacao(req, res, rota, metodo, usuario) {
-    if (!rota.startsWith('/api/auth') && !rota.startsWith('/api/usuarios')) return false;
+  // Rotas de conta e sessão. Ficam fora do RBAC por definição: é aqui que a
+  // identidade nasce. Cada uma protege a si mesma.
+  async function tratarRotasDeAutenticacao(req, res, rota, metodo, url, usuario) {
+    const deConta = rota.startsWith('/api/auth')
+      || rota.startsWith('/api/usuarios')
+      || rota === '/api/perfil';
+    if (!deConta) return false;
 
     const contexto = {
       agente: (req.headers['user-agent'] || '').slice(0, 300) || null,
       ip: req.socket.remoteAddress || null,
     };
+    const semCache = { 'cache-control': 'no-store' };
 
-    if (rota === '/api/auth/login' && metodo === 'POST') {
-      responderJson(res, 200, await auth.entrar(await lerJson(req), contexto), { 'cache-control': 'no-store' });
+    // Rotas simples, mapeadas por método e caminho.
+    const mapa = {
+      'GET /api/auth/opcoes': () => auth.opcoesDeEntrada(),
+      'POST /api/auth/login': async () => auth.entrar(await lerJson(req), contexto),
+      'POST /api/auth/refresh': async () => auth.renovar(await lerJson(req), contexto),
+      'POST /api/auth/logout': async () => auth.sair(await lerJson(req)),
+      'GET /api/auth/sessao': () => auth.sessaoAtual(usuario),
+      'POST /api/auth/cadastro': async () => auth.cadastrar(await lerJson(req)),
+      'GET /api/auth/google': () => auth.iniciarGoogle(),
+      'GET /api/auth/google/retorno': () => auth.retornoGoogle(url.searchParams, contexto),
+      'POST /api/auth/senha': async () => auth.trocarSenha(usuario, await lerJson(req)),
+      'POST /api/auth/recuperar': async () => auth.pedirRecuperacao(await lerJson(req), contexto),
+      'POST /api/auth/redefinir': async () => auth.redefinirSenha(await lerJson(req)),
+      'POST /api/auth/segundo-fator': () => auth.prepararSegundoFator(usuario),
+      'POST /api/auth/segundo-fator/confirmar': async () => auth.confirmarSegundoFator(usuario, await lerJson(req)),
+      'POST /api/auth/segundo-fator/desativar': async () => auth.desativarSegundoFator(usuario, await lerJson(req)),
+      'PUT /api/perfil': async () => auth.atualizarPerfil(usuario, await lerJson(req)),
+      'GET /api/usuarios': () => auth.listarUsuarios(usuario, url.searchParams),
+      'POST /api/usuarios': async () => auth.criarUsuario(usuario, await lerJson(req)),
+    };
+
+    const acao = mapa[`${metodo} ${rota}`];
+    if (acao) {
+      const resultado = await acao();
+      responderJson(res, metodo === 'POST' && rota === '/api/usuarios' ? 201 : 200, resultado, semCache);
       return true;
     }
-    if (rota === '/api/auth/refresh' && metodo === 'POST') {
-      responderJson(res, 200, await auth.renovar(await lerJson(req), contexto), { 'cache-control': 'no-store' });
-      return true;
-    }
-    if (rota === '/api/auth/logout' && metodo === 'POST') {
-      responderJson(res, 200, await auth.sair(await lerJson(req)));
-      return true;
-    }
-    if (rota === '/api/auth/sessao' && metodo === 'GET') {
-      responderJson(res, 200, await auth.sessaoAtual(usuario), { 'cache-control': 'no-store' });
-      return true;
-    }
-    if (rota === '/api/usuarios' && metodo === 'POST') {
-      responderJson(res, 201, await auth.criarUsuario(usuario, await lerJson(req)));
-      return true;
-    }
-    if (rota === '/api/usuarios' && metodo === 'GET') {
-      responderJson(res, 200, await auth.listarUsuarios(usuario), { 'cache-control': 'no-store' });
-      return true;
+
+    // /api/usuarios/:id/situacao e /papel — exclusivas do master.
+    const partes = rota.split('/').filter(Boolean);
+    if (partes[0] === 'api' && partes[1] === 'usuarios' && partes.length === 4) {
+      if (metodo !== 'POST') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+        return true;
+      }
+
+      const sobre = {
+        situacao: (corpo) => auth.definirSituacao(usuario, partes[2], corpo),
+        papel: (corpo) => auth.definirPapel(usuario, partes[2], corpo),
+      }[partes[3]];
+
+      if (sobre) {
+        responderJson(res, 200, await sobre(await lerJson(req)), semCache);
+        return true;
+      }
     }
 
     responderJson(res, 404, { erro: 'rota não encontrada' });
@@ -317,7 +351,7 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
-      if (await tratarRotasDeAutenticacao(req, res, rota, metodo, usuario)) return;
+      if (await tratarRotasDeAutenticacao(req, res, rota, metodo, url, usuario)) return;
 
       if (rota === '/api/eventos') {
         if (metodo !== 'POST') {
@@ -363,10 +397,18 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
       if (erro.status === 401) {
-        responderJson(res, 401, { erro: erro.message }, { 'www-authenticate': 'Bearer' });
+        // `segundoFator` diz à interface que falta o código, não a senha.
+        const detalhe = { erro: erro.message };
+        if (erro.segundoFator) detalhe.segundo_fator = erro.segundoFator;
+        responderJson(res, 401, detalhe, { 'www-authenticate': 'Bearer' });
         return;
       }
-      if (erro.status === 404 || erro.status === 503) {
+      if (erro.status === 403 && erro.situacao) {
+        // Conta na fila ou recusada: a interface precisa da situação para explicar.
+        responderJson(res, 403, { erro: erro.message, situacao: erro.situacao });
+        return;
+      }
+      if ([400, 403, 404, 409, 503].includes(erro.status)) {
         responderJson(res, erro.status, { erro: erro.message });
         return;
       }

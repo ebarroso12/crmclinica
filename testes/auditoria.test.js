@@ -99,9 +99,14 @@ test('no material de referência, os termos proibidos só aparecem como proibiç
 
       const linhas = fs.readFileSync(caminho, 'utf8').split(/\r?\n/);
       linhas.forEach((linha, indice) => {
-        if (padrao.test(linha) && !usoLegitimo.test(linha)) {
-          violacoes.push(`${relativo(caminho)}:${indice + 1}`);
-        }
+        if (!padrao.test(linha)) return;
+
+        // O termo pode ser item de uma lista cujo cabeçalho é que carrega a
+        // negação ("## Proibido importar: … - o termo;"). Olhar só a linha acusaria
+        // a lista inteira, então o bloco acima também conta. Oito linhas cobrem
+        // um cabeçalho de seção mais os itens até ele.
+        const contexto = linhas.slice(Math.max(0, indice - 8), indice + 1).join(' ');
+        if (!usoLegitimo.test(contexto)) violacoes.push(`${relativo(caminho)}:${indice + 1}`);
       });
     }
   };

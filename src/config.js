@@ -69,6 +69,29 @@ function carregarConfiguracao(ambiente = process.env) {
       // os tokens morrem no reinício, que é o comportamento certo em desenvolvimento.
       segredoJwt: texto(ambiente.CRMCLINICA_JWT_SECRET) || (producao ? '' : segredoEfemero()),
       configurada: Boolean(texto(ambiente.CRMCLINICA_JWT_SECRET)),
+      // Endereço público da aplicação, usado nos links de recuperação por e-mail.
+      urlPublica: urlValida(ambiente.CRMCLINICA_URL_PUBLICA) || `http://127.0.0.1:${inteiro(ambiente.PORT, 4100)}`,
+    },
+    // Admin master: conta única que libera as demais. As credenciais iniciais só
+    // são usadas para semear a conta; a troca é obrigatória no primeiro acesso.
+    master: {
+      email: texto(ambiente.CRMCLINICA_MASTER_EMAIL),
+      senhaInicial: texto(ambiente.CRMCLINICA_MASTER_SENHA),
+      nome: texto(ambiente.CRMCLINICA_MASTER_NOME) || 'Administrador master',
+    },
+    google: {
+      clienteId: texto(ambiente.GOOGLE_CLIENT_ID),
+      clienteSegredo: texto(ambiente.GOOGLE_CLIENT_SECRET),
+      redirecionamento: urlValida(ambiente.GOOGLE_REDIRECT_URI),
+    },
+    email: {
+      host: texto(ambiente.SMTP_HOST),
+      porta: inteiro(ambiente.SMTP_PORT, 587),
+      usuario: texto(ambiente.SMTP_USER),
+      senha: texto(ambiente.SMTP_PASS),
+      // 465 fala TLS desde o primeiro byte; 587 começa em claro e sobe com STARTTLS.
+      seguro: inteiro(ambiente.SMTP_PORT, 587) === 465,
+      remetente: texto(ambiente.SMTP_FROM),
     },
     // Provedor de modelo é opcional e nunca controla o fluxo do produto.
     kimi: {
@@ -110,6 +133,25 @@ function validarConfiguracao(configuracao) {
     problemas.push('CRMCLINICA_JWT_SECRET deve ter ao menos 32 caracteres');
   }
 
+  // Login com Google é tudo ou nada: meia configuração falharia só na hora do uso.
+  const partesGoogle = [
+    configuracao.google.clienteId,
+    configuracao.google.clienteSegredo,
+    configuracao.google.redirecionamento,
+  ];
+  if (partesGoogle.some(Boolean) && !partesGoogle.every(Boolean)) {
+    problemas.push('GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REDIRECT_URI precisam ser definidos juntos');
+  }
+  if (configuracao.producao && configuracao.google.redirecionamento
+    && !configuracao.google.redirecionamento.startsWith('https://')) {
+    problemas.push('GOOGLE_REDIRECT_URI deve usar HTTPS em produção');
+  }
+
+  // Sem SMTP a recuperação de senha não chega a ninguém — em produção isso é falha.
+  if (configuracao.producao && !configuracao.email.host) {
+    problemas.push('SMTP_HOST é obrigatório em produção para a recuperação de senha funcionar');
+  }
+
   return problemas;
 }
 
@@ -126,6 +168,12 @@ function descreverConfiguracao(configuracao) {
     atendimento: {
       nome: 'Serena',
       integracao: configuracao.serena.baseUrl ? 'configurada' : 'ausente',
+    },
+    entrada: {
+      // O que a tela de login deve oferecer. Nenhum segredo sai daqui — só se a
+      // opção está ligada ou não.
+      google: Boolean(configuracao.google.clienteId && configuracao.google.clienteSegredo),
+      recuperacaoPorEmail: Boolean(configuracao.email.host && configuracao.email.remetente),
     },
     inbox: {
       nome: 'Inbox do crmclinica',

@@ -62,6 +62,13 @@ function montarConversa(linha) {
   };
 }
 
+// Campos de usuário devolvidos por padrão. `senha_hash` e `totp_segredo_cifrado`
+// ficam de fora: só as consultas que precisam deles os pedem explicitamente.
+const CAMPOS_USUARIO = `
+  id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
+  telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em
+`;
+
 function montarMensagem(linha) {
   return {
     id: Number(linha.id),
@@ -404,31 +411,115 @@ function criarRepositorio(pool) {
     async obterUsuarioPorEmail(email) {
       if (!email) return null;
       const { rows } = await consultar(
-        'SELECT id, nome, email, senha_hash, papel, ativo FROM usuarios WHERE lower(email) = lower($1)',
+        `SELECT ${CAMPOS_USUARIO}, senha_hash FROM usuarios WHERE lower(email) = lower($1)`,
         [email],
       );
       return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
     },
 
     async obterUsuarioPorId(id) {
-      const { rows } = await consultar(
-        'SELECT id, nome, email, papel, ativo FROM usuarios WHERE id = $1',
-        [id],
-      );
+      const { rows } = await consultar(`SELECT ${CAMPOS_USUARIO} FROM usuarios WHERE id = $1`, [id]);
       return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
     },
 
-    async criarUsuario({ nome, email, senhaHash, papel = 'atendente' }) {
-      const { rows } = await consultar(
-        'INSERT INTO usuarios (nome, email, senha_hash, papel) VALUES ($1, $2, $3, $4) RETURNING id, nome, email, papel, ativo',
-        [nome, email, senhaHash, papel],
-      );
+    async obterUsuarioPorGoogleSub(sub) {
+      if (!sub) return null;
+      const { rows } = await consultar(`SELECT ${CAMPOS_USUARIO} FROM usuarios WHERE google_sub = $1`, [sub]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    async criarUsuario({
+      nome, email, senhaHash = null, papel = 'atendente',
+      situacao = 'pendente', master = false, precisaTrocarSenha = false,
+      googleSub = null, telefone = null,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO usuarios (nome, email, senha_hash, papel, situacao, master, precisa_trocar_senha, google_sub, telefone)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING ${CAMPOS_USUARIO}
+      `, [nome, email, senhaHash, papel, situacao, master, precisaTrocarSenha, googleSub, telefone]);
+
       return { ...rows[0], id: Number(rows[0].id) };
     },
 
-    async listarUsuarios() {
-      const { rows } = await consultar('SELECT id, nome, email, papel, ativo FROM usuarios ORDER BY nome');
+    async atualizarUsuario(id, campos) {
+      const permitidos = new Map([
+        ['nome', 'nome'], ['telefone', 'telefone'], ['papel', 'papel'],
+        // `master` só é escrito pela semeadura do administrador: nenhuma rota HTTP
+        // passa este campo, e promover a si mesmo não é um caminho existente.
+        ['master', 'master'],
+        ['situacao', 'situacao'], ['ativo', 'ativo'], ['senhaHash', 'senha_hash'],
+        ['precisaTrocarSenha', 'precisa_trocar_senha'], ['googleSub', 'google_sub'],
+        ['totpSegredoCifrado', 'totp_segredo_cifrado'], ['totpAtivo', 'totp_ativo'],
+        ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
+        ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
+        ['avatarUrl', 'avatar_url'],
+      ]);
+
+      const partes = [];
+      const valores = [];
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}`);
+      }
+      if (partes.length === 0) return this.obterUsuarioPorId(id);
+
+      valores.push(id);
+      await consultar(`UPDATE usuarios SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
+      return this.obterUsuarioPorId(id);
+    },
+
+    async listarUsuarios({ situacao = null } = {}) {
+      const valores = [];
+      let filtro = '';
+      if (situacao) {
+        valores.push(situacao);
+        filtro = 'WHERE situacao = $1';
+      }
+      const { rows } = await consultar(
+        `SELECT ${CAMPOS_USUARIO} FROM usuarios ${filtro} ORDER BY situacao = 'pendente' DESC, nome`,
+        valores,
+      );
       return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    /** O segredo do segundo fator sai separado: quase nenhuma consulta precisa dele. */
+    async obterSegredoTotp(id) {
+      const { rows } = await consultar('SELECT totp_segredo_cifrado FROM usuarios WHERE id = $1', [id]);
+      return rows[0]?.totp_segredo_cifrado ?? null;
+    },
+
+    // ---------------------------------------------------------------- recuperação de senha
+
+    async criarRecuperacao({ usuarioId, hashToken, expiraEm, ip = null }) {
+      const { rows } = await consultar(
+        'INSERT INTO recuperacoes_senha (usuario_id, hash_token, expira_em, solicitado_ip) VALUES ($1, $2, $3, $4) RETURNING id',
+        [usuarioId, hashToken, expiraEm, ip],
+      );
+      return { id: Number(rows[0].id) };
+    },
+
+    async obterRecuperacaoPorHash(hashToken) {
+      const { rows } = await consultar(
+        'SELECT id, usuario_id, expira_em, usado_em FROM recuperacoes_senha WHERE hash_token = $1',
+        [hashToken],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), usuario_id: Number(rows[0].usuario_id) } : null;
+    },
+
+    async marcarRecuperacaoUsada(id) {
+      await consultar('UPDATE recuperacoes_senha SET usado_em = now() WHERE id = $1 AND usado_em IS NULL', [id]);
+    },
+
+    /** Um pedido novo invalida os anteriores: só o último link deve funcionar. */
+    async invalidarRecuperacoesDoUsuario(usuarioId) {
+      const { rowCount } = await consultar(
+        'UPDATE recuperacoes_senha SET usado_em = now() WHERE usuario_id = $1 AND usado_em IS NULL',
+        [usuarioId],
+      );
+      return rowCount;
     },
 
     async criarSessao({ usuarioId, hashRefresh, expiraEm, agente = null, ip = null }) {

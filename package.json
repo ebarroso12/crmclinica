@@ -11,8 +11,10 @@
   "scripts": {
     "iniciar": "node src/index.js",
     "start": "node src/index.js",
+    "criar-admin": "node bin/criar-admin.js",
+    "smoke": "node ferramentas/smoke-fluxo.js",
     "test": "node --test \"testes/**/*.test.js\"",
-    "verificar": "node --check src/index.js && node --check src/servidor/http.js && node --check src/config.js && node --check src/contratos/evento.js && node --check src/integracoes/openclaw.js && node --check src/provedores/kimi.js && node --check api/index.js && node --check public/app.js"
+    "verificar": "node --check src/index.js && node --check src/servidor/http.js && node --check src/config.js && node --check src/contratos/evento.js && node --check src/integracoes/openclaw.js && node --check src/provedores/kimi.js && node --check src/seguranca/contas.js && node --check src/seguranca/google.js && node --check src/seguranca/totp.js && node --check src/seguranca/email.js && node --check bin/criar-admin.js && node --check api/index.js && node --check public/app.js"
   },
   "dependencies": {
     "pg": "^8.22.0"

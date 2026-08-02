@@ -71,6 +71,25 @@ test('produção sem segredo de assinatura é recusada', () => {
   );
 });
 
+test('produção sem SMTP é recusada — a recuperação de senha não chegaria a ninguém', () => {
+  const problemas = validarConfiguracao(carregarConfiguracao({
+    NODE_ENV: 'production',
+    CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
+    CRMCLINICA_JWT_SECRET: 'x'.repeat(48),
+    OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
+  }));
+
+  assert.ok(problemas.some((problema) => /SMTP_HOST/.test(problema)));
+});
+
+test('login com Google pela metade é recusado', () => {
+  const problemas = validarConfiguracao(carregarConfiguracao({
+    GOOGLE_CLIENT_ID: 'id-sintetico.apps.googleusercontent.com',
+  }));
+
+  assert.ok(problemas.some((problema) => /GOOGLE_CLIENT_SECRET/.test(problema)));
+});
+
 test('produção bem configurada não acusa problema', () => {
   const problemas = validarConfiguracao(carregarConfiguracao({
     NODE_ENV: 'production',
@@ -79,6 +98,11 @@ test('produção bem configurada não acusa problema', () => {
     OPENCLAW_BASE_URL: 'https://orquestrador.exemplo',
     SERENA_BASE_URL: 'https://serena.exemplo',
     OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
+    SMTP_HOST: 'smtp.exemplo.com',
+    SMTP_FROM: 'nao-responda@exemplo.com',
+    GOOGLE_CLIENT_ID: 'id-sintetico.apps.googleusercontent.com',
+    GOOGLE_CLIENT_SECRET: 'segredo-sintetico',
+    GOOGLE_REDIRECT_URI: 'https://crmclinica.exemplo/api/auth/google/retorno',
   }));
 
   assert.deepEqual(problemas, []);

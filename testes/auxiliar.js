@@ -46,6 +46,9 @@ async function subirServidor(dependencias = {}) {
       base,
       repositorio: dependencias.repositorio,
       papel: dependencias.papel || 'admin',
+      // Por padrão o usuário do teste é o master: as rotas de gestão de contas
+      // exigem isso, e a maioria das suítes precisa de acesso total.
+      master: dependencias.master ?? (dependencias.papel ?? 'admin') === 'admin',
     });
   }
 
@@ -61,15 +64,20 @@ async function subirServidor(dependencias = {}) {
     pedirSemAuth,
     pedir: (caminho, opcoes) => pedirSemAuth(caminho, comPortador(opcoes)),
     /** Autentica outro usuário, para testar papéis diferentes na mesma instância. */
-    entrarComo: (papel) => autenticar({ base, repositorio: dependencias.repositorio, papel }),
+    entrarComo: (papel, opcoes = {}) => autenticar({
+      base, repositorio: dependencias.repositorio, papel, ...opcoes,
+    }),
     encerrar: () => new Promise((resolve, reject) => {
       servidor.close((erro) => (erro ? reject(erro) : resolve()));
     }),
   };
 }
 
-/** Cria um usuário do papel pedido e devolve a sessão aberta. */
-async function autenticar({ base, repositorio, papel = 'admin' }) {
+/**
+ * Cria um usuário do papel pedido, já liberado, e devolve a sessão aberta.
+ * Conta nova nasce pendente no produto; no teste ela precisa poder entrar.
+ */
+async function autenticar({ base, repositorio, papel = 'admin', master = false }) {
   const email = `${papel}-${Math.random().toString(36).slice(2, 8)}@teste.local`;
 
   await repositorio.criarUsuario({
@@ -77,6 +85,8 @@ async function autenticar({ base, repositorio, papel = 'admin' }) {
     email,
     senhaHash: await gerarHash(SENHA_DE_TESTE),
     papel,
+    situacao: 'ativo',
+    master,
   });
 
   const resposta = await fetch(`${base}/api/auth/login`, {
