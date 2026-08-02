@@ -1,24 +1,32 @@
 'use strict';
 
-const http = require('node:http');
+const { carregarConfiguracao, validarConfiguracao, descreverConfiguracao } = require('./config');
+const { criarAplicacao, criarServidor } = require('./servidor/http');
 
-const porta = Number(process.env.PORT || 4100);
+const configuracao = carregarConfiguracao();
 
-const servidor = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ produto: 'crmclinica', status: 'ok' }));
-    return;
+function iniciar() {
+  const problemas = validarConfiguracao(configuracao);
+  if (problemas.length > 0) {
+    // Em produção, configuração insegura impede a subida; fora dela, apenas avisa.
+    const prefixo = configuracao.producao ? 'Configuração inválida' : 'Aviso de configuração';
+    for (const problema of problemas) console.error(`[crmclinica] ${prefixo}: ${problema}`);
+    if (configuracao.producao) process.exit(1);
   }
 
-  res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify({ erro: 'Rota não encontrada' }));
-});
-
-if (require.main === module) {
-  servidor.listen(porta, '127.0.0.1', () => {
-    console.log(`crmclinica ouvindo na porta ${porta}`);
+  const servidor = criarServidor({ configuracao });
+  servidor.listen(configuracao.porta, configuracao.endereco, () => {
+    console.log(`[crmclinica] ouvindo em http://${configuracao.endereco}:${configuracao.porta}`);
+    console.log('[crmclinica] plataforma:', JSON.stringify(descreverConfiguracao(configuracao)));
   });
+
+  const encerrar = () => servidor.close(() => process.exit(0));
+  process.on('SIGINT', encerrar);
+  process.on('SIGTERM', encerrar);
+
+  return servidor;
 }
 
-module.exports = { servidor };
+if (require.main === module) iniciar();
+
+module.exports = { iniciar, criarAplicacao, criarServidor, configuracao };

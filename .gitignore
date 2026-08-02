@@ -1,10 +1,23 @@
 node_modules/
+
+# Segredos: só o modelo com valores em branco é versionado.
 .env
 .env.*
 !.env.exemplo
-*.log
-.DS_Store
-.vercel/
-dist/
 
+# Material de referência do cliente (PRD, roadmap, schema, infra de exemplo).
+# Fora do Git de propósito: traz senhas-padrão em docker-compose/.env.example e
+# endereço de servidor. Se for para versionar, limpe as credenciais antes.
+documentos/
+
+# Artefatos locais
+*.log
+dist/
+coverage/
+.playwright-mcp/
+.playwright-cli/
+
+# Ferramentas e SO
 .vercel
+.DS_Store
+Thumbs.db

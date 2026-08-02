@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "runtime": "nodejs22.x"
+    }
+  },
+  "rewrites": [
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/api/resumo", "destination": "/api/index" },
+    { "source": "/api/eventos", "destination": "/api/index" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "x-content-type-options", "value": "nosniff" },
+        { "key": "x-frame-options", "value": "DENY" },
+        { "key": "referrer-policy", "value": "no-referrer" },
+        { "key": "strict-transport-security", "value": "max-age=63072000; includeSubDomains; preload" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="CRM de atendimento da Clínica Dr. Edson Barroso.">
+  <title>crmclinica — Clínica Dr. Edson Barroso</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/estilo.css">
+</head>
+<body>
+  <a class="pular" href="#conteudo">Pular para o conteúdo</a>
+
+  <div class="app">
+    <!-- Faixa superior de saúde operacional -->
+    <section class="plantao" aria-label="Saúde operacional">
+      <div>
+        <small>ORQUESTRADOR</small>
+        <strong>OpenClaw</strong>
+        <span id="saude-orquestrador" class="estado">verificando…</span>
+      </div>
+      <div>
+        <small>ATENDIMENTO</small>
+        <strong>Serena</strong>
+        <span id="saude-atendimento" class="estado">verificando…</span>
+      </div>
+      <div>
+        <small>FONTE DE VERDADE</small>
+        <strong>CRM</strong>
+        <span id="saude-crm" class="estado">verificando…</span>
+      </div>
+      <div>
+        <small>FILA</small>
+        <strong id="fila-topo">—</strong>
+        <span>aguardando equipe</span>
+      </div>
+    </section>
+
+    <!-- Menu lateral -->
+    <header class="lateral">
+      <p class="marca">
+        <span class="marca-icone" aria-hidden="true">+</span>
+        <span><b>crmclinica</b><small>Clínica Dr. Edson Barroso</small></span>
+      </p>
+
+      <p class="relogio">
+        <b id="hora">--:--</b>
+        <span>São Paulo · hoje</span>
+      </p>
+
+      <nav aria-label="Seções do CRM">
+        <ul>
+          <li><button type="button" data-tela="painel" aria-current="page"><span class="icone-menu" aria-hidden="true">▦</span> Hoje</button></li>
+          <li><button type="button" data-tela="conversas"><span class="icone-menu" aria-hidden="true">◌</span> Conversas <b class="contador" id="contador-conversas" aria-hidden="true">—</b></button></li>
+          <li><button type="button" data-tela="leads"><span class="icone-menu" aria-hidden="true">⌁</span> Leads</button></li>
+          <li><button type="button" data-tela="agenda"><span class="icone-menu" aria-hidden="true">▤</span> Agenda</button></li>
+        </ul>
+        <p class="divisor" id="grupo-controle">CONTROLE</p>
+        <ul aria-labelledby="grupo-controle">
+          <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
+          <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
+        </ul>
+      </nav>
+
+      <p class="rodape-lateral">crmclinica v0.1 · orquestrado pelo OpenClaw</p>
+    </header>
+
+    <main class="area" id="conteudo">
+      <div class="topo">
+        <div>
+          <small>OPERAÇÃO</small>
+          <h1 id="titulo">Hoje</h1>
+        </div>
+        <div class="acoes">
+          <span class="avatar" aria-hidden="true">EB</span>
+          <span class="nome-equipe">Equipe clínica</span>
+        </div>
+      </div>
+
+      <!-- Aviso permanente enquanto não houver dados reais ligados -->
+      <p class="aviso" role="status">
+        Ambiente de fundação: os números abaixo são de demonstração. Nenhum dado real de paciente é acessado.
+      </p>
+
+      <!-- Painel Hoje -->
+      <section id="painel" class="tela" aria-labelledby="titulo-painel">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-painel">Bom dia, equipe</h2>
+            <p>Veja o que precisa de atenção no atendimento de hoje.</p>
+          </div>
+          <button type="button" class="primario">Nova tarefa</button>
+        </div>
+
+        <ul class="metricas">
+          <li><small>AGUARDANDO RESPOSTA</small><strong id="metrica-pendentes">—</strong><span class="alerta">↑ 3 desde ontem</span></li>
+          <li><small>LEADS RECEBIDOS HOJE</small><strong id="metrica-leads">—</strong><span class="ok">↑ 18% esta semana</span></li>
+          <li><small>CONSULTAS DE HOJE</small><strong id="metrica-consultas">—</strong><span>próxima às 14:30</span></li>
+          <li><small>ESCALONAMENTOS</small><strong id="metrica-escalonamentos">—</strong><span class="alerta">atenção da equipe</span></li>
+        </ul>
+
+        <div class="grade">
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Fila de atendimento</h3>
+                <p>Conversas que precisam de uma decisão agora</p>
+              </div>
+              <button type="button" class="link" data-tela="conversas">Ver todas</button>
+            </div>
+            <ul class="fila">
+              <li>
+                <span class="avatar rosa" aria-hidden="true">MS</span>
+                <span class="linha-texto"><b>Marina Souza</b><small>Quero saber sobre a primeira consulta…</small></span>
+                <span class="quando">há 4 min</span>
+                <span class="etiqueta">Nova</span>
+              </li>
+              <li>
+                <span class="avatar roxo" aria-hidden="true">JL</span>
+                <span class="linha-texto"><b>João Lima</b><small>Posso remarcar minha consulta?</small></span>
+                <span class="quando">há 12 min</span>
+                <span class="etiqueta">Nova</span>
+              </li>
+              <li>
+                <span class="avatar verde" aria-hidden="true">CA</span>
+                <span class="linha-texto"><b>Camila Alves</b><small>Enviei meus documentos pelo WhatsApp</small></span>
+                <span class="quando">há 19 min</span>
+                <span class="etiqueta amarela">Atenção</span>
+              </li>
+            </ul>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Próximos compromissos</h3>
+                <p>Agenda da clínica</p>
+              </div>
+              <button type="button" class="link" data-tela="agenda">Agenda</button>
+            </div>
+            <ul class="compromissos">
+              <li><time datetime="14:30">14:30</time><span><b>Consulta de avaliação</b><small>Paciente confirmado · Sala 1</small></span></li>
+              <li><time datetime="16:00">16:00</time><span><b>Retorno</b><small>Confirmar presença</small></span></li>
+              <li><time datetime="17:30">17:30</time><span><b>Consulta de avaliação</b><small>Aguardando confirmação</small></span></li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <!-- Conversas -->
+      <section id="conversas" class="tela" hidden aria-labelledby="titulo-conversas">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-conversas">Conversas</h2>
+            <p>Priorize quem está esperando uma resposta.</p>
+          </div>
+          <button type="button" class="primario">Nova conversa</button>
+        </div>
+
+        <div class="inbox">
+          <div class="lista">
+            <label class="oculto-visual" for="busca-conversas">Buscar conversa</label>
+            <input id="busca-conversas" type="search" placeholder="Buscar nome, telefone ou mensagem">
+            <div class="abas" role="tablist" aria-label="Filtro de conversas">
+              <button type="button" class="aba selecionada" role="tab" aria-selected="true">Não respondidas</button>
+              <button type="button" class="aba" role="tab" aria-selected="false">Todas</button>
+            </div>
+            <ul class="fila">
+              <li>
+                <span class="avatar rosa" aria-hidden="true">MS</span>
+                <span class="linha-texto"><b>Marina Souza</b><small>Quero saber sobre a primeira consulta…</small></span>
+                <span class="etiqueta">Nova</span>
+              </li>
+              <li>
+                <span class="avatar roxo" aria-hidden="true">JL</span>
+                <span class="linha-texto"><b>João Lima</b><small>Posso remarcar minha consulta?</small></span>
+                <span class="etiqueta">Nova</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="thread">
+            <div class="thread-topo">
+              <b>Marina Souza</b>
+              <small>WhatsApp · lead novo</small>
+            </div>
+            <ol class="mensagens">
+              <li class="recebida">Olá! Quero saber como funciona a primeira consulta.</li>
+              <li class="enviada">Olá, Marina! Vou te ajudar. Qual procedimento você gostaria de conhecer?</li>
+            </ol>
+            <form class="composer" onsubmit="return false">
+              <label class="oculto-visual" for="resposta">Escrever resposta</label>
+              <input id="resposta" type="text" placeholder="Escreva uma resposta…">
+              <button type="submit" class="primario">Enviar</button>
+            </form>
+          </div>
+
+          <aside class="ficha" aria-label="Ficha do contato">
+            <small>FICHA DO CONTATO</small>
+            <h3>Marina Souza</h3>
+            <p>Lead novo · WhatsApp</p>
+            <hr>
+            <small>PRÓXIMA AÇÃO</small>
+            <b>Qualificar interesse</b>
+            <button type="button" class="secundario">Ver histórico</button>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Leads -->
+      <section id="leads" class="tela" hidden aria-labelledby="titulo-leads">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-leads">Leads</h2>
+            <p>Acompanhe oportunidades do primeiro contato à consulta.</p>
+          </div>
+          <button type="button" class="primario">Novo lead</button>
+        </div>
+        <div class="kanban">
+          <section aria-labelledby="coluna-novos">
+            <h3 id="coluna-novos">Novos <b>4</b></h3>
+            <ul>
+              <li>Marina Souza<small>WhatsApp · há 4 min</small></li>
+              <li>Rafael Costa<small>Site · há 28 min</small></li>
+            </ul>
+          </section>
+          <section aria-labelledby="coluna-qualificando">
+            <h3 id="coluna-qualificando">Qualificando <b>3</b></h3>
+            <ul><li>João Lima<small>Primeira consulta</small></li></ul>
+          </section>
+          <section aria-labelledby="coluna-agendados">
+            <h3 id="coluna-agendados">Agendados <b>5</b></h3>
+            <ul><li>Camila Alves<small>Consulta em 08/08</small></li></ul>
+          </section>
+        </div>
+      </section>
+
+      <!-- Agenda -->
+      <section id="agenda" class="tela" hidden aria-labelledby="titulo-agenda">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-agenda">Agenda</h2>
+            <p>Compromissos e confirmações da equipe.</p>
+          </div>
+          <button type="button" class="primario">Novo compromisso</button>
+        </div>
+        <article class="card estreito">
+          <h3>Hoje</h3>
+          <ul class="agenda-lista">
+            <li><time datetime="14:30">14:30</time><span><b>Consulta de avaliação</b><small>Marina Souza · Sala 1 · Confirmada</small></span></li>
+            <li><time datetime="16:00">16:00</time><span><b>Retorno</b><small>João Lima · Sala 2 · Confirmar presença</small></span></li>
+            <li><time datetime="17:30">17:30</time><span><b>Consulta de avaliação</b><small>Camila Alves · Sala 1 · Aguardando</small></span></li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- Serena -->
+      <section id="serena" class="tela" hidden aria-labelledby="titulo-serena">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-serena">Serena</h2>
+            <p>Agente de atendimento, orquestrada pelo OpenClaw.</p>
+          </div>
+          <span class="pilula" id="estado-serena">verificando…</span>
+        </div>
+        <article class="card estreito agente">
+          <span class="agente-icone" aria-hidden="true">✦</span>
+          <div>
+            <h3>Atendimento com barreiras clínicas</h3>
+            <p>
+              A Serena acolhe, qualifica e encaminha. Ela não diagnostica, não prescreve, não interpreta
+              exame e não promete resultado. Dúvida clínica, urgência e exceção vão sempre para a equipe.
+            </p>
+            <p class="nota">
+              O provedor de modelo é uma escolha interna e opcional: trocá-lo não muda as regras de atendimento.
+            </p>
+            <button type="button" class="secundario">Ver regras de atendimento</button>
+          </div>
+        </article>
+      </section>
+
+      <!-- Auditoria -->
+      <section id="auditoria" class="tela" hidden aria-labelledby="titulo-auditoria">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-auditoria">Auditoria</h2>
+            <p>Eventos orquestrados e decisões que precisam de rastreabilidade.</p>
+          </div>
+        </div>
+        <article class="card estreito">
+          <ul class="eventos">
+            <li><span class="bolinha ok" aria-hidden="true">●</span><span><b>Evento recebido e aceito</b><small>WhatsApp · há 4 min · chave de idempotência registrada</small></span></li>
+            <li><span class="bolinha alerta" aria-hidden="true">●</span><span><b>Conversa escalonada para a equipe</b><small>Serena · há 18 min · motivo: dúvida clínica</small></span></li>
+            <li><span class="bolinha ok" aria-hidden="true">●</span><span><b>Evento duplicado ignorado</b><small>WhatsApp · há 22 min · reenvio do mesmo id externo</small></span></li>
+          </ul>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

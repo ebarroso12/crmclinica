@@ -2,11 +2,14 @@
   "name": "crmclinica",
   "version": "0.1.0",
   "private": true,
-  "description": "CRM de atendimento da Clínica Dr. Edson Barroso com OpenClaw e Serena",
+  "description": "CRM clínico da Clínica Dr. Edson Barroso, orquestrado pelo OpenClaw com atendimento da Serena",
   "type": "commonjs",
+  "main": "src/index.js",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test",
-    "verificar": "node --check src/index.js"
+    "iniciar": "node src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test \"testes/**/*.test.js\"",
+    "verificar": "node --check src/index.js && node --check src/servidor/http.js && node --check src/config.js && node --check src/contratos/evento.js && node --check src/integracoes/openclaw.js && node --check src/provedores/kimi.js && node --check api/index.js && node --check public/app.js"
   }
 }
