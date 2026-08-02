@@ -29,8 +29,12 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const eventos = new Map();
   const auditoria = [];
   const usuarios = new Map();
+  const sessoes = new Map();
 
-  let proximoId = { contato: 1, conversa: 1, mensagem: 1, nota: 1, lead: 1, usuario: 1, etiqueta: 1 };
+  const proximoId = {
+    contato: 1, conversa: 1, mensagem: 1, nota: 1,
+    lead: 1, usuario: 1, etiqueta: 1, sessao: 1,
+  };
 
   for (const etiqueta of ETIQUETAS_INICIAIS) {
     etiquetas.set(etiqueta.nome, { id: proximoId.etiqueta++, ativa: true, ...etiqueta });
@@ -295,15 +299,88 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       auditoria.push({ ...registro, criado_em: agora().toISOString() });
     },
 
+    // ---------------------------------------------------------------- usuários e sessões
+
+    async obterUsuarioPorEmail(email) {
+      if (!email) return null;
+      const alvo = String(email).toLowerCase();
+      return [...usuarios.values()].find((usuario) => (usuario.email || '').toLowerCase() === alvo) ?? null;
+    },
+
+    async obterUsuarioPorId(id) {
+      const usuario = usuarios.get(Number(id));
+      if (!usuario) return null;
+      // Sem o hash: quem pede por id não precisa da senha.
+      const { senha_hash: _ignorado, ...semHash } = usuario;
+      return semHash;
+    },
+
+    async criarUsuario({ nome, email, senhaHash, papel = 'atendente' }) {
+      const existente = await this.obterUsuarioPorEmail(email);
+      if (existente) {
+        const erro = new Error('e-mail já cadastrado');
+        erro.codigo = 'usuario_duplicado';
+        throw erro;
+      }
+
+      const usuario = {
+        id: proximoId.usuario++,
+        nome,
+        email,
+        senha_hash: senhaHash,
+        papel,
+        ativo: true,
+      };
+      usuarios.set(usuario.id, usuario);
+
+      const { senha_hash: _ignorado, ...semHash } = usuario;
+      return semHash;
+    },
+
+    async listarUsuarios() {
+      return [...usuarios.values()]
+        .map(({ senha_hash: _ignorado, ...resto }) => resto)
+        .sort((a, b) => a.nome.localeCompare(b.nome));
+    },
+
+    async criarSessao({ usuarioId, hashRefresh, expiraEm, agente = null, ip = null }) {
+      const sessao = {
+        id: proximoId.sessao++,
+        usuario_id: Number(usuarioId),
+        hash_refresh: hashRefresh,
+        expira_em: expiraEm,
+        revogada_em: null,
+        agente,
+        ip,
+        criado_em: agora().toISOString(),
+      };
+      sessoes.set(sessao.id, sessao);
+      return { id: sessao.id };
+    },
+
+    async obterSessaoPorHash(hashRefresh) {
+      return [...sessoes.values()].find((sessao) => sessao.hash_refresh === hashRefresh) ?? null;
+    },
+
+    async revogarSessao(id) {
+      const sessao = sessoes.get(Number(id));
+      if (sessao && !sessao.revogada_em) sessao.revogada_em = agora().toISOString();
+    },
+
+    async revogarSessoesDoUsuario(usuarioId) {
+      let total = 0;
+      for (const sessao of sessoes.values()) {
+        if (sessao.usuario_id === Number(usuarioId) && !sessao.revogada_em) {
+          sessao.revogada_em = agora().toISOString();
+          total += 1;
+        }
+      }
+      return total;
+    },
+
     // ---------------------------------------------------------------- apoio aos testes
 
     _auditoria: auditoria,
-
-    async _criarUsuario(nome, papel = 'atendente') {
-      const usuario = { id: proximoId.usuario++, nome, papel, ativo: true };
-      usuarios.set(usuario.id, usuario);
-      return usuario;
-    },
   };
 
   return repositorio;

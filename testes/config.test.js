@@ -58,10 +58,24 @@ test('produção sem banco é recusada — o inbox não teria onde guardar conve
   assert.ok(problemas.some((problema) => /CRMCLINICA_DATABASE_URL/.test(problema)));
 });
 
+test('produção sem segredo de assinatura é recusada', () => {
+  const problemas = validarConfiguracao(carregarConfiguracao({
+    NODE_ENV: 'production',
+    CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
+    OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
+  }));
+
+  assert.ok(
+    problemas.some((problema) => /CRMCLINICA_JWT_SECRET/.test(problema)),
+    'sem autenticação o inbox não pode ser exposto',
+  );
+});
+
 test('produção bem configurada não acusa problema', () => {
   const problemas = validarConfiguracao(carregarConfiguracao({
     NODE_ENV: 'production',
     CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
+    CRMCLINICA_JWT_SECRET: 'x'.repeat(48),
     OPENCLAW_BASE_URL: 'https://orquestrador.exemplo',
     SERENA_BASE_URL: 'https://serena.exemplo',
     OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),

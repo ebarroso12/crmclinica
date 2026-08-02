@@ -22,6 +22,18 @@ const JUNCOES_CONVERSA = `
   LEFT JOIN leads l ON l.contato_id = c.contato_id
 `;
 
+// Prévia e etiquetas acompanham a conversa em **toda** consulta, não só na lista.
+// Trazer só numa delas fazia `obterConversa` devolver uma forma diferente da que
+// `listarConversas` devolve — divergência que a suíte de contrato pega.
+const AGREGADOS_CONVERSA = `
+  (SELECT m.conteudo FROM mensagens m
+    WHERE m.conversa_id = c.id AND NOT m.privada
+    ORDER BY m.criado_em DESC, m.id DESC LIMIT 1) AS previa,
+  COALESCE((SELECT array_agg(e.nome ORDER BY e.nome)
+    FROM conversa_etiquetas ce JOIN etiquetas e ON e.id = ce.etiqueta_id
+    WHERE ce.conversa_id = c.id), '{}') AS etiquetas
+`;
+
 function montarConversa(linha) {
   if (!linha) return null;
   return {
@@ -99,13 +111,7 @@ function criarRepositorio(pool) {
       valores.push(limite);
 
       const { rows } = await consultar(`
-        SELECT ${SELECAO_CONVERSA},
-          (SELECT m.conteudo FROM mensagens m
-            WHERE m.conversa_id = c.id AND NOT m.privada
-            ORDER BY m.criado_em DESC LIMIT 1) AS previa,
-          COALESCE((SELECT array_agg(e.nome ORDER BY e.nome)
-            FROM conversa_etiquetas ce JOIN etiquetas e ON e.id = ce.etiqueta_id
-            WHERE ce.conversa_id = c.id), '{}') AS etiquetas
+        SELECT ${SELECAO_CONVERSA}, ${AGREGADOS_CONVERSA}
         ${JUNCOES_CONVERSA}
         ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
         ORDER BY c.ultima_msg_em DESC NULLS LAST, c.id DESC
@@ -117,10 +123,7 @@ function criarRepositorio(pool) {
 
     async obterConversa(id) {
       const { rows } = await consultar(`
-        SELECT ${SELECAO_CONVERSA},
-          COALESCE((SELECT array_agg(e.nome ORDER BY e.nome)
-            FROM conversa_etiquetas ce JOIN etiquetas e ON e.id = ce.etiqueta_id
-            WHERE ce.conversa_id = c.id), '{}') AS etiquetas
+        SELECT ${SELECAO_CONVERSA}, ${AGREGADOS_CONVERSA}
         ${JUNCOES_CONVERSA}
         WHERE c.id = $1
       `, [id]);
@@ -328,11 +331,13 @@ function criarRepositorio(pool) {
     },
 
     async criarNota(contatoId, texto, usuarioId = null) {
-      const { rows } = await consultar(
-        'INSERT INTO notas_internas (contato_id, texto, usuario_id) VALUES ($1, $2, $3) RETURNING id, texto, criado_em',
-        [contatoId, texto, usuarioId],
-      );
-      return { ...rows[0], id: Number(rows[0].id) };
+      const { rows } = await consultar(`
+        INSERT INTO notas_internas (contato_id, texto, usuario_id)
+        VALUES ($1, $2, $3)
+        RETURNING id, contato_id, texto, usuario_id, criado_em
+      `, [contatoId, texto, usuarioId]);
+
+      return { ...rows[0], id: Number(rows[0].id), contato_id: Number(rows[0].contato_id) };
     },
 
     // ---------------------------------------------------------------- leads
@@ -392,6 +397,66 @@ function criarRepositorio(pool) {
         'INSERT INTO audit_log (entidade, entidade_id, acao, detalhe, usuario_id) VALUES ($1, $2, $3, $4::jsonb, $5)',
         [entidade, entidadeId, acao, detalhe ? JSON.stringify(detalhe) : null, usuarioId],
       );
+    },
+
+    // ---------------------------------------------------------------- usuários e sessões
+
+    async obterUsuarioPorEmail(email) {
+      if (!email) return null;
+      const { rows } = await consultar(
+        'SELECT id, nome, email, senha_hash, papel, ativo FROM usuarios WHERE lower(email) = lower($1)',
+        [email],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    async obterUsuarioPorId(id) {
+      const { rows } = await consultar(
+        'SELECT id, nome, email, papel, ativo FROM usuarios WHERE id = $1',
+        [id],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    async criarUsuario({ nome, email, senhaHash, papel = 'atendente' }) {
+      const { rows } = await consultar(
+        'INSERT INTO usuarios (nome, email, senha_hash, papel) VALUES ($1, $2, $3, $4) RETURNING id, nome, email, papel, ativo',
+        [nome, email, senhaHash, papel],
+      );
+      return { ...rows[0], id: Number(rows[0].id) };
+    },
+
+    async listarUsuarios() {
+      const { rows } = await consultar('SELECT id, nome, email, papel, ativo FROM usuarios ORDER BY nome');
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async criarSessao({ usuarioId, hashRefresh, expiraEm, agente = null, ip = null }) {
+      const { rows } = await consultar(
+        'INSERT INTO sessoes (usuario_id, hash_refresh, expira_em, agente, ip) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+        [usuarioId, hashRefresh, expiraEm, agente, ip],
+      );
+      return { id: Number(rows[0].id) };
+    },
+
+    async obterSessaoPorHash(hashRefresh) {
+      const { rows } = await consultar(
+        'SELECT id, usuario_id, hash_refresh, expira_em, revogada_em FROM sessoes WHERE hash_refresh = $1',
+        [hashRefresh],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), usuario_id: Number(rows[0].usuario_id) } : null;
+    },
+
+    async revogarSessao(id) {
+      await consultar('UPDATE sessoes SET revogada_em = now() WHERE id = $1 AND revogada_em IS NULL', [id]);
+    },
+
+    async revogarSessoesDoUsuario(usuarioId) {
+      const { rowCount } = await consultar(
+        'UPDATE sessoes SET revogada_em = now() WHERE usuario_id = $1 AND revogada_em IS NULL',
+        [usuarioId],
+      );
+      return rowCount;
     },
   };
 }

@@ -71,29 +71,121 @@ function definirTexto(alvo, valor) {
   if (elemento) elemento.textContent = valor;
 }
 
-async function pedirJson(caminho, opcoes = {}) {
+// ---------------------------------------------------------------------------
+// Sessão da equipe.
+//
+// O access token fica só em memória: em `localStorage` ele sobreviveria à aba e
+// ficaria legível por qualquer script injetado. O refresh vai para `sessionStorage`
+// para que um F5 não derrube a recepção no meio do plantão.
+// ---------------------------------------------------------------------------
+
+let accessToken = null;
+let usuarioAtual = null;
+
+const CHAVE_REFRESH = 'crmclinica.refresh';
+
+function guardarSessao(sessao) {
+  accessToken = sessao.access_token;
+  usuarioAtual = sessao.usuario;
+  try {
+    sessionStorage.setItem(CHAVE_REFRESH, sessao.refresh_token);
+  } catch {
+    // Navegador com armazenamento bloqueado: a sessão vale enquanto a página viver.
+  }
+}
+
+function lerRefresh() {
+  try {
+    return sessionStorage.getItem(CHAVE_REFRESH);
+  } catch {
+    return null;
+  }
+}
+
+function limparSessao() {
+  accessToken = null;
+  usuarioAtual = null;
+  try {
+    sessionStorage.removeItem(CHAVE_REFRESH);
+  } catch {
+    // nada a fazer
+  }
+}
+
+function podeFazer(permissao) {
+  return Boolean(usuarioAtual?.permissoes?.includes(permissao));
+}
+
+async function pedirJson(caminho, opcoes = {}, jaRenovou = false) {
   const resposta = await fetch(caminho, {
     method: opcoes.metodo || 'GET',
-    headers: { accept: 'application/json', ...(opcoes.corpo ? { 'content-type': 'application/json' } : {}) },
+    headers: {
+      accept: 'application/json',
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      ...(opcoes.corpo ? { 'content-type': 'application/json' } : {}),
+    },
     body: opcoes.corpo ? JSON.stringify(opcoes.corpo) : undefined,
   });
+
+  // Access token vence a cada 15 minutos; renovar e repetir é transparente para
+  // quem está atendendo. Uma tentativa só, para não entrar em laço.
+  if (resposta.status === 401 && !jaRenovou && lerRefresh()) {
+    if (await renovarSessao()) return pedirJson(caminho, opcoes, true);
+  }
+
   if (!resposta.ok) {
     const erro = new Error(`HTTP ${resposta.status}`);
     erro.status = resposta.status;
+    try {
+      erro.detalhe = (await resposta.json()).erro;
+    } catch {
+      erro.detalhe = null;
+    }
     throw erro;
   }
   return resposta.json();
+}
+
+async function renovarSessao() {
+  const refresh = lerRefresh();
+  if (!refresh) return false;
+
+  try {
+    const resposta = await fetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+    if (!resposta.ok) throw new Error('refresh recusado');
+
+    guardarSessao(await resposta.json());
+    return true;
+  } catch {
+    limparSessao();
+    mostrarPortao();
+    return false;
+  }
 }
 
 async function carregarResumo() {
   try {
     const resumo = await pedirJson('/api/resumo');
 
+    // Indicador sem fonte vem `null` e vira "—": melhor um traço honesto que um
+    // número inventado ao lado de números reais.
     const { pendentes, leadsHoje, consultasHoje, escalonamentos } = resumo.indicadores;
-    definirTexto('#metrica-pendentes', pendentes);
-    definirTexto('#metrica-leads', leadsHoje);
-    definirTexto('#metrica-consultas', consultasHoje);
-    definirTexto('#metrica-escalonamentos', escalonamentos);
+    const mostrar = (valor) => (valor === null || valor === undefined ? '—' : valor);
+
+    definirTexto('#metrica-pendentes', mostrar(pendentes));
+    definirTexto('#metrica-leads', mostrar(leadsHoje));
+    definirTexto('#metrica-consultas', mostrar(consultasHoje));
+    definirTexto('#metrica-escalonamentos', mostrar(escalonamentos));
+
+    const aviso = seletor('#aviso-ambiente');
+    if (aviso) {
+      aviso.hidden = resumo.origem === 'banco';
+      aviso.textContent = 'Inbox rodando em memória: nada é persistido e tudo se perde no reinício.';
+    }
 
     const { orquestrador, atendimento, inbox, fonteDeVerdade } = resumo.plataforma;
     aplicarEstado('#saude-orquestrador', orquestrador.saude);
@@ -182,8 +274,31 @@ async function carregarConversas() {
     for (const conversa of dados.conversas) {
       lista.append(montarLinhaDaLista(conversa));
     }
+
+    desenharFilaDeHoje(dados.conversas);
   } catch (erro) {
     avisar(lista, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar as conversas.');
+  }
+}
+
+/** Painel Hoje: as conversas que ainda esperam a equipe, com dado real. */
+function desenharFilaDeHoje(conversas) {
+  const fila = seletor('#fila-hoje');
+  if (!fila) return;
+
+  const esperando = conversas.filter((conversa) => conversa.status !== 'resolvida').slice(0, 5);
+  definirTexto('#metrica-pendentes', esperando.length);
+
+  if (esperando.length === 0) {
+    avisar(fila, 'Nenhuma conversa esperando resposta.');
+    return;
+  }
+
+  fila.innerHTML = '';
+  for (const conversa of esperando) {
+    const linha = montarLinhaDaLista(conversa);
+    linha.addEventListener('click', () => abrirTela('conversas'));
+    fila.append(linha);
   }
 }
 
@@ -338,7 +453,7 @@ function desenharFicha(conversa, ficha, temperatura) {
   definirTexto('#ficha-telefone', ficha?.telefone || '—');
   definirTexto('#ficha-identificador', ficha?.identificador || '—');
   definirTexto('#ficha-email', ficha?.email || '—');
-  seletor('#editar-ficha').hidden = false;
+  seletor('#editar-ficha').hidden = !podeFazer('contatos:editar');
 
   // Atributos livres da ficha.
   const atributos = seletor('#ficha-atributos');
@@ -600,6 +715,7 @@ function alternarEdicaoDaFicha(editando) {
 }
 
 seletor('#editar-ficha')?.addEventListener('click', () => {
+  if (!podeFazer('contatos:editar')) return;
   const editando = seletor('#form-ficha').hidden;
   if (editando) {
     seletor('#ficha-campo-nome').value = seletor('#ficha-nome').textContent.replace('Sem nome', '');
@@ -646,16 +762,97 @@ seletor('#form-ficha')?.addEventListener('submit', async (evento) => {
   }
 });
 
+// --- Portão de entrada ---
+
+function mostrarPortao(mensagem = '') {
+  seletor('#portao').hidden = false;
+  seletor('#aplicacao').hidden = true;
+
+  const erro = seletor('#erro-login');
+  erro.hidden = !mensagem;
+  erro.textContent = mensagem;
+
+  seletor('#login-email')?.focus();
+}
+
+function mostrarAplicacao() {
+  seletor('#portao').hidden = true;
+  seletor('#aplicacao').hidden = false;
+
+  definirTexto('#nome-usuario', usuarioAtual?.nome || '—');
+  definirTexto('#avatar-usuario', iniciais(usuarioAtual?.nome));
+
+  // Quem não pode priorizar nem editar ficha não vê o controle: esconder o que
+  // a pessoa não pode fazer evita o clique que só devolveria 403.
+  const prioridade = seletor('#seletor-prioridade');
+  if (prioridade) prioridade.hidden = !podeFazer('conversas:priorizar');
+  const editarFicha = seletor('#editar-ficha');
+  if (editarFicha) editarFicha.dataset.permitido = String(podeFazer('contatos:editar'));
+
+  iniciarInbox();
+}
+
+let inboxIniciado = false;
+function iniciarInbox() {
+  if (inboxIniciado) return;
+  inboxIniciado = true;
+
+  carregarResumo();
+  setInterval(carregarResumo, 60000);
+
+  carregarEtiquetas().then(() => {
+    carregarConversas();
+    carregarLeads();
+  });
+  setInterval(carregarConversas, 30000);
+}
+
+seletor('#form-login')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  const email = seletor('#login-email').value.trim();
+  const senha = seletor('#login-senha').value;
+  if (!email || !senha) return;
+
+  try {
+    const resposta = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, senha }),
+    });
+    if (!resposta.ok) throw new Error('credenciais inválidas');
+
+    guardarSessao(await resposta.json());
+    seletor('#login-senha').value = '';
+    mostrarAplicacao();
+  } catch {
+    // Mensagem única: dizer "e-mail não existe" entregaria quem tem conta.
+    mostrarPortao('E-mail ou senha incorretos.');
+  }
+});
+
+seletor('#sair')?.addEventListener('click', async () => {
+  const refresh = lerRefresh();
+  limparSessao();
+
+  if (refresh) {
+    // Encerrar do lado do servidor é o que revoga de verdade.
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refresh }),
+    }).catch(() => {});
+  }
+  mostrarPortao();
+});
+
 // --- Início ---
 
 atualizarRelogio();
 setInterval(atualizarRelogio, 30000);
 
-carregarResumo();
-setInterval(carregarResumo, 60000);
-
-carregarEtiquetas().then(() => {
-  carregarConversas();
-  carregarLeads();
-});
-setInterval(carregarConversas, 30000);
+// Um F5 no meio do plantão não deve pedir senha de novo.
+(async () => {
+  if (lerRefresh() && await renovarSessao()) mostrarAplicacao();
+  else mostrarPortao();
+})();

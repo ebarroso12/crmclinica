@@ -62,6 +62,45 @@ h1, h2, h3 { line-height: 1.25; }
   white-space: nowrap;
 }
 
+/* ---------- Portão de entrada ---------- */
+
+.portao {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: linear-gradient(160deg, var(--navy), #14233f);
+}
+.cartao-login {
+  width: min(380px, 100%);
+  display: grid;
+  gap: 6px;
+  padding: 32px 28px;
+  background: var(--superficie);
+  border-radius: var(--raio);
+  box-shadow: 0 20px 50px rgba(6, 14, 30, 0.35);
+}
+.cartao-login .marca-icone { margin-bottom: 10px; }
+.cartao-login h1 { margin: 0; font-size: 22px; }
+.cartao-login > p { margin: 0 0 16px; color: var(--apoio); font-size: 13px; }
+.cartao-login label { font-size: 12px; color: var(--apoio); margin-top: 8px; }
+.cartao-login input {
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+.cartao-login .primario { margin-top: 18px; padding: 11px; }
+.erro-login {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  background: #fdeaea;
+  border-left: 3px solid #b02a2a;
+  border-radius: 6px;
+  color: #8a1f1f;
+  font-size: 13px;
+}
+
 /* `minmax(0, 1fr)` em vez de `1fr` em toda coluna flexível: `1fr` equivale a
    `minmax(auto, 1fr)` e se recusa a encolher abaixo do conteúdo, o que empurra
    a página e cria barra de rolagem horizontal em tela estreita. */

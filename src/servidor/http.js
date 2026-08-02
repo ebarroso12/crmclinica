@@ -12,7 +12,10 @@ const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openc
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
+const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarRotasDeConversas } = require('./rotas-conversas');
+const { criarRotasDeAutenticacao } = require('./rotas-autenticacao');
+const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
 const PASTA_PUBLICA = path.join(__dirname, '..', '..', 'public');
@@ -69,7 +72,24 @@ function criarAplicacao(dependencias = {}) {
   const repositorio = dependencias.repositorio || criarRepositorioEmMemoria();
   const atendimento = dependencias.atendimento || criarAtendimento({ repositorio, orquestrador });
 
+  const autenticacao = dependencias.autenticacao || criarAutenticacao({ repositorio, configuracao });
+
   const conversas = criarRotasDeConversas({ repositorio, atendimento });
+  const auth = criarRotasDeAutenticacao({ repositorio, autenticacao });
+
+  // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
+  // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
+  // `exigirPermissao`, e rota sem permissão declarada não é roteada.
+  const PERMISSAO_POR_ACAO = Object.freeze({
+    mensagens: 'conversas:responder',
+    assumir: 'conversas:assumir',
+    etiquetas: 'conversas:etiquetar',
+    estado: 'conversas:resolver',
+    temperatura: 'conversas:etiquetar',
+    prioridade: 'conversas:priorizar',
+    notas: 'conversas:responder',
+    ficha: 'contatos:editar',
+  });
 
   async function receberEventoDoOrquestrador(req, res) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
@@ -118,19 +138,61 @@ function criarAplicacao(dependencias = {}) {
     return interpretarJson(await lerCorpoBruto(req, configuracao.limiteCorpoBytes));
   }
 
+  // Rotas de sessão. Ficam fora do RBAC por definição: é aqui que a identidade nasce.
+  async function tratarRotasDeAutenticacao(req, res, rota, metodo, usuario) {
+    if (!rota.startsWith('/api/auth') && !rota.startsWith('/api/usuarios')) return false;
+
+    const contexto = {
+      agente: (req.headers['user-agent'] || '').slice(0, 300) || null,
+      ip: req.socket.remoteAddress || null,
+    };
+
+    if (rota === '/api/auth/login' && metodo === 'POST') {
+      responderJson(res, 200, await auth.entrar(await lerJson(req), contexto), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/auth/refresh' && metodo === 'POST') {
+      responderJson(res, 200, await auth.renovar(await lerJson(req), contexto), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/auth/logout' && metodo === 'POST') {
+      responderJson(res, 200, await auth.sair(await lerJson(req)));
+      return true;
+    }
+    if (rota === '/api/auth/sessao' && metodo === 'GET') {
+      responderJson(res, 200, await auth.sessaoAtual(usuario), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/usuarios' && metodo === 'POST') {
+      responderJson(res, 201, await auth.criarUsuario(usuario, await lerJson(req)));
+      return true;
+    }
+    if (rota === '/api/usuarios' && metodo === 'GET') {
+      responderJson(res, 200, await auth.listarUsuarios(usuario), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    responderJson(res, 404, { erro: 'rota não encontrada' });
+    return true;
+  }
+
   // Rotas da camada de conversas. Devolve `true` quando tratou a requisição.
-  async function tratarRotasDeConversas(req, res, rota, metodo, url) {
+  // Toda rota daqui exige autenticação e a permissão declarada.
+  async function tratarRotasDeConversas(req, res, rota, metodo, url, usuario) {
     if (rota === '/api/conversas/filas' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
       responderJson(res, 200, await conversas.listarFilas());
       return true;
     }
 
     if (rota === '/api/conversas' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
       responderJson(res, 200, await conversas.listarConversas(url.searchParams), { 'cache-control': 'no-store' });
       return true;
     }
 
     if (rota === '/api/leads' && metodo === 'GET') {
+      exigirPermissao(usuario, 'leads:ler');
       responderJson(res, 200, await conversas.listarLeads(), { 'cache-control': 'no-store' });
       return true;
     }
@@ -143,6 +205,7 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
         return true;
       }
+      exigirPermissao(usuario, 'contatos:ler');
       responderJson(res, 200, await conversas.historicoDoContato(partes[2]), { 'cache-control': 'no-store' });
       return true;
     }
@@ -157,6 +220,7 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
         return true;
       }
+      exigirPermissao(usuario, 'conversas:ler');
       responderJson(res, 200, await conversas.obterConversa(conversaId), { 'cache-control': 'no-store' });
       return true;
     }
@@ -164,6 +228,7 @@ function criarAplicacao(dependencias = {}) {
 
     // A thread é a única sub-rota que também responde a GET.
     if (partes[3] === 'mensagens' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
       responderJson(res, 200, await conversas.listarMensagens(conversaId), { 'cache-control': 'no-store' });
       return true;
     }
@@ -174,6 +239,7 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'PUT' });
         return true;
       }
+      exigirPermissao(usuario, PERMISSAO_POR_ACAO.ficha);
       responderJson(res, 200, await conversas.atualizarFicha(conversaId, await lerJson(req)));
       return true;
     }
@@ -195,7 +261,12 @@ function criarAplicacao(dependencias = {}) {
       responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
       return true;
     }
-    responderJson(res, 200, await acao(await lerJson(req)));
+
+    exigirPermissao(usuario, PERMISSAO_POR_ACAO[partes[3]]);
+
+    // Quem agiu fica registrado na própria ação, não só na auditoria.
+    const corpo = await lerJson(req);
+    responderJson(res, 200, await acao({ ...corpo, usuario_id: usuario.id, autor: usuario.nome }));
     return true;
   }
 
@@ -219,20 +290,34 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
+      // Identidade lida uma vez por requisição; `null` quando não há token válido.
+      const usuario = autenticacao.identificar(req.headers.authorization);
+
       if (rota === '/api/resumo') {
         if (metodo !== 'GET') {
           responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
           return;
         }
-        const [saudeOrquestrador, saudeInbox] = await Promise.all([
+        exigirPermissao(usuario, 'conversas:ler');
+        const [saudeOrquestrador, saudeInbox, conversasDoResumo, leadsDoResumo] = await Promise.all([
           orquestrador.verificarSaude(),
           repositorio.verificarSaude(),
+          repositorio.listarConversas({ limite: 200 }),
+          repositorio.listarLeads(),
         ]);
-        responderJson(res, 200, montarResumo(configuracao, saudeOrquestrador, saudeInbox), {
-          'cache-control': 'no-store',
-        });
+        responderJson(
+          res,
+          200,
+          montarResumo(configuracao, saudeOrquestrador, saudeInbox, {
+            conversas: conversasDoResumo,
+            leads: leadsDoResumo,
+          }),
+          { 'cache-control': 'no-store' },
+        );
         return;
       }
+
+      if (await tratarRotasDeAutenticacao(req, res, rota, metodo, usuario)) return;
 
       if (rota === '/api/eventos') {
         if (metodo !== 'POST') {
@@ -243,7 +328,7 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
-      if (await tratarRotasDeConversas(req, res, rota, metodo, url)) return;
+      if (await tratarRotasDeConversas(req, res, rota, metodo, url, usuario)) return;
 
       const arquivo = ARQUIVOS_PUBLICOS.get(rota);
       if (arquivo) {
@@ -272,7 +357,16 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 503, { erro: erro.message, codigo: erro.codigo });
         return;
       }
-      if (erro.status === 401 || erro.status === 404 || erro.status === 503) {
+      // 401 é "não sei quem você é"; 403 é "sei, e você não pode".
+      if (erro instanceof ErroDeAutorizacao) {
+        responderJson(res, 403, { erro: erro.message, permissao: erro.permissao });
+        return;
+      }
+      if (erro.status === 401) {
+        responderJson(res, 401, { erro: erro.message }, { 'www-authenticate': 'Bearer' });
+        return;
+      }
+      if (erro.status === 404 || erro.status === 503) {
         responderJson(res, erro.status, { erro: erro.message });
         return;
       }

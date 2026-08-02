@@ -12,7 +12,25 @@
 <body>
   <a class="pular" href="#conteudo">Pular para o conteúdo</a>
 
-  <div class="app">
+  <!-- Entrada da equipe. Sem sessão válida, o inbox nem é montado. -->
+  <div class="portao" id="portao" hidden>
+    <form class="cartao-login" id="form-login">
+      <span class="marca-icone" aria-hidden="true">+</span>
+      <h1>crmclinica</h1>
+      <p>Atendimento da Clínica Dr. Edson Barroso</p>
+
+      <label for="login-email">E-mail</label>
+      <input id="login-email" type="email" autocomplete="username" required>
+
+      <label for="login-senha">Senha</label>
+      <input id="login-senha" type="password" autocomplete="current-password" required>
+
+      <button type="submit" class="primario">Entrar</button>
+      <p class="erro-login" id="erro-login" role="alert" hidden></p>
+    </form>
+  </div>
+
+  <div class="app" id="aplicacao" hidden>
     <!-- Faixa superior de saúde operacional -->
     <section class="plantao" aria-label="Saúde operacional">
       <div>
@@ -78,15 +96,14 @@
           <h1 id="titulo">Hoje</h1>
         </div>
         <div class="acoes">
-          <span class="avatar" aria-hidden="true">EB</span>
-          <span class="nome-equipe">Equipe clínica</span>
+          <span class="avatar" id="avatar-usuario" aria-hidden="true">—</span>
+          <span class="nome-equipe" id="nome-usuario">—</span>
+          <button type="button" class="acao" id="sair">Sair</button>
         </div>
       </div>
 
-      <!-- Aviso permanente enquanto não houver dados reais ligados -->
-      <p class="aviso" role="status">
-        Ambiente de fundação: os números abaixo são de demonstração. Nenhum dado real de paciente é acessado.
-      </p>
+      <!-- Só aparece quando o inbox está sem banco. -->
+      <p class="aviso" id="aviso-ambiente" role="status" hidden></p>
 
       <!-- Painel Hoje -->
       <section id="painel" class="tela" aria-labelledby="titulo-painel">
@@ -99,10 +116,10 @@
         </div>
 
         <ul class="metricas">
-          <li><small>AGUARDANDO RESPOSTA</small><strong id="metrica-pendentes">—</strong><span class="alerta">↑ 3 desde ontem</span></li>
-          <li><small>LEADS RECEBIDOS HOJE</small><strong id="metrica-leads">—</strong><span class="ok">↑ 18% esta semana</span></li>
-          <li><small>CONSULTAS DE HOJE</small><strong id="metrica-consultas">—</strong><span>próxima às 14:30</span></li>
-          <li><small>ESCALONAMENTOS</small><strong id="metrica-escalonamentos">—</strong><span class="alerta">atenção da equipe</span></li>
+          <li><small>AGUARDANDO RESPOSTA</small><strong id="metrica-pendentes">—</strong><span>conversas abertas</span></li>
+          <li><small>LEADS RECEBIDOS HOJE</small><strong id="metrica-leads">—</strong><span>leads de hoje</span></li>
+          <li><small>CONSULTAS DE HOJE</small><strong id="metrica-consultas">—</strong><span>agenda não implementada</span></li>
+          <li><small>ESCALONAMENTOS</small><strong id="metrica-escalonamentos">—</strong><span>assumidas por humano</span></li>
         </ul>
 
         <div class="grade">
@@ -114,25 +131,10 @@
               </div>
               <button type="button" class="link" data-tela="conversas">Ver todas</button>
             </div>
-            <ul class="fila">
-              <li>
-                <span class="avatar rosa" aria-hidden="true">MS</span>
-                <span class="linha-texto"><b>Marina Souza</b><small>Quero saber sobre a primeira consulta…</small></span>
-                <span class="quando">há 4 min</span>
-                <span class="etiqueta">Nova</span>
-              </li>
-              <li>
-                <span class="avatar roxo" aria-hidden="true">JL</span>
-                <span class="linha-texto"><b>João Lima</b><small>Posso remarcar minha consulta?</small></span>
-                <span class="quando">há 12 min</span>
-                <span class="etiqueta">Nova</span>
-              </li>
-              <li>
-                <span class="avatar verde" aria-hidden="true">CA</span>
-                <span class="linha-texto"><b>Camila Alves</b><small>Enviei meus documentos pelo WhatsApp</small></span>
-                <span class="quando">há 19 min</span>
-                <span class="etiqueta amarela">Atenção</span>
-              </li>
+            <!-- Preenchida pela API. Nome fictício em HTML estático confundiria
+                 com conversa real agora que o inbox tem dados de verdade. -->
+            <ul class="fila" id="fila-hoje" aria-live="polite">
+              <li class="vazio">Carregando…</li>
             </ul>
           </article>
 
@@ -144,11 +146,7 @@
               </div>
               <button type="button" class="link" data-tela="agenda">Agenda</button>
             </div>
-            <ul class="compromissos">
-              <li><time datetime="14:30">14:30</time><span><b>Consulta de avaliação</b><small>Paciente confirmado · Sala 1</small></span></li>
-              <li><time datetime="16:00">16:00</time><span><b>Retorno</b><small>Confirmar presença</small></span></li>
-              <li><time datetime="17:30">17:30</time><span><b>Consulta de avaliação</b><small>Aguardando confirmação</small></span></li>
-            </ul>
+            <p class="vazio">A agenda ainda não foi implementada.</p>
           </article>
         </div>
       </section>
@@ -306,11 +304,11 @@
         </div>
         <article class="card estreito">
           <h3>Hoje</h3>
-          <ul class="agenda-lista">
-            <li><time datetime="14:30">14:30</time><span><b>Consulta de avaliação</b><small>Marina Souza · Sala 1 · Confirmada</small></span></li>
-            <li><time datetime="16:00">16:00</time><span><b>Retorno</b><small>João Lima · Sala 2 · Confirmar presença</small></span></li>
-            <li><time datetime="17:30">17:30</time><span><b>Consulta de avaliação</b><small>Camila Alves · Sala 1 · Aguardando</small></span></li>
-          </ul>
+          <!-- A agenda ainda não tem banco nem rota: mostrar horário inventado
+               aqui seria a tela mentindo para quem confia nela. -->
+          <p class="vazio">
+            A agenda ainda não foi implementada. Nenhum compromisso é lido ou gravado por esta tela.
+          </p>
         </article>
       </section>
 

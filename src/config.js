@@ -3,7 +3,15 @@
 // Leitura única do ambiente. Nenhum segredo é impresso, serializado ou devolvido
 // por rota HTTP: o restante do sistema só enxerga o resultado de `descreverConfiguracao`.
 
+const crypto = require('node:crypto');
+
 const NIVEIS_VALIDOS = new Set(['development', 'test', 'production']);
+
+// Segredo de assinatura para desenvolvimento: aleatório a cada processo, para que
+// nunca exista um valor "padrão" que alguém acabe levando para produção.
+function segredoEfemero() {
+  return crypto.randomBytes(48).toString('base64url');
+}
 
 function texto(valor) {
   return typeof valor === 'string' ? valor.trim() : '';
@@ -56,6 +64,12 @@ function carregarConfiguracao(ambiente = process.env) {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),
     },
+    autenticacao: {
+      // Fora de produção, um segredo efêmero permite subir sem configurar nada;
+      // os tokens morrem no reinício, que é o comportamento certo em desenvolvimento.
+      segredoJwt: texto(ambiente.CRMCLINICA_JWT_SECRET) || (producao ? '' : segredoEfemero()),
+      configurada: Boolean(texto(ambiente.CRMCLINICA_JWT_SECRET)),
+    },
     // Provedor de modelo é opcional e nunca controla o fluxo do produto.
     kimi: {
       habilitado: Boolean(texto(ambiente.KIMI_API_KEY)),
@@ -86,6 +100,14 @@ function validarConfiguracao(configuracao) {
   // O inbox é o próprio produto: sem banco, ele não tem onde guardar conversa.
   if (configuracao.producao && !configuracao.banco.configurado) {
     problemas.push('CRMCLINICA_DATABASE_URL é obrigatório em produção');
+  }
+  // Sem segredo de assinatura não há autenticação — e sem autenticação o inbox
+  // não pode ser exposto. Em produção isto impede a subida, não só avisa.
+  if (configuracao.producao && !configuracao.autenticacao.configurada) {
+    problemas.push('CRMCLINICA_JWT_SECRET é obrigatório em produção');
+  }
+  if (configuracao.producao && configuracao.autenticacao.segredoJwt.length < 32) {
+    problemas.push('CRMCLINICA_JWT_SECRET deve ter ao menos 32 caracteres');
   }
 
   return problemas;
