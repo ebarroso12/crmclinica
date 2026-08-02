@@ -14,11 +14,33 @@ types.setTypeParser(types.builtins.INT8, (valor) => (valor === null ? null : Num
 
 let poolCompartilhado = null;
 
+// Papel que a conexão assume ao nascer.
+//
+// As políticas do banco decidem por `request.jwt.claims ->> 'app_role'`. Uma
+// conexão que não declara nada é lida como `deny` — e `deny` não escreve em
+// tabela nenhuma. Isso não é hipótese: com a conexão muda, todo INSERT desta
+// aplicação era recusado pelo RLS.
+//
+// A aplicação **é** o backend: é ela que recebe webhook, registra tentativa de
+// login e roda o worker de lembretes, tudo isso sem nenhum usuário logado por
+// trás. Declarar `backend` no startup da conexão é dizer a verdade sobre quem
+// está falando.
+//
+// Quando existe um usuário identificado, `comUsuario` sobrescreve isto com
+// `SET LOCAL` dentro da transação, e o papel real (admin, gestor, atendente)
+// passa a valer — restringindo, nunca ampliando. Sendo local, o valor morre com
+// a transação e a conexão volta ao pool como backend de novo.
+//
+// Sem espaços no JSON de propósito: `options` é separado por espaço no protocolo
+// de startup do PostgreSQL, e um espaço aqui viraria dois parâmetros.
+const CLAIMS_DE_BACKEND = '{"app_role":"backend"}';
+
 function criarPool(configuracaoDoBanco) {
   if (!configuracaoDoBanco.configurado) return null;
 
   return new Pool({
     connectionString: configuracaoDoBanco.url,
+    options: `-c request.jwt.claims=${CLAIMS_DE_BACKEND}`,
     max: configuracaoDoBanco.poolMax,
     connectionTimeoutMillis: configuracaoDoBanco.tempoLimiteMs,
     idleTimeoutMillis: 30000,
@@ -42,4 +64,4 @@ async function encerrarPool() {
   await pool.end();
 }
 
-module.exports = { criarPool, obterPool, encerrarPool };
+module.exports = { criarPool, obterPool, encerrarPool, CLAIMS_DE_BACKEND };

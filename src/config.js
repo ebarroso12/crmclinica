@@ -60,6 +60,17 @@ function carregarConfiguracao(ambiente = process.env) {
       segredoWebhook: texto(ambiente.OPENCLAW_WEBHOOK_SECRET),
       tempoLimiteMs: inteiro(ambiente.OPENCLAW_TIMEOUT_MS, 10000),
     },
+    // Lembretes de agendamento. O modo de entrega é a variável que decide se
+    // alguma mensagem sai de fato — e ela é conservadora por padrão: `dry_run`
+    // roda a fila inteira sem enviar nada. Ver docs/LEMBRETES.md.
+    lembretes: {
+      ativos: texto(ambiente.LEMBRETES_ATIVOS).toLowerCase() !== 'nao',
+      modoEntrega: texto(ambiente.LEMBRETES_MODO_ENTREGA).toLowerCase() === 'real' ? 'real' : 'dry_run',
+      clinica: texto(ambiente.CRMCLINICA_NOME_CLINICA) || 'Clínica Dr. Edson Barroso',
+      intervaloMs: inteiro(ambiente.LEMBRETES_INTERVALO_MS, 60 * 1000),
+      lote: inteiro(ambiente.LEMBRETES_LOTE, 20),
+      maxTentativas: inteiro(ambiente.LEMBRETES_MAX_TENTATIVAS, 5),
+    },
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),
@@ -126,6 +137,13 @@ function validarConfiguracao(configuracao) {
     problemas.push('OPENCLAW_WEBHOOK_SECRET deve ter ao menos 32 caracteres');
   }
 
+  // Pedir entrega real sem credencial não degrada para dry-run em silêncio: a
+  // clínica acharia que está lembrando pacientes e não estaria.
+  if (configuracao.lembretes.modoEntrega === 'real'
+    && !(configuracao.openclaw.baseUrl && configuracao.openclaw.token)) {
+    problemas.push('LEMBRETES_MODO_ENTREGA=real exige OPENCLAW_BASE_URL e OPENCLAW_TOKEN');
+  }
+
   // O inbox é o próprio produto: sem banco, ele não tem onde guardar conversa.
   if (configuracao.producao && !configuracao.banco.configurado) {
     problemas.push('CRMCLINICA_DATABASE_URL é obrigatório em produção');
@@ -180,6 +198,15 @@ function descreverConfiguracao(configuracao) {
       // opção está ligada ou não.
       google: Boolean(configuracao.google.clienteId && configuracao.google.clienteSegredo),
       recuperacaoPorEmail: Boolean(configuracao.email.host && configuracao.email.remetente),
+    },
+    lembretes: {
+      papel: 'confirmação de agendamento 24h e 2h antes, pelo OpenClaw',
+      estado: configuracao.lembretes.ativos ? 'ativos' : 'desligados',
+      // Dito por extenso porque a diferença entre "a fila rodou" e "a mensagem
+      // chegou" é justamente o que um relatório de sistema costuma esconder.
+      entrega: configuracao.lembretes.modoEntrega === 'real'
+        ? 'real'
+        : 'dry-run (a fila processa e nenhuma mensagem sai)',
     },
     inbox: {
       nome: 'Inbox do crmclinica',

@@ -40,7 +40,8 @@ if (URL_DE_TESTE) {
       // Estado limpo por execução. TRUNCATE em cascata devolve as sequências ao
       // início, o que mantém os identificadores previsíveis entre as duas suítes.
       await pool.query(`
-        TRUNCATE conversa_etiquetas, mensagens, notas_internas, leads, conversas,
+        TRUNCATE lembretes, agendamentos, disponibilidades, agenda_bloqueios, profissionais,
+                 conversa_etiquetas, mensagens, notas_internas, leads, conversas,
                  contatos, sessoes, audit_log, eventos_recebidos, usuarios
         RESTART IDENTITY CASCADE
       `);
@@ -353,6 +354,227 @@ for (const { nome, montar } of implementacoes) {
 
       assert.equal(await repositorio.revogarSessoesDoUsuario(usuario.id), 1);
       assert.equal(await repositorio.revogarSessoesDoUsuario(usuario.id), 0);
+    });
+
+    // ---------------------------------------------------------------- lembretes
+    //
+    // A fila é onde memória e PostgreSQL mais poderiam divergir: unicidade e
+    // reivindicação exclusiva são garantias do banco que a implementação em
+    // memória precisa imitar. Uma divergência aqui vira lembrete duplicado lá.
+
+    await t.test('a fila de lembretes: unicidade, reivindicação e desfecho', async () => {
+      const profissional = await repositorio.criarProfissional({ nome: 'Dra. Fila', duracaoMin: 30 });
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000001', nome: 'Paciente da Fila',
+      });
+
+      const inicio = new Date('2027-03-10T17:00:00.000Z');
+      const agendamento = await repositorio.criarAgendamento({
+        profissionalId: profissional.id,
+        contatoId: contato.id,
+        inicio: inicio.toISOString(),
+        fim: new Date(inicio.getTime() + 30 * 60_000).toISOString(),
+      });
+
+      const pedido = {
+        agendamentoId: agendamento.id,
+        contatoId: contato.id,
+        tipo: 'confirmacao_24h',
+        janela: inicio.toISOString(),
+        agendarPara: new Date(inicio.getTime() - 24 * 3_600_000).toISOString(),
+      };
+
+      const primeiro = await repositorio.enfileirarLembrete(pedido);
+      assert.equal(primeiro.criado, true);
+      assert.equal(primeiro.lembrete.estado, 'pendente');
+      assert.equal(primeiro.lembrete.tentativas, 0);
+
+      // Mesmo agendamento, mesmo tipo, mesma janela: não cria segunda linha.
+      const segundo = await repositorio.enfileirarLembrete(pedido);
+      assert.equal(segundo.criado, false);
+      assert.equal(segundo.lembrete.id, primeiro.lembrete.id);
+
+      // Janela diferente é outro lembrete: é assim que a remarcação funciona.
+      // A hora de envio acompanha a janela nova, então ele ainda não vence junto.
+      const remarcado = await repositorio.enfileirarLembrete({
+        ...pedido,
+        janela: new Date(inicio.getTime() + 3_600_000).toISOString(),
+        agendarPara: new Date(inicio.getTime() + 3_600_000 - 24 * 3_600_000).toISOString(),
+      });
+      assert.equal(remarcado.criado, true);
+      assert.notEqual(remarcado.lembrete.id, primeiro.lembrete.id);
+
+      // A leitura traz o mundo que a decisão de envio precisa consultar.
+      const lido = await repositorio.obterLembrete(primeiro.lembrete.id);
+      assert.equal(lido.agendamento.status, 'agendado');
+      assert.equal(lido.contato.telefone, '5516900000001');
+      assert.equal(lido.contato.lembretes_optout, false);
+
+      // Antes da hora, ninguém reivindica.
+      const cedo = await repositorio.reivindicarLembretes({
+        agora: new Date(inicio.getTime() - 48 * 3_600_000).toISOString(), limite: 10, worker: 'contrato',
+      });
+      assert.equal(cedo.length, 0);
+
+      const naHora = new Date(inicio.getTime() - 24 * 3_600_000).toISOString();
+      const reivindicados = await repositorio.reivindicarLembretes({ agora: naHora, limite: 10, worker: 'contrato' });
+      assert.equal(reivindicados.length, 1);
+      assert.equal(reivindicados[0].id, primeiro.lembrete.id);
+      assert.equal(reivindicados[0].estado, 'processando');
+      assert.equal(reivindicados[0].processando_por, 'contrato');
+
+      // Reivindicado uma vez, não é servido de novo.
+      const denovo = await repositorio.reivindicarLembretes({ agora: naHora, limite: 10, worker: 'outro' });
+      assert.equal(denovo.length, 0);
+
+      const enviado = await repositorio.concluirLembrete(primeiro.lembrete.id, {
+        estado: 'enviado', modoEntrega: 'dry_run', entregaReferencia: 'dry-run:1', enviadoEm: naHora,
+      });
+      assert.equal(enviado.estado, 'enviado');
+      assert.equal(enviado.modo_entrega, 'dry_run');
+      // Sair de processando limpa o lease: senão a recuperação acharia trabalho onde não há.
+      assert.equal(enviado.processando_desde, null);
+      assert.equal(enviado.processando_por, null);
+
+      // Fecha o da janela remarcada para não sobrar trabalho pendente na fila
+      // compartilhada — os subtestes seguintes contam o que encontram nela.
+      await repositorio.concluirLembrete(remarcado.lembrete.id, {
+        estado: 'ignorado', ignoradoMotivo: 'remarcado',
+      });
+    });
+
+    await t.test('lembrete preso volta à fila; esgotado, vai para falhou', async () => {
+      const profissional = await repositorio.criarProfissional({ nome: 'Dra. Presa' });
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000002', nome: 'Paciente Preso',
+      });
+      const inicio = new Date('2027-04-10T17:00:00.000Z');
+      const agendamento = await repositorio.criarAgendamento({
+        profissionalId: profissional.id,
+        contatoId: contato.id,
+        inicio: inicio.toISOString(),
+        fim: new Date(inicio.getTime() + 30 * 60_000).toISOString(),
+      });
+
+      const { lembrete } = await repositorio.enfileirarLembrete({
+        agendamentoId: agendamento.id,
+        contatoId: contato.id,
+        tipo: 'confirmacao_2h',
+        janela: inicio.toISOString(),
+        agendarPara: new Date(inicio.getTime() - 2 * 3_600_000).toISOString(),
+        maxTentativas: 2,
+      });
+
+      const naHora = new Date(inicio.getTime() - 2 * 3_600_000).toISOString();
+      await repositorio.reivindicarLembretes({ agora: naHora, limite: 5, worker: 'worker-morto' });
+
+      const depois = new Date(new Date(naHora).getTime() + 10 * 60_000).toISOString();
+      const primeiraSoltura = await repositorio.liberarLembretesPresos({
+        antesDe: depois, agora: depois,
+      });
+      assert.equal(primeiraSoltura.length, 1);
+      assert.equal(primeiraSoltura[0].estado, 'pendente');
+      assert.equal(primeiraSoltura[0].tentativas, 1);
+
+      // Segunda vez: com max_tentativas 2, a linha termina em falhou.
+      await repositorio.reivindicarLembretes({ agora: depois, limite: 5, worker: 'worker-morto' });
+      const maisTarde = new Date(new Date(depois).getTime() + 10 * 60_000).toISOString();
+      const segundaSoltura = await repositorio.liberarLembretesPresos({ antesDe: maisTarde, agora: maisTarde });
+
+      assert.equal(segundaSoltura.length, 1);
+      assert.equal(segundaSoltura[0].estado, 'falhou');
+      assert.equal((await repositorio.obterLembrete(lembrete.id)).estado, 'falhou');
+    });
+
+    await t.test('opt-out do contato e cancelamento em massa da fila', async () => {
+      const profissional = await repositorio.criarProfissional({ nome: 'Dra. Optout' });
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000003', nome: 'Paciente Optout',
+      });
+      const inicio = new Date('2027-05-10T17:00:00.000Z');
+      const agendamento = await repositorio.criarAgendamento({
+        profissionalId: profissional.id,
+        contatoId: contato.id,
+        inicio: inicio.toISOString(),
+        fim: new Date(inicio.getTime() + 30 * 60_000).toISOString(),
+      });
+
+      for (const tipo of ['confirmacao_24h', 'confirmacao_2h']) {
+        await repositorio.enfileirarLembrete({
+          agendamentoId: agendamento.id,
+          contatoId: contato.id,
+          tipo,
+          janela: inicio.toISOString(),
+          agendarPara: new Date(inicio.getTime() - 3_600_000).toISOString(),
+        });
+      }
+
+      const desligado = await repositorio.definirOptOutDeLembretes(contato.id, {
+        optout: true, motivo: 'pediu no telefone',
+      });
+      assert.equal(desligado.lembretes_optout, true);
+      assert.ok(desligado.lembretes_optout_em);
+      assert.equal(desligado.lembretes_optout_motivo, 'pediu no telefone');
+
+      const cancelados = await repositorio.cancelarLembretesDoContato(contato.id, { motivo: 'optout' });
+      assert.equal(cancelados.length, 2);
+      assert.ok(cancelados.every((item) => item.estado === 'ignorado'));
+
+      // Ligar de volta apaga a data e o motivo: o registro do porquê fica na auditoria.
+      const religado = await repositorio.definirOptOutDeLembretes(contato.id, { optout: false });
+      assert.equal(religado.lembretes_optout, false);
+      assert.equal(religado.lembretes_optout_em, null);
+
+      assert.equal(await repositorio.definirOptOutDeLembretes(999999, { optout: true }), null);
+    });
+
+    await t.test('cancelar a fila de um agendamento preserva a janela indicada', async () => {
+      const profissional = await repositorio.criarProfissional({ nome: 'Dra. Remarca' });
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000004', nome: 'Paciente Remarca',
+      });
+      const antiga = new Date('2027-06-10T17:00:00.000Z');
+      const nova = new Date('2027-06-11T17:00:00.000Z');
+      const agendamento = await repositorio.criarAgendamento({
+        profissionalId: profissional.id,
+        contatoId: contato.id,
+        inicio: antiga.toISOString(),
+        fim: new Date(antiga.getTime() + 30 * 60_000).toISOString(),
+      });
+
+      for (const janela of [antiga, nova]) {
+        await repositorio.enfileirarLembrete({
+          agendamentoId: agendamento.id,
+          contatoId: contato.id,
+          tipo: 'confirmacao_24h',
+          janela: janela.toISOString(),
+          agendarPara: new Date(janela.getTime() - 24 * 3_600_000).toISOString(),
+        });
+      }
+
+      const cancelados = await repositorio.cancelarLembretesDoAgendamento(agendamento.id, {
+        motivo: 'remarcado', exceto: nova.toISOString(),
+      });
+
+      assert.equal(cancelados.length, 1);
+      assert.equal(cancelados[0].janela.toISOString?.() ?? cancelados[0].janela, antiga.toISOString());
+
+      const naFila = await repositorio.listarLembretes({ agendamentoId: agendamento.id, estado: 'pendente' });
+      assert.equal(naFila.length, 1);
+    });
+
+    await t.test('a contagem por estado separa dry-run de envio real', async () => {
+      const contagem = await repositorio.contarLembretesPorEstado();
+
+      assert.ok(Number.isInteger(contagem.por_estado.pendente));
+      assert.ok(Number.isInteger(contagem.por_estado.ignorado));
+      assert.ok(Number.isInteger(contagem.entregas.dry_run));
+      assert.ok(Number.isInteger(contagem.entregas.real));
+      // O que o resumo mostra precisa vir das duas implementações com a mesma forma.
+      assert.deepEqual(
+        Object.keys(contagem.por_estado).sort(),
+        ['enviado', 'falhou', 'ignorado', 'pendente', 'processando'],
+      );
     });
 
     await t.test('a auditoria aceita registro com e sem detalhe', async () => {

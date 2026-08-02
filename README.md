@@ -34,8 +34,8 @@ src/
   armazenamento/    registro de idempotência em memória
   contratos/        contrato de eventos — a única porta de entrada de dado externo
   dados/            pool e repositório do inbox (PostgreSQL e memória)
-  dominio/          regras do CRM: conversas, leads e ciclo de atendimento
-  integracoes/      cliente isolado do OpenClaw
+  dominio/          regras do CRM: conversas, leads, agenda, lembretes e atendimento
+  integracoes/      clientes isolados do OpenClaw (eventos e lembretes)
   provedores/       provedor opcional de modelo
   servidor/         HTTP: roteamento, leitura de corpo e cabeçalhos de segurança
 testes/         testes de contrato, repositório, atendimento, HTTP e auditoria
@@ -97,9 +97,36 @@ nada persiste. Em produção a variável é obrigatória.
 | `/api/leads` | GET | Kanban de leads |
 | `/api/agenda…` | GET/POST | Agenda: grade, horários livres, propor, confirmar, remarcar, cancelar |
 | `/api/conversas/:id/agenda` | GET | A agenda do paciente vista de dentro da conversa |
+| `/api/lembretes…` | GET/POST | Fila de lembretes: estado, falhas, sincronização, reenfileiramento |
+| `/api/contatos/:id/lembretes` | POST | Opt-out e opt-in do paciente |
 
-O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md) e a
-agenda em [`docs/AGENDA.md`](docs/AGENDA.md).
+O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md), a
+agenda em [`docs/AGENDA.md`](docs/AGENDA.md) e os lembretes em
+[`docs/LEMBRETES.md`](docs/LEMBRETES.md).
+
+## Lembretes de agendamento
+
+Confirmação automática 24h e 2h antes da consulta, pelo WhatsApp, com o OpenClaw
+como orquestrador. A fila é persistente e processada por um worker:
+
+```bash
+npm run lembretes:worker        # processamento contínuo (pode rodar em duas cópias)
+npm run lembretes -- resumo     # estado da fila e modo de entrega
+npm run lembretes -- falhas     # o que precisa de atenção
+npm run smoke-lembretes         # exercita a fila inteira contra o banco real
+```
+
+Duplicidade é impedida pelo banco, não pelo código: `UNIQUE (agendamento_id,
+tipo, janela)` para o enfileiramento e `FOR UPDATE SKIP LOCKED` para a
+reivindicação. Nada é enviado sem reler o agendamento e o contato — cancelou,
+remarcou ou pediu para parar, o lembrete morre.
+
+> **A entrega está em `dry-run`:** a fila roda de ponta a ponta e **nenhuma
+> mensagem sai**. Não é pendência de código deste repositório — falta o envelope
+> do protocolo do OpenClaw, que não foi confirmado
+> ([`docs/OPENCLAW.md`](docs/OPENCLAW.md)). Pedir `LEMBRETES_MODO_ENTREGA=real`
+> sem ele faz o adaptador recusar, em vez de improvisar um formato e marcar como
+> enviado algo que não chegou a ninguém.
 
 ## Segurança
 
@@ -117,10 +144,13 @@ O inbox funciona de ponta a ponta: mensagem recebida vira contato, conversa e hi
 a equipe responde, assume, resolve, etiqueta e edita a ficha; o kanban abre a conversa
 que originou cada lead. Autenticação, RBAC, rate limit e qualificação de lead estão
 implementados. A agenda marca, remarca e cancela, com o conflito de horário impedido
-pelo banco. Nenhum dado real de paciente foi usado.
+pelo banco. Os lembretes de 24h e 2h têm fila persistente, worker seguro contra
+concorrência, opt-out, retry com backoff e auditoria — verificados contra o banco
+real. Nenhum dado real de paciente foi usado.
 
-Pendente: a régua de confirmação e lembretes (24h e 2h), o follow-up de leads frios,
-as métricas e o copiloto. O envio de mensagem depende do OpenClaw, cujo protocolo
-ainda não foi confirmado — ver [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
+Pendente: o follow-up de leads frios, as métricas e o copiloto. O **envio** de
+mensagem depende do OpenClaw, cujo protocolo ainda não foi confirmado — por isso
+os lembretes operam em dry-run declarado, sem afirmar que enviaram nada. Ver
+[`docs/OPENCLAW.md`](docs/OPENCLAW.md).
 
 Documentação detalhada em [`docs/`](docs/).

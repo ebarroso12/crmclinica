@@ -36,6 +36,19 @@ ficam em `params`?), nem a sequência do handshake de autenticação.
 Implementar o cliente WebSocket a partir desses fragmentos seria adivinhar o
 protocolo — exatamente o mesmo erro que inventar a URL. Por isso **não foi feito**.
 
+### Consequência para os lembretes
+
+Os lembretes de agendamento (24h e 2h) estão implementados por inteiro — fila
+persistente, worker, retry, opt-out, auditoria — e operam em **dry-run**: a fila
+processa e nenhuma mensagem sai. O adaptador
+(`src/integracoes/openclaw-lembretes.js`) carrega uma constante
+`PROTOCOLO_CONFIRMADO = false`, e enquanto ela for falsa, pedir envio real
+devolve `openclaw_protocolo_desconhecido` em vez de improvisar um envelope.
+
+Isso é deliberado: um envio "bem-sucedido" contra um formato inventado marcaria
+`enviado` na fila sem entregar nada, e o erro só apareceria quando um paciente
+reclamasse de não ter recebido. Detalhes em [`LEMBRETES.md`](LEMBRETES.md).
+
 ### Consequência para o código
 
 `src/integracoes/openclaw.js` hoje fala **HTTP** (`POST /eventos`). Esse desenho

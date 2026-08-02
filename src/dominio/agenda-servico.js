@@ -19,7 +19,25 @@ const {
 
 const VALIDADE_PROPOSTA_MS = 15 * 60 * 1000;
 
-function criarServicoDeAgenda({ repositorio, agora = () => new Date() }) {
+/**
+ * @param {object} dependencias.lembretes  Serviço da fila de lembretes, opcional.
+ *   Opcional porque a agenda existia antes dele e continua correta sem ele: sem
+ *   o serviço, marcar e cancelar funcionam igual, apenas nenhum lembrete é
+ *   enfileirado. E porque uma falha na fila nunca pode impedir a clínica de
+ *   marcar uma consulta — por isso toda chamada aqui é embrulhada.
+ */
+function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null }) {
+  /** A fila é acessório do agendamento: se ela falhar, o agendamento continua de pé. */
+  async function comFila(descricao, acao) {
+    if (!lembretes) return null;
+    try {
+      return await acao();
+    } catch (erro) {
+      console.error(`[agenda] falha ao ${descricao} lembretes: ${erro.message}`);
+      return null;
+    }
+  }
+
   // Propostas em memória: são efêmeras por natureza e morrem em 15 minutos.
   // Guardar no banco daria durabilidade a algo que não deve durar.
   const propostas = new Map();
@@ -189,6 +207,11 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date() }) {
         });
       }
 
+      // Os lembretes de 24h e 2h entram na fila junto com o agendamento. Se a
+      // consulta é daqui a três horas, o de 24h nasce ignorado com o motivo
+      // registrado — a clínica precisa poder ver que não houve 24h para avisar.
+      await comFila('enfileirar', () => lembretes.enfileirarPara(agendamento, { usuarioId }));
+
       return agendamento;
     } catch (erro) {
       if (ehConflitoDoBanco(erro)) throw await descreverConflito(profissionalId, inicio, fim);
@@ -256,6 +279,11 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date() }) {
         usuarioId,
       });
 
+      // Horário novo, lembretes novos. Os da janela antiga saem da fila com o
+      // motivo "remarcado": mandar "seu horário é amanhã às 14h" depois de
+      // remarcar para as 16h é pior que não mandar nada.
+      await comFila('sincronizar', () => lembretes.sincronizarAgendamento(agendamentoId, { usuarioId }));
+
       return atualizado;
     } catch (erro) {
       if (ehConflitoDoBanco(erro)) throw new ErroDeConflito();
@@ -287,6 +315,11 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date() }) {
       usuarioId,
     });
 
+    // Cancelou, acabou: nada mais é enviado sobre este agendamento.
+    await comFila('cancelar', () => lembretes.cancelarDoAgendamento(agendamentoId, {
+      motivo: 'agendamento_cancelado', usuarioId,
+    }));
+
     return cancelado;
   }
 
@@ -310,6 +343,14 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date() }) {
       acao: `agendamento_${status}`,
       usuarioId,
     });
+
+    // O que já aconteceu não se lembra: compareceu e faltou encerram a fila
+    // deste agendamento tanto quanto o cancelamento.
+    if (['compareceu', 'faltou'].includes(status)) {
+      await comFila('cancelar', () => lembretes.cancelarDoAgendamento(agendamentoId, {
+        motivo: `agendamento_${status}`, usuarioId,
+      }));
+    }
 
     // Comparecer converte o lead; faltar é o dado que alimenta a métrica de falta.
     if (atual.lead_id && ['compareceu', 'faltou'].includes(status)) {

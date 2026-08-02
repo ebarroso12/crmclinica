@@ -75,7 +75,23 @@ const ESPERADO = {
   '007_hardening': {
     funcoes: ['app_usuario_atual'],
   },
+  '010_lembretes': {
+    tabelas: ['lembretes'],
+    colunas: [
+      ['lembretes', 'janela'], ['lembretes', 'agendar_para'], ['lembretes', 'estado'],
+      ['lembretes', 'tentativas'], ['lembretes', 'tentar_em'], ['lembretes', 'modo_entrega'],
+      ['contatos', 'lembretes_optout'],
+    ],
+  },
 };
+
+// Constraints sem as quais uma garantia inteira deixa de existir. Índice
+// ausente é lentidão; constraint ausente é lembrete duplicado no WhatsApp do
+// paciente — e nada no código avisaria.
+const CONSTRAINTS = [
+  ['lembretes', 'lembretes_unicos', 'idempotência por agendamento, tipo e janela'],
+  ['agendamentos', 'agendamentos_sem_conflito', 'dois agendamentos não se sobrepõem'],
+];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
 // caminho de quem chama decide qual tabela a função enxerga.
@@ -94,7 +110,7 @@ const TABELAS_COM_RLS = [
   'usuarios', 'contatos', 'conversas', 'mensagens', 'etiquetas', 'conversa_etiquetas',
   'leads', 'notas_internas', 'audit_log', 'eventos_recebidos', 'sessoes',
   'recuperacoes_senha', 'tentativas_autenticacao', 'lead_eventos',
-  'profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos',
+  'profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos', 'lembretes',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
@@ -165,6 +181,25 @@ async function main() {
       }
       console.log('');
     }
+
+    // ---------------------------------------------------------------- constraints
+
+    console.log('Constraints que sustentam garantias');
+    const { rows: constraints } = await pool.query(`
+      SELECT conname, conrelid::regclass::text AS tabela
+        FROM pg_constraint
+       WHERE connamespace = 'public'::regnamespace
+    `);
+    const constraintsPresentes = new Set(constraints.map((linha) => `${linha.tabela}.${linha.conname}`));
+
+    for (const [tabela, constraint, porque] of CONSTRAINTS) {
+      if (!porNome.has(tabela)) {
+        console.log(`  ${amarelo('—')}    ${constraint} (tabela ${tabela} ausente)`);
+        continue;
+      }
+      marcar(constraintsPresentes.has(`${tabela}.${constraint}`), `${tabela}: ${constraint}`, porque);
+    }
+    console.log('');
 
     // ---------------------------------------------------------------- RLS
 

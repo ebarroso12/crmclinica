@@ -222,3 +222,62 @@ test('conversa resolvida não recebe resposta automática', async () => {
   assert.equal(resultado.motivo, 'conversa_resolvida');
   assert.equal(orquestrador.despachos.length, despachosAntes);
 });
+
+// ---------------------------------------------------------------- opt-out pelo canal
+//
+// "PARAR" precisa valer na hora em que a mensagem chega. Esperar alguém da
+// equipe ler e clicar em algo deixaria a pessoa que acabou de pedir para não
+// receber nada recebendo o próximo lembrete — que é exatamente o que ela pediu
+// para evitar.
+
+/** Fila simulada: registra os opt-outs sem depender do serviço inteiro. */
+function filaDeLembretesFalsa() {
+  const registros = [];
+  return {
+    registros,
+    definirOptOut: async (contatoId, opcoes) => {
+      registros.push({ contatoId, ...opcoes });
+      return { contato: { id: contatoId }, cancelados: [] };
+    },
+  };
+}
+
+test('"PARAR" pelo canal desliga os lembretes do contato na hora', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const lembretes = filaDeLembretesFalsa();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, lembretes });
+
+  await atendimento.receberMensagem({ ...EVENTO, id_externo: 'wa:parar', texto: 'PARAR' });
+
+  assert.equal(lembretes.registros.length, 1);
+  assert.equal(lembretes.registros[0].optout, true);
+  assert.equal(lembretes.registros[0].origem, 'contato');
+});
+
+test('mensagem comum não desliga lembrete de ninguém', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const lembretes = filaDeLembretesFalsa();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, lembretes });
+
+  // A frase contém "parar" e não é um pedido de descadastro.
+  await atendimento.receberMensagem({
+    ...EVENTO, id_externo: 'wa:duvida', texto: 'posso parar de tomar o remédio antes da consulta?',
+  });
+
+  assert.equal(lembretes.registros.length, 0);
+});
+
+test('falha ao registrar o opt-out não derruba o atendimento', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const lembretes = { definirOptOut: async () => { throw new Error('banco fora do ar'); } };
+  const atendimento = criarAtendimento({ repositorio, orquestrador, lembretes });
+
+  const resultado = await atendimento.receberMensagem({ ...EVENTO, id_externo: 'wa:parar2', texto: 'parar' });
+
+  // A mensagem entrou no inbox e a conversa seguiu: a fila é acessório.
+  assert.equal(resultado.acao, 'respondida_pela_automacao');
+  assert.equal((await repositorio.listarConversas({})).length, 1);
+});

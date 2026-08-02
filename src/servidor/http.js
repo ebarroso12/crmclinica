@@ -24,6 +24,9 @@ const { criarRotasDeLeads } = require('./rotas-leads');
 const { criarServicoDeLeads } = require('../dominio/leads-servico');
 const { criarRotasDeAgenda } = require('./rotas-agenda');
 const { criarServicoDeAgenda } = require('../dominio/agenda-servico');
+const { criarRotasDeLembretes } = require('./rotas-lembretes');
+const { criarServicoDeLembretes } = require('../dominio/lembretes-servico');
+const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -80,8 +83,23 @@ function criarAplicacao(dependencias = {}) {
   // mas nada sobrevive ao reinício — e `/api/resumo` diz isso na cara.
   const repositorio = dependencias.repositorio || criarRepositorioEmMemoria();
   const servicoDeLeads = dependencias.servicoDeLeads || criarServicoDeLeads({ repositorio });
+
+  // A fila de lembretes vem cedo porque três camadas a usam: a agenda (marcar,
+  // remarcar, cancelar), o atendimento (o paciente que responde "PARAR") e as
+  // rotas de consulta. O adaptador é o único que fala com o OpenClaw — e fica em
+  // dry-run enquanto o protocolo não estiver confirmado.
+  const entregaDeLembretes = dependencias.entregaDeLembretes
+    || criarAdaptadorDeLembretes({ ...configuracao.openclaw, modoEntrega: configuracao.lembretes.modoEntrega });
+  const servicoDeLembretes = dependencias.servicoDeLembretes || criarServicoDeLembretes({
+    repositorio,
+    entrega: entregaDeLembretes,
+    clinica: configuracao.lembretes.clinica,
+    maxTentativas: configuracao.lembretes.maxTentativas,
+  });
+  const lembretesLigados = configuracao.lembretes.ativos ? servicoDeLembretes : null;
+
   const atendimento = dependencias.atendimento
-    || criarAtendimento({ repositorio, orquestrador, leads: servicoDeLeads });
+    || criarAtendimento({ repositorio, orquestrador, leads: servicoDeLeads, lembretes: lembretesLigados });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
@@ -96,8 +114,11 @@ function criarAplicacao(dependencias = {}) {
   const conversas = criarRotasDeConversas({ repositorio, atendimento });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
-  const servicoDeAgenda = dependencias.servicoDeAgenda || criarServicoDeAgenda({ repositorio });
+
+  const servicoDeAgenda = dependencias.servicoDeAgenda
+    || criarServicoDeAgenda({ repositorio, lembretes: lembretesLigados });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
+  const rotasDeLembretes = criarRotasDeLembretes({ lembretes: servicoDeLembretes, repositorio });
 
   // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
   // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
@@ -227,6 +248,40 @@ function criarAplicacao(dependencias = {}) {
     return true;
   }
 
+  // Rotas da fila de lembretes. Devolve `true` quando tratou a requisição.
+  async function tratarRotasDeLembretes(req, res, rota, metodo, url, usuario) {
+    if (!rota.startsWith('/api/lembretes')) return false;
+    const semCache = { 'cache-control': 'no-store' };
+
+    const simples = {
+      'GET /api/lembretes': () => rotasDeLembretes.listar(usuario, url.searchParams),
+      'GET /api/lembretes/vocabulario': () => rotasDeLembretes.vocabulario(usuario),
+      'GET /api/lembretes/resumo': () => rotasDeLembretes.resumo(usuario),
+      'GET /api/lembretes/falhas': () => rotasDeLembretes.falhas(usuario),
+      'POST /api/lembretes/sincronizar': () => rotasDeLembretes.sincronizar(usuario),
+    };
+
+    const acao = simples[`${metodo} ${rota}`];
+    if (acao) {
+      responderJson(res, 200, await acao(), semCache);
+      return true;
+    }
+
+    // /api/lembretes/:id/reenfileirar
+    const partes = rota.split('/').filter(Boolean);
+    if (partes.length === 4 && partes[3] === 'reenfileirar') {
+      if (metodo !== 'POST') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+        return true;
+      }
+      responderJson(res, 200, await rotasDeLembretes.reenfileirar(usuario, partes[2]), semCache);
+      return true;
+    }
+
+    responderJson(res, 404, { erro: 'rota não encontrada' });
+    return true;
+  }
+
   // Rotas da agenda. Devolve `true` quando tratou a requisição.
   async function tratarRotasDeAgenda(req, res, rota, metodo, url, usuario) {
     if (!rota.startsWith('/api/agenda')) return false;
@@ -270,6 +325,12 @@ function criarAplicacao(dependencias = {}) {
         return true;
       }
       responderJson(res, 200, await rotasDeAgenda.removerBloqueio(usuario, partes[3]));
+      return true;
+    }
+
+    // GET /api/agenda/:id/lembretes — o que a fila tem sobre este agendamento.
+    if (partes.length === 4 && partes[3] === 'lembretes' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeLembretes.doAgendamento(usuario, partes[2]), semCache);
       return true;
     }
 
@@ -324,6 +385,7 @@ function criarAplicacao(dependencias = {}) {
     }
 
     if (await tratarRotasDeAgenda(req, res, rota, metodo, url, usuario)) return true;
+    if (await tratarRotasDeLembretes(req, res, rota, metodo, url, usuario)) return true;
 
     const partes = rota.split('/').filter(Boolean);
 
@@ -377,6 +439,16 @@ function criarAplicacao(dependencias = {}) {
         limite: 10,
       });
       responderJson(res, 200, { contatos }, { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // POST /api/contatos/:id/lembretes — o opt-out do paciente, com auditoria.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes[3] === 'lembretes' && partes.length === 4) {
+      if (metodo !== 'POST') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+        return true;
+      }
+      responderJson(res, 200, await rotasDeLembretes.definirOptOut(usuario, partes[2], await lerJson(req)));
       return true;
     }
 
@@ -469,8 +541,10 @@ function criarAplicacao(dependencias = {}) {
      * `exigirPermissao` de qualquer jeito, e abrir transação para isso só
      * ocuparia conexão do pool à toa.
      */
+    // O usuário inteiro, não só o id: o papel vai junto para o banco, e é dele
+    // que as políticas dependem para decidir o que a requisição pode escrever.
     const comIdentidade = (quem, acao) => (
-      quem ? repositorio.comUsuario(quem.id, acao) : acao()
+      quem ? repositorio.comUsuario({ id: quem.id, papel: quem.papel }, acao) : acao()
     );
 
     try {

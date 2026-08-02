@@ -107,6 +107,74 @@ function montarAgendamento(linha) {
   };
 }
 
+/**
+ * Um lembrete com o mundo que a decisão de envio precisa consultar.
+ *
+ * O agendamento e o contato vêm juntos porque a decisão depende do estado
+ * **atual** dos dois, e buscá-los em consultas separadas abriria espaço para
+ * decidir com uma foto e enviar com outra.
+ */
+function montarLembrete(linha) {
+  if (!linha) return null;
+
+  const lembrete = {
+    id: Number(linha.id),
+    agendamento_id: Number(linha.agendamento_id),
+    contato_id: Number(linha.contato_id),
+    tipo: linha.tipo,
+    janela: linha.janela,
+    agendar_para: linha.agendar_para,
+    estado: linha.estado,
+    tentativas: Number(linha.tentativas),
+    max_tentativas: Number(linha.max_tentativas),
+    tentar_em: linha.tentar_em,
+    processando_por: linha.processando_por,
+    processando_desde: linha.processando_desde,
+    modo_entrega: linha.modo_entrega,
+    entrega_referencia: linha.entrega_referencia,
+    enviado_em: linha.enviado_em,
+    ignorado_motivo: linha.ignorado_motivo,
+    ultimo_erro: linha.ultimo_erro,
+    criado_em: linha.criado_em,
+    atualizado_em: linha.atualizado_em,
+  };
+
+  if (linha.agendamento_status !== undefined) {
+    lembrete.agendamento = {
+      id: Number(linha.agendamento_id),
+      status: linha.agendamento_status,
+      inicio: linha.agendamento_inicio,
+      fim: linha.agendamento_fim,
+      contato_id: Number(linha.contato_id),
+    };
+  }
+  if (linha.contato_telefone !== undefined) {
+    lembrete.contato = {
+      id: Number(linha.contato_id),
+      nome: linha.contato_nome,
+      telefone: linha.contato_telefone,
+      lembretes_optout: linha.contato_optout === true,
+    };
+  }
+
+  return lembrete;
+}
+
+// Junções e colunas usadas por toda leitura de lembrete: uma forma só, para as
+// consultas não divergirem entre si.
+const SELECAO_LEMBRETE = `
+  l.*,
+  a.status AS agendamento_status, a.inicio AS agendamento_inicio, a.fim AS agendamento_fim,
+  ct.nome AS contato_nome, ct.telefone AS contato_telefone,
+  ct.lembretes_optout AS contato_optout
+`;
+
+const JUNCOES_LEMBRETE = `
+  FROM lembretes l
+  JOIN agendamentos a ON a.id = l.agendamento_id
+  JOIN contatos ct ON ct.id = l.contato_id
+`;
+
 function montarMensagem(linha) {
   return {
     id: Number(linha.id),
@@ -134,6 +202,23 @@ function criarRepositorio(pool) {
     /**
      * Roda `acao` numa transação, com o usuário declarado para o banco.
      *
+     * Duas declarações saem daqui, porque o banco pergunta duas coisas
+     * diferentes:
+     *
+     *   • `app.usuario_id` — lido por `app_usuario_atual()` (migration 007);
+     *   • `request.jwt.claims` — lido por `current_app_role()` e
+     *     `current_usuario_id()`, de que dependem **todas** as políticas
+     *     `crm008_*` do banco.
+     *
+     * A segunda é a que decide se a linha entra. Sem ela, `current_app_role()`
+     * devolve `deny` e o INSERT é recusado — mesmo com o usuário identificado
+     * na aplicação e o privilégio de tabela concedido.
+     *
+     * O papel declarado é o do usuário (admin, gestor, atendente), o que
+     * **restringe** o que a conexão podia fazer: ela nasce como `backend` (ver
+     * `criarPool`). Uma requisição de atendente não deve poder o que a conta
+     * dele não pode, ainda que a conexão pudesse.
+     *
      * `set_config(..., is_local => true)` é o `SET LOCAL` da documentação, mas
      * aceita parâmetro. `SET LOCAL app.usuario_id = ...` não aceita `$1`, e
      * interpolar um valor vindo do token dentro do SQL é exatamente o tipo de
@@ -142,14 +227,29 @@ function criarRepositorio(pool) {
      * Sendo local, o valor morre com a transação. A conexão volta ao pool limpa
      * e a próxima requisição não herda a identidade da anterior — que é o modo
      * como esse tipo de mecanismo costuma vazar.
+     *
+     * @param {number|{id: number, papel: string}} quem  Id ou o usuário inteiro.
+     *   Passar só o id mantém a chamada antiga funcionando, mas sem papel a
+     *   transação assume `backend` — a mesma coisa que a conexão já era.
      */
-    async comUsuario(usuarioId, acao) {
+    async comUsuario(quem, acao) {
+      const usuario = (quem !== null && typeof quem === 'object') ? quem : { id: quem, papel: null };
+      const usuarioId = usuario.id ?? null;
+      const papel = usuario.papel || 'backend';
+
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
         await client.query(
           'SELECT set_config($1, $2, true)',
           ['app.usuario_id', usuarioId === null || usuarioId === undefined ? '' : String(usuarioId)],
+        );
+        await client.query(
+          'SELECT set_config($1, $2, true)',
+          ['request.jwt.claims', JSON.stringify({
+            ...(usuarioId === null || usuarioId === undefined ? {} : { usuario_id: String(usuarioId) }),
+            app_role: papel,
+          })],
         );
 
         const resultado = await contexto.executarCom(
@@ -343,8 +443,33 @@ function criarRepositorio(pool) {
         origem: rows[0].origem,
         atributos: rows[0].atributos || {},
         observacoes: rows[0].observacoes,
+        // O opt-out acompanha o contato em toda leitura: quem decide enviar um
+        // lembrete não deve precisar lembrar de buscar isso à parte.
+        lembretes_optout: rows[0].lembretes_optout === true,
+        lembretes_optout_em: rows[0].lembretes_optout_em ?? null,
+        lembretes_optout_motivo: rows[0].lembretes_optout_motivo ?? null,
         criado_em: rows[0].criado_em,
       };
+    },
+
+    /**
+     * Liga ou desliga os lembretes para o contato.
+     *
+     * Fora de `atualizarContato` de propósito: opt-out não é campo de ficha que
+     * a equipe edita junto com o telefone — é uma decisão do paciente, com data
+     * e motivo próprios, e passa por uma rota que a audita.
+     */
+    async definirOptOutDeLembretes(id, { optout = true, motivo = null, agora = null }) {
+      const { rowCount } = await consultar(`
+        UPDATE contatos
+           SET lembretes_optout = $2,
+               lembretes_optout_em = CASE WHEN $2 THEN COALESCE($3::timestamptz, now()) ELSE NULL END,
+               lembretes_optout_motivo = CASE WHEN $2 THEN $4 ELSE NULL END
+         WHERE id = $1
+      `, [id, optout === true, agora, motivo]);
+
+      if (rowCount === 0) return null;
+      return this.obterContato(id);
     },
 
     async atualizarContato(id, campos) {
@@ -887,6 +1012,234 @@ function criarRepositorio(pool) {
       valores.push(id);
       await consultar(`UPDATE agendamentos SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
       return this.obterAgendamento(id);
+    },
+
+    // ---------------------------------------------------------------- lembretes
+    //
+    // A fila que sustenta os lembretes de 24h e 2h. Duas operações carregam as
+    // garantias inteiras — `enfileirarLembrete` (idempotência) e
+    // `reivindicarLembretes` (exclusão entre workers). O resto é leitura.
+
+    /**
+     * Põe um lembrete na fila. Repetir não cria linha.
+     *
+     * `ON CONFLICT DO NOTHING` sobre `lembretes_unicos` é o que torna o
+     * enfileiramento idempotente por (agendamento, tipo, janela). Sem linha
+     * devolvida, o lembrete já existia — e é o que existe que vale, não o que
+     * esta chamada tentou criar.
+     */
+    async enfileirarLembrete({
+      agendamentoId, contatoId, tipo, janela, agendarPara,
+      estado = 'pendente', ignoradoMotivo = null, maxTentativas = 5,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO lembretes
+          (agendamento_id, contato_id, tipo, janela, agendar_para, estado, ignorado_motivo, max_tentativas, tentar_em)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $5)
+        ON CONFLICT ON CONSTRAINT lembretes_unicos DO NOTHING
+        RETURNING *
+      `, [agendamentoId, contatoId, tipo, janela, agendarPara, estado, ignoradoMotivo, maxTentativas]);
+
+      if (rows.length > 0) return { lembrete: montarLembrete(rows[0]), criado: true };
+
+      const { rows: existente } = await consultar(
+        'SELECT * FROM lembretes WHERE agendamento_id = $1 AND tipo = $2 AND janela = $3',
+        [agendamentoId, tipo, janela],
+      );
+      return { lembrete: montarLembrete(existente[0]), criado: false };
+    },
+
+    async obterLembrete(id) {
+      const { rows } = await consultar(`SELECT ${SELECAO_LEMBRETE} ${JUNCOES_LEMBRETE} WHERE l.id = $1`, [id]);
+      return montarLembrete(rows[0]);
+    },
+
+    async listarLembretes({
+      estado = null, tipo = null, agendamentoId = null, contatoId = null, limite = 50,
+    } = {}) {
+      const condicoes = [];
+      const valores = [];
+
+      if (estado) { valores.push(estado); condicoes.push(`l.estado = $${valores.length}`); }
+      if (tipo) { valores.push(tipo); condicoes.push(`l.tipo = $${valores.length}`); }
+      if (agendamentoId) { valores.push(agendamentoId); condicoes.push(`l.agendamento_id = $${valores.length}`); }
+      if (contatoId) { valores.push(contatoId); condicoes.push(`l.contato_id = $${valores.length}`); }
+      valores.push(Number(limite));
+
+      const { rows } = await consultar(`
+        SELECT ${SELECAO_LEMBRETE} ${JUNCOES_LEMBRETE}
+        ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
+        ORDER BY l.agendar_para DESC, l.id DESC
+        LIMIT $${valores.length}
+      `, valores);
+
+      return rows.map(montarLembrete);
+    },
+
+    async contarLembretesPorEstado() {
+      const { rows } = await consultar(`
+        SELECT estado, tipo, count(*)::int AS total,
+               count(*) FILTER (WHERE modo_entrega = 'dry_run')::int AS dry_run,
+               count(*) FILTER (WHERE modo_entrega = 'real')::int AS real
+          FROM lembretes GROUP BY estado, tipo
+      `);
+
+      const total = { pendente: 0, processando: 0, enviado: 0, ignorado: 0, falhou: 0 };
+      const porTipo = {};
+      let dryRun = 0;
+      let reais = 0;
+
+      for (const linha of rows) {
+        total[linha.estado] = (total[linha.estado] ?? 0) + linha.total;
+        porTipo[linha.tipo] = porTipo[linha.tipo] ?? { pendente: 0, processando: 0, enviado: 0, ignorado: 0, falhou: 0 };
+        porTipo[linha.tipo][linha.estado] += linha.total;
+        dryRun += linha.dry_run;
+        reais += linha.real;
+      }
+
+      return { por_estado: total, por_tipo: porTipo, entregas: { dry_run: dryRun, real: reais } };
+    },
+
+    /**
+     * Reivindica lembretes para processar. **É a operação que impede duplicidade.**
+     *
+     * `FOR UPDATE SKIP LOCKED` faz o segundo worker pular a linha que o primeiro
+     * travou, em vez de esperar por ela. Os dois recebem conjuntos disjuntos, e
+     * a marcação para 'processando' acontece na mesma instrução — não há
+     * intervalo entre selecionar e reservar em que um terceiro pudesse entrar.
+     *
+     * `SELECT ... FOR UPDATE` sozinho não bastaria: o segundo worker bloquearia
+     * até o primeiro terminar e então enxergaria a linha já processada.
+     */
+    async reivindicarLembretes({ agora, limite = 20, worker = 'worker' }) {
+      const { rows } = await consultar(`
+        WITH candidatos AS (
+          SELECT id FROM lembretes
+           WHERE estado = 'pendente'
+             AND agendar_para <= $1::timestamptz
+             AND tentar_em <= $1::timestamptz
+           ORDER BY agendar_para, id
+           FOR UPDATE SKIP LOCKED
+           LIMIT $2
+        )
+        UPDATE lembretes l
+           SET estado = 'processando',
+               processando_por = $3,
+               processando_desde = $1::timestamptz
+          FROM candidatos c
+         WHERE l.id = c.id
+        RETURNING l.id
+      `, [agora, Number(limite), String(worker).slice(0, 100)]);
+
+      if (rows.length === 0) return [];
+
+      const { rows: completos } = await consultar(`
+        SELECT ${SELECAO_LEMBRETE} ${JUNCOES_LEMBRETE}
+         WHERE l.id = ANY($1::bigint[])
+         ORDER BY l.agendar_para, l.id
+      `, [rows.map((linha) => Number(linha.id))]);
+
+      return completos.map(montarLembrete);
+    },
+
+    /** Grava o desfecho de um lembrete: enviado, ignorado, falhou ou de volta à fila. */
+    async concluirLembrete(id, {
+      estado, modoEntrega = undefined, entregaReferencia = undefined, enviadoEm = undefined,
+      ignoradoMotivo = undefined, ultimoErro = undefined, tentativas = undefined, tentarEm = undefined,
+    }) {
+      const partes = ['estado = $2'];
+      const valores = [id, estado];
+
+      const acrescentar = (coluna, valor, cast = '') => {
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}${cast}`);
+      };
+
+      if (modoEntrega !== undefined) acrescentar('modo_entrega', modoEntrega);
+      if (entregaReferencia !== undefined) acrescentar('entrega_referencia', entregaReferencia);
+      if (enviadoEm !== undefined) acrescentar('enviado_em', enviadoEm, '::timestamptz');
+      if (ignoradoMotivo !== undefined) acrescentar('ignorado_motivo', ignoradoMotivo);
+      if (ultimoErro !== undefined) acrescentar('ultimo_erro', ultimoErro);
+      if (tentativas !== undefined) acrescentar('tentativas', tentativas);
+      if (tentarEm !== undefined) acrescentar('tentar_em', tentarEm ?? new Date().toISOString(), '::timestamptz');
+
+      // Sair de 'processando' devolve a linha à fila limpa: um lease velho
+      // faria a recuperação achar que ainda há alguém trabalhando nela.
+      if (estado !== 'processando') partes.push('processando_por = NULL, processando_desde = NULL');
+
+      await consultar(`UPDATE lembretes SET ${partes.join(', ')} WHERE id = $1`, valores);
+      return this.obterLembrete(id);
+    },
+
+    /**
+     * Devolve à fila o que ficou preso em 'processando'.
+     *
+     * O worker que morre no meio de um envio deixa a linha reservada para
+     * sempre. Aqui ela volta — contando a tentativa, para que um lembrete que
+     * derruba o worker toda vez termine em 'falhou' em vez de circular eterno.
+     */
+    async liberarLembretesPresos({ antesDe, agora }) {
+      const { rows } = await consultar(`
+        UPDATE lembretes
+           SET tentativas = tentativas + 1,
+               estado = CASE WHEN tentativas + 1 >= max_tentativas THEN 'falhou' ELSE 'pendente' END,
+               tentar_em = $2::timestamptz,
+               ultimo_erro = 'processamento abandonado por worker inativo',
+               processando_por = NULL,
+               processando_desde = NULL
+         WHERE estado = 'processando'
+           AND processando_desde < $1::timestamptz
+        RETURNING id
+      `, [antesDe, agora]);
+
+      if (rows.length === 0) return [];
+      const { rows: completos } = await consultar(
+        `SELECT ${SELECAO_LEMBRETE} ${JUNCOES_LEMBRETE} WHERE l.id = ANY($1::bigint[])`,
+        [rows.map((linha) => Number(linha.id))],
+      );
+      return completos.map(montarLembrete);
+    },
+
+    /**
+     * Tira da fila o que ainda não saiu de um agendamento.
+     *
+     * `exceto` preserva a janela informada: remarcar enfileira o horário novo e
+     * cancela o antigo numa tacada, sem apagar o que acabou de entrar.
+     */
+    async cancelarLembretesDoAgendamento(agendamentoId, { motivo = 'cancelado', exceto = null } = {}) {
+      const { rows } = await consultar(`
+        UPDATE lembretes
+           SET estado = 'ignorado', ignorado_motivo = $2,
+               processando_por = NULL, processando_desde = NULL
+         WHERE agendamento_id = $1
+           AND estado IN ('pendente', 'processando')
+           AND ($3::timestamptz IS NULL OR janela <> $3::timestamptz)
+        RETURNING id
+      `, [agendamentoId, motivo, exceto]);
+
+      if (rows.length === 0) return [];
+      const { rows: completos } = await consultar(
+        `SELECT ${SELECAO_LEMBRETE} ${JUNCOES_LEMBRETE} WHERE l.id = ANY($1::bigint[])`,
+        [rows.map((linha) => Number(linha.id))],
+      );
+      return completos.map(montarLembrete);
+    },
+
+    async cancelarLembretesDoContato(contatoId, { motivo = 'optout' } = {}) {
+      const { rows } = await consultar(`
+        UPDATE lembretes
+           SET estado = 'ignorado', ignorado_motivo = $2,
+               processando_por = NULL, processando_desde = NULL
+         WHERE contato_id = $1 AND estado IN ('pendente', 'processando')
+        RETURNING id
+      `, [contatoId, motivo]);
+
+      if (rows.length === 0) return [];
+      const { rows: completos } = await consultar(
+        `SELECT ${SELECAO_LEMBRETE} ${JUNCOES_LEMBRETE} WHERE l.id = ANY($1::bigint[])`,
+        [rows.map((linha) => Number(linha.id))],
+      );
+      return completos.map(montarLembrete);
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

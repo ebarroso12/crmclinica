@@ -102,3 +102,21 @@ Clicar num espaço livre abre a proposta. Clicar num compromisso abre as ações
 Dentro de uma conversa, "Marcar horário" leva à agenda com o paciente já
 escolhido — em vez de propor "agora + 30 minutos", que quase sempre cai fora do
 horário de atendimento e renderia uma recusa antes de a pessoa poder escolher.
+
+## Lembretes
+
+Marcar, remarcar e cancelar mexem na fila de lembretes de 24h e 2h:
+
+| Ação na agenda | O que acontece com a fila |
+| --- | --- |
+| Marcar | Dois lembretes entram (24h e 2h). Sem antecedência suficiente, o de 24h nasce `ignorado` com o motivo registrado — não some em silêncio |
+| Remarcar | A janela nova entra; a antiga sai com motivo `remarcado` |
+| Cancelar | Tudo o que ainda não saiu vira `ignorado` |
+| Compareceu / faltou | Idem: o que já aconteceu não se lembra |
+
+A fila é acessório do agendamento, nunca o contrário: se ela falhar, a consulta
+é marcada do mesmo jeito e o erro vai para o log. Uma clínica que não consegue
+marcar consulta porque a fila de mensagens está fora do ar seria um projeto pior
+do que uma sem lembrete nenhum.
+
+Detalhes, operação e o estado da entrega em [`LEMBRETES.md`](LEMBRETES.md).

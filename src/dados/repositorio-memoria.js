@@ -37,6 +37,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const disponibilidades = [];
   const bloqueios = [];
   const agendamentos = [];
+  const lembretes = [];
 
   /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
   function enriquecerAgendamento(agendamento) {
@@ -71,8 +72,36 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const proximoId = {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
-    profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1,
+    profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
   };
+
+  /** Espelha o que o PostgreSQL devolve nas junções da fila de lembretes. */
+  function enriquecerLembrete(lembrete) {
+    if (!lembrete) return null;
+    const agendamento = agendamentos.find((item) => item.id === lembrete.agendamento_id);
+    const contato = contatos.get(lembrete.contato_id);
+
+    return {
+      ...lembrete,
+      agendamento: agendamento
+        ? {
+          id: agendamento.id,
+          status: agendamento.status,
+          inicio: agendamento.inicio,
+          fim: agendamento.fim,
+          contato_id: agendamento.contato_id,
+        }
+        : null,
+      contato: contato
+        ? {
+          id: contato.id,
+          nome: contato.nome,
+          telefone: contato.telefone,
+          lembretes_optout: contato.lembretes_optout === true,
+        }
+        : null,
+    };
+  }
 
   // Espelha o que o PostgreSQL devolve: o hash da senha e o segredo do segundo
   // fator só saem pelas consultas que os pedem explicitamente.
@@ -276,9 +305,23 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         origem: canal,
         atributos: {},
         observacoes: null,
+        lembretes_optout: false,
+        lembretes_optout_em: null,
+        lembretes_optout_motivo: null,
         criado_em: agora().toISOString(),
       };
       contatos.set(contato.id, contato);
+      return contato;
+    },
+
+    /** Fora de `atualizarContato` pelo mesmo motivo do PostgreSQL: não é campo de ficha. */
+    async definirOptOutDeLembretes(id, { optout = true, motivo = null, agora: instante = null }) {
+      const contato = contatos.get(Number(id));
+      if (!contato) return null;
+
+      contato.lembretes_optout = optout === true;
+      contato.lembretes_optout_em = optout ? (instante ?? agora().toISOString()) : null;
+      contato.lembretes_optout_motivo = optout ? motivo : null;
       return contato;
     },
 
@@ -810,6 +853,186 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       }
       agendamento.atualizado_em = agora().toISOString();
       return enriquecerAgendamento(agendamento);
+    },
+
+    // ---------------------------------------------------------------- lembretes
+
+    /**
+     * Enfileira imitando a constraint `lembretes_unicos` do PostgreSQL.
+     *
+     * A busca pelo existente e a inserção acontecem **sem `await` entre elas**:
+     * em thread única isso é atômico, e o mesmo par (agendamento, tipo, janela)
+     * não vira duas linhas nem sob chamadas concorrentes. Sem esse cuidado, o
+     * teste de idempotência passaria aqui e falharia no banco.
+     */
+    async enfileirarLembrete({
+      agendamentoId, contatoId, tipo, janela, agendarPara,
+      estado = 'pendente', ignoradoMotivo = null, maxTentativas = 5,
+    }) {
+      const existente = lembretes.find((item) => item.agendamento_id === Number(agendamentoId)
+        && item.tipo === tipo
+        && new Date(item.janela).getTime() === new Date(janela).getTime());
+
+      if (existente) return { lembrete: enriquecerLembrete(existente), criado: false };
+
+      const lembrete = {
+        id: proximoId.lembrete++,
+        agendamento_id: Number(agendamentoId),
+        contato_id: Number(contatoId),
+        tipo,
+        janela,
+        agendar_para: agendarPara,
+        estado,
+        tentativas: 0,
+        max_tentativas: Number(maxTentativas),
+        tentar_em: agendarPara,
+        processando_por: null,
+        processando_desde: null,
+        modo_entrega: null,
+        entrega_referencia: null,
+        enviado_em: null,
+        ignorado_motivo: ignoradoMotivo,
+        ultimo_erro: null,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      lembretes.push(lembrete);
+      return { lembrete: enriquecerLembrete(lembrete), criado: true };
+    },
+
+    async obterLembrete(id) {
+      return enriquecerLembrete(lembretes.find((item) => item.id === Number(id)) ?? null);
+    },
+
+    async listarLembretes({ estado = null, tipo = null, agendamentoId = null, contatoId = null, limite = 50 } = {}) {
+      return lembretes
+        .filter((item) => (!estado || item.estado === estado)
+          && (!tipo || item.tipo === tipo)
+          && (!agendamentoId || item.agendamento_id === Number(agendamentoId))
+          && (!contatoId || item.contato_id === Number(contatoId)))
+        .sort((a, b) => new Date(b.agendar_para) - new Date(a.agendar_para) || b.id - a.id)
+        .slice(0, Number(limite))
+        .map(enriquecerLembrete);
+    },
+
+    async contarLembretesPorEstado() {
+      const vazio = () => ({ pendente: 0, processando: 0, enviado: 0, ignorado: 0, falhou: 0 });
+      const porEstado = vazio();
+      const porTipo = {};
+      const entregas = { dry_run: 0, real: 0 };
+
+      for (const lembrete of lembretes) {
+        porEstado[lembrete.estado] += 1;
+        porTipo[lembrete.tipo] = porTipo[lembrete.tipo] ?? vazio();
+        porTipo[lembrete.tipo][lembrete.estado] += 1;
+        if (lembrete.modo_entrega === 'dry_run') entregas.dry_run += 1;
+        if (lembrete.modo_entrega === 'real') entregas.real += 1;
+      }
+
+      return { por_estado: porEstado, por_tipo: porTipo, entregas };
+    },
+
+    /**
+     * Reivindica imitando `FOR UPDATE SKIP LOCKED`.
+     *
+     * Seleção e marcação sem `await` no meio: dois "workers" chamando isto em
+     * paralelo recebem conjuntos disjuntos, como no PostgreSQL. É o que faz o
+     * teste de concorrência significar alguma coisa nas duas implementações.
+     */
+    async reivindicarLembretes({ agora: instante, limite = 20, worker = 'worker' }) {
+      const momento = new Date(instante).getTime();
+
+      const candidatos = lembretes
+        .filter((item) => item.estado === 'pendente'
+          && new Date(item.agendar_para).getTime() <= momento
+          && new Date(item.tentar_em).getTime() <= momento)
+        .sort((a, b) => new Date(a.agendar_para) - new Date(b.agendar_para) || a.id - b.id)
+        .slice(0, Number(limite));
+
+      for (const lembrete of candidatos) {
+        lembrete.estado = 'processando';
+        lembrete.processando_por = String(worker).slice(0, 100);
+        lembrete.processando_desde = instante;
+        lembrete.atualizado_em = instante;
+      }
+
+      return candidatos.map(enriquecerLembrete);
+    },
+
+    async concluirLembrete(id, {
+      estado, modoEntrega = undefined, entregaReferencia = undefined, enviadoEm = undefined,
+      ignoradoMotivo = undefined, ultimoErro = undefined, tentativas = undefined, tentarEm = undefined,
+    }) {
+      const lembrete = lembretes.find((item) => item.id === Number(id));
+      if (!lembrete) return null;
+
+      lembrete.estado = estado;
+      if (modoEntrega !== undefined) lembrete.modo_entrega = modoEntrega;
+      if (entregaReferencia !== undefined) lembrete.entrega_referencia = entregaReferencia;
+      if (enviadoEm !== undefined) lembrete.enviado_em = enviadoEm;
+      if (ignoradoMotivo !== undefined) lembrete.ignorado_motivo = ignoradoMotivo;
+      if (ultimoErro !== undefined) lembrete.ultimo_erro = ultimoErro;
+      if (tentativas !== undefined) lembrete.tentativas = Number(tentativas);
+      if (tentarEm !== undefined) lembrete.tentar_em = tentarEm ?? agora().toISOString();
+
+      if (estado !== 'processando') {
+        lembrete.processando_por = null;
+        lembrete.processando_desde = null;
+      }
+      lembrete.atualizado_em = agora().toISOString();
+      return enriquecerLembrete(lembrete);
+    },
+
+    async liberarLembretesPresos({ antesDe, agora: instante }) {
+      const limite = new Date(antesDe).getTime();
+      const liberados = lembretes.filter((item) => item.estado === 'processando'
+        && item.processando_desde
+        && new Date(item.processando_desde).getTime() < limite);
+
+      for (const lembrete of liberados) {
+        lembrete.tentativas += 1;
+        lembrete.estado = lembrete.tentativas >= lembrete.max_tentativas ? 'falhou' : 'pendente';
+        lembrete.tentar_em = instante;
+        lembrete.ultimo_erro = 'processamento abandonado por worker inativo';
+        lembrete.processando_por = null;
+        lembrete.processando_desde = null;
+        lembrete.atualizado_em = instante;
+      }
+
+      return liberados.map(enriquecerLembrete);
+    },
+
+    async cancelarLembretesDoAgendamento(agendamentoId, { motivo = 'cancelado', exceto = null } = {}) {
+      const preservar = exceto ? new Date(exceto).getTime() : null;
+
+      const alvo = lembretes.filter((item) => item.agendamento_id === Number(agendamentoId)
+        && ['pendente', 'processando'].includes(item.estado)
+        && (preservar === null || new Date(item.janela).getTime() !== preservar));
+
+      for (const lembrete of alvo) {
+        lembrete.estado = 'ignorado';
+        lembrete.ignorado_motivo = motivo;
+        lembrete.processando_por = null;
+        lembrete.processando_desde = null;
+        lembrete.atualizado_em = agora().toISOString();
+      }
+
+      return alvo.map(enriquecerLembrete);
+    },
+
+    async cancelarLembretesDoContato(contatoId, { motivo = 'optout' } = {}) {
+      const alvo = lembretes.filter((item) => item.contato_id === Number(contatoId)
+        && ['pendente', 'processando'].includes(item.estado));
+
+      for (const lembrete of alvo) {
+        lembrete.estado = 'ignorado';
+        lembrete.ignorado_motivo = motivo;
+        lembrete.processando_por = null;
+        lembrete.processando_desde = null;
+        lembrete.atualizado_em = agora().toISOString();
+      }
+
+      return alvo.map(enriquecerLembrete);
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

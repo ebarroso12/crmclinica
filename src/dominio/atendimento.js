@@ -3,6 +3,7 @@
 const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('./conversas');
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
 const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
+const { ehPedidoDeOptOut } = require('./lembretes');
 
 // O ciclo de atendimento do crmclinica.
 //
@@ -14,7 +15,7 @@ const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificaca
 //   2. quando um humano assume, a automação cala;
 //   3. só o contexto mínimo autorizado atravessa para o orquestrador.
 
-function criarAtendimento({ repositorio, orquestrador, leads = null }) {
+function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes = null }) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -42,6 +43,21 @@ function criarAtendimento({ repositorio, orquestrador, leads = null }) {
 
     if (duplicada) {
       return { acao: 'mensagem_duplicada', conversa_id: conversa.id, mensagem_id: mensagem.id };
+    }
+
+    // "PARAR" precisa valer na hora. Esperar alguém da equipe ver a mensagem e
+    // clicar em algo faria a pessoa que acabou de pedir para não receber nada
+    // receber o próximo lembrete — que é exatamente o que ela pediu para evitar.
+    if (lembretes && ehPedidoDeOptOut(evento.texto)) {
+      try {
+        await lembretes.definirOptOut(contato.id, {
+          optout: true,
+          motivo: 'pedido do contato pelo canal',
+          origem: 'contato',
+        });
+      } catch (erro) {
+        console.error(`[atendimento] falha ao registrar opt-out de lembretes: ${erro.message}`);
+      }
     }
 
     // O lead nasce junto da conversa e guarda o vínculo: é o que faz o card do

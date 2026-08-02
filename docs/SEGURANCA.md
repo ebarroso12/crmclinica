@@ -225,6 +225,45 @@ A ordem correta de endurecimento é:
 3. **`FORCE ROW LEVEL SECURITY`**, que faz o RLS valer até para o dono. Só depois
    de (1), porque antes disso ele tranca a própria aplicação para fora.
 
+### O papel da conexão: a segunda coisa que o banco pergunta
+
+Depois que a aplicação passou a conectar como `crmclinica_app`, o RLS finalmente
+começou a ser avaliado — e apareceu um efeito que ninguém tinha visto porque, com
+`postgres`, nada era avaliado.
+
+O banco tem políticas aplicadas por fora deste repositório (`crm008_*`, visíveis
+em `supabase_migrations.schema_migrations` como
+`008_crmclinica_security_hardening`). Elas decidem por duas funções:
+
+```sql
+current_app_role()   -- request.jwt.claims ->> 'app_role', ou 'deny'
+current_usuario_id() -- request.jwt.claims ->> 'usuario_id'
+```
+
+A aplicação declarava `app.usuario_id` — que a migration 007 usa — e **não**
+declarava `request.jwt.claims`. Resultado: `current_app_role()` devolvia `deny`,
+e `deny` não escreve em tabela nenhuma. Todo `INSERT` era recusado pelo RLS, e
+todo `SELECT` voltava vazio em vez de dar erro — que é o modo mais silencioso
+possível de um sistema parar de funcionar.
+
+A correção tem duas partes, e a divisão entre elas é a parte que importa:
+
+1. **A conexão nasce como `backend`** (`options=-c request.jwt.claims=…` em
+   `src/dados/pool.js`). A aplicação *é* o backend: é ela que recebe webhook,
+   registra tentativa de login e roda o worker de lembretes — tudo isso sem
+   nenhum usuário logado por trás. Declarar isso é dizer a verdade sobre quem
+   está falando.
+
+2. **`comUsuario` restringe para o papel real** do usuário da requisição
+   (`admin`, `gestor`, `atendente`), com `SET LOCAL` dentro da transação. Uma
+   requisição de atendente não deve poder o que a conta dele não pode, ainda que
+   a conexão pudesse. Sendo local, o valor morre com a transação e a conexão
+   volta ao pool como `backend` de novo.
+
+O sentido é sempre esse: a transação **restringe**, nunca amplia. Não há caminho
+em que uma requisição de usuário termine com mais poder do que a conexão já
+tinha.
+
 ### Storage: o risco que não dá para corrigir por migration
 
 `anon` e `authenticated` têm `SELECT`, `INSERT`, `UPDATE`, `DELETE` e **`TRUNCATE`**
@@ -354,6 +393,6 @@ pode virar vazamento. Testado.
 
 - **A trilha de auditoria não tem rota de consulta** — existe a permissão `auditoria:ler`, mas nenhuma rota a usa ainda.
 - **O IP vem de `req.socket.remoteAddress`.** Atrás de um proxy reverso, isso é o IP do proxy, e o limite por IP passa a valer para todo mundo junto. Ao publicar: ler `X-Forwarded-For` **apenas** de proxies confiáveis — confiar no cabeçalho de qualquer origem permitiria forjar o IP e contornar o limite.
-- **RLS não foi verificado contra o banco real** — as migrations estão escritas, mas não foram aplicadas nem testadas aqui.
+- ~~**RLS não foi verificado contra o banco real**~~ — verificado. A aplicação conecta como `crmclinica_app`, o RLS é avaliado, e `npm run smoke-lembretes` exercita escrita e leitura sob as políticas reais.
 - **O envio de e-mail não foi exercido contra um SMTP real** — o cliente foi escrito e testado com dublê.
 - **O login com Google não foi exercido contra o Google real** — a verificação do `id_token` foi testada com par de chaves gerado no teste, incluindo os casos de recusa.

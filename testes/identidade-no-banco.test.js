@@ -52,7 +52,15 @@ test('a transação abre, declara o usuário e confirma', async () => {
   const resultado = await repositorio.comUsuario(42, async () => 'pronto');
 
   assert.equal(resultado, 'pronto');
-  assert.deepEqual(textos(pool), ['BEGIN', 'SELECT set_config($1, $2, true)', 'COMMIT']);
+  // Duas declarações, porque o banco pergunta duas coisas: `app.usuario_id`,
+  // lido por `app_usuario_atual()`, e `request.jwt.claims`, lido por
+  // `current_app_role()` — de que dependem todas as políticas do banco.
+  assert.deepEqual(textos(pool), [
+    'BEGIN',
+    'SELECT set_config($1, $2, true)',
+    'SELECT set_config($1, $2, true)',
+    'COMMIT',
+  ]);
 
   // O terceiro argumento `true` é o que torna o valor local à transação. Sem
   // ele, a identidade sobreviveria na conexão e a próxima requisição a herdaria.
@@ -85,8 +93,40 @@ test('erro no meio desfaz tudo — meia escrita é pior que nenhuma', async () =
     /a rota falhou/,
   );
 
-  assert.deepEqual(textos(pool), ['BEGIN', 'SELECT set_config($1, $2, true)', 'ROLLBACK']);
+  assert.deepEqual(textos(pool), [
+    'BEGIN',
+    'SELECT set_config($1, $2, true)',
+    'SELECT set_config($1, $2, true)',
+    'ROLLBACK',
+  ]);
   assert.ok(!textos(pool).includes('COMMIT'));
+});
+
+test('o papel do usuário vai declarado ao banco, não só o id', async () => {
+  // Sem isto, `current_app_role()` devolve `deny` e as políticas do banco
+  // recusam todo INSERT — com o usuário identificado na aplicação e o
+  // privilégio de tabela concedido. Foi exatamente o que aconteceu em produção
+  // até esta declaração existir.
+  const pool = poolEspiao();
+  const repositorio = criarRepositorio(pool);
+
+  await repositorio.comUsuario({ id: 42, papel: 'atendente' }, async () => null);
+
+  const claims = pool.comandos.find((comando) => comando.valores?.[0] === 'request.jwt.claims');
+  assert.ok(claims, 'as claims precisam ser declaradas');
+  assert.deepEqual(JSON.parse(claims.valores[1]), { usuario_id: '42', app_role: 'atendente' });
+});
+
+test('sem papel informado, a transação não se promove a nada — fica no que a conexão já é', async () => {
+  const pool = poolEspiao();
+  const repositorio = criarRepositorio(pool);
+
+  // A chamada antiga, só com o id, continua funcionando: assume `backend`, que
+  // é o papel com que a conexão já nasce. Não há elevação de privilégio aqui.
+  await repositorio.comUsuario(7, async () => null);
+
+  const claims = pool.comandos.find((comando) => comando.valores?.[0] === 'request.jwt.claims');
+  assert.deepEqual(JSON.parse(claims.valores[1]), { usuario_id: '7', app_role: 'backend' });
 });
 
 test('a conexão volta ao pool mesmo quando tudo dá errado', async () => {
