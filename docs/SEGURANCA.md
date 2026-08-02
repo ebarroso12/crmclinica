@@ -267,11 +267,50 @@ uma tabela sem linhas; migrar para o GoTrue seria reescrever a autenticação in
 e adicionar uma superfície que hoje não existe.
 
 O objetivo por trás da recomendação — **o banco saber quem é o usuário** — é
-legítimo, e o caminho para ele aqui é outro: `db/007_hardening.sql` cria
-`app_usuario_atual()`, que lê `app.usuario_id` da sessão. Quando a aplicação passar
-a declarar esse valor por transação, as políticas podem decidir por usuário sem
-depender do GoTrue. Isso exige que toda consulta rode dentro de uma transação com
-`SET LOCAL` — mudança na camada de dados que ainda não foi feita.
+legítimo, e o caminho para ele aqui é outro, descrito a seguir.
+
+### Como o banco sabe quem está pedindo
+
+A aplicação conecta com uma credencial só. Sem ajuda, o PostgreSQL vê todas as
+requisições como a mesma pessoa, e nenhuma policy consegue decidir por usuário.
+
+Depois de validar o JWT, cada requisição autenticada roda dentro de uma transação
+que declara quem é:
+
+```sql
+BEGIN;
+SELECT set_config('app.usuario_id', $1, true);   -- `true` = local à transação
+-- … tudo o que a rota faz …
+COMMIT;
+```
+
+As políticas leem por `app_usuario_atual()` (criada em `db/007_hardening.sql`),
+que devolve `NULL` quando ninguém declarou — e é assim que se distingue uma
+requisição identificada de uma conexão solta.
+
+Três detalhes que essa implementação carrega, cada um por um motivo:
+
+- **`set_config` em vez de `SET LOCAL`.** `SET LOCAL app.usuario_id = ...` não
+  aceita `$1`, e quem contorna isso acaba interpolando um valor vindo do token
+  dentro do comando. `set_config` aceita parâmetro.
+- **Local à transação.** O valor morre no `COMMIT`, então a conexão volta ao pool
+  limpa. Fosse de sessão, a próxima requisição herdaria a identidade da anterior
+  — que é o modo como esse tipo de mecanismo costuma vazar.
+- **A identidade viaja por `AsyncLocalStorage`**, não por parâmetro. O repositório
+  é capturado por closure em nove camadas montadas na inicialização; passar o
+  usuário adiante mudaria todas elas e toda assinatura no caminho.
+
+Como efeito colateral, cada rota autenticada virou atômica: se algo falha no meio,
+o `ROLLBACK` desfaz tudo. Uma mensagem gravada sem a auditoria correspondente é
+pior que nenhuma.
+
+**Três caminhos ficam de fora da transação, de propósito:**
+
+| Caminho | Por quê |
+| --- | --- |
+| `/api/auth/*` | Login errado responde 401 lançando, e o `ROLLBACK` levaria junto o registro da tentativa. O rate limit pararia de contar exatamente o que existe para contar — sem sintoma visível, porque a rota continuaria devolvendo 401. |
+| `/api/eventos` | É onde o orquestrador é acionado. Uma chamada de rede lenta seguraria uma conexão do pool durante toda a espera. |
+| Saúde do orquestrador em `/api/resumo` | Mesma razão: é rede, não banco. |
 
 ### Migrations aplicadas fora da CLI
 

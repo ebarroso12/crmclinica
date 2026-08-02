@@ -6,6 +6,8 @@
 //
 // Consultas sempre parametrizadas ($1, $2…): nada de concatenar valor em SQL.
 
+const contexto = require('./contexto');
+
 const SELECAO_CONVERSA = `
   c.id, c.contato_id, c.canal, c.status, c.prioridade, c.atribuido_a,
   c.assumida_por_humano, c.ia_pausada_ate, c.ultima_msg_em, c.criado_em,
@@ -121,10 +123,55 @@ function montarMensagem(linha) {
 }
 
 function criarRepositorio(pool) {
-  const consultar = (texto, valores) => pool.query(texto, valores);
+  // Dentro de uma requisição existe uma transação aberta com o usuário já
+  // declarado; fora dela (semeadura, tarefas de manutenção, health check) o pool
+  // atende direto. Nenhuma consulta abaixo precisa saber em qual dos dois está.
+  const consultar = (texto, valores) => (contexto.atual()?.client ?? pool).query(texto, valores);
 
   return {
     tipo: 'postgres',
+
+    /**
+     * Roda `acao` numa transação, com o usuário declarado para o banco.
+     *
+     * `set_config(..., is_local => true)` é o `SET LOCAL` da documentação, mas
+     * aceita parâmetro. `SET LOCAL app.usuario_id = ...` não aceita `$1`, e
+     * interpolar um valor vindo do token dentro do SQL é exatamente o tipo de
+     * concatenação que este repositório não faz em lugar nenhum.
+     *
+     * Sendo local, o valor morre com a transação. A conexão volta ao pool limpa
+     * e a próxima requisição não herda a identidade da anterior — que é o modo
+     * como esse tipo de mecanismo costuma vazar.
+     */
+    async comUsuario(usuarioId, acao) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'SELECT set_config($1, $2, true)',
+          ['app.usuario_id', usuarioId === null || usuarioId === undefined ? '' : String(usuarioId)],
+        );
+
+        const resultado = await contexto.executarCom(
+          { client, usuarioId },
+          () => acao(this),
+        );
+
+        await client.query('COMMIT');
+        return resultado;
+      } catch (erro) {
+        // Falha no meio de uma rota não pode deixar meia escrita para trás: uma
+        // mensagem gravada sem a auditoria correspondente é pior que nenhuma.
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Conexão já perdida; o servidor a descarta ao liberar.
+        }
+        throw erro;
+      } finally {
+        client.release();
+      }
+    },
 
     async verificarSaude() {
       try {

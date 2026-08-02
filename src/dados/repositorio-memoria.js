@@ -121,6 +121,19 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const repositorio = {
     tipo: 'memoria',
 
+    /**
+     * Mesma interface do PostgreSQL, sem transação nem identidade no banco.
+     *
+     * Aqui não há policy para ler `app.usuario_id`, e um Map não tem rollback.
+     * Fingir uma transação — copiando os Maps e restaurando em caso de erro —
+     * daria a impressão de que os testes cobrem atomicidade, e eles não cobrem:
+     * o que garante isso é o PostgreSQL. O contrato existe para as rotas
+     * poderem chamar `comUsuario` sem saber quem está por trás.
+     */
+    async comUsuario(usuarioId, acao) {
+      return acao(repositorio);
+    },
+
     async verificarSaude() {
       return { estado: 'operacional' };
     },

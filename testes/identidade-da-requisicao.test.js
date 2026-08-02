@@ -1,0 +1,182 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
+const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
+const { criarAtendimento } = require('../src/dominio/atendimento');
+
+// Quem agiu vem do token, nunca do corpo da requisição.
+//
+// O servidor monta o corpo das ações como `{ ...corpo, usuario_id: usuario.id }`
+// — o valor do token entra depois e sobrescreve. Funciona, mas a garantia mora
+// três arquivos longe de quem a consome: as rotas leem `corpo.usuario_id` e não
+// têm como saber de onde ele veio.
+//
+// Estes testes são o que segura isso. Sem eles, alguém "simplifica" a ordem do
+// spread um dia e passa a aceitar identidade forjada — sem erro, sem log, e com
+// a auditoria registrando outra pessoa.
+
+function orquestradorFalso() {
+  return {
+    disponivel: false,
+    despacharEvento: async () => ({ resposta: null }),
+    verificarSaude: async () => ({ estado: 'nao_configurado' }),
+  };
+}
+
+async function subir() {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const atendimento = criarAtendimento({ repositorio, orquestrador });
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp', id_externo: 'id:1', remetente: '5516999999999',
+    nome: 'Marina', texto: 'Olá',
+  });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, configuracao: configuracaoDeTeste(),
+  });
+
+  const [conversa] = await repositorio.listarConversas({});
+  return { app, repositorio, conversa };
+}
+
+function postarComo(app, sessao) {
+  return (caminho, corpo) => app.pedirSemAuth(caminho, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${sessao.access_token}`,
+    },
+    body: JSON.stringify(corpo),
+  });
+}
+
+test('mensagem enviada com usuario_id forjado grava quem está no token', async (t) => {
+  const { app, repositorio, conversa } = await subir();
+  t.after(() => app.encerrar());
+
+  const atendente = await app.entrarComo('atendente', { email: 'recepcao@teste.local' });
+  const postar = postarComo(app, atendente);
+
+  // O corpo tenta se passar por outra pessoa, nos dois campos que carregam
+  // identidade: o nome que aparece no balão e o id que assume a conversa.
+  const resposta = await postar(`/api/conversas/${conversa.id}/mensagens`, {
+    texto: 'Bom dia!',
+    usuario_id: 999999,
+    autor: 'Diretor Clínico',
+  });
+  assert.equal(resposta.status, 200);
+
+  // Não é a última: responder assume a conversa, e assumir grava uma mensagem
+  // de sistema logo depois.
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  const enviada = mensagens.filter((item) => item.autor_tipo === 'equipe').at(-1);
+  assert.ok(enviada, 'a mensagem da equipe precisa existir');
+
+  assert.equal(enviada.autor_nome, atendente.usuario.nome, 'o nome no balão é o de quem tem o token');
+  assert.notEqual(enviada.autor_nome, 'Diretor Clínico', 'o corpo não escolhe de quem é a fala');
+
+  // Responder assume a conversa, e é aí que o id entra: se o corpo mandasse,
+  // a conversa ficaria atribuída a outra pessoa.
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.atribuido_a, atendente.usuario.id);
+  assert.notEqual(depois.atribuido_a, 999999);
+});
+
+test('nota interna também ignora o autor enviado pelo cliente', async (t) => {
+  const { app, repositorio, conversa } = await subir();
+  t.after(() => app.encerrar());
+
+  const atendente = await app.entrarComo('atendente', { email: 'nota@teste.local' });
+  const postar = postarComo(app, atendente);
+
+  await postar(`/api/conversas/${conversa.id}/notas`, {
+    texto: 'Paciente pediu retorno',
+    usuario_id: 424242,
+  });
+
+  const notas = await repositorio.listarNotas(conversa.contato_id);
+  assert.equal(notas.at(-1).usuario_id, atendente.usuario.id);
+});
+
+test('assumir conversa registra quem tem o token, não quem o corpo diz', async (t) => {
+  const { app, repositorio, conversa } = await subir();
+  t.after(() => app.encerrar());
+
+  const atendente = await app.entrarComo('atendente', { email: 'assume@teste.local' });
+  const postar = postarComo(app, atendente);
+
+  await postar(`/api/conversas/${conversa.id}/assumir`, { usuario_id: 777777 });
+
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.atribuido_a, atendente.usuario.id);
+  assert.notEqual(depois.atribuido_a, 777777);
+});
+
+test('sem token nenhuma identidade é aceita, nem a inventada', async (t) => {
+  const { app, conversa } = await subir();
+  t.after(() => app.encerrar());
+
+  const resposta = await app.pedirSemAuth(`/api/conversas/${conversa.id}/mensagens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ texto: 'oi', usuario_id: 1 }),
+  });
+
+  assert.equal(resposta.status, 401);
+});
+
+test('token adulterado não vira identidade', async (t) => {
+  const { app, conversa } = await subir();
+  t.after(() => app.encerrar());
+
+  const atendente = await app.entrarComo('atendente', { email: 'adultera@teste.local' });
+
+  // Troca um caractere do payload: a assinatura deixa de conferir.
+  const partes = atendente.access_token.split('.');
+  const adulterado = `${partes[0]}.${partes[1].slice(0, -1)}X.${partes[2]}`;
+
+  const resposta = await app.pedirSemAuth(`/api/conversas/${conversa.id}/mensagens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${adulterado}` },
+    body: JSON.stringify({ texto: 'oi' }),
+  });
+
+  assert.equal(resposta.status, 401);
+});
+
+test('a agenda também grava o usuário do token', async (t) => {
+  const { app, repositorio, conversa } = await subir();
+  t.after(() => app.encerrar());
+
+  const gestor = await app.entrarComo('gestor', { email: 'gestor-ag@teste.local' });
+  const postar = postarComo(app, gestor);
+
+  const profissional = await repositorio.criarProfissional({ nome: 'Dra. Helena', duracaoMin: 30 });
+  await repositorio.definirDisponibilidades(profissional.id, [0, 1, 2, 3, 4, 5, 6].map((dia) => ({
+    dia_semana: dia, hora_inicio: '08:00', hora_fim: '18:00',
+  })));
+
+  const inicio = new Date();
+  inicio.setDate(inicio.getDate() + 1);
+  inicio.setHours(10, 0, 0, 0);
+  const fim = new Date(inicio);
+  fim.setHours(11, 0, 0, 0);
+
+  const { token } = await (await postar('/api/agenda/propor', {
+    profissional_id: profissional.id,
+    contato_id: conversa.contato_id,
+    inicio: inicio.toISOString(),
+    fim: fim.toISOString(),
+    usuario_id: 555555,
+  })).json();
+
+  await postar('/api/agenda/confirmar', { token, usuario_id: 555555 });
+
+  const registro = repositorio._auditoria.find((linha) => linha.acao === 'agendamento_criado');
+  assert.equal(registro.usuarioId, gestor.usuario.id, 'a auditoria da agenda segue o token');
+  assert.notEqual(registro.usuarioId, 555555);
+});

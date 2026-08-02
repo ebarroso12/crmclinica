@@ -21,6 +21,7 @@ const { criarAplicacao, criarServidor } = require('./servidor/http');
 const { criarRepositorioEmMemoria } = require('./dados/repositorio-memoria');
 const { semearMaster } = require('./seguranca/semear-master');
 const { criarLimitador } = require('./seguranca/limite');
+const { exigirConexaoSegura } = require('./dados/conferir-conexao');
 
 const configuracao = carregarConfiguracao();
 
@@ -40,7 +41,7 @@ function montarRepositorio() {
   const { criarRepositorio } = require('./dados/repositorio');
 
   const pool = criarPool(configuracao.banco);
-  return { repositorio: criarRepositorio(pool), encerrar: encerrarPool };
+  return { repositorio: criarRepositorio(pool), pool, encerrar: encerrarPool };
 }
 
 function iniciar() {
@@ -52,7 +53,19 @@ function iniciar() {
     if (configuracao.producao) process.exit(1);
   }
 
-  const { repositorio, encerrar: encerrarBanco } = montarRepositorio();
+  const { repositorio, pool, encerrar: encerrarBanco } = montarRepositorio();
+
+  // Com quem a aplicação conectou decide se o RLS existe para ela. Conectar como
+  // dono das tabelas não gera erro nenhum — tudo funciona igual, e as políticas
+  // simplesmente não rodam. Em produção isso não pode passar em silêncio.
+  if (pool) {
+    exigirConexaoSegura(pool, { producao: configuracao.producao }).catch((erro) => {
+      console.error(`[crmclinica] ${erro.message}`);
+      console.error('[crmclinica] Aponte CRMCLINICA_DATABASE_URL para crmclinica_app '
+        + '(veja .env.exemplo e docs/SEGURANCA.md).');
+      process.exit(1);
+    });
+  }
 
   // Sem banco, o admin master é semeado a cada subida — do contrário não haveria
   // como entrar em desenvolvimento. Com banco, use `npm run criar-admin`, para

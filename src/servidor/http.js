@@ -462,6 +462,17 @@ function criarAplicacao(dependencias = {}) {
     const rota = url.pathname;
     const metodo = req.method;
 
+    /**
+     * Roda a ação com o usuário declarado ao banco, numa transação.
+     *
+     * Sem usuário identificado não há transação: a rota vai responder 401 em
+     * `exigirPermissao` de qualquer jeito, e abrir transação para isso só
+     * ocuparia conexão do pool à toa.
+     */
+    const comIdentidade = (quem, acao) => (
+      quem ? repositorio.comUsuario(quem.id, acao) : acao()
+    );
+
     try {
       if (rota === '/health') {
         if (metodo !== 'GET' && metodo !== 'HEAD') {
@@ -486,12 +497,16 @@ function criarAplicacao(dependencias = {}) {
           return;
         }
         exigirPermissao(usuario, 'conversas:ler');
-        const [saudeOrquestrador, saudeInbox, conversasDoResumo, leadsDoResumo] = await Promise.all([
-          orquestrador.verificarSaude(),
-          repositorio.verificarSaude(),
-          repositorio.listarConversas({ limite: 200 }),
-          repositorio.listarLeads(),
-        ]);
+        // A saúde do orquestrador é rede, e fica fora da transação: seria uma
+        // conexão do pool parada esperando um serviço externo responder.
+        const saudeOrquestrador = await orquestrador.verificarSaude();
+        const [saudeInbox, conversasDoResumo, leadsDoResumo] = await comIdentidade(usuario, () => (
+          Promise.all([
+            repositorio.verificarSaude(),
+            repositorio.listarConversas({ limite: 200 }),
+            repositorio.listarLeads(),
+          ])
+        ));
         responderJson(
           res,
           200,
@@ -504,6 +519,16 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
+      // Autenticação fica FORA da transação de identidade, por dois motivos.
+      //
+      // O primeiro é aritmético: em `/api/auth/login` ainda não existe usuário
+      // para declarar ao banco.
+      //
+      // O segundo é a razão de isto ser um comentário e não uma linha a menos:
+      // login errado responde 401 lançando, e um ROLLBACK levaria junto o
+      // registro da tentativa. O rate limit pararia de contar exatamente as
+      // tentativas que ele existe para contar — e ninguém notaria, porque a
+      // rota continuaria devolvendo 401 certinho.
       if (await tratarRotasDeAutenticacao(req, res, rota, metodo, url, usuario)) return;
 
       if (rota === '/api/eventos') {
@@ -511,11 +536,18 @@ function criarAplicacao(dependencias = {}) {
           responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
           return;
         }
+        // Webhook também fica fora: é aqui que o orquestrador é acionado, e uma
+        // chamada de rede lenta seguraria a conexão do pool durante a espera.
         await receberEventoDoOrquestrador(req, res);
         return;
       }
 
-      if (await tratarRotasDeConversas(req, res, rota, metodo, url, usuario)) return;
+      // Daqui para baixo, tudo que toca o banco corre numa transação com o
+      // usuário declarado — inbox, contatos, leads e agenda.
+      const tratou = await comIdentidade(usuario, () => (
+        tratarRotasDeConversas(req, res, rota, metodo, url, usuario)
+      ));
+      if (tratou) return;
 
       const arquivo = ARQUIVOS_PUBLICOS.get(rota);
       if (arquivo) {

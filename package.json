@@ -15,7 +15,8 @@
     "verificar-banco": "node bin/verificar-banco.js",
     "smoke": "node ferramentas/smoke-fluxo.js",
     "test": "node --test \"testes/**/*.test.js\"",
-    "verificar": "node --check src/index.js && node --check src/servidor/http.js && node --check src/config.js && node --check src/contratos/evento.js && node --check src/integracoes/openclaw.js && node --check src/provedores/kimi.js && node --check src/seguranca/contas.js && node --check src/seguranca/google.js && node --check src/seguranca/totp.js && node --check src/seguranca/email.js && node --check bin/criar-admin.js && node --check api/index.js && node --check src/dominio/agenda.js && node --check src/dominio/agenda-servico.js && node --check src/servidor/rotas-agenda.js && node --check src/dados/repositorio.js && node --check src/dados/repositorio-memoria.js && node --check bin/verificar-banco.js && node --check public/app.js"
+    "verificar": "node --check src/index.js && node --check src/servidor/http.js && node --check src/config.js && node --check src/contratos/evento.js && node --check src/integracoes/openclaw.js && node --check src/provedores/kimi.js && node --check src/seguranca/contas.js && node --check src/seguranca/google.js && node --check src/seguranca/totp.js && node --check src/seguranca/email.js && node --check bin/criar-admin.js && node --check api/index.js && node --check src/dominio/agenda.js && node --check src/dominio/agenda-servico.js && node --check src/servidor/rotas-agenda.js && node --check src/dados/repositorio.js && node --check src/dados/contexto.js && node --check src/dados/conferir-conexao.js && node --check bin/preparar-conexao-app.js && node --check src/dados/repositorio-memoria.js && node --check bin/verificar-banco.js && node --check public/app.js",
+    "preparar-conexao": "node bin/preparar-conexao-app.js"
   },
   "dependencies": {
     "pg": "^8.22.0"

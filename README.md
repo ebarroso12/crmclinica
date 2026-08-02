@@ -65,6 +65,22 @@ as migrations foram aplicadas e se o RLS está ligado. Rode antes de expor
 qualquer ambiente: uma tabela sem RLS num projeto Supabase fica legível pela API
 REST automática com a chave anônima, que é pública por definição.
 
+### Conecte como `crmclinica_app`, não como `postgres`
+
+```bash
+npm run preparar-conexao
+```
+
+O comando gera uma senha, aplica na role, testa a conexão nova e só então
+reescreve `CRMCLINICA_DATABASE_URL` no `.env`. **A senha não é exibida nem
+registrada em log** — existe em memória durante a execução e depois só no `.env`,
+que o `.gitignore` protege. É idempotente: rode de novo para rotacionar.
+
+Por que isso não é opcional: `postgres` é dono das tabelas e tem `BYPASSRLS`.
+Conectando por ele, o Row Level Security **nunca é avaliado** e todas as
+políticas do banco viram decoração — sem erro, sem log, sem sintoma. Em produção
+a aplicação recusa subir com conexão privilegiada; fora dela, avisa.
+
 Sem `CRMCLINICA_DATABASE_URL` o inbox roda em memória: útil para desenvolver, mas
 nada persiste. Em produção a variável é obrigatória.
 
