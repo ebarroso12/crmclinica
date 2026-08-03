@@ -74,9 +74,10 @@ test('o resumo diz, sem rodeios, que em dry-run nada sai', async (t) => {
   const corpo = await resposta.json();
 
   assert.equal(corpo.entrega.modo, 'dry_run');
-  assert.equal(corpo.entrega.protocolo_confirmado, false);
+  assert.equal(corpo.entrega.metodo, 'gateway.send');
   assert.match(corpo.entrega.significado, /nenhuma mensagem sai/);
-  assert.ok(Array.isArray(corpo.entrega.falta));
+  // Sem gateway configurado no teste, o resumo diz o que falta para enviar.
+  assert.match(corpo.entrega.motivo, /OPENCLAW_GATEWAY_URL/);
   assert.match(corpo.observacao, /dry-run/);
 });
 

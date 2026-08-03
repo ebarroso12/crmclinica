@@ -4,6 +4,7 @@
 // por rota HTTP: o restante do sistema só enxerga o resultado de `descreverConfiguracao`.
 
 const crypto = require('node:crypto');
+const path = require('node:path');
 
 const NIVEIS_VALIDOS = new Set(['development', 'test', 'production']);
 
@@ -34,6 +35,38 @@ function urlValida(valor) {
   }
 }
 
+/** O gateway fala WebSocket: `http(s)` aqui seria um endereço que não conecta. */
+function urlWebSocketValida(valor) {
+  const bruto = texto(valor);
+  if (!bruto) return '';
+  try {
+    const url = new URL(bruto);
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return '';
+    return bruto.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A chave privada do dispositivo, aceita como PEM direto ou em base64.
+ *
+ * Base64 existe porque PEM tem quebras de linha, e painel de variável de
+ * ambiente (Vercel, systemd) costuma achatá-las — deixando uma chave que parece
+ * certa e não carrega.
+ */
+function decodificarChave(valor) {
+  const bruto = texto(valor);
+  if (!bruto) return '';
+  if (bruto.includes('BEGIN')) return bruto.replace(/\\n/g, '\n');
+  try {
+    const decodificado = Buffer.from(bruto, 'base64').toString('utf8');
+    return decodificado.includes('BEGIN') ? decodificado : '';
+  } catch {
+    return '';
+  }
+}
+
 function carregarConfiguracao(ambiente = process.env) {
   const nodeEnv = NIVEIS_VALIDOS.has(texto(ambiente.NODE_ENV)) ? texto(ambiente.NODE_ENV) : 'development';
   const producao = nodeEnv === 'production';
@@ -59,6 +92,22 @@ function carregarConfiguracao(ambiente = process.env) {
       sessao: texto(ambiente.OPENCLAW_SESSION_ID),
       segredoWebhook: texto(ambiente.OPENCLAW_WEBHOOK_SECRET),
       tempoLimiteMs: inteiro(ambiente.OPENCLAW_TIMEOUT_MS, 10000),
+      // Gateway WebSocket: é por aqui que a mensagem sai de verdade. O token
+      // compartilhado sozinho não concede escopo — quem envia precisa ser um
+      // dispositivo pareado. Ver docs/OPENCLAW.md.
+      gateway: {
+        url: urlWebSocketValida(ambiente.OPENCLAW_GATEWAY_URL),
+        token: texto(ambiente.OPENCLAW_GATEWAY_TOKEN),
+        deviceToken: texto(ambiente.OPENCLAW_DEVICE_TOKEN),
+        // Chave privada do dispositivo. Em ambiente sem disco gravável (Vercel)
+        // ela vem do ambiente; fora dele, de um arquivo que o .gitignore cobre.
+        chavePrivada: decodificarChave(ambiente.OPENCLAW_DEVICE_PRIVATE_KEY),
+        identidadePath: texto(ambiente.OPENCLAW_DEVICE_IDENTITY_PATH)
+          || path.join(__dirname, '..', '.openclaw-identidade.json'),
+        timeoutMs: inteiro(ambiente.OPENCLAW_GATEWAY_TIMEOUT_MS, 20000),
+        canal: texto(ambiente.OPENCLAW_CANAL) || 'whatsapp',
+        contaId: texto(ambiente.OPENCLAW_ACCOUNT_ID),
+      },
     },
     // Lembretes de agendamento. O modo de entrega é a variável que decide se
     // alguma mensagem sai de fato — e ela é conservadora por padrão: `dry_run`

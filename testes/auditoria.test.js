@@ -33,6 +33,10 @@ function listarArquivos(diretorio = RAIZ, acumulado = []) {
     // O .env local contém a conexão real e é protegido pelo .gitignore.
     // Apenas o modelo vazio .env.exemplo pode entrar na auditoria versionável.
     if (entrada.name === '.env' || (entrada.name.startsWith('.env.') && entrada.name !== '.env.exemplo')) continue;
+    // Mesma razão: a identidade do dispositivo no gateway OpenClaw guarda uma
+    // chave privada Ed25519 e é coberta pelo .gitignore. O teste logo abaixo
+    // confere essa proteção — que é o que realmente importa auditar.
+    if (entrada.name === '.openclaw-identidade.json') continue;
     const caminho = path.join(diretorio, entrada.name);
 
     if (entrada.isDirectory()) {
@@ -185,6 +189,14 @@ test('o .gitignore protege o arquivo .env', () => {
   const conteudo = fs.readFileSync(path.join(RAIZ, '.gitignore'), 'utf8');
   assert.match(conteudo, /^\.env$/m);
   assert.match(conteudo, /^!\.env\.exemplo$/m);
+});
+
+test('o .gitignore protege a identidade do dispositivo no gateway', () => {
+  // A chave privada Ed25519 é o que prova ao OpenClaw que quem fala é o
+  // crmclinica. Versioná-la daria a qualquer pessoa com acesso ao repositório o
+  // poder de mandar mensagem pelo WhatsApp da clínica.
+  const conteudo = fs.readFileSync(path.join(RAIZ, '.gitignore'), 'utf8');
+  assert.match(conteudo, /^\.openclaw-identidade\.json$/m);
 });
 
 test('a interface não embute script nem estilo inline', () => {

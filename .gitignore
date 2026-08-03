@@ -21,3 +21,7 @@ coverage/
 .vercel
 .DS_Store
 Thumbs.db
+
+# Identidade do dispositivo no gateway OpenClaw: chave privada Ed25519.
+# Quem a tem fala pelo crmclinica com o orquestrador.
+.openclaw-identidade.json

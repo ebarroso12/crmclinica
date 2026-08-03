@@ -3,10 +3,10 @@
 Confirmação automática 24 horas e 2 horas antes da consulta, pelo WhatsApp,
 com o **OpenClaw** como único orquestrador.
 
-> **Estado da entrega: `dry-run`.** A fila funciona de ponta a ponta — enfileira,
-> decide, tenta, registra, audita — e **nenhuma mensagem sai**. O motivo está em
-> [Por que dry-run](#por-que-dry-run), e não é uma pendência de código deste
-> repositório.
+> **Estado da entrega: real.** As mensagens saem pelo canal WhatsApp do OpenClaw,
+> com confirmação do gateway a cada envio. O modo é uma variável
+> (`LEMBRETES_MODO_ENTREGA`): em `dry_run` a fila roda inteira sem enviar nada,
+> o que é o certo para desenvolvimento e para testar mudanças na régua.
 
 ---
 
@@ -157,44 +157,66 @@ uma contagem de caracteres.
 
 ---
 
-## Por que dry-run
+## Como a mensagem sai
 
-O transporte do OpenClaw está confirmado: é um gateway **WebSocket** — o proxy
-aceita upgrade e não existe REST em `/api`. O que **não** está confirmado é o
-envelope do protocolo: se é JSON-RPC, se há `id`, se os campos vão em `params`,
-nem qual é a sequência do handshake de autenticação. As evidências estão em
-`docs/OPENCLAW.md`.
+Pelo método **`send`** do gateway WebSocket do OpenClaw — o mesmo que o comando
+oficial `openclaw message send` usa. Não há caminho paralelo: o crmclinica fala
+o protocolo do orquestrador, não um atalho.
 
-Escrever o cliente a partir desses fragmentos seria adivinhar. Um envio
-"bem-sucedido" contra um envelope inventado não entrega mensagem nenhuma — e a
-fila marcaria `enviado`, e ninguém descobriria até um paciente reclamar.
+O protocolo inteiro, com a origem de cada regra, está em
+[`OPENCLAW.md`](OPENCLAW.md). O que importa aqui:
 
-Por isso, enquanto `PROTOCOLO_CONFIRMADO` for `false` em
-`src/integracoes/openclaw-lembretes.js`:
+### A entrega é confirmada, não presumida
 
-- o adaptador opera em `dry_run`;
-- pedir `LEMBRETES_MODO_ENTREGA=real` **não** faz o adaptador improvisar: ele
-  recusa com `openclaw_protocolo_desconhecido`, dizendo o que falta;
-- todo lugar que mostra a fila diz em que modo ela está.
+`enviado` só depois de o gateway responder `ok` **com identificador de
+mensagem**. Três situações nunca viram `enviado`:
 
-### Como ligar o envio real
+| Situação | O que acontece |
+| --- | --- |
+| Timeout | falha com retry — a mensagem pode ter saído, e a chave de idempotência impede duplicar |
+| Conexão caída | idem |
+| Resposta `ok` sem identificador | falha com retry, código `entrega_nao_confirmada` |
 
-Falta uma coisa só, e ela não é código deste repositório: **o protocolo**.
-Qualquer uma destas o fornece:
+Uma mensagem que *talvez* tenha saído é tratada como não enviada. É a escolha
+segura: o retry é barato, e a duplicata é o erro que o paciente percebe.
 
-1. documentação oficial do gateway OpenClaw;
-2. captura de uma sessão real na aba de rede, com a interface aberta — as
-   primeiras mensagens revelam handshake e envelope;
-3. acesso ao servidor, para ler a configuração do gateway.
+### Idempotência de ponta a ponta
 
-Com ele em mãos:
+Além da constraint do banco, cada envio carrega uma `idempotencyKey`
+determinística, derivada do lembrete. **O gateway deduplica por ela** — repetir
+o envio devolve a resposta em cache em vez de mandar de novo.
 
-1. implemente `enviarReal(envelope)` como cliente WebSocket;
-2. vire `PROTOCOLO_CONFIRMADO` para `true`;
-3. defina `LEMBRETES_MODO_ENTREGA=real`, `OPENCLAW_BASE_URL` e `OPENCLAW_TOKEN`.
+Isso fecha a última janela que a fila sozinha não fecha: worker que envia, morre
+antes de gravar `enviado`, e volta a processar a mesma linha. Verificado em
+produção: dois envios com o mesmo envelope, um único `Sent message` no log do
+canal.
 
-Nenhum outro arquivo muda. Fila, worker, auditoria e testes continuam iguais — o
-caminho `real` já está montado e testado com cliente injetado.
+### O dispositivo pareado
+
+O token do gateway sozinho **não concede escopo**: quem envia precisa ser um
+dispositivo pareado, com uma chave Ed25519 que um operador aprovou uma vez.
+
+```bash
+npm run parear-openclaw               # gera a chave e pede o pareamento
+# no servidor:
+openclaw devices list
+openclaw devices approve <requestId>
+npm run parear-openclaw               # confirma e recebe o deviceToken
+```
+
+A chave privada fica em `.openclaw-identidade.json` (coberto pelo `.gitignore`,
+verificado pelo `npm test`) ou em `OPENCLAW_DEVICE_PRIVATE_KEY` para ambientes
+sem disco gravável. Quem a tem fala pelo crmclinica com o orquestrador.
+
+### Voltar para dry-run
+
+`LEMBRETES_MODO_ENTREGA=dry_run`. A fila roda inteira — enfileira, decide, tenta,
+registra, audita — e nada sai. É o modo certo para desenvolver e para testar
+mudanças na régua sem mandar WhatsApp para ninguém.
+
+Pedir `real` sem gateway configurado **não** degrada para dry-run em silêncio: o
+adaptador recusa com `openclaw_indisponivel`, porque o alternativo seria a
+clínica achar que está lembrando pacientes e não estar.
 
 ---
 
@@ -247,12 +269,23 @@ atendimento. Opt-out exige `contatos:editar`.
 ## Variáveis
 
 ```bash
+# Régua
 LEMBRETES_ATIVOS=sim              # `nao` desliga o enfileiramento
-LEMBRETES_MODO_ENTREGA=dry_run    # `real` exige protocolo confirmado
+LEMBRETES_MODO_ENTREGA=real       # `dry_run` roda a fila sem enviar nada
 CRMCLINICA_NOME_CLINICA=Clínica Dr. Edson Barroso
 LEMBRETES_INTERVALO_MS=60000
 LEMBRETES_LOTE=20
 LEMBRETES_MAX_TENTATIVAS=5
+
+# Gateway do OpenClaw — é por aqui que a mensagem sai
+OPENCLAW_GATEWAY_URL=wss://openclaw.exemplo.com.br/ws
+OPENCLAW_GATEWAY_TOKEN=            # necessário no primeiro pareamento
+OPENCLAW_DEVICE_TOKEN=             # emitido no pareamento; basta ele depois
+OPENCLAW_DEVICE_PRIVATE_KEY=       # PEM ou base64, para ambiente sem disco
+OPENCLAW_DEVICE_IDENTITY_PATH=     # padrão: .openclaw-identidade.json
+OPENCLAW_CANAL=whatsapp
+OPENCLAW_ACCOUNT_ID=               # só quando há mais de uma conta no canal
+OPENCLAW_GATEWAY_TIMEOUT_MS=20000
 ```
 
 ---
@@ -282,7 +315,8 @@ workers simultâneos, e limpa o que criou.
 | `testes/lembretes-servico.test.js` | A fila de ponta a ponta: cancelamento, remarcação, opt-out, retry |
 | `testes/lembretes-concorrencia.test.js` | Dois workers; unicidade sob enfileiramento paralelo |
 | `testes/lembretes-http.test.js` | A API, com RBAC |
-| `testes/openclaw-lembretes.test.js` | O adaptador não inventa protocolo |
+| `testes/openclaw-gateway.test.js` | O protocolo e a assinatura do dispositivo, sem rede |
+| `testes/openclaw-lembretes.test.js` | O adaptador: envio, confirmação e o que nunca vira "enviado" |
 | `testes/contrato-repositorio.test.js` | Memória e PostgreSQL respondem igual |
 
 A suíte de contrato e a de concorrência também rodam contra PostgreSQL:

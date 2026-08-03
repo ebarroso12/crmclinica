@@ -549,14 +549,14 @@ test('o resumo diz em que modo a entrega está e o que isso significa', async ()
   const tempo = relogio(new Date(CONSULTA.getTime() - 72 * HORA));
   const cenario = await montarCenario({
     tempo,
-    // Adaptador de verdade, para o resumo refletir o estado real do protocolo.
+    // Adaptador de verdade, para o resumo refletir o estado real da entrega.
     entrega: criarAdaptadorDeLembretes({ modoEntrega: 'dry_run' }, { registrar: () => {} }),
   });
   await marcar(cenario);
 
   const resumo = await cenario.lembretes.resumo();
   assert.equal(resumo.entrega.modo, 'dry_run');
-  assert.equal(resumo.entrega.protocolo_confirmado, false);
+  assert.equal(resumo.entrega.metodo, 'gateway.send');
   assert.match(resumo.observacao, /dry-run/);
   assert.equal(resumo.fila.por_estado.pendente, 2);
 });

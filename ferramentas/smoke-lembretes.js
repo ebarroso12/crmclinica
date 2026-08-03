@@ -240,10 +240,26 @@ async function main() {
       { registrar: () => {} },
     );
     const descricao = adaptador.descrever();
-    verificar('o adaptador está em dry-run declarado', descricao.modo === 'dry_run');
-    verificar('e diz por quê', Boolean(descricao.motivo), descricao.motivo);
+    console.log(`\nEntrega: modo ${descricao.modo}, método ${descricao.metodo}`);
+
+    verificar('o modo de entrega é declarado sem ambiguidade',
+      ['real', 'dry_run'].includes(descricao.modo), descricao.modo);
+    verificar('o método é o oficial do gateway', descricao.metodo === 'gateway.send');
     verificar('nenhum segredo aparece na descrição',
-      !JSON.stringify(descricao).includes(configuracao.openclaw.token || ' '));
+      !JSON.stringify(descricao).includes(configuracao.openclaw.gateway.token || 'sem-token'));
+
+    // Em modo real o canal é consultado de verdade — mas **nada é enviado**:
+    // `channels.status` é leitura. Um smoke que mandasse WhatsApp mandaria uma
+    // mensagem a alguém toda vez que alguém roda os testes.
+    if (descricao.modo === 'real') {
+      const canal = await adaptador.verificarCanal();
+      verificar('o canal do OpenClaw está conectado', canal.conectado === true,
+        canal.numero ? `${canal.canal} em ${canal.numero}` : (canal.motivo ?? ''));
+      verificar('o dispositivo do crmclinica está pareado', Boolean(descricao.dispositivo));
+    } else {
+      verificar('em dry-run, o motivo está dito', Boolean(descricao.motivo), descricao.motivo);
+    }
+    await adaptador.encerrar?.();
 
     // ---------------------------------------------------------------- 10. resumo
     const resumo = await lembretes.resumo();

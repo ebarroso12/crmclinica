@@ -121,12 +121,24 @@ tipo, janela)` para o enfileiramento e `FOR UPDATE SKIP LOCKED` para a
 reivindicação. Nada é enviado sem reler o agendamento e o contato — cancelou,
 remarcou ou pediu para parar, o lembrete morre.
 
-> **A entrega está em `dry-run`:** a fila roda de ponta a ponta e **nenhuma
-> mensagem sai**. Não é pendência de código deste repositório — falta o envelope
-> do protocolo do OpenClaw, que não foi confirmado
-> ([`docs/OPENCLAW.md`](docs/OPENCLAW.md)). Pedir `LEMBRETES_MODO_ENTREGA=real`
-> sem ele faz o adaptador recusar, em vez de improvisar um formato e marcar como
-> enviado algo que não chegou a ninguém.
+A mensagem sai pelo método `send` do gateway WebSocket do OpenClaw — o mesmo que
+o comando oficial `openclaw message send` usa. O crmclinica se autentica como um
+**dispositivo pareado** (chave Ed25519 aprovada uma vez no servidor), porque o
+token do gateway sozinho não concede escopo de escrita:
+
+```bash
+npm run parear-openclaw   # gera a chave e pede pareamento; aprove no servidor
+```
+
+`enviado` só é gravado com confirmação do gateway **e** identificador de
+mensagem. Timeout, queda de conexão e resposta sem identificador viram falha com
+retry — nunca "enviado". Cada envio carrega uma chave de idempotência que o
+próprio gateway deduplica, então o retry não duplica mensagem.
+
+`LEMBRETES_MODO_ENTREGA=dry_run` roda a fila inteira sem enviar nada. Pedir
+`real` sem gateway configurado faz o adaptador recusar, em vez de degradar em
+silêncio e deixar a clínica achando que está lembrando pacientes. Protocolo e
+evidências em [`docs/OPENCLAW.md`](docs/OPENCLAW.md).
 
 ## Segurança
 
@@ -148,9 +160,13 @@ pelo banco. Os lembretes de 24h e 2h têm fila persistente, worker seguro contra
 concorrência, opt-out, retry com backoff e auditoria — verificados contra o banco
 real. Nenhum dado real de paciente foi usado.
 
-Pendente: o follow-up de leads frios, as métricas e o copiloto. O **envio** de
-mensagem depende do OpenClaw, cujo protocolo ainda não foi confirmado — por isso
-os lembretes operam em dry-run declarado, sem afirmar que enviaram nada. Ver
-[`docs/OPENCLAW.md`](docs/OPENCLAW.md).
+Os lembretes enviam de verdade: o protocolo do gateway OpenClaw foi verificado na
+instalação em produção, o crmclinica está pareado como dispositivo e a entrega é
+confirmada mensagem a mensagem ([`docs/OPENCLAW.md`](docs/OPENCLAW.md)).
+
+Pendente: o follow-up de leads frios, as métricas e o copiloto. O cliente de
+**eventos de conversa** (`src/integracoes/openclaw.js`) ainda fala HTTP e
+precisará migrar para o mesmo gateway — o inbox opera sem ele, então nada se
+perde enquanto isso.
 
 Documentação detalhada em [`docs/`](docs/).
