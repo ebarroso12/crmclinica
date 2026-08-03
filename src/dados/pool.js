@@ -38,7 +38,7 @@ const CLAIMS_DE_BACKEND = '{"app_role":"backend"}';
 function criarPool(configuracaoDoBanco) {
   if (!configuracaoDoBanco.configurado) return null;
 
-  return new Pool({
+  const pool = new Pool({
     connectionString: configuracaoDoBanco.url,
     options: `-c request.jwt.claims=${CLAIMS_DE_BACKEND}`,
     max: configuracaoDoBanco.poolMax,
@@ -50,6 +50,53 @@ function criarPool(configuracaoDoBanco) {
       ? { rejectUnauthorized: false }
       : undefined,
   });
+
+  return comPapelGarantido(pool);
+}
+
+/**
+ * Garante que toda conexão entregue já declarou o papel `backend`.
+ *
+ * O `options` do startup só chega ao PostgreSQL numa conexão **direta**. Atrás
+ * de um pooler — Supavisor no Supabase, PgBouncer — os parâmetros de startup do
+ * cliente são descartados, e a conexão nasce sem papel: `current_app_role()`
+ * devolve `deny` e o RLS filtra **tudo**.
+ *
+ * O sintoma disso é o pior possível, porque não parece um erro de conexão: o
+ * login responde "credenciais inválidas". O `SELECT` em `usuarios` volta vazio,
+ * a aplicação conclui que a conta não existe, e ninguém suspeita do banco —
+ * que respondeu na hora, sem erro, com zero linhas.
+ *
+ * O `SET` é de sessão (não `LOCAL`): vale para a conexão inteira, e as
+ * transações continuam livres para restringir o papel com `SET LOCAL` por
+ * cima. Roda uma vez por conexão, antes de ela ser usada.
+ */
+function comPapelGarantido(pool) {
+  const conectarOriginal = pool.connect.bind(pool);
+
+  const declarar = async (client) => {
+    if (client.__papelDeclarado) return client;
+    await client.query(`SET request.jwt.claims = '${CLAIMS_DE_BACKEND}'`);
+    // Marcado no client, não no pool: uma conexão reciclada não repete o SET,
+    // e uma conexão nova nunca escapa dele.
+    client.__papelDeclarado = true;
+    return client;
+  };
+
+  // `pool.query` chama `pool.connect` com callback; o resto do código usa a
+  // forma com promessa. As duas passam por aqui.
+  pool.connect = function conectar(callback) {
+    const pronto = conectarOriginal().then(declarar);
+    if (!callback) return pronto;
+
+    pronto.then(
+      (client) => callback(null, client, (erro) => client.release(erro)),
+      (erro) => callback(erro),
+    );
+    return undefined;
+  };
+
+  return pool;
 }
 
 function obterPool(configuracaoDoBanco) {

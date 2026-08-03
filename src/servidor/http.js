@@ -683,11 +683,36 @@ function criarAplicacao(dependencias = {}) {
           responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
           return;
         }
+        // O health responde sem autenticação, então carrega só o que não é
+        // segredo. O estado do banco entra porque a falha mais cara que este
+        // sistema já teve foi silenciosa: a conexão respondia na hora, sem
+        // erro, e devolvia zero linhas porque o papel não fora declarado — o
+        // login dizia "credenciais inválidas" e ninguém suspeitava do banco.
+        //
+        // Sai o usuário e o papel; não sai host, porta, senha nem URL.
+        let banco = { configurado: false };
+        if (configuracao.banco.configurado) {
+          try {
+            const { rows: [linha] } = await repositorio.consultarSaudeDaConexao();
+            banco = {
+              configurado: true,
+              alcancavel: true,
+              usuario: linha.usuario,
+              // `deny` aqui significa que o RLS vai filtrar tudo em silêncio.
+              papel: linha.papel,
+              rls_efetivo: linha.papel !== 'deny',
+            };
+          } catch (erro) {
+            banco = { configurado: true, alcancavel: false, falha: erro.code ?? erro.message };
+          }
+        }
+
         responderJson(res, 200, {
           produto: 'crmclinica',
           status: 'ok',
           versao: require('../../package.json').version,
           instante: new Date().toISOString(),
+          banco,
         });
         return;
       }

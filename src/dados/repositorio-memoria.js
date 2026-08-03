@@ -170,6 +170,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       return acao(repositorio);
     },
 
+    /** Sem banco não há papel a declarar; a resposta diz isso em vez de fingir. */
+    async consultarSaudeDaConexao() {
+      return { rows: [{ usuario: 'memoria', papel: 'memoria' }] };
+    },
+
     async verificarSaude() {
       return { estado: 'operacional' };
     },

@@ -16,7 +16,9 @@ if (fs.existsSync(CAMINHO_ENV) && typeof process.loadEnvFile === 'function') {
   }
 }
 
-const { carregarConfiguracao, validarConfiguracao, descreverConfiguracao } = require('./config');
+const {
+  carregarConfiguracao, validarConfiguracao, avisosDeConfiguracao, descreverConfiguracao,
+} = require('./config');
 const { criarAplicacao, criarServidor } = require('./servidor/http');
 const { criarRepositorioEmMemoria } = require('./dados/repositorio-memoria');
 const { semearMaster } = require('./seguranca/semear-master');
@@ -45,6 +47,12 @@ function montarRepositorio() {
 }
 
 function iniciar() {
+  // Avisos primeiro: eles degradam uma função, não impedem a subida. Um deles
+  // silenciado é uma clínica descobrindo pelo paciente que algo não funciona.
+  for (const aviso of avisosDeConfiguracao(configuracao)) {
+    console.warn(`[crmclinica] Aviso: ${aviso}`);
+  }
+
   const problemas = validarConfiguracao(configuracao);
   if (problemas.length > 0) {
     // Em produção, configuração insegura impede a subida; fora dela, apenas avisa.

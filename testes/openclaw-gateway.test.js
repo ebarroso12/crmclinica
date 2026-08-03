@@ -10,7 +10,7 @@ const path = require('node:path');
 const {
   criarClienteGateway, carregarOuCriarIdentidade, descreverIdentidade, gerarIdentidade,
   montarPayloadDeAssinatura, derivarDeviceId, chavePublicaCrua, base64url,
-  PROTOCOLO, ESCOPOS, CLIENTE_ID, CLIENTE_MODO, PAPEL,
+  PROTOCOLO, ESCOPOS, CLIENTE_ID, CLIENTE_MODO, PAPEL, PLATAFORMA,
 } = require('../src/integracoes/openclaw-gateway');
 
 // O protocolo do gateway OpenClaw, sem rede.
@@ -187,7 +187,7 @@ test('a assinatura enviada confere com a chave pública declarada', async () => 
     signedAtMs: device.signedAt,
     token: 'token-de-teste',
     nonce: 'nonce-abc',
-    platform: process.platform,
+    platform: PLATAFORMA,
   });
 
   const deBase64Url = (valor) => Buffer.from(valor.replaceAll('-', '+').replaceAll('_', '/'), 'base64');

@@ -46,6 +46,20 @@ const CLIENTE_ID = 'gateway-client';
 const CLIENTE_MODO = 'backend';
 const PAPEL = 'operator';
 
+/**
+ * A plataforma declarada ao gateway. **Constante de propósito.**
+ *
+ * O `platform` entra no payload assinado, e o gateway compara a assinatura com
+ * a do pareamento. Usar `process.platform` fazia a mesma instalação parecer
+ * dispositivos diferentes conforme onde rodasse: pareado no Windows (`win32`),
+ * a mesma chave era recusada na Vercel (`linux`) com
+ * "device identity changed and must be re-approved" — e o painel mostrava o
+ * OpenClaw offline sem que nada tivesse mudado.
+ *
+ * O crmclinica é um dispositivo lógico só, rode onde rodar.
+ */
+const PLATAFORMA = 'crmclinica';
+
 // `operator.write` é o que permite enviar; `operator.read`, consultar o estado
 // do canal antes. Pedir mais que isso seria pedir poder que o lembrete não usa.
 const ESCOPOS = Object.freeze(['operator.read', 'operator.write']);
@@ -284,7 +298,7 @@ function criarClienteGateway({
     // O token que entra na assinatura é o mesmo que vai em `auth`, nesta ordem
     // de precedência — é como `resolveSignatureToken` do gateway o escolhe.
     const tokenDaAssinatura = token ?? deviceToken ?? null;
-    const platform = process.platform;
+    const platform = PLATAFORMA;
 
     const payload = montarPayloadDeAssinatura({
       deviceId: identidade.deviceId,
@@ -411,6 +425,7 @@ module.exports = {
   ErroDeGateway,
   PROTOCOLO,
   ESCOPOS,
+  PLATAFORMA,
   CLIENTE_ID,
   CLIENTE_MODO,
   PAPEL,

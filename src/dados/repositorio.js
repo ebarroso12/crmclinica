@@ -310,6 +310,17 @@ function criarRepositorio(pool) {
       }
     },
 
+    /**
+     * Estado da conexão para o health check: quem conectou e com que papel.
+     *
+     * O papel importa mais que o alcance. Uma conexão que responde com
+     * `app_role = deny` faz o RLS filtrar tudo sem erro nenhum — o sintoma é
+     * "credenciais inválidas" no login, e ninguém olha para o banco.
+     */
+    async consultarSaudeDaConexao() {
+      return consultar('SELECT current_user AS usuario, current_app_role() AS papel');
+    },
+
     async verificarSaude() {
       try {
         await consultar('SELECT 1');

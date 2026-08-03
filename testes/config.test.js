@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { carregarConfiguracao, validarConfiguracao, descreverConfiguracao } = require('../src/config');
+const {
+  carregarConfiguracao, validarConfiguracao, avisosDeConfiguracao, descreverConfiguracao,
+} = require('../src/config');
 
 test('valores padrão são seguros quando o ambiente está vazio', () => {
   const configuracao = carregarConfiguracao({});
@@ -71,15 +73,36 @@ test('produção sem segredo de assinatura é recusada', () => {
   );
 });
 
-test('produção sem SMTP é recusada — a recuperação de senha não chegaria a ninguém', () => {
-  const problemas = validarConfiguracao(carregarConfiguracao({
+test('produção sem SMTP avisa, mas não impede a subida', () => {
+  // A regra mudou de propósito: sem SMTP a recuperação de senha por e-mail não
+  // sai, e só isso. Tratar como bloqueio derrubava inbox, agenda e lembretes
+  // para proteger o único fluxo realmente afetado — a clínica inteira parada
+  // por causa de um e-mail que ninguém pediu naquele momento.
+  const producao = carregarConfiguracao({
     NODE_ENV: 'production',
     CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
     CRMCLINICA_JWT_SECRET: 'x'.repeat(48),
     OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
-  }));
+  });
 
-  assert.ok(problemas.some((problema) => /SMTP_HOST/.test(problema)));
+  assert.deepEqual(validarConfiguracao(producao), [], 'nada aqui impede a subida');
+  assert.ok(
+    avisosDeConfiguracao(producao).some((aviso) => /SMTP_HOST/.test(aviso)),
+    'mas o aviso precisa existir, e ser persistente',
+  );
+});
+
+test('o aviso some quando o SMTP é configurado', () => {
+  const comSmtp = carregarConfiguracao({
+    NODE_ENV: 'production',
+    CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
+    CRMCLINICA_JWT_SECRET: 'x'.repeat(48),
+    OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
+    SMTP_HOST: 'smtp.exemplo.com',
+    LEMBRETES_MODO_ENTREGA: 'real',
+  });
+
+  assert.deepEqual(avisosDeConfiguracao(comSmtp), []);
 });
 
 test('login com Google pela metade é recusado', () => {

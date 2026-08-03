@@ -223,12 +223,32 @@ function validarConfiguracao(configuracao) {
     problemas.push('GOOGLE_REDIRECT_URI deve usar HTTPS em produção');
   }
 
-  // Sem SMTP a recuperação de senha não chega a ninguém — em produção isso é falha.
+  return problemas;
+}
+
+/**
+ * Problemas que degradam alguma função, mas não impedem o sistema de operar.
+ *
+ * A distinção existe porque tratá-los como bloqueio derrubava o produto inteiro
+ * por causa de um recurso auxiliar: sem SMTP, a clínica ficava sem inbox, sem
+ * agenda e sem lembretes — para proteger a recuperação de senha por e-mail, que
+ * é o único fluxo realmente afetado.
+ *
+ * O aviso é persistente: aparece no log a cada subida e em `/api/resumo`. Falha
+ * localizada e visível é melhor que indisponibilidade total.
+ */
+function avisosDeConfiguracao(configuracao) {
+  const avisos = [];
+
   if (configuracao.producao && !configuracao.email.host) {
-    problemas.push('SMTP_HOST é obrigatório em produção para a recuperação de senha funcionar');
+    avisos.push('SMTP_HOST ausente: a recuperação de senha por e-mail não sai — '
+      + 'o pedido é registrado em log e a rota responde que está indisponível');
+  }
+  if (configuracao.producao && configuracao.lembretes.modoEntrega !== 'real') {
+    avisos.push('LEMBRETES_MODO_ENTREGA não está em "real": a fila processa e nenhuma mensagem sai');
   }
 
-  return problemas;
+  return avisos;
 }
 
 // Retrato seguro da configuração: diz o que está ligado sem revelar nenhum valor sensível.
@@ -274,4 +294,6 @@ function descreverConfiguracao(configuracao) {
   };
 }
 
-module.exports = { carregarConfiguracao, validarConfiguracao, descreverConfiguracao };
+module.exports = {
+  carregarConfiguracao, validarConfiguracao, avisosDeConfiguracao, descreverConfiguracao,
+};
