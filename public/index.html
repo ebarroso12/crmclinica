@@ -158,6 +158,7 @@
           <li><button type="button" data-tela="conversas"><span class="icone-menu" aria-hidden="true">◌</span> Conversas <b class="contador" id="contador-conversas" aria-hidden="true">—</b></button></li>
           <li><button type="button" data-tela="leads"><span class="icone-menu" aria-hidden="true">⌁</span> Leads</button></li>
           <li><button type="button" data-tela="agenda"><span class="icone-menu" aria-hidden="true">▤</span> Agenda</button></li>
+          <li><button type="button" data-tela="contatos"><span class="icone-menu" aria-hidden="true">☏</span> Contatos</button></li>
         </ul>
         <p class="divisor" id="grupo-controle">CONTROLE</p>
         <ul aria-labelledby="grupo-controle">
@@ -501,19 +502,197 @@
           </div>
           <span class="pilula" id="estado-serena">verificando…</span>
         </div>
-        <article class="card estreito agente">
-          <span class="agente-icone" aria-hidden="true">✦</span>
-          <div>
-            <h3>Atendimento com barreiras clínicas</h3>
-            <p>
-              A Serena acolhe, qualifica e encaminha. Ela não diagnostica, não prescreve, não interpreta
-              exame e não promete resultado. Dúvida clínica, urgência e exceção vão sempre para a equipe.
-            </p>
-            <p class="nota">
-              O provedor de modelo é uma escolha interna e opcional: trocá-lo não muda as regras de atendimento.
-            </p>
-            <button type="button" class="secundario">Ver regras de atendimento</button>
+
+        <!-- Estado real: quatro coisas que não são a mesma. -->
+        <div class="serena-estado" id="serena-estado">
+          <article class="cartao-estado">
+            <small>OPENCLAW</small>
+            <strong id="serena-openclaw">verificando…</strong>
+            <span class="nota" id="serena-openclaw-detalhe">—</span>
+          </article>
+          <article class="cartao-estado">
+            <small>WHATSAPP</small>
+            <strong id="serena-whatsapp">verificando…</strong>
+            <span class="nota" id="serena-numero">—</span>
+          </article>
+          <article class="cartao-estado">
+            <small>SERENA</small>
+            <strong id="serena-interruptor-estado">verificando…</strong>
+            <span class="nota" id="serena-alterado">—</span>
+          </article>
+          <article class="cartao-estado">
+            <small>ENTREGA</small>
+            <strong id="serena-entrega">—</strong>
+            <span class="nota" id="serena-entrega-detalhe">—</span>
+          </article>
+        </div>
+
+        <!-- Interruptor global: só o admin vê os botões. -->
+        <article class="card estreito" id="serena-controle" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3>Controle da automação</h3>
+              <p>Desligada, a Serena não responde — as mensagens continuam sendo gravadas no inbox.</p>
+            </div>
           </div>
+          <div class="linha-acoes">
+            <button type="button" class="primario" id="serena-ligar">Ligar Serena</button>
+            <button type="button" class="perigo" id="serena-desligar">Desligar Serena</button>
+          </div>
+          <p class="nota" id="serena-motivo-atual" hidden></p>
+        </article>
+
+        <!-- Prompt publicado -->
+        <article class="card" id="serena-prompt-card">
+          <div class="card-titulo">
+            <div>
+              <h3>Prompt no ar <span class="pilula pequena" id="serena-versao">—</span></h3>
+              <p id="serena-prompt-titulo">Nenhuma versão publicada.</p>
+            </div>
+            <div class="linha-acoes" id="serena-prompt-acoes" hidden>
+              <button type="button" class="secundario" id="serena-novo-prompt">Nova versão</button>
+            </div>
+          </div>
+          <pre class="prompt-efetivo" id="serena-prompt-efetivo">—</pre>
+          <p class="nota">
+            O texto acima é o que o agente recebe: a versão publicada somada às regras ligadas, na ordem de leitura.
+          </p>
+        </article>
+
+        <!-- Editor de versão (aparece ao criar ou editar) -->
+        <article class="card" id="serena-editor" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3 id="serena-editor-titulo">Nova versão do prompt</h3>
+              <p>Publicar troca o que está no ar. A versão anterior fica no histórico.</p>
+            </div>
+          </div>
+          <form id="form-prompt">
+            <label for="prompt-titulo">Título</label>
+            <input id="prompt-titulo" type="text" maxlength="120" required>
+            <label for="prompt-conteudo">Conteúdo</label>
+            <textarea id="prompt-conteudo" rows="10" required minlength="20"></textarea>
+            <div class="linha-acoes">
+              <button type="submit" class="primario">Salvar rascunho</button>
+              <button type="button" class="secundario" id="serena-cancelar-editor">Cancelar</button>
+            </div>
+          </form>
+        </article>
+
+        <!-- Histórico de versões -->
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Versões</h3>
+              <p>Cada publicação tem autor e data. Voltar atrás é publicar a anterior.</p>
+            </div>
+          </div>
+          <ul class="lista-versoes" id="serena-versoes">
+            <li class="vazio">carregando…</li>
+          </ul>
+        </article>
+
+        <!-- Regras -->
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Regras</h3>
+              <p>Desligar uma regra a tira do prompt na hora, sem reescrever o texto.</p>
+            </div>
+            <div class="linha-acoes" id="serena-regras-acoes" hidden>
+              <button type="button" class="secundario" id="serena-nova-regra">Nova regra</button>
+            </div>
+          </div>
+
+          <form id="form-regra" class="form-regra" hidden>
+            <div class="grade-form">
+              <div>
+                <label for="regra-nome">Nome</label>
+                <input id="regra-nome" type="text" maxlength="80" required>
+              </div>
+              <div>
+                <label for="regra-categoria">Categoria</label>
+                <select id="regra-categoria">
+                  <option value="barreira">Barreira clínica</option>
+                  <option value="encaminhamento">Encaminhamento</option>
+                  <option value="fluxo">Fluxo</option>
+                  <option value="estilo">Estilo</option>
+                  <option value="geral">Geral</option>
+                </select>
+              </div>
+              <div>
+                <label for="regra-ordem">Ordem</label>
+                <input id="regra-ordem" type="number" min="0" max="9999" value="100">
+              </div>
+            </div>
+            <label for="regra-conteudo">Conteúdo</label>
+            <textarea id="regra-conteudo" rows="3" required></textarea>
+            <div class="linha-acoes">
+              <button type="submit" class="primario">Salvar regra</button>
+              <button type="button" class="secundario" id="serena-cancelar-regra">Cancelar</button>
+            </div>
+          </form>
+
+          <ul class="lista-regras" id="serena-regras">
+            <li class="vazio">carregando…</li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- Contatos -->
+      <section id="contatos" class="tela" hidden aria-labelledby="titulo-contatos">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-contatos">Contatos</h2>
+            <p>A base de pacientes. Excluir aqui é exclusão lógica: o histórico permanece.</p>
+          </div>
+          <div class="linha-acoes">
+            <button type="button" class="primario" id="contato-novo">Novo contato</button>
+          </div>
+        </div>
+
+        <article class="card" id="contato-editor" hidden>
+          <div class="card-titulo">
+            <div><h3 id="contato-editor-titulo">Novo contato</h3></div>
+          </div>
+          <form id="form-contato">
+            <div class="grade-form">
+              <div>
+                <label for="contato-nome">Nome</label>
+                <input id="contato-nome" type="text" maxlength="120" required>
+              </div>
+              <div>
+                <label for="contato-telefone">Telefone</label>
+                <input id="contato-telefone" type="tel" placeholder="(16) 99312-0938" required>
+              </div>
+              <div>
+                <label for="contato-email">E-mail</label>
+                <input id="contato-email" type="email" maxlength="200">
+              </div>
+            </div>
+            <label for="contato-observacoes">Observações</label>
+            <textarea id="contato-observacoes" rows="2" maxlength="2000"></textarea>
+            <div class="linha-acoes">
+              <button type="submit" class="primario">Salvar</button>
+              <button type="button" class="secundario" id="contato-cancelar">Cancelar</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Base</h3>
+              <p id="contatos-total">—</p>
+            </div>
+            <div class="linha-acoes">
+              <input id="contatos-busca" type="search" placeholder="Buscar por nome ou telefone">
+              <label class="marcador"><input type="checkbox" id="contatos-excluidos"> mostrar excluídos</label>
+            </div>
+          </div>
+          <ul class="lista-contatos" id="lista-contatos">
+            <li class="vazio">carregando…</li>
+          </ul>
         </article>
       </section>
 

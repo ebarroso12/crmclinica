@@ -15,7 +15,14 @@ const { ehPedidoDeOptOut } = require('./lembretes');
 //   2. quando um humano assume, a automação cala;
 //   3. só o contexto mínimo autorizado atravessa para o orquestrador.
 
-function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes = null }) {
+/**
+ * @param {object} dependencias.serena  Serviço da Serena, opcional.
+ *   Quando presente, o interruptor global tem precedência sobre a decisão por
+ *   conversa: desligada, ela não responde nada, em conversa nenhuma. Sem o
+ *   serviço, vale só a regra por conversa — que é como o sistema funcionava
+ *   antes de o interruptor existir.
+ */
+function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes = null, serena = null }) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -89,16 +96,28 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
   /** Aplica a regra da pausa e, quando permitido, aciona o orquestrador. */
   async function responderSePossivel(conversaId) {
     const conversa = await repositorio.obterConversa(conversaId);
-    const decisao = decidirAutomacao(conversa);
+
+    // Com o serviço da Serena montado, a decisão passa por ele: o interruptor
+    // global vem antes da regra por conversa. Note que a mensagem do paciente
+    // **já foi gravada** neste ponto — desligar a Serena cala a resposta, não o
+    // inbox. É a diferença entre "não respondemos" e "não recebemos".
+    const decisao = serena
+      ? await serena.podeResponder(conversa)
+      : decidirAutomacao(conversa);
 
     if (!decisao.responder) {
       await repositorio.registrarAuditoria({
         entidade: 'conversa',
         entidadeId: conversaId,
         acao: 'automacao_silenciada',
-        detalhe: { motivo: decisao.motivo },
+        detalhe: { motivo: decisao.motivo, escopo: decisao.escopo ?? 'conversa' },
       });
-      return { acao: 'aguardando_equipe', conversa_id: conversaId, motivo: decisao.motivo };
+      return {
+        acao: 'aguardando_equipe',
+        conversa_id: conversaId,
+        motivo: decisao.motivo,
+        escopo: decisao.escopo ?? 'conversa',
+      };
     }
 
     if (!orquestrador?.disponivel) {

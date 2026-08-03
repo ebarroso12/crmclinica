@@ -75,6 +75,13 @@ const ESPERADO = {
   '007_hardening': {
     funcoes: ['app_usuario_atual'],
   },
+  '011_serena': {
+    tabelas: ['serena_configuracao', 'serena_prompts', 'serena_regras'],
+    colunas: [
+      ['serena_configuracao', 'ativa'], ['serena_prompts', 'publicado'],
+      ['serena_regras', 'categoria'], ['contatos', 'excluido_em'],
+    ],
+  },
   '010_lembretes': {
     tabelas: ['lembretes'],
     colunas: [
@@ -91,6 +98,7 @@ const ESPERADO = {
 const CONSTRAINTS = [
   ['lembretes', 'lembretes_unicos', 'idempotência por agendamento, tipo e janela'],
   ['agendamentos', 'agendamentos_sem_conflito', 'dois agendamentos não se sobrepõem'],
+  ['serena_prompts', 'serena_prompt_versao_uk', 'versão de prompt não se repete'],
 ];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
@@ -111,6 +119,7 @@ const TABELAS_COM_RLS = [
   'leads', 'notas_internas', 'audit_log', 'eventos_recebidos', 'sessoes',
   'recuperacoes_senha', 'tentativas_autenticacao', 'lead_eventos',
   'profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos', 'lembretes',
+  'serena_configuracao', 'serena_prompts', 'serena_regras',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;

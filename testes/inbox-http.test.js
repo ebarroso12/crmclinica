@@ -416,11 +416,17 @@ test('atendente busca contato; quem não pode ler contatos recebe 403', async (t
   assert.equal(semSessao.status, 401);
 });
 
-test('POST em /api/contatos é recusado', async (t) => {
+test('POST em /api/contatos cadastra, e exige telefone', async (t) => {
+  // A rota mudou quando o CRUD de contatos entrou: antes recusava POST com 405.
+  // Cadastrar sem telefone continua sendo erro — o telefone é o que identifica
+  // a pessoa entre canais, e contato sem ele não reencontra ninguém.
   const { app } = await subirInbox();
   t.after(() => app.encerrar());
 
-  const resposta = await enviar(app, '/api/contatos', { nome: 'X' });
-  assert.equal(resposta.status, 405);
-  assert.equal(resposta.headers.get('allow'), 'GET');
+  const semTelefone = await enviar(app, '/api/contatos', { nome: 'X' });
+  assert.equal(semTelefone.status, 400);
+  assert.equal((await semTelefone.json()).campo, 'telefone');
+
+  const completo = await enviar(app, '/api/contatos', { nome: 'Marina', telefone: '16993129999' });
+  assert.equal(completo.status, 201);
 });

@@ -38,6 +38,12 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const bloqueios = [];
   const agendamentos = [];
   const lembretes = [];
+  const serenaPrompts = [];
+  const serenaRegras = [];
+  // Uma linha só, como a constraint do PostgreSQL garante lá.
+  const serenaConfiguracao = {
+    id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
+  };
 
   /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
   function enriquecerAgendamento(agendamento) {
@@ -73,6 +79,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
+    serenaPrompt: 1, serenaRegra: 1,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da fila de lembretes. */
@@ -264,6 +271,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
 
       const digitos = alvo.replace(/\D/g, '');
       return [...contatos.values()]
+        .filter((contato) => !contato.excluido_em)
         .filter((contato) => {
           const nome = (contato.nome ?? '').toLowerCase();
           const telefone = (contato.telefone ?? '').replace(/\D/g, '');
@@ -289,10 +297,96 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       return contato;
     },
 
+    /**
+     * Lista para a tela de gestão. Excluídos ficam de fora por padrão; a própria
+     * tela pede os excluídos quando quer oferecer a restauração.
+     */
+    async listarContatos({ termo = null, incluirExcluidos = false, limite = 100 } = {}) {
+      const alvo = String(termo ?? '').trim().toLowerCase();
+      const digitos = alvo.replace(/\D/g, '');
+
+      return [...contatos.values()]
+        .filter((contato) => incluirExcluidos || !contato.excluido_em)
+        .filter((contato) => {
+          if (!alvo) return true;
+          const nome = (contato.nome ?? '').toLowerCase();
+          const telefone = (contato.telefone ?? '').replace(/\D/g, '');
+          return nome.includes(alvo) || (digitos.length >= 3 && telefone.includes(digitos));
+        })
+        .sort((a, b) => Number(Boolean(a.excluido_em)) - Number(Boolean(b.excluido_em))
+          || (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'))
+        .slice(0, Number(limite))
+        .map((contato) => ({
+          ...contato,
+          conversas: [...conversas.values()].filter((c) => c.contato_id === contato.id).length,
+          agendamentos: agendamentos.filter((a) => a.contato_id === contato.id).length,
+        }));
+    },
+
+    /** O contato de um telefone, mesmo excluído — é como o duplicado é impedido. */
+    async obterContatoPorTelefone(telefone) {
+      if (!telefone) return null;
+      return [...contatos.values()].find((contato) => contato.telefone === telefone) ?? null;
+    },
+
+    async criarContato({ nome, telefone, email = null, identificador = null, origem = 'manual', observacoes = null }) {
+      if (telefone && [...contatos.values()].some((contato) => contato.telefone === telefone)) {
+        const erro = new Error('duplicate key value violates unique constraint');
+        erro.code = '23505';
+        erro.constraint = 'contatos_telefone_uk';
+        throw erro;
+      }
+
+      const contato = {
+        id: proximoId.contato++,
+        nome,
+        telefone,
+        email,
+        identificador,
+        origem,
+        atributos: {},
+        observacoes,
+        lembretes_optout: false,
+        lembretes_optout_em: null,
+        lembretes_optout_motivo: null,
+        excluido_em: null,
+        excluido_por: null,
+        excluido_motivo: null,
+        criado_em: agora().toISOString(),
+      };
+      contatos.set(contato.id, contato);
+      return contato;
+    },
+
+    /** Soft delete: o contato sai das listas, o histórico fica de pé. */
+    async excluirContato(id, { motivo = null, usuarioId = null } = {}) {
+      const contato = contatos.get(Number(id));
+      if (!contato || contato.excluido_em) return null;
+
+      contato.excluido_em = agora().toISOString();
+      contato.excluido_por = usuarioId;
+      contato.excluido_motivo = motivo;
+      return contato;
+    },
+
+    async restaurarContato(id) {
+      const contato = contatos.get(Number(id));
+      if (!contato || !contato.excluido_em) return null;
+
+      contato.excluido_em = null;
+      contato.excluido_por = null;
+      contato.excluido_motivo = null;
+      return contato;
+    },
+
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
       const existente = [...contatos.values()].find((contato) => contato.telefone === telefone);
       if (existente) {
         if (!existente.nome && nome) existente.nome = nome;
+        // Excluído que volta a escrever é reativado, não duplicado.
+        existente.excluido_em = null;
+        existente.excluido_por = null;
+        existente.excluido_motivo = null;
         return existente;
       }
 
@@ -308,6 +402,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         lembretes_optout: false,
         lembretes_optout_em: null,
         lembretes_optout_motivo: null,
+        excluido_em: null,
+        excluido_por: null,
+        excluido_motivo: null,
         criado_em: agora().toISOString(),
       };
       contatos.set(contato.id, contato);
@@ -853,6 +950,149 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       }
       agendamento.atualizado_em = agora().toISOString();
       return enriquecerAgendamento(agendamento);
+    },
+
+    // ---------------------------------------------------------------- Serena
+
+    async obterConfiguracaoDaSerena() {
+      const responsavel = serenaConfiguracao.alterado_por ? usuarios.get(serenaConfiguracao.alterado_por) : null;
+      return { ...serenaConfiguracao, alterado_por_nome: responsavel?.nome ?? null };
+    },
+
+    async definirConfiguracaoDaSerena({ ativa, motivo = null, usuarioId = null }) {
+      serenaConfiguracao.ativa = ativa === true;
+      serenaConfiguracao.motivo = motivo;
+      serenaConfiguracao.alterado_por = usuarioId;
+      serenaConfiguracao.alterado_em = agora().toISOString();
+      return { ...serenaConfiguracao };
+    },
+
+    async listarPromptsDaSerena({ limite = 50 } = {}) {
+      return [...serenaPrompts]
+        .sort((a, b) => b.versao - a.versao)
+        .slice(0, Number(limite))
+        .map((prompt) => ({
+          ...prompt,
+          criado_por_nome: prompt.criado_por ? usuarios.get(prompt.criado_por)?.nome ?? null : null,
+          publicado_por_nome: prompt.publicado_por ? usuarios.get(prompt.publicado_por)?.nome ?? null : null,
+        }));
+    },
+
+    async obterPromptDaSerena(id) {
+      return serenaPrompts.find((prompt) => prompt.id === Number(id)) ?? null;
+    },
+
+    async obterPromptPublicadoDaSerena() {
+      return serenaPrompts.find((prompt) => prompt.publicado) ?? null;
+    },
+
+    async criarPromptDaSerena({ titulo, conteudo, criadoPor = null }) {
+      // A versão sai do maior existente, como o `max(versao) + 1` do PostgreSQL.
+      const versao = serenaPrompts.reduce((maior, prompt) => Math.max(maior, prompt.versao), 0) + 1;
+      const prompt = {
+        id: proximoId.serenaPrompt++,
+        versao,
+        titulo,
+        conteudo,
+        publicado: false,
+        publicado_em: null,
+        publicado_por: null,
+        criado_por: criadoPor,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      serenaPrompts.push(prompt);
+      return prompt;
+    },
+
+    async atualizarPromptDaSerena(id, { titulo, conteudo }) {
+      const prompt = serenaPrompts.find((item) => item.id === Number(id));
+      // Publicado não se reescreve: a versão no ar é registro do que foi decidido.
+      if (!prompt || prompt.publicado) return null;
+
+      prompt.titulo = titulo;
+      prompt.conteudo = conteudo;
+      prompt.atualizado_em = agora().toISOString();
+      return prompt;
+    },
+
+    async publicarPromptDaSerena(id, { usuarioId = null } = {}) {
+      const prompt = serenaPrompts.find((item) => item.id === Number(id));
+      if (!prompt) return null;
+
+      // Sem `await` entre despublicar e publicar: em thread única isso é
+      // atômico, como a transação do PostgreSQL. Nunca há duas publicadas.
+      for (const outro of serenaPrompts) {
+        if (outro.id !== prompt.id && outro.publicado) {
+          outro.publicado = false;
+          outro.publicado_em = null;
+          outro.publicado_por = null;
+        }
+      }
+      prompt.publicado = true;
+      prompt.publicado_em = agora().toISOString();
+      prompt.publicado_por = usuarioId;
+      return prompt;
+    },
+
+    async listarRegrasDaSerena({ apenasAtivas = false } = {}) {
+      return serenaRegras
+        .filter((regra) => !apenasAtivas || regra.ativa)
+        .sort((a, b) => a.categoria.localeCompare(b.categoria)
+          || a.ordem - b.ordem
+          || a.nome.localeCompare(b.nome, 'pt-BR'))
+        .map((regra) => ({
+          ...regra,
+          criado_por_nome: regra.criado_por ? usuarios.get(regra.criado_por)?.nome ?? null : null,
+        }));
+    },
+
+    async obterRegraDaSerena(id) {
+      return serenaRegras.find((regra) => regra.id === Number(id)) ?? null;
+    },
+
+    async criarRegraDaSerena({ nome, conteudo, categoria, descricao = null, ordem = 100, criadoPor = null }) {
+      if (serenaRegras.some((regra) => regra.nome === nome)) {
+        // Mesmos sinais do PostgreSQL, para o tratamento ser o mesmo dos dois lados.
+        const erro = new Error('duplicate key value violates unique constraint');
+        erro.code = '23505';
+        erro.constraint = 'serena_regras_nome_key';
+        throw erro;
+      }
+
+      const regra = {
+        id: proximoId.serenaRegra++,
+        nome,
+        conteudo,
+        categoria,
+        descricao,
+        ordem: Number(ordem),
+        ativa: true,
+        criado_por: criadoPor,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      serenaRegras.push(regra);
+      return regra;
+    },
+
+    async atualizarRegraDaSerena(id, campos) {
+      const regra = serenaRegras.find((item) => item.id === Number(id));
+      if (!regra) return null;
+
+      const permitidos = ['nome', 'conteudo', 'categoria', 'descricao', 'ordem', 'ativa'];
+      for (const [campo, valor] of Object.entries(campos)) {
+        if (permitidos.includes(campo)) regra[campo] = valor;
+      }
+      regra.atualizado_em = agora().toISOString();
+      return regra;
+    },
+
+    async removerRegraDaSerena(id) {
+      const indice = serenaRegras.findIndex((regra) => regra.id === Number(id));
+      if (indice === -1) return 0;
+      serenaRegras.splice(indice, 1);
+      return 1;
     },
 
     // ---------------------------------------------------------------- lembretes

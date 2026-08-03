@@ -9,6 +9,7 @@ const TITULOS = {
   leads: 'Leads',
   agenda: 'Agenda',
   serena: 'Serena',
+  contatos: 'Contatos',
   auditoria: 'Auditoria',
   usuarios: 'Usuários',
   perfil: 'Meu perfil',
@@ -34,6 +35,8 @@ function abrirTela(tela) {
   if (tela === 'conversas') carregarConversas();
   if (tela === 'leads') carregarLeads();
   if (tela === 'agenda') carregarAgenda();
+  if (tela === 'serena') carregarSerena();
+  if (tela === 'contatos') carregarContatos();
   if (tela === 'usuarios') carregarUsuarios();
   if (tela === 'perfil') desenharPerfil();
 }
@@ -2113,4 +2116,450 @@ for (const id of ['#cortina-agenda', '#cortina-compromisso']) {
     if (id === '#cortina-agenda') fecharProposta();
     else seletor('#cortina-compromisso').hidden = true;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Serena: estado real, interruptor, prompt versionado e regras.
+//
+// O estado vem em quatro peças de propósito. "OpenClaw offline" e "Serena
+// desligada pela equipe" pedem ações opostas — chamar o suporte contra clicar
+// em "ligar" — e a tela antiga mostrava as duas como "não configurado".
+// ---------------------------------------------------------------------------
+
+function informar(mensagem) { window.alert(mensagem); }
+
+let serenaPainel = null;
+let promptEmEdicao = null;
+let regraEmEdicao = null;
+
+function pintarEstado(alvo, texto, tom) {
+  const elemento = seletor(alvo);
+  if (!elemento) return;
+  elemento.textContent = texto;
+  elemento.dataset.tom = tom;
+}
+
+function desenharEstadoDaSerena(dados) {
+  const { openclaw, whatsapp, serena, entrega } = dados;
+
+  const rotuloOpenclaw = { online: 'Online', offline: 'Offline', nao_configurado: 'Não configurado' };
+  pintarEstado('#serena-openclaw', rotuloOpenclaw[openclaw.estado] ?? openclaw.estado,
+    openclaw.estado === 'online' ? 'ok' : (openclaw.estado === 'offline' ? 'ruim' : 'neutro'));
+  const detalheOpenclaw = seletor('#serena-openclaw-detalhe');
+  if (detalheOpenclaw) {
+    detalheOpenclaw.textContent = openclaw.gateway
+      ? `gateway ${new URL(openclaw.gateway).host}`
+      : 'sem gateway configurado';
+  }
+
+  pintarEstado('#serena-whatsapp', whatsapp.estado === 'conectado' ? 'Conectado' : 'Desconectado',
+    whatsapp.estado === 'conectado' ? 'ok' : 'ruim');
+  const numero = seletor('#serena-numero');
+  if (numero) numero.textContent = whatsapp.numero ? formatarTelefone(whatsapp.numero) : (whatsapp.motivo ?? '—');
+
+  pintarEstado('#serena-interruptor-estado', serena.ativa ? 'Ligada' : 'Desligada',
+    serena.ativa ? 'ok' : 'alerta');
+  const alterado = seletor('#serena-alterado');
+  if (alterado) {
+    alterado.textContent = serena.alterado_em
+      ? `por ${serena.alterado_por ?? 'sistema'} em ${new Date(serena.alterado_em).toLocaleString('pt-BR')}`
+      : 'nunca alterado';
+  }
+
+  pintarEstado('#serena-entrega', entrega.modo === 'real' ? 'Real' : 'Dry-run',
+    entrega.modo === 'real' ? 'ok' : 'alerta');
+  const detalheEntrega = seletor('#serena-entrega-detalhe');
+  if (detalheEntrega) detalheEntrega.textContent = entrega.significado ?? '—';
+
+  const pilula = seletor('#estado-serena');
+  if (pilula) {
+    pilula.textContent = serena.ativa ? 'Ligada' : 'Desligada';
+    pilula.dataset.tom = serena.ativa ? 'ok' : 'alerta';
+  }
+
+  const motivo = seletor('#serena-motivo-atual');
+  if (motivo) {
+    motivo.hidden = Boolean(serena.ativa) || !serena.motivo;
+    motivo.textContent = serena.motivo ? `Motivo do desligamento: ${serena.motivo}` : '';
+  }
+}
+
+function formatarTelefone(valor) {
+  const digitos = String(valor ?? '').replace(/\D/g, '');
+  if (digitos.length < 12) return valor ?? '—';
+  const semPais = digitos.slice(2);
+  return `+55 ${semPais.slice(0, 2)} ${semPais.slice(2, -4)}-${semPais.slice(-4)}`;
+}
+
+function desenharVersoes(versoes, podeGerenciar) {
+  const lista = seletor('#serena-versoes');
+  if (!lista) return;
+
+  if (versoes.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma versão criada.</li>';
+    return;
+  }
+
+  lista.innerHTML = versoes.map((versao) => `
+    <li class="${versao.publicado ? 'publicada' : ''}">
+      <div>
+        <strong>v${versao.versao} — ${escapar(versao.titulo)}</strong>
+        <small>${versao.publicado ? 'no ar' : 'rascunho'} · ${versao.criado_por ?? 'sistema'} ·
+          ${new Date(versao.criado_em).toLocaleDateString('pt-BR')}</small>
+      </div>
+      <div class="linha-acoes">
+        ${podeGerenciar && !versao.publicado ? `
+          <button type="button" class="secundario" data-editar-prompt="${versao.id}">Editar</button>
+          <button type="button" class="primario" data-publicar-prompt="${versao.id}">Publicar</button>` : ''}
+      </div>
+    </li>`).join('');
+}
+
+function desenharRegras(regras, podeGerenciar) {
+  const lista = seletor('#serena-regras');
+  if (!lista) return;
+
+  if (regras.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma regra cadastrada.</li>';
+    return;
+  }
+
+  const rotulos = {
+    barreira: 'Barreira', encaminhamento: 'Encaminhamento',
+    fluxo: 'Fluxo', estilo: 'Estilo', geral: 'Geral',
+  };
+
+  lista.innerHTML = regras.map((regra) => `
+    <li class="${regra.ativa ? '' : 'desligada'}">
+      <div>
+        <strong>${escapar(regra.nome)} <span class="pilula pequena">${rotulos[regra.categoria] ?? regra.categoria}</span></strong>
+        <small>${escapar(regra.conteudo)}</small>
+      </div>
+      <div class="linha-acoes">
+        ${podeGerenciar ? `
+          <button type="button" class="secundario" data-regra-ativa="${regra.id}" data-valor="${regra.ativa ? 'false' : 'true'}">
+            ${regra.ativa ? 'Desligar' : 'Ligar'}
+          </button>
+          <button type="button" class="secundario" data-editar-regra="${regra.id}">Editar</button>
+          <button type="button" class="perigo" data-remover-regra="${regra.id}">Apagar</button>` : ''}
+      </div>
+    </li>`).join('');
+}
+
+function escapar(texto) {
+  const div = document.createElement('div');
+  div.textContent = String(texto ?? '');
+  return div.innerHTML;
+}
+
+async function carregarSerena() {
+  try {
+    const dados = await pedirJson('/api/serena');
+    serenaPainel = dados;
+
+    desenharEstadoDaSerena(dados);
+
+    const controle = seletor('#serena-controle');
+    if (controle) controle.hidden = !dados.pode_gerenciar;
+    for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
+      const bloco = seletor(alvo);
+      if (bloco) bloco.hidden = !dados.pode_gerenciar;
+    }
+
+    const versao = seletor('#serena-versao');
+    if (versao) versao.textContent = dados.prompt_ativo ? `v${dados.prompt_ativo.versao}` : '—';
+
+    const titulo = seletor('#serena-prompt-titulo');
+    if (titulo) {
+      titulo.textContent = dados.prompt_ativo
+        ? `${dados.prompt_ativo.titulo} — publicado em ${new Date(dados.prompt_ativo.publicado_em).toLocaleString('pt-BR')}`
+        : 'Nenhuma versão publicada.';
+    }
+
+    const efetivo = seletor('#serena-prompt-efetivo');
+    if (efetivo) efetivo.textContent = dados.prompt_efetivo ?? '—';
+
+    desenharVersoes(dados.versoes ?? [], dados.pode_gerenciar);
+    desenharRegras(dados.regras ?? [], dados.pode_gerenciar);
+  } catch (erro) {
+    pintarEstado('#serena-openclaw', 'Indisponível', 'ruim');
+    informar(`Não foi possível carregar a Serena: ${erro.message}`);
+  }
+}
+
+async function alternarSerena(ativa) {
+  const motivo = ativa ? null : prompt('Motivo do desligamento (obrigatório):');
+  if (!ativa && !motivo) return;
+
+  try {
+    await pedirJson('/api/serena/estado', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ativa, motivo }),
+    });
+    informar(ativa ? 'Serena ligada.' : 'Serena desligada — as mensagens continuam sendo gravadas.');
+    await carregarSerena();
+  } catch (erro) {
+    informar(`Não foi possível alterar: ${erro.message}`);
+  }
+}
+
+function abrirEditorDePrompt(prompt = null) {
+  promptEmEdicao = prompt;
+  const editor = seletor('#serena-editor');
+  if (!editor) return;
+
+  editor.hidden = false;
+  seletor('#serena-editor-titulo').textContent = prompt ? `Editar v${prompt.versao}` : 'Nova versão do prompt';
+  seletor('#prompt-titulo').value = prompt?.titulo ?? '';
+  seletor('#prompt-conteudo').value = prompt?.conteudo ?? (serenaPainel?.prompt_ativo?.conteudo ?? '');
+  editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function abrirEditorDeRegra(regra = null) {
+  regraEmEdicao = regra;
+  const form = seletor('#form-regra');
+  if (!form) return;
+
+  form.hidden = false;
+  seletor('#regra-nome').value = regra?.nome ?? '';
+  seletor('#regra-categoria').value = regra?.categoria ?? 'geral';
+  seletor('#regra-ordem').value = regra?.ordem ?? 100;
+  seletor('#regra-conteudo').value = regra?.conteudo ?? '';
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ---------------------------------------------------------------------------
+// Contatos: a base de pacientes. Excluir é soft delete — o histórico fica.
+// ---------------------------------------------------------------------------
+
+let contatoEmEdicao = null;
+
+async function carregarContatos() {
+  const busca = seletor('#contatos-busca')?.value ?? '';
+  const excluidos = seletor('#contatos-excluidos')?.checked ? 'sim' : 'nao';
+
+  try {
+    const dados = await pedirJson(`/api/contatos/gestao?busca=${encodeURIComponent(busca)}&excluidos=${excluidos}`);
+    const lista = seletor('#lista-contatos');
+    const total = seletor('#contatos-total');
+
+    if (total) total.textContent = `${dados.total} contato(s)`;
+    if (!lista) return;
+
+    if (dados.contatos.length === 0) {
+      lista.innerHTML = '<li class="vazio">Nenhum contato encontrado.</li>';
+      return;
+    }
+
+    lista.innerHTML = dados.contatos.map((contato) => `
+      <li class="${contato.excluido ? 'desligada' : ''}">
+        <div>
+          <strong>${escapar(contato.nome ?? 'sem nome')}</strong>
+          <small>${contato.telefone} · ${contato.conversas ?? 0} conversa(s) ·
+            ${contato.agendamentos ?? 0} agendamento(s)
+            ${contato.recebe_lembretes ? '' : ' · não recebe lembretes'}
+            ${contato.excluido ? ` · excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}` : ''}</small>
+        </div>
+        <div class="linha-acoes">
+          ${contato.excluido
+            ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`
+            : `<button type="button" class="secundario" data-ver-contato="${contato.id}">Histórico</button>
+               <button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
+               <button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>`}
+        </div>
+      </li>`).join('');
+  } catch (erro) {
+    informar(`Não foi possível carregar os contatos: ${erro.message}`);
+  }
+}
+
+function abrirEditorDeContato(contato = null) {
+  contatoEmEdicao = contato;
+  const editor = seletor('#contato-editor');
+  if (!editor) return;
+
+  editor.hidden = false;
+  seletor('#contato-editor-titulo').textContent = contato ? 'Editar contato' : 'Novo contato';
+  seletor('#contato-nome').value = contato?.nome ?? '';
+  seletor('#contato-telefone').value = contato?.telefone ?? '';
+  seletor('#contato-email').value = contato?.email ?? '';
+  seletor('#contato-observacoes').value = contato?.observacoes ?? '';
+  editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function verHistoricoDoContato(id) {
+  try {
+    const dados = await pedirJson(`/api/contatos/${id}`);
+    const { contato, historico } = dados;
+    const linhas = [
+      `${contato.nome ?? 'sem nome'} — ${contato.telefone}`,
+      '',
+      `Conversas: ${historico.conversas.length}`,
+      ...historico.conversas.slice(0, 5).map((c) => `  · ${c.status} — ${c.previa ?? 'sem mensagem'}`),
+      '',
+      `Agendamentos: ${historico.agendamentos.length}`,
+      ...historico.agendamentos.slice(0, 5).map((a) => `  · ${new Date(a.inicio).toLocaleString('pt-BR')} — ${a.status}`),
+    ];
+    alert(linhas.join('\n'));
+  } catch (erro) {
+    informar(`Não foi possível abrir o histórico: ${erro.message}`);
+  }
+}
+
+// ---------------------------------------------------------------- eventos
+
+document.addEventListener('click', async (evento) => {
+  const alvo = evento.target.closest('button');
+  if (!alvo) return;
+
+  try {
+    if (alvo.id === 'serena-ligar') await alternarSerena(true);
+    if (alvo.id === 'serena-desligar') await alternarSerena(false);
+    if (alvo.id === 'serena-novo-prompt') abrirEditorDePrompt(null);
+    if (alvo.id === 'serena-cancelar-editor') seletor('#serena-editor').hidden = true;
+    if (alvo.id === 'serena-nova-regra') abrirEditorDeRegra(null);
+    if (alvo.id === 'serena-cancelar-regra') seletor('#form-regra').hidden = true;
+
+    if (alvo.dataset.publicarPrompt) {
+      await pedirJson(`/api/serena/prompts/${alvo.dataset.publicarPrompt}/publicar`, { method: 'POST' });
+      informar('Versão publicada.');
+      await carregarSerena();
+    }
+    if (alvo.dataset.editarPrompt) {
+      const versoes = await pedirJson('/api/serena/prompts');
+      const alvoPrompt = (versoes.versoes ?? []).find((v) => String(v.id) === alvo.dataset.editarPrompt);
+      abrirEditorDePrompt(alvoPrompt ?? null);
+    }
+    if (alvo.dataset.regraAtiva) {
+      await pedirJson(`/api/serena/regras/${alvo.dataset.regraAtiva}/ativa`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ativa: alvo.dataset.valor === 'true' }),
+      });
+      await carregarSerena();
+    }
+    if (alvo.dataset.editarRegra) {
+      const regra = (serenaPainel?.regras ?? []).find((r) => String(r.id) === alvo.dataset.editarRegra);
+      abrirEditorDeRegra(regra ?? null);
+    }
+    if (alvo.dataset.removerRegra) {
+      if (!confirm('Apagar esta regra? O conteúdo fica registrado na auditoria.')) return;
+      await pedirJson(`/api/serena/regras/${alvo.dataset.removerRegra}`, { method: 'DELETE' });
+      informar('Regra apagada.');
+      await carregarSerena();
+    }
+
+    if (alvo.id === 'contato-novo') abrirEditorDeContato(null);
+    if (alvo.id === 'contato-cancelar') seletor('#contato-editor').hidden = true;
+    if (alvo.dataset.verContato) await verHistoricoDoContato(alvo.dataset.verContato);
+    if (alvo.dataset.editarContato) {
+      const dados = await pedirJson(`/api/contatos/${alvo.dataset.editarContato}`);
+      abrirEditorDeContato(dados.contato);
+    }
+    if (alvo.dataset.excluirContato) {
+      const motivo = prompt('Motivo da exclusão (opcional):') ?? null;
+      if (!confirm('Excluir este contato? O histórico é preservado e a exclusão pode ser desfeita.')) return;
+      await pedirJson(`/api/contatos/${alvo.dataset.excluirContato}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ motivo }),
+      });
+      informar('Contato excluído. O histórico foi preservado.');
+      await carregarContatos();
+    }
+    if (alvo.dataset.restaurarContato) {
+      await pedirJson(`/api/contatos/${alvo.dataset.restaurarContato}/restaurar`, { method: 'POST' });
+      informar('Contato restaurado.');
+      await carregarContatos();
+    }
+  } catch (erro) {
+    informar(erro.message);
+  }
+});
+
+document.addEventListener('submit', async (evento) => {
+  const form = evento.target;
+
+  if (form.id === 'form-prompt') {
+    evento.preventDefault();
+    const corpo = {
+      titulo: seletor('#prompt-titulo').value,
+      conteudo: seletor('#prompt-conteudo').value,
+    };
+    try {
+      if (promptEmEdicao) {
+        await pedirJson(`/api/serena/prompts/${promptEmEdicao.id}`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+        });
+      } else {
+        await pedirJson('/api/serena/prompts', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+        });
+      }
+      seletor('#serena-editor').hidden = true;
+      informar('Rascunho salvo. Publique quando quiser colocá-lo no ar.');
+      await carregarSerena();
+    } catch (erro) {
+      informar(erro.message);
+    }
+    return;
+  }
+
+  if (form.id === 'form-regra') {
+    evento.preventDefault();
+    const corpo = {
+      nome: seletor('#regra-nome').value,
+      categoria: seletor('#regra-categoria').value,
+      ordem: Number(seletor('#regra-ordem').value),
+      conteudo: seletor('#regra-conteudo').value,
+    };
+    try {
+      if (regraEmEdicao) {
+        await pedirJson(`/api/serena/regras/${regraEmEdicao.id}`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+        });
+      } else {
+        await pedirJson('/api/serena/regras', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+        });
+      }
+      form.hidden = true;
+      await carregarSerena();
+    } catch (erro) {
+      informar(erro.message);
+    }
+    return;
+  }
+
+  if (form.id === 'form-contato') {
+    evento.preventDefault();
+    const corpo = {
+      nome: seletor('#contato-nome').value,
+      telefone: seletor('#contato-telefone').value,
+      email: seletor('#contato-email').value || null,
+      observacoes: seletor('#contato-observacoes').value || null,
+    };
+    try {
+      if (contatoEmEdicao) {
+        await pedirJson(`/api/contatos/${contatoEmEdicao.id}`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+        });
+      } else {
+        await pedirJson('/api/contatos', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+        });
+      }
+      seletor('#contato-editor').hidden = true;
+      informar('Contato salvo.');
+      await carregarContatos();
+    } catch (erro) {
+      informar(erro.message);
+    }
+  }
+});
+
+for (const alvo of ['#contatos-busca', '#contatos-excluidos']) {
+  const campo = seletor(alvo);
+  if (campo) campo.addEventListener('change', () => carregarContatos());
 }

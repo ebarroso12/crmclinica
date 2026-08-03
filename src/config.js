@@ -108,6 +108,9 @@ function carregarConfiguracao(ambiente = process.env) {
         canal: texto(ambiente.OPENCLAW_CANAL) || 'whatsapp',
         contaId: texto(ambiente.OPENCLAW_ACCOUNT_ID),
       },
+      // Linha da clínica. Usada só para exibir no painel quando o canal ainda
+      // não respondeu qual número está vinculado — nunca para decidir envio.
+      numeroWhatsapp: texto(ambiente.WHATSAPP_BUSINESS_PHONE),
     },
     // Lembretes de agendamento. O modo de entrega é a variável que decide se
     // alguma mensagem sai de fato — e ela é conservadora por padrão: `dry_run`

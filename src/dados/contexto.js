@@ -35,8 +35,11 @@ function atual() {
  * Tudo que `acao` chamar — inclusive várias camadas abaixo — enxerga o mesmo
  * client e o mesmo usuário, sem receber nenhum dos dois por parâmetro.
  */
-function executarCom({ client, usuarioId }, acao) {
-  return contexto.run({ client, usuarioId: usuarioId ?? null }, acao);
+function executarCom({ client, usuarioId, claims = null }, acao) {
+  // `claims` guarda o que foi declarado ao banco nesta transação. É o que
+  // permite elevar uma instrução ao papel de sistema e **voltar** ao papel do
+  // usuário logo depois — sem isso, a elevação valeria até o fim da transação.
+  return contexto.run({ client, usuarioId: usuarioId ?? null, claims }, acao);
 }
 
 module.exports = { atual, executarCom };

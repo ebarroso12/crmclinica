@@ -190,11 +190,50 @@ function montarMensagem(linha) {
   };
 }
 
+// Claims do papel de sistema. Mesmo valor com que a conexão nasce (ver `criarPool`).
+const CLAIMS_DE_SISTEMA = JSON.stringify({ app_role: 'backend' });
+
 function criarRepositorio(pool) {
   // Dentro de uma requisição existe uma transação aberta com o usuário já
   // declarado; fora dela (semeadura, tarefas de manutenção, health check) o pool
   // atende direto. Nenhuma consulta abaixo precisa saber em qual dos dois está.
   const consultar = (texto, valores) => (contexto.atual()?.client ?? pool).query(texto, valores);
+
+  /**
+   * Roda uma instrução como o **sistema**, não como o usuário da requisição.
+   *
+   * Existe por causa de uma regra do banco que está certa: a policy de INSERT em
+   * `audit_log` exige `app_role = 'backend'`. Auditoria que o usuário pode
+   * escrever é auditoria que o usuário pode forjar — e a trilha deixaria de
+   * servir para o que existe.
+   *
+   * Mas quem escreve a auditoria é a aplicação, **dentro** da transação do
+   * usuário, que declarou o papel dele. Sem esta elevação, todo INSERT de
+   * auditoria era recusado — e, pior, o PostgreSQL aborta a transação inteira
+   * quando um comando falha: a ação que estava sendo auditada ia junto no
+   * rollback. O sintoma era desligar a Serena, receber "ok", e ela continuar
+   * ligada.
+   *
+   * A elevação é de uma instrução: as claims do usuário são restauradas em
+   * `finally`, ainda dentro da mesma transação. Fora de transação não há o que
+   * elevar — a conexão já nasce como `backend`.
+   */
+  async function comoSistema(executar) {
+    const atual = contexto.atual();
+    if (!atual?.client) return executar(pool);
+
+    const { client, claims } = atual;
+    await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', CLAIMS_DE_SISTEMA]);
+    try {
+      return await executar(client);
+    } finally {
+      // Volta ao papel do usuário mesmo se a instrução falhar: uma transação que
+      // segue com privilégio de sistema é pior que a falha original.
+      if (claims) {
+        await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
+      }
+    }
+  }
 
   return {
     tipo: 'postgres',
@@ -244,16 +283,14 @@ function criarRepositorio(pool) {
           'SELECT set_config($1, $2, true)',
           ['app.usuario_id', usuarioId === null || usuarioId === undefined ? '' : String(usuarioId)],
         );
-        await client.query(
-          'SELECT set_config($1, $2, true)',
-          ['request.jwt.claims', JSON.stringify({
-            ...(usuarioId === null || usuarioId === undefined ? {} : { usuario_id: String(usuarioId) }),
-            app_role: papel,
-          })],
-        );
+        const claims = JSON.stringify({
+          ...(usuarioId === null || usuarioId === undefined ? {} : { usuario_id: String(usuarioId) }),
+          app_role: papel,
+        });
+        await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
 
         const resultado = await contexto.executarCom(
-          { client, usuarioId },
+          { client, usuarioId, claims },
           () => acao(this),
         );
 
@@ -416,9 +453,10 @@ function criarRepositorio(pool) {
       const { rows } = await consultar(
         `SELECT id, nome, telefone
            FROM contatos
-          WHERE nome ILIKE '%' || $1 || '%'
+          WHERE excluido_em IS NULL
+            AND (nome ILIKE '%' || $1 || '%'
              OR ($2 <> '' AND length($2) >= 3
-                 AND regexp_replace(COALESCE(telefone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
+                 AND regexp_replace(COALESCE(telefone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%'))
           ORDER BY nome NULLS LAST
           LIMIT $3`,
         [alvo, digitos, Number(limite)],
@@ -448,8 +486,95 @@ function criarRepositorio(pool) {
         lembretes_optout: rows[0].lembretes_optout === true,
         lembretes_optout_em: rows[0].lembretes_optout_em ?? null,
         lembretes_optout_motivo: rows[0].lembretes_optout_motivo ?? null,
+        excluido_em: rows[0].excluido_em ?? null,
+        excluido_motivo: rows[0].excluido_motivo ?? null,
         criado_em: rows[0].criado_em,
       };
+    },
+
+    /**
+     * Lista contatos para a tela de gestão.
+     *
+     * Excluídos ficam de fora por padrão. `incluirExcluidos` existe para a
+     * própria tela poder mostrar quem saiu e oferecer a restauração — sem isso,
+     * um contato apagado por engano viraria um chamado de suporte.
+     */
+    async listarContatos({ termo = null, incluirExcluidos = false, limite = 100 } = {}) {
+      const condicoes = [];
+      const valores = [];
+
+      if (!incluirExcluidos) condicoes.push('c.excluido_em IS NULL');
+      if (termo) {
+        const digitos = String(termo).replace(/\D/g, '');
+        valores.push(String(termo).trim(), digitos);
+        condicoes.push(`(c.nome ILIKE '%' || $${valores.length - 1} || '%'
+          OR ($${valores.length} <> '' AND length($${valores.length}) >= 3
+              AND regexp_replace(COALESCE(c.telefone, ''), '\\D', '', 'g') LIKE '%' || $${valores.length} || '%'))`);
+      }
+      valores.push(Number(limite));
+
+      const { rows } = await consultar(`
+        SELECT c.id, c.nome, c.telefone, c.email, c.identificador, c.origem, c.observacoes,
+               c.lembretes_optout, c.excluido_em, c.excluido_motivo, c.criado_em,
+               (SELECT count(*)::int FROM conversas v WHERE v.contato_id = c.id) AS conversas,
+               (SELECT count(*)::int FROM agendamentos a WHERE a.contato_id = c.id) AS agendamentos
+          FROM contatos c
+         ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
+         ORDER BY c.excluido_em NULLS FIRST, c.nome NULLS LAST, c.id DESC
+         LIMIT $${valores.length}
+      `, valores);
+
+      return rows.map((linha) => ({
+        ...linha,
+        id: Number(linha.id),
+        lembretes_optout: linha.lembretes_optout === true,
+      }));
+    },
+
+    /** O contato de um telefone, mesmo excluído — é como o duplicado é impedido. */
+    async obterContatoPorTelefone(telefone) {
+      if (!telefone) return null;
+      const { rows } = await consultar('SELECT id FROM contatos WHERE telefone = $1', [telefone]);
+      return rows[0] ? this.obterContato(rows[0].id) : null;
+    },
+
+    async criarContato({ nome, telefone, email = null, identificador = null, origem = 'manual', observacoes = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO contatos (nome, telefone, email, identificador, origem, observacoes)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+      `, [nome, telefone, email, identificador, origem, observacoes]);
+
+      return this.obterContato(rows[0].id);
+    },
+
+    /**
+     * Soft delete: o contato sai das listas, o histórico fica.
+     *
+     * Não há `DELETE` aqui de propósito. Apagar a linha levaria junto conversas,
+     * mensagens, leads e agendamentos pelo `ON DELETE CASCADE` — o histórico
+     * clínico e comercial inteiro daquela pessoa, sem aviso e sem volta.
+     */
+    async excluirContato(id, { motivo = null, usuarioId = null } = {}) {
+      const { rowCount } = await consultar(`
+        UPDATE contatos
+           SET excluido_em = now(), excluido_por = $2, excluido_motivo = $3
+         WHERE id = $1 AND excluido_em IS NULL
+      `, [id, usuarioId, motivo]);
+
+      if (rowCount === 0) return null;
+      return this.obterContato(id);
+    },
+
+    async restaurarContato(id) {
+      const { rowCount } = await consultar(`
+        UPDATE contatos
+           SET excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
+         WHERE id = $1 AND excluido_em IS NOT NULL
+      `, [id]);
+
+      if (rowCount === 0) return null;
+      return this.obterContato(id);
     },
 
     /**
@@ -489,13 +614,21 @@ function criarRepositorio(pool) {
       return this.obterContato(id);
     },
 
-    /** Encontra pelo telefone ou cria. É como uma mensagem nova vira contato. */
+    /**
+     * Encontra pelo telefone ou cria. É como uma mensagem nova vira contato.
+     *
+     * Contato excluído que volta a escrever é **reativado**, não duplicado. O
+     * índice único do telefone não distingue excluído de ativo justamente para
+     * isso: a alternativa seria uma segunda ficha para a mesma pessoa, e um CRM
+     * com fichas duplicadas não se recupera direito depois.
+     */
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
       const { rows } = await consultar(`
         INSERT INTO contatos (telefone, nome, origem, identificador)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (telefone) WHERE telefone IS NOT NULL
-        DO UPDATE SET nome = COALESCE(contatos.nome, EXCLUDED.nome)
+        DO UPDATE SET nome = COALESCE(contatos.nome, EXCLUDED.nome),
+                      excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
         RETURNING id
       `, [telefone, nome, canal, identificador]);
 
@@ -652,8 +785,14 @@ function criarRepositorio(pool) {
 
     // ---------------------------------------------------------------- jornada
 
+    /**
+     * A jornada do lead é trilha de sistema, como a auditoria: escrita pela
+     * aplicação, nunca digitada por alguém. Vai pelo mesmo caminho elevado —
+     * do contrário, um atendente registrando avanço numa conversa que não é
+     * dele abortaria a transação inteira.
+     */
     async registrarEventoDeLead(evento) {
-      const { rows } = await consultar(`
+      const { rows } = await comoSistema((cliente) => cliente.query(`
         INSERT INTO lead_eventos (lead_id, conversa_id, tipo, de, para, detalhe, origem, usuario_id)
         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
         RETURNING id, lead_id, conversa_id, tipo, de, para, detalhe, origem, criado_em
@@ -661,7 +800,7 @@ function criarRepositorio(pool) {
         evento.lead_id, evento.conversa_id, evento.tipo, evento.de, evento.para,
         evento.detalhe ? JSON.stringify(evento.detalhe) : null,
         evento.origem, evento.usuario_id,
-      ]);
+      ]));
 
       return { ...rows[0], id: Number(rows[0].id), lead_id: Number(rows[0].lead_id) };
     },
@@ -722,11 +861,20 @@ function criarRepositorio(pool) {
       return rows[0].recibo;
     },
 
+    /**
+     * Grava a trilha. Escreve como sistema — ver `comoSistema` acima: a policy
+     * do banco exige isso, e ela está certa em exigir.
+     *
+     * O `usuario_id` continua sendo o do autor da ação: elevar o papel não
+     * apaga quem fez o quê, que é justamente o que a auditoria registra.
+     */
     async registrarAuditoria({ entidade, entidadeId, acao, detalhe = null, usuarioId = null }) {
-      await consultar(
+      const autor = usuarioId ?? contexto.atual()?.usuarioId ?? null;
+
+      await comoSistema((cliente) => cliente.query(
         'INSERT INTO audit_log (entidade, entidade_id, acao, detalhe, usuario_id) VALUES ($1, $2, $3, $4::jsonb, $5)',
-        [entidade, entidadeId, acao, detalhe ? JSON.stringify(detalhe) : null, usuarioId],
-      );
+        [entidade, entidadeId, acao, detalhe ? JSON.stringify(detalhe) : null, autor],
+      ));
     },
 
     // ---------------------------------------------------------------- usuários e sessões
@@ -1012,6 +1160,187 @@ function criarRepositorio(pool) {
       valores.push(id);
       await consultar(`UPDATE agendamentos SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
       return this.obterAgendamento(id);
+    },
+
+    // ---------------------------------------------------------------- Serena
+
+    /** O interruptor global. Uma linha só, garantida pela constraint da tabela. */
+    async obterConfiguracaoDaSerena() {
+      const { rows } = await consultar(`
+        SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo, u.nome AS alterado_por_nome
+          FROM serena_configuracao c
+          LEFT JOIN usuarios u ON u.id = c.alterado_por
+         WHERE c.id = 1
+      `);
+      if (!rows[0]) return { id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null };
+      return { ...rows[0], ativa: rows[0].ativa === true };
+    },
+
+    async definirConfiguracaoDaSerena({ ativa, motivo = null, usuarioId = null }) {
+      // UPSERT: se a linha sumiu (banco novo, restauração parcial), ela volta
+      // com o valor pedido em vez de a chamada falhar em silêncio.
+      const { rows } = await consultar(`
+        INSERT INTO serena_configuracao (id, ativa, motivo, alterado_por, alterado_em)
+        VALUES (1, $1, $2, $3, now())
+        ON CONFLICT (id) DO UPDATE
+           SET ativa = EXCLUDED.ativa,
+               motivo = EXCLUDED.motivo,
+               alterado_por = EXCLUDED.alterado_por,
+               alterado_em = now()
+        RETURNING id, ativa, alterado_por, alterado_em, motivo
+      `, [ativa === true, motivo, usuarioId]);
+
+      return { ...rows[0], ativa: rows[0].ativa === true };
+    },
+
+    // ---------------------------------------------------------------- prompts
+
+    async listarPromptsDaSerena({ limite = 50 } = {}) {
+      const { rows } = await consultar(`
+        SELECT p.id, p.versao, p.titulo, p.conteudo, p.publicado, p.publicado_em,
+               p.criado_em, p.atualizado_em,
+               c.nome AS criado_por_nome, e.nome AS publicado_por_nome
+          FROM serena_prompts p
+          LEFT JOIN usuarios c ON c.id = p.criado_por
+          LEFT JOIN usuarios e ON e.id = p.publicado_por
+         ORDER BY p.versao DESC
+         LIMIT $1
+      `, [Number(limite)]);
+
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id), versao: Number(linha.versao) }));
+    },
+
+    async obterPromptDaSerena(id) {
+      const { rows } = await consultar('SELECT * FROM serena_prompts WHERE id = $1', [id]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), versao: Number(rows[0].versao) } : null;
+    },
+
+    async obterPromptPublicadoDaSerena() {
+      const { rows } = await consultar('SELECT * FROM serena_prompts WHERE publicado LIMIT 1');
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), versao: Number(rows[0].versao) } : null;
+    },
+
+    /**
+     * Cria uma versão nova.
+     *
+     * A numeração vem do banco (`max(versao) + 1`) e não de um contador da
+     * aplicação: duas pessoas salvando ao mesmo tempo receberiam o mesmo número
+     * se a conta fosse feita em JavaScript, e a constraint `serena_prompt_versao_uk`
+     * recusaria a segunda com um erro que não diz nada.
+     */
+    async criarPromptDaSerena({ titulo, conteudo, criadoPor = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO serena_prompts (versao, titulo, conteudo, criado_por)
+        VALUES ((SELECT COALESCE(max(versao), 0) + 1 FROM serena_prompts), $1, $2, $3)
+        RETURNING *
+      `, [titulo, conteudo, criadoPor]);
+
+      return { ...rows[0], id: Number(rows[0].id), versao: Number(rows[0].versao) };
+    },
+
+    /** Edita um rascunho. O que já foi publicado não se reescreve. */
+    async atualizarPromptDaSerena(id, { titulo, conteudo }) {
+      const { rows } = await consultar(`
+        UPDATE serena_prompts SET titulo = $2, conteudo = $3
+         WHERE id = $1 AND NOT publicado
+        RETURNING *
+      `, [id, titulo, conteudo]);
+
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), versao: Number(rows[0].versao) } : null;
+    },
+
+    /**
+     * Publica uma versão. Despublicar a anterior e publicar a nova na **mesma**
+     * transação: o índice único parcial recusaria duas publicadas, e fazer em
+     * duas chamadas deixaria um instante sem nenhuma no ar.
+     */
+    async publicarPromptDaSerena(id, { usuarioId = null } = {}) {
+      const cliente = contexto.atual()?.client;
+      const executar = async (query) => (cliente ? cliente.query(query.texto, query.valores) : pool.query(query.texto, query.valores));
+
+      // Dentro de uma transação da requisição, aproveita-a; fora dela, abre uma.
+      if (cliente) {
+        await executar({ texto: 'UPDATE serena_prompts SET publicado = false, publicado_em = NULL, publicado_por = NULL WHERE publicado AND id <> $1', valores: [id] });
+        const { rows } = await executar({
+          texto: 'UPDATE serena_prompts SET publicado = true, publicado_em = now(), publicado_por = $2 WHERE id = $1 RETURNING *',
+          valores: [id, usuarioId],
+        });
+        return rows[0] ? { ...rows[0], id: Number(rows[0].id), versao: Number(rows[0].versao) } : null;
+      }
+
+      const conexao = await pool.connect();
+      try {
+        await conexao.query('BEGIN');
+        await conexao.query('UPDATE serena_prompts SET publicado = false, publicado_em = NULL, publicado_por = NULL WHERE publicado AND id <> $1', [id]);
+        const { rows } = await conexao.query(
+          'UPDATE serena_prompts SET publicado = true, publicado_em = now(), publicado_por = $2 WHERE id = $1 RETURNING *',
+          [id, usuarioId],
+        );
+        await conexao.query('COMMIT');
+        return rows[0] ? { ...rows[0], id: Number(rows[0].id), versao: Number(rows[0].versao) } : null;
+      } catch (erro) {
+        try { await conexao.query('ROLLBACK'); } catch { /* conexão perdida */ }
+        throw erro;
+      } finally {
+        conexao.release();
+      }
+    },
+
+    // ---------------------------------------------------------------- regras
+
+    async listarRegrasDaSerena({ apenasAtivas = false } = {}) {
+      const { rows } = await consultar(`
+        SELECT r.*, u.nome AS criado_por_nome
+          FROM serena_regras r
+          LEFT JOIN usuarios u ON u.id = r.criado_por
+         ${apenasAtivas ? 'WHERE r.ativa' : ''}
+         ORDER BY r.categoria, r.ordem, r.nome
+      `);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id), ativa: linha.ativa === true }));
+    },
+
+    async obterRegraDaSerena(id) {
+      const { rows } = await consultar('SELECT * FROM serena_regras WHERE id = $1', [id]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true } : null;
+    },
+
+    async criarRegraDaSerena({ nome, conteudo, categoria, descricao = null, ordem = 100, criadoPor = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO serena_regras (nome, conteudo, categoria, descricao, ordem, criado_por)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [nome, conteudo, categoria, descricao, ordem, criadoPor]);
+
+      return { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true };
+    },
+
+    async atualizarRegraDaSerena(id, campos) {
+      const permitidos = new Map([
+        ['nome', 'nome'], ['conteudo', 'conteudo'], ['categoria', 'categoria'],
+        ['descricao', 'descricao'], ['ordem', 'ordem'], ['ativa', 'ativa'],
+      ]);
+
+      const partes = [];
+      const valores = [];
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}`);
+      }
+      if (partes.length === 0) return this.obterRegraDaSerena(id);
+
+      valores.push(id);
+      const { rows } = await consultar(
+        `UPDATE serena_regras SET ${partes.join(', ')} WHERE id = $${valores.length} RETURNING *`,
+        valores,
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true } : null;
+    },
+
+    async removerRegraDaSerena(id) {
+      const { rowCount } = await consultar('DELETE FROM serena_regras WHERE id = $1', [id]);
+      return rowCount;
     },
 
     // ---------------------------------------------------------------- lembretes

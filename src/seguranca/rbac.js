@@ -20,6 +20,15 @@ const PERMISSOES = Object.freeze({
   // Ficha do contato
   'contatos:ler': ['admin', 'gestor', 'atendente'],
   'contatos:editar': ['admin', 'gestor'],
+  // Excluir é soft delete, mas some da operação inteira: fica com quem responde
+  // pela base, não com quem atende.
+  'contatos:excluir': ['admin', 'gestor'],
+
+  // Serena: ler o estado é de todos — quem atende precisa saber se a automação
+  // está no ar. Mexer nela é só do admin: desligar a Serena muda o atendimento
+  // da clínica inteira, e publicar prompt muda o que ela diz a pacientes.
+  'serena:ler': ['admin', 'gestor', 'atendente'],
+  'serena:gerenciar': ['admin'],
 
   // Leads
   'leads:ler': ['admin', 'gestor', 'atendente'],

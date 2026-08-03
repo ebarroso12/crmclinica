@@ -10,8 +10,17 @@ const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 
 const HORA = 60 * 60 * 1000;
 
+/**
+ * Um instante no futuro, sempre às 10:00 locais.
+ *
+ * A hora é fixada de propósito: `agora + 48h` cai em qualquer horário, e perto
+ * da meia-noite o agendamento atravessava o fim da janela de atendimento — o
+ * teste falhava por causa do relógio de quem o roda, não do código.
+ */
 function daquiA(horas) {
-  return new Date(Date.now() + horas * HORA);
+  const data = new Date(Date.now() + horas * HORA);
+  data.setHours(10, 0, 0, 0);
+  return data;
 }
 
 async function prepararAgenda(repositorio) {

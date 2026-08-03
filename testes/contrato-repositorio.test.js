@@ -40,7 +40,7 @@ if (URL_DE_TESTE) {
       // Estado limpo por execução. TRUNCATE em cascata devolve as sequências ao
       // início, o que mantém os identificadores previsíveis entre as duas suítes.
       await pool.query(`
-        TRUNCATE lembretes, agendamentos, disponibilidades, agenda_bloqueios, profissionais,
+        TRUNCATE serena_prompts, serena_regras, lembretes, agendamentos, disponibilidades, agenda_bloqueios, profissionais,
                  conversa_etiquetas, mensagens, notas_internas, leads, conversas,
                  contatos, sessoes, audit_log, eventos_recebidos, usuarios
         RESTART IDENTITY CASCADE
@@ -575,6 +575,134 @@ for (const { nome, montar } of implementacoes) {
         Object.keys(contagem.por_estado).sort(),
         ['enviado', 'falhou', 'ignorado', 'pendente', 'processando'],
       );
+    });
+
+    // ---------------------------------------------------------------- Serena
+
+    await t.test('o interruptor da Serena guarda quem mexeu e por quê', async () => {
+      const inicial = await repositorio.obterConfiguracaoDaSerena();
+      assert.equal(inicial.ativa, true, 'a Serena nasce ligada');
+
+      const desligada = await repositorio.definirConfiguracaoDaSerena({
+        ativa: false, motivo: 'respondendo errado', usuarioId: null,
+      });
+      assert.equal(desligada.ativa, false);
+      assert.equal(desligada.motivo, 'respondendo errado');
+      assert.ok(desligada.alterado_em);
+
+      const religada = await repositorio.definirConfiguracaoDaSerena({ ativa: true, motivo: null });
+      assert.equal(religada.ativa, true);
+      assert.equal((await repositorio.obterConfiguracaoDaSerena()).ativa, true);
+    });
+
+    await t.test('prompt: versão sequencial, edição só de rascunho, uma publicada por vez', async () => {
+      const primeira = await repositorio.criarPromptDaSerena({
+        titulo: 'Política v1', conteudo: 'Você é Serena, assistente da clínica.',
+      });
+      const segunda = await repositorio.criarPromptDaSerena({
+        titulo: 'Política v2', conteudo: 'Você é Serena, com política revista.',
+      });
+
+      // A numeração vem do banco: duas pessoas salvando ao mesmo tempo não
+      // recebem o mesmo número.
+      assert.equal(segunda.versao, primeira.versao + 1);
+
+      // Rascunho se edita.
+      const editada = await repositorio.atualizarPromptDaSerena(primeira.id, {
+        titulo: 'Política v1 revista', conteudo: 'Texto revisado da política da clínica.',
+      });
+      assert.equal(editada.titulo, 'Política v1 revista');
+
+      await repositorio.publicarPromptDaSerena(primeira.id, {});
+      assert.equal((await repositorio.obterPromptPublicadoDaSerena()).id, primeira.id);
+
+      // Publicada não se edita: o repositório devolve `null` e o serviço traduz.
+      assert.equal(await repositorio.atualizarPromptDaSerena(primeira.id, {
+        titulo: 'x', conteudo: 'tentativa de reescrever o que está no ar',
+      }), null);
+
+      // Publicar a segunda tira a primeira do ar — sem instante nenhum com duas.
+      await repositorio.publicarPromptDaSerena(segunda.id, {});
+      const publicado = await repositorio.obterPromptPublicadoDaSerena();
+      assert.equal(publicado.id, segunda.id);
+
+      const todas = await repositorio.listarPromptsDaSerena({ limite: 50 });
+      assert.equal(todas.filter((prompt) => prompt.publicado).length, 1);
+    });
+
+    await t.test('regras: criar, ligar, desligar, apagar e nome único', async () => {
+      const regra = await repositorio.criarRegraDaSerena({
+        nome: 'contrato: sem diagnóstico', categoria: 'barreira', conteudo: 'Nunca diagnostique.', ordem: 10,
+      });
+      assert.equal(regra.ativa, true, 'regra nasce ligada');
+
+      await assert.rejects(
+        () => repositorio.criarRegraDaSerena({
+          nome: 'contrato: sem diagnóstico', categoria: 'geral', conteudo: 'outra',
+        }),
+        (erro) => {
+          // Mesmo sinal nas duas implementações, para o serviço tratar igual.
+          assert.equal(erro.code, '23505');
+          return true;
+        },
+      );
+
+      const desligada = await repositorio.atualizarRegraDaSerena(regra.id, { ativa: false });
+      assert.equal(desligada.ativa, false);
+
+      const ativas = await repositorio.listarRegrasDaSerena({ apenasAtivas: true });
+      assert.ok(!ativas.some((item) => item.id === regra.id), 'desligada some da lista de ativas');
+
+      assert.equal(await repositorio.removerRegraDaSerena(regra.id), 1);
+      assert.equal(await repositorio.obterRegraDaSerena(regra.id), null);
+    });
+
+    // ---------------------------------------------------------------- contatos
+
+    await t.test('contato: criação, telefone único e soft delete', async () => {
+      const contato = await repositorio.criarContato({
+        nome: 'Contrato Paciente', telefone: '5516900000777',
+      });
+      assert.equal(contato.excluido_em, null);
+
+      await assert.rejects(
+        () => repositorio.criarContato({ nome: 'Outro', telefone: '5516900000777' }),
+        (erro) => {
+          assert.equal(erro.code, '23505');
+          return true;
+        },
+      );
+
+      // O telefone acha o contato mesmo depois de excluído — é o que impede a
+      // segunda ficha para a mesma pessoa.
+      const excluido = await repositorio.excluirContato(contato.id, { motivo: 'contrato' });
+      assert.ok(excluido.excluido_em);
+      assert.equal((await repositorio.obterContatoPorTelefone('5516900000777')).id, contato.id);
+
+      // E some das listas de trabalho.
+      const listados = await repositorio.listarContatos({});
+      assert.ok(!listados.some((item) => item.id === contato.id));
+      const comExcluidos = await repositorio.listarContatos({ incluirExcluidos: true });
+      assert.ok(comExcluidos.some((item) => item.id === contato.id));
+
+      // Excluir de novo não faz nada; restaurar traz de volta.
+      assert.equal(await repositorio.excluirContato(contato.id, {}), null);
+      const restaurado = await repositorio.restaurarContato(contato.id);
+      assert.equal(restaurado.excluido_em, null);
+    });
+
+    await t.test('contato excluído que reescreve é reativado, não duplicado', async () => {
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000778', nome: 'Volta Sempre',
+      });
+      await repositorio.excluirContato(contato.id, { motivo: 'engano' });
+
+      const reencontrado = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000778', nome: 'Volta Sempre',
+      });
+
+      assert.equal(reencontrado.id, contato.id);
+      assert.equal(reencontrado.excluido_em, null);
     });
 
     await t.test('a auditoria aceita registro com e sem detalhe', async () => {

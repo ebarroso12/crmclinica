@@ -27,6 +27,9 @@ const { criarServicoDeAgenda } = require('../dominio/agenda-servico');
 const { criarRotasDeLembretes } = require('./rotas-lembretes');
 const { criarServicoDeLembretes } = require('../dominio/lembretes-servico');
 const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes');
+const { criarRotasDaSerena } = require('./rotas-serena');
+const { criarServicoDaSerena } = require('../dominio/serena-servico');
+const { criarRotasDeContatos } = require('./rotas-contatos');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -98,8 +101,18 @@ function criarAplicacao(dependencias = {}) {
   });
   const lembretesLigados = configuracao.lembretes.ativos ? servicoDeLembretes : null;
 
+  // A Serena vem antes do atendimento porque o atendimento a consulta antes de
+  // responder: o interruptor global tem precedência sobre a regra por conversa.
+  const servicoDaSerena = dependencias.servicoDaSerena || criarServicoDaSerena({ repositorio });
+
   const atendimento = dependencias.atendimento
-    || criarAtendimento({ repositorio, orquestrador, leads: servicoDeLeads, lembretes: lembretesLigados });
+    || criarAtendimento({
+      repositorio,
+      orquestrador,
+      leads: servicoDeLeads,
+      lembretes: lembretesLigados,
+      serena: servicoDaSerena,
+    });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
@@ -119,6 +132,15 @@ function criarAplicacao(dependencias = {}) {
     || criarServicoDeAgenda({ repositorio, lembretes: lembretesLigados });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
   const rotasDeLembretes = criarRotasDeLembretes({ lembretes: servicoDeLembretes, repositorio });
+  const rotasDaSerena = criarRotasDaSerena({
+    serena: servicoDaSerena,
+    // O adaptador é quem sabe falar com o gateway: reaproveitá-lo para o status
+    // evita uma segunda conexão e garante que a tela mostre o mesmo canal por
+    // onde as mensagens realmente saem.
+    entregaDeLembretes,
+    configuracao,
+  });
+  const rotasDeContatos = criarRotasDeContatos({ repositorio });
 
   // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
   // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
@@ -240,6 +262,70 @@ function criarAplicacao(dependencias = {}) {
 
       if (sobre) {
         responderJson(res, 200, await sobre(await lerJson(req)), semCache);
+        return true;
+      }
+    }
+
+    responderJson(res, 404, { erro: 'rota não encontrada' });
+    return true;
+  }
+
+  // Rotas da Serena: estado, interruptor, prompt e regras.
+  async function tratarRotasDaSerena(req, res, rota, metodo, url, usuario) {
+    if (!rota.startsWith('/api/serena')) return false;
+    const semCache = { 'cache-control': 'no-store' };
+
+    const simples = {
+      'GET /api/serena': () => rotasDaSerena.painel(usuario),
+      'GET /api/serena/status': () => rotasDaSerena.status(usuario),
+      'POST /api/serena/estado': async () => rotasDaSerena.definirEstado(usuario, await lerJson(req)),
+      'GET /api/serena/prompts': () => rotasDaSerena.listarPrompts(usuario),
+      'POST /api/serena/prompts': async () => rotasDaSerena.criarPrompt(usuario, await lerJson(req)),
+      'GET /api/serena/regras': () => rotasDaSerena.listarRegras(usuario, url.searchParams),
+      'POST /api/serena/regras': async () => rotasDaSerena.criarRegra(usuario, await lerJson(req)),
+    };
+
+    const acao = simples[`${metodo} ${rota}`];
+    if (acao) {
+      const criou = metodo === 'POST' && (rota === '/api/serena/prompts' || rota === '/api/serena/regras');
+      responderJson(res, criou ? 201 : 200, await acao(), semCache);
+      return true;
+    }
+
+    const partes = rota.split('/').filter(Boolean);
+
+    // /api/serena/prompts/:id  e  /api/serena/prompts/:id/publicar
+    if (partes[2] === 'prompts' && partes.length >= 4) {
+      if (partes.length === 4) {
+        if (metodo !== 'PUT') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'PUT' });
+          return true;
+        }
+        responderJson(res, 200, await rotasDaSerena.editarPrompt(usuario, partes[3], await lerJson(req)), semCache);
+        return true;
+      }
+      if (partes.length === 5 && partes[4] === 'publicar' && metodo === 'POST') {
+        responderJson(res, 200, await rotasDaSerena.publicarPrompt(usuario, partes[3]), semCache);
+        return true;
+      }
+    }
+
+    // /api/serena/regras/:id  e  /api/serena/regras/:id/ativa
+    if (partes[2] === 'regras' && partes.length >= 4) {
+      if (partes.length === 4) {
+        if (metodo === 'PUT') {
+          responderJson(res, 200, await rotasDaSerena.editarRegra(usuario, partes[3], await lerJson(req)), semCache);
+          return true;
+        }
+        if (metodo === 'DELETE') {
+          responderJson(res, 200, await rotasDaSerena.removerRegra(usuario, partes[3]), semCache);
+          return true;
+        }
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'PUT, DELETE' });
+        return true;
+      }
+      if (partes.length === 5 && partes[4] === 'ativa' && metodo === 'POST') {
+        responderJson(res, 200, await rotasDaSerena.definirRegraAtiva(usuario, partes[3], await lerJson(req)), semCache);
         return true;
       }
     }
@@ -386,8 +472,52 @@ function criarAplicacao(dependencias = {}) {
 
     if (await tratarRotasDeAgenda(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeLembretes(req, res, rota, metodo, url, usuario)) return true;
+    if (await tratarRotasDaSerena(req, res, rota, metodo, url, usuario)) return true;
 
     const partes = rota.split('/').filter(Boolean);
+
+    // /api/contatos/gestao — a tela de gestão. Fica antes da busca simples
+    // porque "gestao" seria interpretado como identificador de contato.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes[2] === 'gestao' && partes.length === 3) {
+      if (metodo !== 'GET') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+        return true;
+      }
+      responderJson(res, 200, await rotasDeContatos.listar(usuario, url.searchParams), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // POST /api/contatos — cadastro manual.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes.length === 2 && metodo === 'POST') {
+      responderJson(res, 201, await rotasDeContatos.criar(usuario, await lerJson(req)));
+      return true;
+    }
+
+    // /api/contatos/:id — ficha, edição e exclusão lógica.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes.length === 3 && /^\d+$/.test(partes[2])) {
+      const acoes = {
+        GET: async () => rotasDeContatos.obter(usuario, partes[2]),
+        PUT: async () => rotasDeContatos.editar(usuario, partes[2], await lerJson(req)),
+        DELETE: async () => rotasDeContatos.excluir(usuario, partes[2], await lerJson(req).catch(() => ({}))),
+      };
+      const acao = acoes[metodo];
+      if (!acao) {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET, PUT, DELETE' });
+        return true;
+      }
+      responderJson(res, 200, await acao(), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // POST /api/contatos/:id/restaurar — desfaz a exclusão lógica.
+    if (partes[0] === 'api' && partes[1] === 'contatos' && partes[3] === 'restaurar' && partes.length === 4) {
+      if (metodo !== 'POST') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+        return true;
+      }
+      responderJson(res, 200, await rotasDeContatos.restaurar(usuario, partes[2]));
+      return true;
+    }
 
     // /api/leads/:id e suas ações.
     if (partes[0] === 'api' && partes[1] === 'leads' && partes.length >= 3 && partes[2] !== 'vocabulario') {
@@ -688,6 +818,9 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, erro.status, {
           erro: erro.message,
           ...(erro.codigo ? { codigo: erro.codigo } : {}),
+          // Telefone duplicado leva o contato que já tem o número: sem isso, a
+          // equipe descobre que existe e não descobre onde.
+          ...(erro.contato_id ? { contato_id: erro.contato_id } : {}),
         });
         return;
       }

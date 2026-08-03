@@ -1151,3 +1151,130 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   .grade-agenda { grid-template-columns: 44px minmax(0, 1fr); }
   .dias-agenda { grid-template-columns: repeat(7, minmax(92px, 1fr)); }
 }
+
+/* ---------------------------------------------------------------- Serena */
+
+/* Quatro peças de estado, lado a lado. "OpenClaw offline" e "Serena desligada"
+   pedem ações opostas — e por isso não podem parecer a mesma coisa. */
+.serena-estado {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.cartao-estado {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.cartao-estado small {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--apoio);
+  margin-bottom: 6px;
+}
+
+.cartao-estado strong { display: block; font-size: 17px; }
+.cartao-estado .nota { display: block; margin-top: 4px; font-size: 12px; color: var(--apoio); }
+
+/* O tom carrega o significado; o texto continua legível sem a cor. */
+[data-tom='ok'] { color: #0f766e; }
+[data-tom='alerta'] { color: #b45309; }
+[data-tom='ruim'] { color: #b91c1c; }
+[data-tom='neutro'] { color: var(--apoio); }
+
+.pilula.pequena { font-size: 11px; padding: 2px 8px; }
+.pilula[data-tom='ok'] { background: #d1fae5; color: #065f46; }
+.pilula[data-tom='alerta'] { background: #fef3c7; color: #92400e; }
+
+.linha-acoes { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+button.perigo {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+button.perigo:hover { background: #fecaca; }
+
+/* O prompt efetivo é texto do agente: monoespaçado, com quebra preservada e
+   rolagem própria — a página não pode rolar na horizontal por causa dele. */
+.prompt-efetivo {
+  background: #f8fafc;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  padding: 14px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 340px;
+  margin: 0 0 10px;
+}
+
+.lista-versoes, .lista-regras, .lista-contatos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lista-versoes li, .lista-regras li, .lista-contatos li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  background: var(--superficie);
+}
+
+.lista-versoes li small, .lista-regras li small, .lista-contatos li small {
+  display: block;
+  color: var(--apoio);
+  font-size: 12.5px;
+  margin-top: 3px;
+}
+
+.lista-versoes li.publicada { border-color: #99f6e4; background: #f0fdfa; }
+
+/* Regra ou contato desligado continua visível — some da operação, não da tela. */
+.lista-regras li.desligada, .lista-contatos li.desligada { opacity: 0.55; }
+
+.form-regra, #form-prompt, #form-contato { display: block; margin-bottom: 14px; }
+.form-regra label, #form-prompt label, #form-contato label {
+  display: block;
+  font-size: 13px;
+  color: var(--apoio);
+  margin: 10px 0 4px;
+}
+.form-regra input, .form-regra select, .form-regra textarea,
+#form-prompt input, #form-prompt textarea,
+#form-contato input, #form-contato textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  font: inherit;
+  background: var(--superficie);
+}
+
+.grade-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.marcador { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--apoio); }
+.marcador input { width: auto; }
