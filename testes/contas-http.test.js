@@ -456,3 +456,100 @@ test('o retorno do Google recusa state ausente ou desconhecido', async (t) => {
   assert.equal((await app.pedirSemAuth('/api/auth/google/retorno?code=abc&state=forjado')).status, 401);
   assert.equal((await app.pedirSemAuth('/api/auth/google/retorno?state=x')).status, 400);
 });
+
+// ---------------------------------------------------------------- senha sem e-mail
+//
+// A recuperação por e-mail depende de SMTP, e uma clínica pequena pode não ter.
+// Sem um caminho alternativo, esquecer a senha vira chamado técnico — ou, pior,
+// alguém emprestando a conta de outro, que é como a auditoria deixa de valer.
+
+test('o master define senha temporária e a troca é exigida no primeiro acesso', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio });
+  t.after(() => ambiente.encerrar());
+
+  const atendente = await ambiente.entrarComo('atendente');
+  const alvo = await repositorio.obterUsuarioPorEmail(atendente.email);
+
+  const resposta = await ambiente.pedir(`/api/usuarios/${alvo.id}/senha`, { method: 'POST' });
+  assert.equal(resposta.status, 200);
+
+  const corpo = await resposta.json();
+  assert.equal(corpo.definida, true);
+  // A senha aparece uma vez, para ser entregue pessoalmente.
+  assert.ok(corpo.senha_temporaria && corpo.senha_temporaria.length >= 16);
+  assert.equal(corpo.usuario.precisa_trocar_senha, true);
+
+  // E ela funciona: entrar com a temporária é o ponto do recurso.
+  const login = await ambiente.pedirSemAuth('/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: atendente.email, senha: corpo.senha_temporaria }),
+  });
+  assert.equal(login.status, 200);
+  assert.equal((await login.json()).usuario.precisa_trocar_senha, true);
+});
+
+test('a senha antiga para de valer, e as sessões caem junto', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio });
+  t.after(() => ambiente.encerrar());
+
+  const atendente = await ambiente.entrarComo('atendente');
+  const alvo = await repositorio.obterUsuarioPorEmail(atendente.email);
+
+  await ambiente.pedir(`/api/usuarios/${alvo.id}/senha`, { method: 'POST' });
+
+  const comAntiga = await ambiente.pedirSemAuth('/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: atendente.email, senha: atendente.senha }),
+  });
+  assert.equal(comAntiga.status, 401, 'a senha anterior não pode continuar entrando');
+
+  // Redefinir senha por suspeita e deixar a sessão aberta anularia o gesto.
+  const sessao = await repositorio.obterSessaoPorHash('qualquer');
+  assert.equal(sessao, null);
+});
+
+test('só o master redefine senha de outra conta', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio, master: false, papel: 'admin' });
+  t.after(() => ambiente.encerrar());
+
+  const outro = await ambiente.entrarComo('atendente');
+  const alvo = await repositorio.obterUsuarioPorEmail(outro.email);
+
+  // Admin sem `master` não passa: redefinir senha alheia é poder de dono da conta.
+  const resposta = await ambiente.pedir(`/api/usuarios/${alvo.id}/senha`, { method: 'POST' });
+  assert.equal(resposta.status, 403);
+});
+
+test('o master não redefine a própria senha por este caminho', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio });
+  t.after(() => ambiente.encerrar());
+
+  const eu = await (await ambiente.pedir('/api/auth/sessao')).json();
+  const resposta = await ambiente.pedir(`/api/usuarios/${eu.usuario.id}/senha`, { method: 'POST' });
+
+  // A própria senha se troca pelo fluxo normal, que exige a atual — do
+  // contrário, um token roubado trocaria a senha do dono sem saber a antiga.
+  assert.equal(resposta.status, 409);
+});
+
+test('a redefinição fica auditada, e a senha não aparece na trilha', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio });
+  t.after(() => ambiente.encerrar());
+
+  const atendente = await ambiente.entrarComo('atendente');
+  const alvo = await repositorio.obterUsuarioPorEmail(atendente.email);
+
+  const corpo = await (await ambiente.pedir(`/api/usuarios/${alvo.id}/senha`, { method: 'POST' })).json();
+
+  const registro = repositorio._auditoria.find((item) => item.acao === 'senha_temporaria_definida');
+  assert.ok(registro, 'a redefinição precisa deixar rastro');
+  assert.ok(registro.usuarioId, 'com o autor');
+  assert.doesNotMatch(JSON.stringify(registro), new RegExp(corpo.senha_temporaria));
+});

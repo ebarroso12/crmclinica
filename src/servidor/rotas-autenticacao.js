@@ -193,6 +193,34 @@ function criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, c
       return contas.trocarSenha(usuario.id, corpo?.senha_atual ?? '', senhaNova);
     },
 
+    /**
+     * POST /api/usuarios/:id/senha — o master define uma senha temporária.
+     *
+     * É o caminho de recuperação quando não há SMTP: o admin gera, entrega
+     * pessoalmente, e a troca é exigida no primeiro acesso. A senha aparece
+     * **uma vez** nesta resposta e não é guardada em lugar nenhum.
+     */
+    async definirSenhaTemporaria(master, usuarioId) {
+      if (!master?.master) {
+        const erro = new Error('apenas o administrador master redefine a senha de outra conta');
+        erro.status = 403;
+        throw erro;
+      }
+
+      const id = Number(usuarioId);
+      if (!Number.isInteger(id) || id <= 0) {
+        throw new ErroDeContrato('identificador de usuário inválido', 'usuario_id');
+      }
+      if (id === master.id) {
+        // O master troca a própria senha pelo fluxo normal, que exige a atual.
+        const erro = new Error('para a sua própria senha, use a troca de senha');
+        erro.status = 409;
+        throw erro;
+      }
+
+      return contas.definirSenhaTemporaria(id, { porUsuarioId: master.id });
+    },
+
     /** POST /api/auth/recuperar — pede o link por e-mail. */
     async pedirRecuperacao(corpo, contexto) {
       const email = exigirTexto(corpo?.email, 'email', 254);

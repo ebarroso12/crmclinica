@@ -1209,6 +1209,39 @@ function montarLinhaDeUsuario(usuario) {
   return linha;
 }
 
+/**
+ * Gera uma senha temporária e a mostra uma única vez.
+ *
+ * Ela não é guardada em lugar nenhum — nem em claro no banco, nem na
+ * auditoria. Quem administra copia, entrega pessoalmente, e a troca é exigida
+ * no primeiro acesso. Fechada a janela, só gerando outra.
+ */
+async function redefinirSenhaDe(usuario) {
+  const confirmado = confirm(
+    `Gerar uma senha temporária para ${usuario.nome}?
+
+`
+    + 'A senha atual deixa de valer, as sessões abertas caem, e a troca será '
+    + 'exigida no primeiro acesso.',
+  );
+  if (!confirmado) return;
+
+  try {
+    const resposta = await pedirJson(`/api/usuarios/${usuario.id}/senha`, { metodo: 'POST' });
+    window.alert(
+      `Senha temporária de ${usuario.nome}:
+
+${resposta.senha_temporaria}
+
+`
+      + 'Anote agora: ela não aparece de novo. Entregue pessoalmente.',
+    );
+    await carregarUsuarios();
+  } catch (erro) {
+    window.alert(`Não foi possível redefinir: ${erro.message}`);
+  }
+}
+
 async function agirNoUsuario(id, caminho, corpo) {
   try {
     await pedirJson(`/api/usuarios/${id}/${caminho}`, { metodo: 'POST', corpo });
@@ -2292,11 +2325,7 @@ async function alternarSerena(ativa) {
   if (!ativa && !motivo) return;
 
   try {
-    await pedirJson('/api/serena/estado', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ativa, motivo }),
-    });
+    await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa, motivo } });
     informar(ativa ? 'Serena ligada.' : 'Serena desligada — as mensagens continuam sendo gravadas.');
     await carregarSerena();
   } catch (erro) {
@@ -2422,7 +2451,7 @@ document.addEventListener('click', async (evento) => {
     if (alvo.id === 'serena-cancelar-regra') seletor('#form-regra').hidden = true;
 
     if (alvo.dataset.publicarPrompt) {
-      await pedirJson(`/api/serena/prompts/${alvo.dataset.publicarPrompt}/publicar`, { method: 'POST' });
+      await pedirJson(`/api/serena/prompts/${alvo.dataset.publicarPrompt}/publicar`, { metodo: 'POST' });
       informar('Versão publicada.');
       await carregarSerena();
     }
@@ -2432,11 +2461,7 @@ document.addEventListener('click', async (evento) => {
       abrirEditorDePrompt(alvoPrompt ?? null);
     }
     if (alvo.dataset.regraAtiva) {
-      await pedirJson(`/api/serena/regras/${alvo.dataset.regraAtiva}/ativa`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ativa: alvo.dataset.valor === 'true' }),
-      });
+      await pedirJson(`/api/serena/regras/${alvo.dataset.regraAtiva}/ativa`, { metodo: 'POST', corpo: { ativa: alvo.dataset.valor === 'true' } });
       await carregarSerena();
     }
     if (alvo.dataset.editarRegra) {
@@ -2445,7 +2470,7 @@ document.addEventListener('click', async (evento) => {
     }
     if (alvo.dataset.removerRegra) {
       if (!confirm('Apagar esta regra? O conteúdo fica registrado na auditoria.')) return;
-      await pedirJson(`/api/serena/regras/${alvo.dataset.removerRegra}`, { method: 'DELETE' });
+      await pedirJson(`/api/serena/regras/${alvo.dataset.removerRegra}`, { metodo: 'DELETE' });
       informar('Regra apagada.');
       await carregarSerena();
     }
@@ -2460,16 +2485,12 @@ document.addEventListener('click', async (evento) => {
     if (alvo.dataset.excluirContato) {
       const motivo = prompt('Motivo da exclusão (opcional):') ?? null;
       if (!confirm('Excluir este contato? O histórico é preservado e a exclusão pode ser desfeita.')) return;
-      await pedirJson(`/api/contatos/${alvo.dataset.excluirContato}`, {
-        method: 'DELETE',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ motivo }),
-      });
+      await pedirJson(`/api/contatos/${alvo.dataset.excluirContato}`, { metodo: 'DELETE', corpo: { motivo } });
       informar('Contato excluído. O histórico foi preservado.');
       await carregarContatos();
     }
     if (alvo.dataset.restaurarContato) {
-      await pedirJson(`/api/contatos/${alvo.dataset.restaurarContato}/restaurar`, { method: 'POST' });
+      await pedirJson(`/api/contatos/${alvo.dataset.restaurarContato}/restaurar`, { metodo: 'POST' });
       informar('Contato restaurado.');
       await carregarContatos();
     }
@@ -2490,11 +2511,11 @@ document.addEventListener('submit', async (evento) => {
     try {
       if (promptEmEdicao) {
         await pedirJson(`/api/serena/prompts/${promptEmEdicao.id}`, {
-          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+          metodo: 'PUT', corpo: corpo,
         });
       } else {
         await pedirJson('/api/serena/prompts', {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+          metodo: 'POST', corpo: corpo,
         });
       }
       seletor('#serena-editor').hidden = true;
@@ -2517,11 +2538,11 @@ document.addEventListener('submit', async (evento) => {
     try {
       if (regraEmEdicao) {
         await pedirJson(`/api/serena/regras/${regraEmEdicao.id}`, {
-          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+          metodo: 'PUT', corpo: corpo,
         });
       } else {
         await pedirJson('/api/serena/regras', {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+          metodo: 'POST', corpo: corpo,
         });
       }
       form.hidden = true;
@@ -2543,11 +2564,11 @@ document.addEventListener('submit', async (evento) => {
     try {
       if (contatoEmEdicao) {
         await pedirJson(`/api/contatos/${contatoEmEdicao.id}`, {
-          method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+          metodo: 'PUT', corpo: corpo,
         });
       } else {
         await pedirJson('/api/contatos', {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo),
+          metodo: 'POST', corpo: corpo,
         });
       }
       seletor('#contato-editor').hidden = true;

@@ -151,3 +151,28 @@ test('a descrição da configuração nomeia os papéis e não carrega segredo',
     assert.ok(!serializada.includes(segredo), `a descrição vazou "${segredo}"`);
   }
 });
+
+test('entrega real exige o gateway — não as variáveis do cliente HTTP antigo', () => {
+  // Esta checagem já apontou para OPENCLAW_BASE_URL/OPENCLAW_TOKEN e acusava
+  // configuração faltando com o envio funcionando: quem entrega é o gateway.
+  const semGateway = carregarConfiguracao({
+    LEMBRETES_MODO_ENTREGA: 'real',
+    OPENCLAW_BASE_URL: 'https://openclaw.exemplo',
+    OPENCLAW_TOKEN: 'token-do-cliente-http',
+  });
+  assert.ok(validarConfiguracao(semGateway).some((p) => /OPENCLAW_GATEWAY_URL/.test(p)));
+
+  const semCredencial = carregarConfiguracao({
+    LEMBRETES_MODO_ENTREGA: 'real',
+    OPENCLAW_GATEWAY_URL: 'wss://openclaw.exemplo/ws',
+  });
+  assert.ok(validarConfiguracao(semCredencial).some((p) => /OPENCLAW_DEVICE_TOKEN/.test(p)));
+
+  // Com o gateway e um deviceToken, nada falta — mesmo sem as variáveis antigas.
+  const completo = carregarConfiguracao({
+    LEMBRETES_MODO_ENTREGA: 'real',
+    OPENCLAW_GATEWAY_URL: 'wss://openclaw.exemplo/ws',
+    OPENCLAW_DEVICE_TOKEN: 'device-token-sintetico',
+  });
+  assert.deepEqual(validarConfiguracao(completo), []);
+});

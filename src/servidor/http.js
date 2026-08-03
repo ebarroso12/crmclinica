@@ -258,10 +258,16 @@ function criarAplicacao(dependencias = {}) {
       const sobre = {
         situacao: (corpo) => auth.definirSituacao(usuario, partes[2], corpo),
         papel: (corpo) => auth.definirPapel(usuario, partes[2], corpo),
+        // Recuperação sem e-mail: o master gera uma senha temporária e entrega
+        // pessoalmente. Não lê corpo — não há nada a informar.
+        senha: () => auth.definirSenhaTemporaria(usuario, partes[2]),
       }[partes[3]];
 
       if (sobre) {
-        responderJson(res, 200, await sobre(await lerJson(req)), semCache);
+        // A redefinição de senha não recebe nada: exigir um corpo JSON vazio
+        // ali faria a rota responder 400 para uma requisição correta.
+        const corpo = partes[3] === 'senha' ? null : await lerJson(req);
+        responderJson(res, 200, await sobre(corpo), semCache);
         return true;
       }
     }

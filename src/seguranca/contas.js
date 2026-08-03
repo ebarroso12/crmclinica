@@ -192,6 +192,63 @@ function criarContas({
   }
 
   /**
+   * O administrador define uma senha temporária para outra conta.
+   *
+   * Existe porque a recuperação por e-mail depende de SMTP, e numa clínica
+   * pequena o SMTP pode simplesmente não existir. Sem este caminho, esquecer a
+   * senha viraria um chamado técnico — ou, pior, alguém emprestando a conta de
+   * outro, que é como uma trilha de auditoria deixa de valer.
+   *
+   * A senha é **gerada aqui**, não escolhida por quem administra: senha que o
+   * admin inventa costuma ser a mesma para todo mundo, e ele passa a conhecer a
+   * senha de cada pessoa. Ela é devolvida uma única vez, para ser entregue
+   * pessoalmente, e a troca é obrigatória no primeiro acesso.
+   */
+  async function definirSenhaTemporaria(usuarioId, { porUsuarioId = null } = {}) {
+    const usuario = await repositorio.obterUsuarioPorId(usuarioId);
+    if (!usuario) {
+      const erro = new Error('usuário não encontrado');
+      erro.status = 404;
+      throw erro;
+    }
+
+    // 18 caracteres de base64url: aleatoriedade suficiente para não ser
+    // adivinhada no intervalo entre a entrega e a primeira troca.
+    const senha = crypto.randomBytes(13).toString('base64url');
+
+    await repositorio.atualizarUsuario(usuarioId, {
+      senhaHash: await gerarHash(senha),
+      // O produto já exige a troca quando esta marca está ligada. A senha
+      // temporária serve para entrar uma vez, e só.
+      precisaTrocarSenha: true,
+    });
+
+    // As sessões antigas caem junto: se a senha foi redefinida porque alguém
+    // perdeu o acesso — ou porque houve suspeita —, manter as sessões abertas
+    // anularia o gesto.
+    await repositorio.revogarSessoesDoUsuario(usuarioId);
+
+    await repositorio.registrarAuditoria({
+      entidade: 'usuario',
+      entidadeId: usuarioId,
+      acao: 'senha_temporaria_definida',
+      // Quem pediu fica registrado; a senha, nunca.
+      detalhe: { alvo: usuario.email },
+      usuarioId: porUsuarioId,
+    });
+
+    return {
+      definida: true,
+      // Relido depois da atualização: o retrato precisa mostrar
+      // `precisa_trocar_senha: true`, que é o que a tela usa para avisar quem
+      // administra que a troca será exigida.
+      usuario: retratoDoUsuario(await repositorio.obterUsuarioPorId(usuarioId)),
+      senha_temporaria: senha,
+      detalhe: 'entregue pessoalmente; a troca é exigida no primeiro acesso',
+    };
+  }
+
+  /**
    * Pede recuperação por e-mail.
    *
    * Responde igual para e-mail conhecido e desconhecido: a diferença revelaria
@@ -408,6 +465,7 @@ function criarContas({
     cadastrar,
     definirSituacao,
     trocarSenha,
+    definirSenhaTemporaria,
     pedirRecuperacao,
     redefinirSenha,
     prepararSegundoFator,

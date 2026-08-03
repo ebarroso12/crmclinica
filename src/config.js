@@ -189,11 +189,20 @@ function validarConfiguracao(configuracao) {
     problemas.push('OPENCLAW_WEBHOOK_SECRET deve ter ao menos 32 caracteres');
   }
 
-  // Pedir entrega real sem credencial não degrada para dry-run em silêncio: a
+  // Pedir entrega real sem gateway não degrada para dry-run em silêncio: a
   // clínica acharia que está lembrando pacientes e não estaria.
-  if (configuracao.lembretes.modoEntrega === 'real'
-    && !(configuracao.openclaw.baseUrl && configuracao.openclaw.token)) {
-    problemas.push('LEMBRETES_MODO_ENTREGA=real exige OPENCLAW_BASE_URL e OPENCLAW_TOKEN');
+  //
+  // A checagem olha para o **gateway**, que é por onde a mensagem sai de fato.
+  // Ela já apontou para `OPENCLAW_BASE_URL`/`OPENCLAW_TOKEN` — variáveis do
+  // cliente HTTP de eventos — e acusava configuração faltando com o envio
+  // funcionando perfeitamente.
+  if (configuracao.lembretes.modoEntrega === 'real') {
+    const gateway = configuracao.openclaw.gateway;
+    if (!gateway.url) {
+      problemas.push('LEMBRETES_MODO_ENTREGA=real exige OPENCLAW_GATEWAY_URL');
+    } else if (!gateway.token && !gateway.deviceToken) {
+      problemas.push('LEMBRETES_MODO_ENTREGA=real exige OPENCLAW_GATEWAY_TOKEN ou OPENCLAW_DEVICE_TOKEN');
+    }
   }
 
   // O inbox é o próprio produto: sem banco, ele não tem onde guardar conversa.
