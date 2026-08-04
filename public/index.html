@@ -559,6 +559,31 @@
           <p class="nota" id="serena-motivo-atual" hidden></p>
         </article>
 
+        <article class="card voz-card" id="serena-voz-card">
+          <div class="card-titulo">
+            <div>
+              <h3>Laboratório de voz <span class="pilula pequena" id="serena-voz-estado">verificando…</span></h3>
+              <p>Conversa falada em tempo real, somente para avaliação interna da equipe.</p>
+            </div>
+          </div>
+          <p class="aviso-voz">
+            Não use com pacientes nesta etapa. A voz não agenda, não prescreve e não envia mensagens.
+            O áudio passa em tempo real e não é armazenado; apenas a transcrição fica auditada.
+          </p>
+          <label class="marcador consentimento-voz">
+            <input type="checkbox" id="serena-voz-consentimento">
+            Concordo em ativar o microfone e registrar a transcrição deste teste.
+          </label>
+          <div class="linha-acoes">
+            <button type="button" class="primario" id="serena-voz-iniciar" disabled>Iniciar conversa</button>
+            <button type="button" class="perigo" id="serena-voz-parar" hidden>Encerrar</button>
+          </div>
+          <p class="nota" id="serena-voz-detalhe" role="status">O recurso está desligado por padrão.</p>
+          <ol class="transcricao-voz" id="serena-voz-transcricao" aria-live="polite">
+            <li class="vazio">Nenhuma fala nesta sessão.</li>
+          </ol>
+        </article>
+
         <!-- Prompt publicado -->
         <article class="card" id="serena-prompt-card">
           <div class="card-titulo">
@@ -875,6 +900,7 @@
     </main>
   </div>
 
+  <script src="/serena-voz.js"></script>
   <script src="/app.js"></script>
 
   <!-- Vinculação do WhatsApp: o QR troca sozinho, então a tela o recarrega. -->

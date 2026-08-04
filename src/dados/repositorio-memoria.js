@@ -40,6 +40,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const lembretes = [];
   const serenaPrompts = [];
   const serenaRegras = [];
+  const serenaVozSessoes = new Map();
+  const serenaVozTurnos = [];
   // Uma linha só, como a constraint do PostgreSQL garante lá.
   const serenaConfiguracao = {
     id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
@@ -1098,6 +1100,49 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       if (indice === -1) return 0;
       serenaRegras.splice(indice, 1);
       return 1;
+    },
+
+    // --------------------------------------------------------- Serena — voz
+
+    async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {
+      const sessao = {
+        id, usuario_id: Number(usuarioId), conversa_id: conversaId ? Number(conversaId) : null,
+        perfil, estado: 'ativa', consentimento_em: consentimentoEm.toISOString(),
+        expira_em: expiraEm.toISOString(), encerrado_em: null, criado_em: agora().toISOString(),
+      };
+      serenaVozSessoes.set(id, sessao);
+      return { ...sessao };
+    },
+
+    async obterSessaoDeVoz(id) {
+      const sessao = serenaVozSessoes.get(String(id));
+      return sessao ? { ...sessao } : null;
+    },
+
+    async encerrarSessaoDeVoz(id) {
+      const sessao = serenaVozSessoes.get(String(id));
+      if (!sessao) return null;
+      if (sessao.estado === 'ativa') {
+        sessao.estado = 'encerrada';
+        sessao.encerrado_em = agora().toISOString();
+      }
+      return { ...sessao };
+    },
+
+    async listarTurnosDeVoz(sessaoId) {
+      return serenaVozTurnos.filter((turno) => turno.sessao_id === String(sessaoId)).map((turno) => ({ ...turno }));
+    },
+
+    async registrarTurnoDeVoz({ chaveIdempotencia, sessaoId, papel, transcricao, ocorridoEm }) {
+      const existente = serenaVozTurnos.find((turno) => turno.chave_idempotencia === chaveIdempotencia);
+      if (existente) return { turno: { ...existente }, criado: false };
+      const turno = {
+        id: serenaVozTurnos.length + 1, chave_idempotencia: chaveIdempotencia,
+        sessao_id: sessaoId, papel, transcricao,
+        ocorrido_em: ocorridoEm.toISOString(), criado_em: agora().toISOString(),
+      };
+      serenaVozTurnos.push(turno);
+      return { turno: { ...turno }, criado: true };
     },
 
     // ---------------------------------------------------------------- lembretes

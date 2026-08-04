@@ -28,6 +28,7 @@ fundido de provedor e orquestrador.
 api/            ponte para a Vercel (mesma aplicação, como função)
 db/             migrations do PostgreSQL
 public/         interface web (HTML, CSS e JS sem dependência externa)
+servicos/       processos separados; gateway seguro da Serena Voz
 src/
   config.js         leitura e validação do ambiente, sem expor segredo
   index.js          inicialização do processo
@@ -124,10 +125,20 @@ nada persiste. Em produção a variável é obrigatória.
 | `/api/conversas/:id/agenda` | GET | A agenda do paciente vista de dentro da conversa |
 | `/api/lembretes…` | GET/POST | Fila de lembretes: estado, falhas, sincronização, reenfileiramento |
 | `/api/contatos/:id/lembretes` | POST | Opt-out e opt-in do paciente |
+| `/api/serena/voz…` | GET/POST | Laboratório interno de voz, consentimento, sessão e transcrição |
 
 O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md), a
 agenda em [`docs/AGENDA.md`](docs/AGENDA.md) e os lembretes em
 [`docs/LEMBRETES.md`](docs/LEMBRETES.md).
+
+## Serena Voz (laboratório interno)
+
+O projeto inclui um gateway para o motor livre
+[`huggingface/speech-to-speech`](https://github.com/huggingface/speech-to-speech).
+Ele nasce desligado, exige consentimento, usa sessões curtas e não armazena
+áudio bruto. Nesta fase é só para teste da equipe: não atende pacientes nem
+executa ações. Instalação, arquitetura e limites estão em
+[`docs/SERENA_VOZ.md`](docs/SERENA_VOZ.md).
 
 ## Lembretes de agendamento
 

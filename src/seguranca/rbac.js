@@ -29,6 +29,7 @@ const PERMISSOES = Object.freeze({
   // da clínica inteira, e publicar prompt muda o que ela diz a pacientes.
   'serena:ler': ['admin', 'gestor', 'atendente'],
   'serena:gerenciar': ['admin'],
+  'serena:voz': ['admin', 'gestor', 'atendente'],
 
   // Leads
   'leads:ler': ['admin', 'gestor', 'atendente'],

@@ -2312,6 +2312,7 @@ async function carregarSerena() {
     const efetivo = seletor('#serena-prompt-efetivo');
     if (efetivo) efetivo.textContent = dados.prompt_efetivo ?? '—';
 
+    await carregarEstadoDaVoz();
     desenharVersoes(dados.versoes ?? [], dados.pode_gerenciar);
     desenharRegras(dados.regras ?? [], dados.pode_gerenciar);
 
@@ -2324,6 +2325,103 @@ async function carregarSerena() {
     informar(`Não foi possível carregar a Serena: ${erro.message}`);
   }
 }
+
+// ---------------------------------------------------------------- voz
+
+let clienteDeVoz = null;
+let sessaoDeVozId = null;
+let estadoDaVoz = null;
+
+const ROTULOS_DA_VOZ = {
+  pedindo_microfone: 'aguardando permissão do microfone…',
+  ouvindo: 'ouvindo — pode falar',
+  falando: 'fala detectada…',
+  processando: 'processando…',
+  respondendo: 'Serena está respondendo…',
+  encerrada: 'sessão encerrada',
+};
+
+function desenharEstadoDaVoz() {
+  const estado = seletor('#serena-voz-estado');
+  const detalhe = seletor('#serena-voz-detalhe');
+  const iniciar = seletor('#serena-voz-iniciar');
+  const consentiu = seletor('#serena-voz-consentimento')?.checked === true;
+  if (!estado || !detalhe || !iniciar) return;
+
+  const pronta = estadoDaVoz?.pronta === true;
+  estado.textContent = pronta ? 'pronto' : (estadoDaVoz?.ativa ? 'indisponível' : 'desligado');
+  estado.dataset.tom = pronta ? 'ok' : 'alerta';
+  iniciar.disabled = !pronta || !consentiu || Boolean(clienteDeVoz);
+  if (!clienteDeVoz) {
+    detalhe.textContent = pronta
+      ? `Perfil ${estadoDaVoz.perfil}; sessão limitada a ${Math.round(estadoDaVoz.limite_segundos / 60)} min. Use fone de ouvido.`
+      : (estadoDaVoz?.prompt_publicado === false
+        ? 'Publique um prompt para liberar o teste.'
+        : 'Configure e ligue o gateway de voz para liberar o teste.');
+  }
+}
+
+async function carregarEstadoDaVoz() {
+  try {
+    estadoDaVoz = await pedirJson('/api/serena/voz/status');
+  } catch {
+    estadoDaVoz = { ativa: false, pronta: false };
+  }
+  desenharEstadoDaVoz();
+}
+
+function adicionarTranscricaoDaVoz(papel, texto) {
+  const lista = seletor('#serena-voz-transcricao');
+  if (!lista) return;
+  if (lista.querySelector('.vazio')) lista.innerHTML = '';
+  const item = document.createElement('li');
+  const autor = document.createElement('strong');
+  autor.textContent = papel === 'serena' ? 'Serena: ' : 'Você: ';
+  item.append(autor, document.createTextNode(String(texto)));
+  lista.append(item);
+  lista.scrollTop = lista.scrollHeight;
+}
+
+async function iniciarVoz() {
+  const consentimento = seletor('#serena-voz-consentimento')?.checked === true;
+  if (!consentimento) return;
+  const detalhe = seletor('#serena-voz-detalhe');
+  try {
+    const sessao = await pedirJson('/api/serena/voz/sessoes', {
+      metodo: 'POST', corpo: { consentimento: true },
+    });
+    sessaoDeVozId = sessao.sessao_id;
+    clienteDeVoz = new window.SerenaVozCliente({
+      aoEstado(estado) { if (detalhe) detalhe.textContent = ROTULOS_DA_VOZ[estado] ?? estado; },
+      aoTurno: adicionarTranscricaoDaVoz,
+      aoErro(erro) { if (detalhe) detalhe.textContent = erro.message; },
+    });
+    seletor('#serena-voz-iniciar').disabled = true;
+    seletor('#serena-voz-parar').hidden = false;
+    await clienteDeVoz.iniciar(sessao.websocket_url);
+  } catch (erro) {
+    if (detalhe) detalhe.textContent = erro.detalhe || erro.message;
+    await pararVoz();
+  }
+}
+
+async function pararVoz() {
+  const cliente = clienteDeVoz;
+  const sessaoId = sessaoDeVozId;
+  clienteDeVoz = null;
+  sessaoDeVozId = null;
+  if (cliente) await cliente.parar().catch(() => {});
+  if (sessaoId) {
+    await pedirJson(`/api/serena/voz/sessoes/${encodeURIComponent(sessaoId)}/encerrar`, { metodo: 'POST' }).catch(() => {});
+  }
+  const parar = seletor('#serena-voz-parar');
+  if (parar) parar.hidden = true;
+  desenharEstadoDaVoz();
+}
+
+seletor('#serena-voz-consentimento')?.addEventListener('change', desenharEstadoDaVoz);
+seletor('#serena-voz-iniciar')?.addEventListener('click', iniciarVoz);
+seletor('#serena-voz-parar')?.addEventListener('click', pararVoz);
 
 async function alternarSerena(ativa) {
   const motivo = ativa ? null : prompt('Motivo do desligamento (obrigatório):');
