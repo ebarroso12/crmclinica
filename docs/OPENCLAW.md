@@ -178,20 +178,38 @@ O telefone por onde os pacientes falam com a Serena vive noutra instância do
 OpenClaw — outro processo, outro token, outro dispositivo. O painel **lê** esse
 estado; **não** vincula.
 
-### Por que não vincula pelo painel
+### Por que não vincula pelo painel — o que foi medido
 
-A primeira tentativa apostou que o gateway expunha a vinculação por RPC. Não
-expõe: `wizard.*` é o assistente de configuração geral do gateway, não o do
-WhatsApp, e `channels.login` só existe no CLI. O que saiu daquilo foi um botão
-que girava sem entregar — pior que não ter botão, porque quem clica espera.
+Sondando o gateway **2026.7.1-2** com os escopos de administração:
 
-Então o painel faz o que sabe fazer: mostra qual telefone está conectado e, ao
-clicar em conectar, mostra o caminho que funciona.
+| Sonda | Resultado |
+| --- | --- |
+| Lista de métodos (vem no `hello`) | não há `channels.login`, `.link`, `.pair` nem `.qr` |
+| `channels.login` e afins | `unknown method` |
+| `channels.start {channel:"whatsapp"}` | `started: false` enquanto `linked` é falso |
+| Eventos após o `start` | só `health` e `tick` — nenhum QR |
+| Esquema de `channels.whatsapp` | nenhum campo de vínculo |
+| `wizard.status` | exige `sessionId` — o código antigo mandava `{}`, e por isso **sempre** falhava |
+| `wizard.*` percorrido com `sessionId` | trava numa nota com `executor: "client"` |
+
+Esse último item explica todos os outros: o assistente espera ser executado pela
+**interface** do OpenClaw, não por RPC. Vincular WhatsApp não é uma operação que
+este gateway exponha a um cliente de automação.
 
 ### O caminho que funciona
 
-Com o celular da clínica em **WhatsApp → Aparelhos conectados → Conectar
-aparelho**:
+A própria instância serve o **OpenClaw Control**. Com o celular da clínica em
+**WhatsApp → Aparelhos conectados → Conectar aparelho**, abra:
+
+```text
+https://<host>/clinica/
+```
+
+O QR aparece ali, num navegador — sem terminal, sem SSH. É esse o link que o
+painel oferece ao master, derivado do endereço do gateway (`urlDoControle`):
+duas variáveis que precisam concordar são duas variáveis que um dia discordam.
+
+Quem já tem acesso ao servidor tem o mesmo resultado por:
 
 ```bash
 ssh <OPENCLAW_SSH_HOST>
@@ -200,12 +218,11 @@ vincular-whatsapp
 
 O comando vive em `/usr/local/bin` no servidor do OpenClaw. Ele carrega o
 ambiente da instância da clínica, avisa se já existe telefone conectado antes de
-derrubá-lo, mostra o QR e confere o resultado — o QR expira em segundos e ele o
-renova sozinho enquanto ninguém escaneia.
+derrubá-lo, mostra o QR e confere o resultado.
 
-O endereço não está no código. Vem de `OPENCLAW_SSH_HOST`, e a API só o devolve
-ao admin master: `public/app.js` é servido **sem login**, e qualquer endereço
-escrito lá é endereço publicado.
+O endereço SSH não está no código. Vem de `OPENCLAW_SSH_HOST`, e a API só o
+devolve ao admin master: `public/app.js` é servido **sem login**, e qualquer
+endereço escrito lá é endereço publicado.
 
 ### Duas identidades, de propósito
 

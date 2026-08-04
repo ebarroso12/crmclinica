@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { criarVinculoDeCanal, extrairQr } = require('../src/integracoes/openclaw-vinculo');
+const { criarVinculoDeCanal, extrairQr, urlDoControle } = require('../src/integracoes/openclaw-vinculo');
 const { ErroDeGateway } = require('../src/integracoes/openclaw-gateway');
 
 // A vinculação do canal é lida por uma tela que repete a chamada a cada 5s. O
@@ -145,4 +145,21 @@ test('extrairQr não confunde texto qualquer com imagem', () => {
   assert.equal(extrairQr({ step: { id: 'aguardando' } }), null);
   assert.equal(extrairQr(null), null);
   assert.equal(extrairQr('data:image/png;base64,xxx'), null, 'só objeto é passo de wizard');
+});
+
+test('a tela de controle é derivada do gateway, não pedida em outra variável', () => {
+  // Duas variáveis que precisam concordar são duas variáveis que um dia
+  // discordam — e o sintoma seria um link para a instância errada.
+  assert.equal(
+    urlDoControle('wss://openclaw.edsonbarrosojr.com.br/clinica/ws'),
+    'https://openclaw.edsonbarrosojr.com.br/clinica/',
+  );
+  assert.equal(urlDoControle('ws://127.0.0.1:8080/ws'), 'http://127.0.0.1:8080/');
+  assert.equal(urlDoControle('wss://host/clinica/ws?token=x#y'), 'https://host/clinica/');
+});
+
+test('sem gateway configurado não há tela de controle a oferecer', () => {
+  assert.equal(urlDoControle(null), null);
+  assert.equal(urlDoControle(''), null);
+  assert.equal(urlDoControle('nao-e-url'), null);
 });

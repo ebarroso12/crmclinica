@@ -2806,9 +2806,26 @@ function mostrarInstrucaoDeVinculo(instrucao) {
   const linhas = [
     criarElemento('p', { html: `<b>${escapar(instrucao.titulo)}</b>` }),
     criarElemento('p', { texto: instrucao.antes }),
-    criarElemento('pre', { texto: instrucao.comandos.join('\n') }),
-    criarElemento('p', { texto: instrucao.depois, classe: 'nota' }),
   ];
+
+  // O link primeiro: é o caminho de quem está na clínica, num navegador. O
+  // comando de terminal só aparece quando existe, e depois — instrução que a
+  // pessoa não consegue seguir, posta antes da que ela consegue, é ruído.
+  if (instrucao.url) {
+    const link = criarElemento('a', { texto: 'Abrir o OpenClaw Control', classe: 'botao-link' });
+    link.href = instrucao.url;
+    link.target = '_blank';
+    // Sem isto, a página aberta ganha `window.opener` e pode redirecionar esta.
+    link.rel = 'noopener noreferrer';
+    linhas.push(link);
+  }
+
+  if (instrucao.comandos?.length) {
+    linhas.push(criarElemento('p', { texto: 'Ou, com acesso ao servidor:', classe: 'nota' }));
+    linhas.push(criarElemento('pre', { texto: instrucao.comandos.join('\n') }));
+  }
+
+  linhas.push(criarElemento('p', { texto: instrucao.depois, classe: 'nota' }));
 
   bloco.replaceChildren(...linhas);
   bloco.hidden = false;

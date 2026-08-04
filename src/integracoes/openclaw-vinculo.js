@@ -8,15 +8,24 @@ const {
 //
 // ----------------------------------------------------------- o que isto NÃO faz
 //
-// Não vincula. A tentativa anterior partia de que o gateway expunha a vinculação
-// por RPC — `wizard.start` abre, `wizard.next` avança, um dos passos traz o QR —
-// e isso não se confirmou: o `wizard.*` é o assistente de configuração geral do
-// gateway, não o do WhatsApp, e `channels.login` só existe no CLI. O resultado
-// era um botão que girava sem entregar.
+// Não vincula — e isto foi **medido** contra o gateway 2026.7.1-2, sondando com
+// os escopos de administração, não suposto:
 //
-// Quem vincula é o comando `vincular-whatsapp`, no servidor. Este módulo apenas
-// **lê**: diz qual telefone está conectado, e devolve o QR se algum dia o gateway
-// passar a publicá-lo em `wizard.status`.
+//   • a lista de métodos vem no `hello`, e não há `channels.login`, `.link`,
+//     `.pair` nem `.qr` — o gateway responde "unknown method" a todos;
+//   • `channels.start` devolve `started: false` enquanto `linked` é falso, e
+//     nenhum evento de QR sai depois (só `health` e `tick`);
+//   • o esquema de `channels.whatsapp` não tem campo algum de vínculo;
+//   • `wizard.*` é o assistente de configuração geral e trava numa nota com
+//     `executor: "client"` — espera ser executado pela interface do OpenClaw,
+//     não por RPC. Foi essa a pista que explicou todo o resto.
+//
+// Quem vincula é a interface **OpenClaw Control**, servida pela própria
+// instância (ver `urlDoControle`): o QR aparece lá, num navegador, sem terminal.
+// O comando `vincular-whatsapp` faz o mesmo, e serve a quem já tem SSH.
+//
+// Este módulo apenas **lê**: diz qual telefone está conectado, e devolve o QR se
+// algum dia o gateway passar a publicá-lo.
 //
 // ------------------------------------------------------- por que só leitura
 //
@@ -52,6 +61,29 @@ const FALHAS_DE_TRANSPORTE = new Set([
   'gateway_desconectado',
   'gateway_indisponivel',
 ]);
+
+/**
+ * O endereço da interface de controle do OpenClaw, derivado do gateway.
+ *
+ * `wss://host/clinica/ws` → `https://host/clinica/`. Derivar em vez de pedir
+ * mais uma variável: as duas apontam para a mesma instância por definição, e
+ * duas variáveis que precisam concordar são duas variáveis que um dia discordam.
+ *
+ * É por essa tela que o telefone é vinculado — ver o cabeçalho deste arquivo.
+ */
+function urlDoControle(urlDoGateway) {
+  if (!urlDoGateway) return null;
+  try {
+    const url = new URL(urlDoGateway);
+    url.protocol = url.protocol === 'ws:' ? 'http:' : 'https:';
+    url.pathname = url.pathname.replace(/ws\/?$/, '');
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 /** Acha o QR na resposta do wizard, sem depender de um caminho fixo. */
 function extrairQr(passo) {
@@ -171,4 +203,6 @@ function criarVinculoDeCanal(configuracao = {}, dependencias = {}) {
   };
 }
 
-module.exports = { criarVinculoDeCanal, extrairQr, FALHAS_DE_TRANSPORTE };
+module.exports = {
+  criarVinculoDeCanal, extrairQr, urlDoControle, FALHAS_DE_TRANSPORTE,
+};

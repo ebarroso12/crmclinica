@@ -3,6 +3,7 @@
 const { ErroDeContrato } = require('../contratos/erros');
 const { exigirPermissao } = require('../seguranca/rbac');
 const { CATEGORIAS } = require('../dominio/serena');
+const { urlDoControle } = require('../integracoes/openclaw-vinculo');
 
 // API da Serena: estado, interruptor, prompt versionado e regras.
 //
@@ -37,13 +38,19 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
    */
   function instrucaoDeVinculo() {
     const host = configuracao.openclaw.hostDeAdministracao;
-    if (!host) return null;
+    const controle = urlDoControle(configuracao.openclaw.canalClinica?.url);
+    if (!host && !controle) return null;
 
     return {
-      titulo: 'A vinculação é feita no servidor.',
-      antes: 'No celular da clínica, abra WhatsApp → Aparelhos conectados → Conectar aparelho. Depois rode:',
-      comandos: [`ssh ${host}`, 'vincular-whatsapp'],
-      depois: 'O código aparece no terminal e se renova sozinho enquanto ninguém escaneia.',
+      titulo: 'A vinculação é feita na tela do OpenClaw.',
+      antes: 'No celular da clínica, abra WhatsApp → Aparelhos conectados → Conectar aparelho. Depois abra:',
+      // O link é o caminho de quem está na clínica: é um navegador, não um
+      // terminal. O comando fica como segunda opção, para quem já tem SSH — e
+      // some quando `OPENCLAW_SSH_HOST` não está configurado, porque instrução
+      // que ninguém consegue seguir é ruído.
+      url: controle,
+      comandos: host ? [`ssh ${host}`, 'vincular-whatsapp'] : [],
+      depois: 'O código aparece lá e se renova sozinho enquanto ninguém escaneia. Ao terminar, o estado acima se atualiza.',
     };
   }
 

@@ -1365,3 +1365,20 @@ button.perigo:hover { background: #fecaca; }
   color: #5b7183;
   font-size: 0.85rem;
 }
+
+
+
+/* Link que se comporta como botão, dentro da instrução de vinculação. */
+.instrucao-vinculo .botao-link {
+  display: inline-block;
+  margin: 4px 0 8px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  background: var(--primaria, #2563eb);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.instrucao-vinculo .botao-link:hover { filter: brightness(1.08); }
