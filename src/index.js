@@ -91,7 +91,7 @@ function iniciar() {
   }
 
   const limitador = criarLimitador({ repositorio });
-  const servidor = criarServidor({ configuracao, repositorio, limitador });
+  const servidor = criarServidor({ configuracao, repositorio, pool, limitador });
 
   // Tentativa fora de qualquer janela não limita nada, e guardá-la para sempre
   // transformaria a tabela num registro de quem tentou entrar e quando.

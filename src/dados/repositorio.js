@@ -960,6 +960,65 @@ function criarRepositorio(pool) {
      * separadamente abriria janela para uma contar dias que a outra não conta —
      * uma taxa calculada sobre dois períodos diferentes é pior que nenhuma.
      */
+    /**
+     * Saúde da fila de lembretes, para o centro operacional.
+     *
+     * Três contagens que denunciam falhas diferentes: preso é worker que morreu
+     * no meio do lote, falhado é entrega que esgotou as tentativas, e atrasado é
+     * fila que parou de ser processada — o sintoma mais direto de worker fora do
+     * ar, e o único que ninguém percebe até um paciente não receber o lembrete.
+     */
+    async resumirFilaDeLembretes() {
+      const { rows } = await consultar(
+        `SELECT
+           count(*) FILTER (WHERE estado = 'processando'
+                              AND processando_desde < now() - interval '10 minutes') AS presos,
+           count(*) FILTER (WHERE estado = 'falhou')                                  AS falhados,
+           count(*) FILTER (WHERE estado = 'pendente' AND agendar_para < now() - interval '15 minutes') AS atrasados,
+           count(*) FILTER (WHERE estado = 'pendente')                                AS pendentes
+         FROM lembretes`,
+      );
+
+      const linha = rows[0] ?? {};
+      return {
+        presos: Number(linha.presos ?? 0),
+        falhados: Number(linha.falhados ?? 0),
+        atrasados: Number(linha.atrasados ?? 0),
+        pendentes: Number(linha.pendentes ?? 0),
+      };
+    },
+
+    /**
+     * Verifica objetos do banco que as migrations deveriam ter criado.
+     *
+     * Olha o objeto, não o registro no ledger: `supabase_migrations` só recebe
+     * o que passa pelo CLI, e boa parte das migrations aqui foi aplicada por
+     * outros caminhos. Perguntar "a coluna existe?" responde a pergunta que
+     * importa — se o código publicado vai encontrar o que espera.
+     */
+    async conferirObjetosEsperados(objetos = []) {
+      if (!objetos.length) return [];
+
+      const faltando = [];
+      for (const alvo of objetos) {
+        const { rows } = alvo.coluna
+          ? await consultar(
+            `SELECT 1 FROM information_schema.columns
+              WHERE table_name = $1 AND column_name = $2 LIMIT 1`,
+            [alvo.tabela, alvo.coluna],
+          )
+          : await consultar(
+            `SELECT 1 FROM information_schema.tables WHERE table_name = $1 LIMIT 1`,
+            [alvo.tabela],
+          );
+
+        if (rows.length === 0) {
+          faltando.push(alvo.coluna ? `${alvo.tabela}.${alvo.coluna}` : alvo.tabela);
+        }
+      }
+      return faltando;
+    },
+
     async medirCanalDeLembretes({ dias = 30 } = {}) {
       const { rows } = await consultar(
         `WITH periodo AS (SELECT (now() - ($1 || ' days')::interval) AS desde)

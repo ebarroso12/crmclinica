@@ -33,6 +33,8 @@ const { criarConversaDeTeste } = require('../integracoes/openclaw-conversa');
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
+const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
+const { criarPoliticaDoCanal } = require('../integracoes/openclaw-politica');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -149,6 +151,20 @@ function criarAplicacao(dependencias = {}) {
   // WhatsApp. É o que permite validar o prompt antes de expor ao paciente.
   const conversaDeTeste = dependencias.conversaDeTeste
     || (configuracao.openclaw.canalClinica.url ? criarConversaDeTeste(configuracao.openclaw.canalClinica) : null);
+
+  // Centro operacional: a varredura que pergunta a todas as peças de uma vez se
+  // ainda estão inteiras. Usa a mesma política do canal que o worker usa para
+  // sincronizar — é assim que ela detecta painel e WhatsApp discordando.
+  const politicaDoCanal = dependencias.politicaDoCanal
+    || (configuracao.openclaw.canalClinica.url ? criarPoliticaDoCanal(configuracao.openclaw.canalClinica) : null);
+
+  const rotasDeDiagnostico = criarRotasDeDiagnostico({
+    repositorio,
+    serena: servicoDaSerena,
+    pool: dependencias.pool ?? null,
+    vinculo: vinculoDoCanal,
+    politica: politicaDoCanal,
+  });
 
   const rotasDaSerena = criarRotasDaSerena({
     serena: servicoDaSerena,
@@ -329,6 +345,7 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/regras': () => rotasDaSerena.listarRegras(usuario, url.searchParams),
       'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
       'GET /api/serena/canal/risco': () => rotasDaSerena.riscoDoCanal(usuario),
+      'GET /api/diagnostico': () => rotasDeDiagnostico.varrer(usuario),
       'GET /api/serena/teste': () => rotasDaSerena.lerTeste(usuario, url),
       'POST /api/serena/teste': () => rotasDaSerena.abrirTeste(usuario, corpo),
       'POST /api/serena/teste/mensagem': () => rotasDaSerena.enviarNoTeste(usuario, corpo),

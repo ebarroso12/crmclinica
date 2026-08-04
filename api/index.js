@@ -38,12 +38,13 @@ function montarRepositorio() {
   // `obterPool` guarda o pool no módulo. Numa função serverless o processo é
   // reaproveitado entre invocações, então isso evita abrir um pool novo — e
   // esgotar o limite de conexões do banco — a cada requisição.
-  return criarRepositorio(obterPool(configuracao.banco));
+  const pool = obterPool(configuracao.banco);
+  return { repositorio: criarRepositorio(pool), pool };
 }
 
-const repositorio = montarRepositorio();
+const banco = montarRepositorio();
 
 module.exports = criarAplicacao({
   configuracao,
-  ...(repositorio ? { repositorio } : {}),
+  ...(banco ? { repositorio: banco.repositorio, pool: banco.pool } : {}),
 });

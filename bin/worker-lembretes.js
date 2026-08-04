@@ -35,6 +35,12 @@ const { criarServicoDeLembretes } = require('../src/dominio/lembretes-servico');
 const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
 const { criarSincronizadorDaSerena } = require('../src/dominio/sincronia-serena');
 const { criarPoliticaDoCanal } = require('../src/integracoes/openclaw-politica');
+const { executarDiagnostico } = require('../src/dominio/diagnostico');
+const { sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena } = require('../src/dominio/diagnostico-sondas');
+const { decidirAtendimento } = require('../src/dominio/sincronia-serena');
+const { criarVinculoDeCanal } = require('../src/integracoes/openclaw-vinculo');
+const { conferirConexao } = require('../src/dados/conferir-conexao');
+const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 
 function lerArgumento(nome, padrao = null) {
@@ -131,6 +137,43 @@ async function main() {
     if (resultado?.erro) console.error(`[serena] sincronia falhou: ${resultado.erro}`);
   }
 
+
+  // Varredura semanal. Roda no worker porque é o único processo que fica de pé
+  // o tempo todo — a Vercel dorme entre requisições e nunca acordaria sozinha
+  // num domingo de madrugada para conferir se o sistema ainda está inteiro.
+  //
+  // Ela relata, não conserta. Um reparo automático decide sozinho que entendeu
+  // o problema, e quando erra, erra sem ninguém olhando, sobre dado de paciente.
+  const UMA_SEMANA = 7 * 24 * 60 * 60 * 1000;
+
+  async function varreduraSemanal() {
+    try {
+      const laudo = await executarDiagnostico({
+        banco: sondaDoBanco(repositorio, OBJETOS_ESPERADOS, () => conferirConexao(pool)),
+        fila: sondaDaFila(repositorio),
+        canal: sondaDoCanal(configuracao.openclaw.canalClinica?.url
+          ? criarVinculoDeCanal(configuracao.openclaw.canalClinica) : null),
+        serena: sondaDaSerena(servicoDaSerena, sincronia, decidirAtendimento),
+      });
+
+      console.log('[diagnostico]', laudo.nivel + ':', laudo.resumo);
+      for (const item of laudo.achados) {
+        console.log(`[diagnostico]   [${item.nivel}] ${item.area}: ${item.titulo}`);
+      }
+
+      // Vai para a auditoria: um relatório que só existe no log do systemd some
+      // na primeira rotação, e ninguém compara a semana passada com esta.
+      await repositorio.registrarAuditoria({
+        entidade: 'sistema', entidadeId: 1, acao: 'diagnostico_semanal',
+        detalhe: { nivel: laudo.nivel, resumo: laudo.resumo, achados: laudo.achados },
+      }).catch(() => {});
+    } catch (erro) {
+      // A varredura falhando não pode derrubar o worker: a fila de lembretes
+      // que já estava pronta precisa continuar saindo.
+      console.error(`[diagnostico] varredura falhou: ${erro.message}`);
+    }
+  }
+
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
     // ciclos se sobreporem dentro do mesmo processo.
@@ -168,6 +211,11 @@ async function main() {
   }
 
   const cicloCompleto = async () => { await sincronizarSerena(); await umLote(); };
+
+  const relogioDaVarredura = setInterval(varreduraSemanal, UMA_SEMANA);
+  relogioDaVarredura.unref();
+  // Uma agora, para o primeiro laudo não esperar sete dias.
+  varreduraSemanal();
 
   const relogio = setInterval(cicloCompleto, intervaloMs);
   await cicloCompleto();

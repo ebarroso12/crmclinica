@@ -2300,6 +2300,10 @@ async function carregarSerena() {
     // de quem publica a versão.
     const cartaoDeTeste = seletor('#serena-teste-card');
     if (cartaoDeTeste) cartaoDeTeste.hidden = !dados.pode_gerenciar;
+    // A varredura mostra o estado interno da infraestrutura — nome do usuário do
+    // banco, serviços parados. Quem atende paciente não precisa disso.
+    const cartaoDeDiagnostico = seletor('#diagnostico-card');
+    if (cartaoDeDiagnostico) cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
     desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
       const bloco = seletor(alvo);
@@ -3240,3 +3244,71 @@ seletor('#teste-modelo')?.addEventListener('change', () => {
   desenharConversaDeTeste([]);
   informar('Conversa reiniciada para testar o modelo escolhido.');
 });
+
+// ------------------------------------------------------------ centro operacional
+//
+// Sete peças falham em silêncio — banco, RLS, esquema, fila, canal, automação e
+// worker — e nenhuma avisa quando cai. A varredura pergunta a todas de uma vez.
+//
+// Nada é consertado sozinho: cada achado traz o que fazer, e aplicar é decisão
+// de quem administra. Reparo automático em produção decide sozinho que entendeu
+// o problema, e quando erra, erra de madrugada, sobre dado de paciente.
+
+const CORES_DO_NIVEL = Object.freeze({
+  critico: 'grave',
+  falha: 'grave',
+  aviso: 'moderado',
+  ok: 'moderado',
+});
+
+async function varrerSistema() {
+  const botao = seletor('#diagnostico-verificar');
+  const resumo = seletor('#diagnostico-resumo');
+  const area = seletor('#diagnostico-achados');
+  if (!area) return;
+
+  if (botao) { botao.disabled = true; botao.textContent = 'Verificando…'; }
+  if (resumo) resumo.textContent = 'consultando banco, esquema, fila, canal e automação…';
+
+  try {
+    const laudo = await pedirJson('/api/diagnostico');
+
+    if (resumo) resumo.textContent = laudo.resumo;
+
+    if (!laudo.achados.length) {
+      area.innerHTML = '<p class="vazio">Nenhum problema encontrado.</p>';
+      return;
+    }
+
+    area.replaceChildren(...laudo.achados.map((item) => {
+      const bloco = document.createElement('div');
+      bloco.className = `aviso-risco ${CORES_DO_NIVEL[item.nivel] ?? 'moderado'}`;
+
+      const titulo = document.createElement('p');
+      titulo.className = 'titulo-risco';
+      titulo.innerHTML = `<b>${escapar(item.area)}: ${escapar(item.titulo)}</b>`;
+      bloco.appendChild(titulo);
+
+      if (item.detalhe) {
+        const detalhe = document.createElement('p');
+        detalhe.className = 'nota';
+        detalhe.textContent = item.detalhe;
+        bloco.appendChild(detalhe);
+      }
+
+      if (item.reparo) {
+        const reparo = document.createElement('p');
+        reparo.textContent = item.reparo;
+        bloco.appendChild(reparo);
+      }
+
+      return bloco;
+    }));
+  } catch (erro) {
+    if (resumo) resumo.textContent = `não foi possível verificar: ${erro.message}`;
+  } finally {
+    if (botao) { botao.disabled = false; botao.textContent = 'Verificar agora'; }
+  }
+}
+
+seletor('#diagnostico-verificar')?.addEventListener('click', varrerSistema);
