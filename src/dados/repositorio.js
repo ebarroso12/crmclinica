@@ -953,6 +953,42 @@ function criarRepositorio(pool) {
       return this.obterUsuarioPorId(id);
     },
 
+    /**
+     * Números do canal nos últimos `dias`, para julgar risco de bloqueio.
+     *
+     * Uma consulta só: são quatro medidas do mesmo período, e buscá-las
+     * separadamente abriria janela para uma contar dias que a outra não conta —
+     * uma taxa calculada sobre dois períodos diferentes é pior que nenhuma.
+     */
+    async medirCanalDeLembretes({ dias = 30 } = {}) {
+      const { rows } = await consultar(
+        `WITH periodo AS (SELECT (now() - ($1 || ' days')::interval) AS desde)
+         SELECT
+           (SELECT count(*) FROM lembretes, periodo
+              WHERE estado = 'enviado' AND enviado_em >= periodo.desde)         AS enviados,
+           (SELECT count(*) FROM lembretes, periodo
+              WHERE estado = 'falhou' AND atualizado_em >= periodo.desde)       AS falhas,
+           (SELECT count(DISTINCT contato_id) FROM lembretes, periodo
+              WHERE estado = 'enviado' AND enviado_em >= periodo.desde)         AS contatos,
+           (SELECT count(*) FROM contatos, periodo
+              WHERE lembretes_optout = true
+                AND lembretes_optout_em >= periodo.desde)                       AS optouts`,
+        [String(dias)],
+      );
+
+      const linha = rows[0] ?? {};
+      const enviados = Number(linha.enviados ?? 0);
+
+      return {
+        dias,
+        enviados,
+        falhas: Number(linha.falhas ?? 0),
+        contatos: Number(linha.contatos ?? 0),
+        optouts: Number(linha.optouts ?? 0),
+        enviadosPorDia: dias > 0 ? enviados / dias : 0,
+      };
+    },
+
     async listarUsuarios({ situacao = null } = {}) {
       const valores = [];
       let filtro = '';

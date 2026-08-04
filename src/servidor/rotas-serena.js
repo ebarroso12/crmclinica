@@ -3,6 +3,7 @@
 const { ErroDeContrato } = require('../contratos/erros');
 const { exigirPermissao } = require('../seguranca/rbac');
 const { CATEGORIAS, dentroDoHorario } = require('../dominio/serena');
+const { avaliarRiscoDoCanal } = require('../dominio/risco-canal');
 const { urlDoControle } = require('../integracoes/openclaw-vinculo');
 
 // API da Serena: estado, interruptor, prompt versionado e regras.
@@ -189,6 +190,35 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
         // Quem só tem `serena:ler` vê tudo e não muda nada; a tela usa isto para
         // esconder os botões em vez de deixar o usuário descobrir com um 403.
         pode_gerenciar: usuario?.papel === 'admin',
+      };
+    },
+
+    /**
+     * GET /api/serena/canal/risco — vale a pena continuar no WhatsApp por QR?
+     *
+     * O número atende por sessão pareada, não pela API oficial, e o WhatsApp
+     * derruba quem se comporta como disparador. Trocar de tecnologia tem custo
+     * alto — tira o número do celular da recepção —, então a troca só se
+     * justifica quando os números mostram que o risco virou real. Esta rota é
+     * quem mede, para a decisão não depender de palpite.
+     */
+    async riscoDoCanal(usuario) {
+      exigirPermissao(usuario, 'serena:ler');
+
+      const medidas = await serena.medirCanal({ dias: 30 });
+
+      // Quedas da sessão ainda não são registradas. Zero aqui é honesto — os
+      // outros três sinais valem por si, e inventar um número faria a avaliação
+      // parecer mais completa do que é.
+      return {
+        periodo_dias: medidas.dias,
+        ...avaliarRiscoDoCanal({ ...medidas, quedasEm24h: 0 }),
+        volumes: {
+          enviados: medidas.enviados,
+          falhas: medidas.falhas,
+          contatos: medidas.contatos,
+          optouts: medidas.optouts,
+        },
       };
     },
 

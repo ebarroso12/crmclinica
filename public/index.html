@@ -546,6 +546,15 @@
             — troca de aparelho, celular desligado por dias. Este cartão mostra se ela está de pé;
             reconectar é um comando no servidor, e o botão explica qual.
           </p>
+
+          <!-- Vigia do risco de bloqueio. Fica escondido enquanto o uso é o de
+               uma clínica: um aviso permanente vira paisagem, e quando o risco
+               aparecer de verdade ninguém vai reparar que ele mudou. -->
+          <div class="aviso-risco" id="canal-risco" hidden>
+            <p class="titulo-risco"><span id="risco-selo"></span> <b id="risco-frase"></b></p>
+            <ul id="risco-motivos"></ul>
+            <p class="nota" id="risco-recomendacao"></p>
+          </div>
         </article>
         <!-- Interruptor global: só o admin vê os botões. -->
         <article class="card estreito" id="serena-controle" hidden>

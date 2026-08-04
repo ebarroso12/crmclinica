@@ -2858,9 +2858,61 @@ async function desenharEstadoDoCanal() {
       const botao = seletor('#canal-conectar');
       if (botao) botao.textContent = canal.vinculado ? 'Reconectar' : 'Conectar WhatsApp';
     }
+
+    // Sem await: é um aviso, não um pré-requisito para mostrar o estado.
+    desenharRiscoDoCanal().catch(() => {});
   } catch (erro) {
     descricao.textContent = `não foi possível verificar: ${erro.message}`;
   }
+}
+
+/**
+ * Aviso de risco de bloqueio do número.
+ *
+ * O WhatsApp derruba números que se comportam como disparador de massa, e o
+ * nosso atende por sessão pareada — o mesmo mecanismo do WhatsApp Web, sem a
+ * proteção contratual da API oficial. Migrar tem custo alto (tira o número do
+ * celular da recepção), então este bloco só aparece quando os números mostram
+ * que a hora chegou. Enquanto o uso é o de uma clínica, fica calado: aviso
+ * permanente vira paisagem, e aí ninguém repara quando ele muda.
+ */
+async function desenharRiscoDoCanal() {
+  const bloco = seletor('#canal-risco');
+  if (!bloco) return;
+
+  const risco = await pedirJson('/api/serena/canal/risco');
+
+  if (risco.semDados || risco.nivel === 'tranquilo') {
+    bloco.hidden = true;
+    return;
+  }
+
+  const ehRisco = risco.nivel === 'risco';
+  bloco.className = `aviso-risco ${ehRisco ? 'grave' : 'moderado'}`;
+
+  const selo = seletor('#risco-selo');
+  if (selo) selo.textContent = ehRisco ? '⛔' : '⚠️';
+
+  const frase = seletor('#risco-frase');
+  if (frase) {
+    frase.textContent = ehRisco
+      ? 'O número corre risco real de ser bloqueado'
+      : 'O uso começou a sair do padrão de uma clínica';
+  }
+
+  const lista = seletor('#risco-motivos');
+  if (lista) {
+    lista.replaceChildren(...risco.motivos.map((motivo) => {
+      const item = document.createElement('li');
+      item.textContent = `${motivo.texto} — ${motivo.porque}`;
+      return item;
+    }));
+  }
+
+  const recomendacao = seletor('#risco-recomendacao');
+  if (recomendacao) recomendacao.textContent = risco.recomendacao;
+
+  bloco.hidden = false;
 }
 
 async function atualizarQr() {

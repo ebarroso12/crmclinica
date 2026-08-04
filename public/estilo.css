@@ -1409,3 +1409,26 @@ button.perigo:hover { background: #fecaca; }
   width: auto;
   padding: 6px 8px;
 }
+
+/* Aviso de risco do canal. Só aparece quando os números pedem — por isso pode
+   ser chamativo: quando estiver visível, é porque merece atenção. */
+.aviso-risco {
+  margin-top: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-radius: 10px;
+  border-left: 4px solid;
+  font-size: 0.9rem;
+}
+
+.aviso-risco.moderado { background: #fffbeb; border-color: #d97706; color: #713f12; }
+.aviso-risco.grave    { background: #fef2f2; border-color: #dc2626; color: #7f1d1d; }
+
+.aviso-risco .titulo-risco { margin: 0 0 0.5rem; }
+
+.aviso-risco ul {
+  margin: 0.4rem 0 0.6rem;
+  padding-left: 1.2rem;
+  line-height: 1.5;
+}
+
+.aviso-risco .nota { color: inherit; opacity: 0.85; margin: 0; }

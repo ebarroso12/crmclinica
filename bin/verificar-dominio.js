@@ -160,13 +160,26 @@ async function main() {
     return;
   }
 
+  // O nome resolvendo já responde a pergunta do registro. Repetir "falta o
+  // registro DNS" aqui mandaria mexer de novo no painel do provedor — refazendo
+  // algo que está certo — quando o que falta é a Vercel emitir o certificado,
+  // que leva alguns minutos e não depende de ninguém.
+  const [nomeResolve] = resultado.passos[0] ?? [false];
+  if (nomeResolve) {
+    console.log(`\n${amarelo('O DNS está certo. Falta o certificado HTTPS, que a Vercel emite sozinha.')}\n`);
+    console.log('  Costuma levar de 1 a 10 minutos depois que o nome passa a resolver.');
+    console.log(`  Para acompanhar: npm run verificar-dominio -- --esperar\n`);
+    process.exitCode = 1;
+    return;
+  }
+
   console.log(`\n${amarelo('Falta o registro DNS. No painel do provedor:')}\n`);
   console.log('  Tipo:  A');
   console.log(`  Nome:  ${DOMINIO.split('.')[0]}`);
   console.log('  Valor: 76.76.21.21');
   console.log('  TTL:   3600 (ou o padrão)\n');
   console.log('  Alternativa equivalente, e mais durável se a Vercel trocar de IP:');
-  console.log('  Tipo: CNAME · Nome: crmclinica · Valor: cname.vercel-dns.com\n');
+  console.log(`  Tipo: CNAME · Nome: ${DOMINIO.split('.')[0]} · Valor: cname.vercel-dns.com\n`);
   process.exitCode = 1;
 }
 

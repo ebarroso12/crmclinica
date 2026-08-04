@@ -220,6 +220,13 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
     return prompt;
   }
 
+  // ---------------------------------------------------------------- canal
+
+  /** Números do canal para a avaliação de risco. Leitura pura. */
+  async function medirCanal({ dias = 30 } = {}) {
+    return repositorio.medirCanalDeLembretes({ dias });
+  }
+
   // ---------------------------------------------------------------- regras
 
   async function listarRegras({ apenasAtivas = false } = {}) {
@@ -301,6 +308,7 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
     criarPrompt,
     editarPrompt,
     publicarPrompt,
+    medirCanal,
     listarRegras,
     criarRegra,
     editarRegra,
