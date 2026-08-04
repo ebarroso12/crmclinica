@@ -1354,6 +1354,56 @@ function criarRepositorio(pool) {
       return rowCount;
     },
 
+    // --------------------------------------------------------- Serena — voz
+
+    async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {
+      const { rows } = await consultar(`
+        INSERT INTO serena_voz_sessoes
+          (id, usuario_id, conversa_id, perfil, consentimento_em, expira_em)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [id, usuarioId, conversaId, perfil, consentimentoEm, expiraEm]);
+      return rows[0];
+    },
+
+    async obterSessaoDeVoz(id) {
+      const { rows } = await consultar('SELECT * FROM serena_voz_sessoes WHERE id = $1', [id]);
+      return rows[0] ?? null;
+    },
+
+    async encerrarSessaoDeVoz(id) {
+      const { rows } = await consultar(`
+        UPDATE serena_voz_sessoes
+           SET estado = CASE WHEN estado = 'ativa' THEN 'encerrada' ELSE estado END,
+               encerrado_em = CASE WHEN estado = 'ativa' THEN now() ELSE encerrado_em END
+         WHERE id = $1 RETURNING *
+      `, [id]);
+      return rows[0] ?? null;
+    },
+
+    async listarTurnosDeVoz(sessaoId) {
+      const { rows } = await consultar(`
+        SELECT * FROM serena_voz_turnos WHERE sessao_id = $1
+        ORDER BY ocorrido_em, id
+      `, [sessaoId]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async registrarTurnoDeVoz({ chaveIdempotencia, sessaoId, papel, transcricao, ocorridoEm }) {
+      const { rows } = await consultar(`
+        INSERT INTO serena_voz_turnos
+          (chave_idempotencia, sessao_id, papel, transcricao, ocorrido_em)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (chave_idempotencia) DO NOTHING
+        RETURNING *
+      `, [chaveIdempotencia, sessaoId, papel, transcricao, ocorridoEm]);
+      if (rows[0]) return { turno: { ...rows[0], id: Number(rows[0].id) }, criado: true };
+      const { rows: existentes } = await consultar(
+        'SELECT * FROM serena_voz_turnos WHERE chave_idempotencia = $1', [chaveIdempotencia],
+      );
+      return { turno: { ...existentes[0], id: Number(existentes[0].id) }, criado: false };
+    },
+
     // ---------------------------------------------------------------- lembretes
     //
     // A fila que sustenta os lembretes de 24h e 2h. Duas operações carregam as

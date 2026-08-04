@@ -140,6 +140,18 @@ function carregarConfiguracao(ambiente = process.env) {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),
     },
+    // Voz roda em processo separado do CRM. A flag nasce desligada e a
+    // configuração é tudo-ou-nada: nunca cai para um serviço pago em silêncio.
+    serenaVoz: {
+      ativa: texto(ambiente.SERENA_VOZ_ATIVA).toLowerCase() === 'sim',
+      gatewayUrl: urlWebSocketValida(ambiente.SERENA_VOZ_GATEWAY_URL),
+      segredoJwt: texto(ambiente.SERENA_VOZ_JWT_SECRET),
+      segredoWebhook: texto(ambiente.SERENA_VOZ_WEBHOOK_SECRET),
+      tokenTtlSegundos: Math.min(inteiro(ambiente.SERENA_VOZ_TOKEN_TTL_SEGUNDOS, 60), 300),
+      duracaoMaximaSegundos: Math.min(inteiro(ambiente.SERENA_VOZ_DURACAO_MAX_SEGUNDOS, 900), 3600),
+      perfil: texto(ambiente.SERENA_VOZ_PERFIL) || 'local-livre',
+      voz: texto(ambiente.SERENA_VOZ_VOZ) || 'serena',
+    },
     autenticacao: {
       // Fora de produção, um segredo efêmero permite subir sem configurar nada;
       // os tokens morrem no reinício, que é o comportamento certo em desenvolvimento.
@@ -194,6 +206,18 @@ function validarConfiguracao(configuracao) {
   }
   if (configuracao.serena.baseUrl && configuracao.producao && !configuracao.serena.baseUrl.startsWith('https://')) {
     problemas.push('SERENA_BASE_URL deve usar HTTPS em produção');
+  }
+  if (configuracao.serenaVoz.ativa) {
+    if (!configuracao.serenaVoz.gatewayUrl) problemas.push('SERENA_VOZ_ATIVA=sim exige SERENA_VOZ_GATEWAY_URL');
+    if (configuracao.producao && !configuracao.serenaVoz.gatewayUrl.startsWith('wss://')) {
+      problemas.push('SERENA_VOZ_GATEWAY_URL deve usar WSS em produção');
+    }
+    if (configuracao.serenaVoz.segredoJwt.length < 32) {
+      problemas.push('SERENA_VOZ_JWT_SECRET deve ter ao menos 32 caracteres');
+    }
+    if (configuracao.serenaVoz.segredoWebhook.length < 32) {
+      problemas.push('SERENA_VOZ_WEBHOOK_SECRET deve ter ao menos 32 caracteres');
+    }
   }
   if (configuracao.producao && !configuracao.openclaw.segredoWebhook) {
     problemas.push('OPENCLAW_WEBHOOK_SECRET é obrigatório em produção');

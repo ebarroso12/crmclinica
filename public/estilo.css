@@ -1279,6 +1279,30 @@ button.perigo:hover { background: #fecaca; }
 .marcador { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--apoio); }
 .marcador input { width: auto; }
 
+/* ------------------------------------------------ laboratório de voz */
+.voz-card { border-left: 4px solid var(--ambar); }
+.aviso-voz {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff7df;
+  color: #6f4a00;
+  line-height: 1.5;
+}
+.consentimento-voz { margin: 14px 0; align-items: flex-start; }
+.transcricao-voz {
+  margin: 16px 0 0;
+  padding: 12px;
+  min-height: 80px;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  list-style: none;
+}
+.transcricao-voz li { margin: 0 0 10px; line-height: 1.45; }
+.transcricao-voz li:last-child { margin-bottom: 0; }
+.transcricao-voz strong { color: var(--texto); }
+
 
 /* ---------------------------------------------------------------- modal do QR */
 

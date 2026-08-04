@@ -30,6 +30,7 @@ const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes
 const { criarRotasDaSerena } = require('./rotas-serena');
 const { criarVinculoDeCanal } = require('../integracoes/openclaw-vinculo');
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
+const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
@@ -42,6 +43,7 @@ const ARQUIVOS_PUBLICOS = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/estilo.css', ['estilo.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/serena-voz.js', ['serena-voz.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 
@@ -53,7 +55,7 @@ const CABECALHOS_SEGURANCA = Object.freeze({
   // A interface só carrega recursos do próprio domínio: sem CDN, sem script inline, sem iframe.
   'content-security-policy':
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    "connect-src 'self' ws: wss:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 });
 
 function responder(res, status, corpo, tipo = 'application/json; charset=utf-8', extras = {}) {
@@ -105,6 +107,9 @@ function criarAplicacao(dependencias = {}) {
   // A Serena vem antes do atendimento porque o atendimento a consulta antes de
   // responder: o interruptor global tem precedência sobre a regra por conversa.
   const servicoDaSerena = dependencias.servicoDaSerena || criarServicoDaSerena({ repositorio });
+  const servicoDeVoz = dependencias.servicoDeVoz || criarServicoDeVoz({
+    repositorio, serena: servicoDaSerena, configuracao,
+  });
 
   const atendimento = dependencias.atendimento
     || criarAtendimento({
@@ -288,6 +293,25 @@ function criarAplicacao(dependencias = {}) {
   async function tratarRotasDaSerena(req, res, rota, metodo, url, usuario) {
     if (!rota.startsWith('/api/serena')) return false;
     const semCache = { 'cache-control': 'no-store' };
+
+    if (rota === '/api/serena/voz/status' && metodo === 'GET') {
+      responderJson(res, 200, await servicoDeVoz.status(usuario), semCache);
+      return true;
+    }
+    if (rota === '/api/serena/voz/sessoes' && metodo === 'POST') {
+      responderJson(res, 201, await servicoDeVoz.criarSessao(usuario, await lerJson(req)), semCache);
+      return true;
+    }
+    const partesDaVoz = rota.split('/').filter(Boolean);
+    if (partesDaVoz.length === 6 && partesDaVoz[2] === 'voz'
+        && partesDaVoz[3] === 'sessoes' && partesDaVoz[5] === 'encerrar') {
+      if (metodo !== 'POST') {
+        responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+        return true;
+      }
+      responderJson(res, 200, await servicoDeVoz.encerrarSessao(usuario, partesDaVoz[4]), semCache);
+      return true;
+    }
 
     const simples = {
       'GET /api/serena': () => rotasDaSerena.painel(usuario),
@@ -736,6 +760,27 @@ function criarAplicacao(dependencias = {}) {
 
       // Identidade lida uma vez por requisição; `null` quando não há token válido.
       const usuario = autenticacao.identificar(req.headers.authorization);
+
+      // O gateway de voz não usa a sessão da interface. O contexto exige o JWT
+      // curto da própria sessão; eventos exigem HMAC sobre o corpo bruto.
+      if (rota === '/api/serena/voz/contexto') {
+        if (metodo !== 'GET') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+          return;
+        }
+        const portador = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1];
+        responderJson(res, 200, await servicoDeVoz.obterContexto(portador), { 'cache-control': 'no-store' });
+        return;
+      }
+      if (rota === '/api/serena/voz/eventos') {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return;
+        }
+        const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
+        responderJson(res, 202, await servicoDeVoz.receberEvento(corpoBruto, req.headers), { 'cache-control': 'no-store' });
+        return;
+      }
 
       if (rota === '/api/resumo') {
         if (metodo !== 'GET') {

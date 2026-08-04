@@ -82,6 +82,13 @@ const ESPERADO = {
       ['serena_regras', 'categoria'], ['contatos', 'excluido_em'],
     ],
   },
+  '012_serena_voz': {
+    tabelas: ['serena_voz_sessoes', 'serena_voz_turnos'],
+    colunas: [
+      ['serena_voz_sessoes', 'consentimento_em'], ['serena_voz_sessoes', 'expira_em'],
+      ['serena_voz_turnos', 'chave_idempotencia'], ['serena_voz_turnos', 'transcricao'],
+    ],
+  },
   '010_lembretes': {
     tabelas: ['lembretes'],
     colunas: [
