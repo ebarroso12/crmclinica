@@ -32,6 +32,9 @@ if (fs.existsSync(CAMINHO_ENV) && typeof process.loadEnvFile === 'function') {
 const os = require('node:os');
 const { carregarConfiguracao } = require('../src/config');
 const { criarServicoDeLembretes } = require('../src/dominio/lembretes-servico');
+const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
+const { criarSincronizadorDaSerena } = require('../src/dominio/sincronia-serena');
+const { criarPoliticaDoCanal } = require('../src/integracoes/openclaw-politica');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 
 function lerArgumento(nome, padrao = null) {
@@ -85,6 +88,17 @@ async function main() {
     maxTentativas: configuracao.lembretes.maxTentativas,
   });
 
+  const servicoDaSerena = criarServicoDaSerena({ repositorio });
+
+  // Sem gateway do canal configurado não há o que sincronizar — e é melhor o
+  // worker rodar a fila sem a sincronia do que não rodar de jeito nenhum.
+  const sincronia = configuracao.openclaw.canalClinica?.url
+    ? criarPoliticaDoCanal(configuracao.openclaw.canalClinica)
+    : null;
+  if (!sincronia) {
+    console.warn('[serena] canal da clínica não configurado: o horário e a pausa não valem no WhatsApp.');
+  }
+
   const worker = identificarWorker();
   const lote = Number(lerArgumento('lote', configuracao.lembretes.lote));
   const intervaloMs = lerArgumento('intervalo')
@@ -99,6 +113,23 @@ async function main() {
 
   let encerrando = false;
   let rodando = false;
+
+  // A Serena do OpenClaw responde ao paciente sem passar por aqui. Sem esta
+  // sincronia, o interruptor, a pausa e a grade de horário do painel seriam
+  // controles que não desligam nada — a tela diria "desligada" e o paciente
+  // continuaria recebendo resposta automática.
+  //
+  // Fica no worker porque a decisão muda sozinha com a hora: às 18h a grade
+  // abre, e ninguém vai estar no painel naquele minuto para aplicar.
+  const sincronizador = sincronia
+    ? criarSincronizadorDaSerena({ serena: servicoDaSerena, politica: sincronia })
+    : null;
+
+  async function sincronizarSerena() {
+    if (!sincronizador) return;
+    const resultado = await sincronizador.sincronizar();
+    if (resultado?.erro) console.error(`[serena] sincronia falhou: ${resultado.erro}`);
+  }
 
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
@@ -136,8 +167,10 @@ async function main() {
     return;
   }
 
-  const relogio = setInterval(umLote, intervaloMs);
-  await umLote();
+  const cicloCompleto = async () => { await sincronizarSerena(); await umLote(); };
+
+  const relogio = setInterval(cicloCompleto, intervaloMs);
+  await cicloCompleto();
 
   const encerrar = async (sinal) => {
     if (encerrando) return;
