@@ -539,9 +539,12 @@
               <button type="button" class="primario" id="canal-conectar">Conectar WhatsApp</button>
             </div>
           </div>
+          <!-- Não prometer o que o painel não faz: a vinculação é um comando no
+               servidor, e este cartão mostra o estado e o caminho para chegar lá. -->
           <p class="nota">
-            É o telefone por onde os pacientes falam com a Serena. Se a sessão cair — troca de
-            aparelho, celular desligado por dias —, reconecte por aqui.
+            É o telefone por onde os pacientes falam com a Serena. A sessão cai de vez em quando
+            — troca de aparelho, celular desligado por dias. Este cartão mostra se ela está de pé;
+            reconectar é um comando no servidor, e o botão explica qual.
           </p>
         </article>
         <!-- Interruptor global: só o admin vê os botões. -->
@@ -907,7 +910,11 @@
   <div class="modal" id="modal-qr" hidden role="dialog" aria-modal="true" aria-labelledby="modal-qr-titulo">
     <div class="modal-caixa">
       <h3 id="modal-qr-titulo">Conectar o WhatsApp da clínica</h3>
-      <ol class="passos">
+      <!-- Passos e nota falam de escanear um código na tela. Quando o QR não vem
+           e entra a instrução do servidor, os dois viram instrução errada: a
+           tela mandaria apontar a câmera para um código que não está ali. O JS
+           os esconde junto. -->
+      <ol class="passos" id="qr-passos">
         <li>Pegue o celular do número da clínica</li>
         <li>Abra <b>WhatsApp → Aparelhos conectados</b></li>
         <li>Toque em <b>Conectar aparelho</b> e aponte para o código</li>

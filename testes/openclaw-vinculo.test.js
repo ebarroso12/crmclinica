@@ -120,14 +120,12 @@ test('gateway inalcançável no status sobe direto, sem virar "sem QR"', async (
   await assert.rejects(() => vinculo.obterQr(), (erro) => erro.codigo === 'gateway_desconectado');
 });
 
-test('cancelar não trata "não havia nada aberto" como erro', async () => {
-  const aberto = criarVinculoDeCanal({}, { cliente: clienteFalso({ 'wizard.cancel': {} }) });
-  assert.deepEqual(await aberto.cancelar(), { cancelado: true });
-
-  const fechado = criarVinculoDeCanal({}, {
-    cliente: clienteFalso({ 'wizard.cancel': new ErroDeGateway('nada aberto', 'gateway_erro') }),
-  });
-  assert.deepEqual(await fechado.cancelar(), { cancelado: false });
+test('não existe cancelar: o painel não abre assistente, e não pode fechar o dos outros', () => {
+  // O único assistente que poderia estar aberto é o do admin rodando
+  // `vincular-whatsapp` no terminal. Um `wizard.cancel` disparado ao fechar a
+  // janela do navegador mataria o QR dele no meio do escaneamento.
+  const vinculo = criarVinculoDeCanal({}, { cliente: clienteFalso() });
+  assert.equal(vinculo.cancelar, undefined);
 });
 
 test('sem URL configurada, falha permanente antes de tentar rede', async () => {

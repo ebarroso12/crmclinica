@@ -256,15 +256,10 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
       }
     },
 
-    /** POST /api/serena/canal/cancelar — fecha a vinculação em andamento. */
-    async cancelarVinculo(usuario) {
-      if (!usuario?.master) {
-        const erro = new Error('apenas o administrador master');
-        erro.status = 403;
-        throw erro;
-      }
-      return vinculo ? vinculo.cancelar() : { cancelado: false };
-    },
+    // Não há rota de cancelar. O painel não abre assistente nenhum — quem abre é
+    // o `vincular-whatsapp` no servidor —, então cancelar daqui só poderia
+    // derrubar o assistente de outra pessoa: o do admin com o comando rodando no
+    // terminal, no instante em que ele fecha a janela do navegador.
 
     // ---------------------------------------------------------------- prompt
 

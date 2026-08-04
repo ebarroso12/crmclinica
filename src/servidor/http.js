@@ -322,7 +322,6 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/regras': () => rotasDaSerena.listarRegras(usuario, url.searchParams),
       'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
-      'POST /api/serena/canal/cancelar': () => rotasDaSerena.cancelarVinculo(usuario),
       'POST /api/serena/regras': async () => rotasDaSerena.criarRegra(usuario, await lerJson(req)),
     };
 

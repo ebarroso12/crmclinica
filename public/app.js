@@ -2760,6 +2760,10 @@ async function atualizarQr() {
       imagem.src = resposta.qr;
       imagem.hidden = false;
       if (aviso) aviso.hidden = true;
+      // Veio QR de verdade: os passos voltam a descrever o que está na tela.
+      const bloco = seletor('#qr-instrucao');
+      if (bloco) { bloco.hidden = true; bloco.replaceChildren(); }
+      alternarPassosDoQr(true);
       return;
     }
 
@@ -2787,6 +2791,10 @@ function mostrarInstrucaoDeVinculo(instrucao) {
   const aviso = seletor('#qr-aviso');
   pararRelogioDoQr();
   if (aviso) aviso.hidden = true;
+  // Os passos e a nota mandam apontar a câmera para um código na tela. Com a
+  // instrução do servidor no lugar do QR, eles passam a instruir o contrário do
+  // que a janela mostra — some com os dois enquanto o caminho é o manual.
+  alternarPassosDoQr(false);
   if (!bloco) return;
 
   if (!instrucao) {
@@ -2804,6 +2812,14 @@ function mostrarInstrucaoDeVinculo(instrucao) {
 
   bloco.replaceChildren(...linhas);
   bloco.hidden = false;
+}
+
+/** Passos e nota só fazem sentido quando há um QR de verdade na tela. */
+function alternarPassosDoQr(visiveis) {
+  for (const alvo of ['#qr-passos', '#qr-nota']) {
+    const elemento = seletor(alvo);
+    if (elemento) elemento.hidden = !visiveis;
+  }
 }
 
 function criarElemento(tag, { texto, html, classe } = {}) {
@@ -2830,7 +2846,10 @@ function fecharModalDoQr() {
   if (imagem) { imagem.hidden = true; imagem.removeAttribute('src'); }
   const instrucao = seletor('#qr-instrucao');
   if (instrucao) { instrucao.hidden = true; instrucao.replaceChildren(); }
-  pedirJson('/api/serena/canal/cancelar', { metodo: 'POST' }).catch(() => {});
+  alternarPassosDoQr(true);
+  // Nada de avisar o servidor. O painel não abre assistente nenhum, então um
+  // "cancelar" daqui só poderia derrubar o de outra pessoa — o do admin com o
+  // `vincular-whatsapp` rodando no terminal, no instante em que ele fecha isto.
 }
 
 async function conectarWhatsapp() {

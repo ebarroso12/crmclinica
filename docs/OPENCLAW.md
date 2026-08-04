@@ -172,6 +172,56 @@ Estas três situações **nunca** viram `enviado`:
 Dispositivo não pareado e falta de escopo são falhas **permanentes**: insistir
 não aprova ninguém, e retry só gastaria as tentativas.
 
+## Vincular o WhatsApp da clínica
+
+O telefone por onde os pacientes falam com a Serena vive noutra instância do
+OpenClaw — outro processo, outro token, outro dispositivo. O painel **lê** esse
+estado; **não** vincula.
+
+### Por que não vincula pelo painel
+
+A primeira tentativa apostou que o gateway expunha a vinculação por RPC. Não
+expõe: `wizard.*` é o assistente de configuração geral do gateway, não o do
+WhatsApp, e `channels.login` só existe no CLI. O que saiu daquilo foi um botão
+que girava sem entregar — pior que não ter botão, porque quem clica espera.
+
+Então o painel faz o que sabe fazer: mostra qual telefone está conectado e, ao
+clicar em conectar, mostra o caminho que funciona.
+
+### O caminho que funciona
+
+Com o celular da clínica em **WhatsApp → Aparelhos conectados → Conectar
+aparelho**:
+
+```bash
+ssh <OPENCLAW_SSH_HOST>
+vincular-whatsapp
+```
+
+O comando vive em `/usr/local/bin` no servidor do OpenClaw. Ele carrega o
+ambiente da instância da clínica, avisa se já existe telefone conectado antes de
+derrubá-lo, mostra o QR e confere o resultado — o QR expira em segundos e ele o
+renova sozinho enquanto ninguém escaneia.
+
+O endereço não está no código. Vem de `OPENCLAW_SSH_HOST`, e a API só o devolve
+ao admin master: `public/app.js` é servido **sem login**, e qualquer endereço
+escrito lá é endereço publicado.
+
+### Duas identidades, de propósito
+
+Administrar canal exige `operator.admin`. O worker de lembretes roda sozinho a
+noite inteira e não pode ter esse poder, então o cliente do canal tem chave
+própria — `OPENCLAW_CLINICA_DEVICE_PRIVATE_KEY`, nunca a de comando. São dois
+dispositivos, e cada um é pareado por si.
+
+### Só leitura, e por quê
+
+A tela repete a consulta a cada 5 s. Qualquer chamada que altere estado seria
+executada dezenas de vezes por vinculação — `wizard.start` trocaria o QR no meio
+do escaneamento. Pelo mesmo motivo não existe rota de cancelar: cancelar um
+assistente que o painel nunca abriu só poderia derrubar o de quem está com o
+`vincular-whatsapp` aberto no terminal.
+
 ## O que continua fora
 
 `src/integracoes/openclaw.js` — o cliente de **eventos de conversa** — ainda fala

@@ -4,24 +4,31 @@ const {
   criarClienteGateway, carregarOuCriarIdentidade, ErroDeGateway, ESCOPOS_DE_CANAL,
 } = require('./openclaw-gateway');
 
-// Vinculação do WhatsApp da clínica, pelo painel.
+// Estado do WhatsApp da clínica, para o painel.
 //
-// Sem isto, conectar o telefone da clínica exigia SSH no servidor e um comando
-// de terminal com o celular na mão — algo que ninguém da clínica ia fazer, e que
-// na prática significava depender de quem tem acesso ao servidor toda vez que a
-// sessão do WhatsApp caísse. E ela cai: troca de aparelho, celular sem bateria
-// por dias, WhatsApp desconectando aparelhos antigos.
+// ----------------------------------------------------------- o que isto NÃO faz
 //
-// ------------------------------------------------------------------ o mecanismo
+// Não vincula. A tentativa anterior partia de que o gateway expunha a vinculação
+// por RPC — `wizard.start` abre, `wizard.next` avança, um dos passos traz o QR —
+// e isso não se confirmou: o `wizard.*` é o assistente de configuração geral do
+// gateway, não o do WhatsApp, e `channels.login` só existe no CLI. O resultado
+// era um botão que girava sem entregar.
 //
-// O gateway expõe um **wizard**: `wizard.start` abre, `wizard.next` avança, e
-// um dos passos é `scanQr` — que traz o QR já renderizado como PNG em data URL.
-// O plugin do WhatsApp o produz em `renderQrPngDataUrl`.
+// Quem vincula é o comando `vincular-whatsapp`, no servidor. Este módulo apenas
+// **lê**: diz qual telefone está conectado, e devolve o QR se algum dia o gateway
+// passar a publicá-lo em `wizard.status`.
 //
-// O QR expira em segundos e é substituído por outro enquanto ninguém escaneia.
-// Por isso a rota devolve o QR atual a cada chamada, e a tela repete a chamada:
-// entregar um QR e deixá-lo na tela produziria um código morto que a pessoa
-// tenta escanear sem entender por que não funciona.
+// ------------------------------------------------------- por que só leitura
+//
+// A tela repete a consulta a cada 5s. Qualquer chamada que altere estado seria
+// executada dezenas de vezes por vinculação: `wizard.start` reiniciaria o
+// assistente e trocaria o QR que a pessoa está no meio de escanear, e
+// `wizard.next` empurraria o assistente às cegas, sem resposta preenchida.
+//
+// Pelo mesmo motivo não há `cancelar`: cancelar um assistente que este módulo
+// nunca abriu só poderia derrubar o de outra pessoa — na prática, o do admin com
+// o `vincular-whatsapp` rodando no terminal, no exato momento em que ele fecha a
+// janela do navegador.
 
 /**
  * Falhas de transporte: a pergunta não chegou ao gateway, ou a resposta não
@@ -117,24 +124,22 @@ function criarVinculoDeCanal(configuracao = {}, dependencias = {}) {
     },
 
     /**
-     * Abre (ou retoma) a vinculação e devolve o QR do momento.
+     * Devolve o QR do momento, se houver um assistente aberto publicando um.
      *
-     * Chamar de novo é seguro e esperado: cada chamada traz o QR atual, que é
-     * como a tela acompanha a troca do código sem o operador perceber.
+     * Não abre nada: quem abre é o `vincular-whatsapp` no servidor. Chamar de
+     * novo é seguro e esperado — é como a tela acompanharia a troca do código,
+     * que expira em segundos, sem o operador perceber.
+     *
+     * Sem QR, a resposta é `{ vinculado: false, qr: null }` e a rota completa
+     * com o passo a passo manual. Esse é o caminho normal hoje, não o de exceção.
      */
     async obterQr() {
       const gateway = conectar();
 
-      // Já vinculado: não há QR a mostrar, e abrir o wizard derrubaria a sessão
-      // existente — o oposto do que quem clicou no botão espera.
+      // Já vinculado não tem QR a mostrar, e a pergunta seguinte seria inútil.
       const atual = await this.estado();
       if (atual.vinculado) return { vinculado: true, qr: null, ...atual };
 
-      // Só leitura. A tela repete esta chamada a cada 5s, e qualquer coisa que
-      // altere estado aqui é executada dezenas de vezes por vinculação:
-      // `wizard.start` reiniciaria o assistente e trocaria o QR que a pessoa
-      // está no meio de escanear, e `wizard.next` empurraria um assistente de
-      // configuração geral às cegas, sem nenhuma resposta preenchida.
       let passo = null;
       try {
         passo = await gateway.chamar('wizard.status', {});
@@ -157,17 +162,6 @@ function criarVinculoDeCanal(configuracao = {}, dependencias = {}) {
         passo: passo?.step?.id ?? passo?.id ?? null,
         ...(qr ? {} : { motivo: 'o gateway não devolveu um QR neste passo' }),
       };
-    },
-
-    /** Cancela a vinculação em andamento — o botão "fechar" da tela. */
-    async cancelar() {
-      try {
-        await conectar().chamar('wizard.cancel', {});
-        return { cancelado: true };
-      } catch {
-        // Não havia wizard aberto. Fechar o que já está fechado não é erro.
-        return { cancelado: false };
-      }
     },
 
     async encerrar() {
