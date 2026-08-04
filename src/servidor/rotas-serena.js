@@ -2,7 +2,7 @@
 
 const { ErroDeContrato } = require('../contratos/erros');
 const { exigirPermissao } = require('../seguranca/rbac');
-const { CATEGORIAS } = require('../dominio/serena');
+const { CATEGORIAS, dentroDoHorario } = require('../dominio/serena');
 const { urlDoControle } = require('../integracoes/openclaw-vinculo');
 
 // API da Serena: estado, interruptor, prompt versionado e regras.
@@ -30,6 +30,32 @@ function exigirIdentificador(valor, campo) {
 }
 
 function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null }) {
+  /**
+   * O que a tela precisa saber sobre horário, pausa e plantão — de uma vez.
+   *
+   * `atendendo` é o campo que importa: responde "a Serena está falando com
+   * paciente agora?", que é a pergunta real. Sem ele, a tela teria que refazer a
+   * precedência entre interruptor, pausa, plantão e grade — e reimplementar essa
+   * ordem no navegador é como as duas versões passam a discordar.
+   */
+  function resumoDoHorario(configuracao = {}, agora = new Date()) {
+    const vigente = (instante) => Boolean(instante) && new Date(instante) > agora;
+
+    const pausada = vigente(configuracao.pausada_ate);
+    const emPlantao = vigente(configuracao.ligada_ate);
+    const noHorario = dentroDoHorario(configuracao.agenda, agora);
+
+    return {
+      agenda: configuracao.agenda ?? null,
+      pausada_ate: pausada ? configuracao.pausada_ate : null,
+      ligada_ate: emPlantao ? configuracao.ligada_ate : null,
+      pausada,
+      em_plantao: emPlantao,
+      dentro_do_horario: noHorario,
+      atendendo: configuracao.ativa !== false && !pausada && (emPlantao || noHorario),
+    };
+  }
+
   /**
    * Passo a passo da vinculação manual, com o endereço do servidor.
    *
@@ -105,6 +131,9 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
         alterado_por: config.alterado_por_nome ?? null,
         motivo: config.motivo ?? null,
       },
+      // Separado de `serena.estado` porque responde outra pergunta: aquele diz
+      // se o interruptor está ligado, este diz se ela está atendendo agora.
+      horario: resumoDoHorario(config),
       entrega: {
         modo: entrega.modo ?? 'dry_run',
         significado: entrega.significado ?? null,
@@ -184,6 +213,46 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
           motivo: configuracaoNova.motivo,
         },
       };
+    },
+
+    // ------------------------------------------------------ horário, pausa, plantão
+
+    /**
+     * PUT /api/serena/horario — a grade. `{ "ativa": true, "fuso": "…", "dias": {…} }`
+     *
+     * Corpo `null` remove o limite e a Serena volta a atender sempre. É
+     * diferente de uma grade com todos os dias vazios, que cala a semana
+     * inteira — e a diferença precisa ser explícita, não um efeito colateral de
+     * apagar as janelas na tela.
+     */
+    async definirHorario(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      const configuracao = await serena.definirAgenda(corpo ?? null, { usuarioId: usuario.id });
+      return { horario: resumoDoHorario(configuracao) };
+    },
+
+    /** POST /api/serena/pausa — cala por um tempo. `{ "minutos": 15, "motivo": "…" }` */
+    async pausar(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      const configuracao = await serena.pausar(corpo?.minutos, {
+        motivo: corpo?.motivo ?? null,
+        usuarioId: usuario.id,
+      });
+      return { horario: resumoDoHorario(configuracao) };
+    },
+
+    /** DELETE /api/serena/pausa — devolve a palavra antes do prazo. */
+    async despausar(usuario) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      const configuracao = await serena.despausar({ usuarioId: usuario.id });
+      return { horario: resumoDoHorario(configuracao) };
+    },
+
+    /** POST /api/serena/plantao — atende fora do horário. `{ "minutos": 60 }` */
+    async ligarPorTempo(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      const configuracao = await serena.ligarPorTempo(corpo?.minutos, { usuarioId: usuario.id });
+      return { horario: resumoDoHorario(configuracao) };
     },
 
     // ---------------------------------------------------------------- canal

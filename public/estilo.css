@@ -1382,3 +1382,30 @@ button.perigo:hover { background: #fecaca; }
 }
 
 .instrucao-vinculo .botao-link:hover { filter: brightness(1.08); }
+/* ------------------------------------------------- grade de horário da Serena */
+
+.horario-grade {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.horario-dia {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Largura fixa no nome do dia: sem ela, "Segunda" e "Sábado" desalinham as
+   colunas de hora e a grade deixa de ser legível como tabela. */
+.horario-nome {
+  flex: 0 0 84px;
+  font-size: 14px;
+  color: var(--apoio);
+}
+
+.horario-dia input[type="time"] {
+  width: auto;
+  padding: 6px 8px;
+}

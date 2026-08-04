@@ -89,6 +89,15 @@ const ESPERADO = {
       ['serena_voz_turnos', 'chave_idempotencia'], ['serena_voz_turnos', 'transcricao'],
     ],
   },
+  // 013 e não 012: o laboratório de voz chegou primeiro a esse número. Duas
+  // migrations com o mesmo prefixo se aplicam fora de ordem conforme o `ls`.
+  '013_serena_horario': {
+    colunas: [
+      ['serena_configuracao', 'agenda'],
+      ['serena_configuracao', 'pausada_ate'],
+      ['serena_configuracao', 'ligada_ate'],
+    ],
+  },
   '010_lembretes': {
     tabelas: ['lembretes'],
     colunas: [

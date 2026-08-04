@@ -45,6 +45,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   // Uma linha só, como a constraint do PostgreSQL garante lá.
   const serenaConfiguracao = {
     id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
+    // Nasce sem limite de horário: quem não configurou grade não pediu silêncio.
+    agenda: null, pausada_ate: null, ligada_ate: null,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
@@ -969,6 +971,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     async definirConfiguracaoDaSerena({ ativa, motivo = null, usuarioId = null }) {
       serenaConfiguracao.ativa = ativa === true;
       serenaConfiguracao.motivo = motivo;
+      serenaConfiguracao.alterado_por = usuarioId;
+      serenaConfiguracao.alterado_em = agora().toISOString();
+      return { ...serenaConfiguracao };
+    },
+
+    // `undefined` é "não mexa"; `null` é "apague". Despausar é gravar `null`.
+    async definirHorarioDaSerena({ agenda, pausadaAte, ligadaAte, usuarioId = null }) {
+      if (agenda !== undefined) serenaConfiguracao.agenda = agenda;
+      if (pausadaAte !== undefined) serenaConfiguracao.pausada_ate = pausadaAte;
+      if (ligadaAte !== undefined) serenaConfiguracao.ligada_ate = ligadaAte;
       serenaConfiguracao.alterado_por = usuarioId;
       serenaConfiguracao.alterado_em = agora().toISOString();
       return { ...serenaConfiguracao };

@@ -2294,6 +2294,9 @@ async function carregarSerena() {
 
     const controle = seletor('#serena-controle');
     if (controle) controle.hidden = !dados.pode_gerenciar;
+    const cartaoDeHorario = seletor('#serena-horario-card');
+    if (cartaoDeHorario) cartaoDeHorario.hidden = !dados.pode_gerenciar;
+    desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
       const bloco = seletor(alvo);
       if (bloco) bloco.hidden = !dados.pode_gerenciar;
@@ -2690,6 +2693,131 @@ for (const alvo of ['#contatos-busca', '#contatos-excluidos']) {
 
 
 // ---------------------------------------------------------------------------
+// Horário de atendimento, pausa e plantão.
+//
+// A tela nunca recalcula "a Serena está atendendo?". Esse campo vem pronto do
+// servidor (`horario.atendendo`), porque reimplementar aqui a precedência entre
+// interruptor, pausa, plantão e grade é como as duas versões passam a discordar
+// — e a que o usuário lê é a errada.
+// ---------------------------------------------------------------------------
+
+const DIAS_DA_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+const FUSO_DA_CLINICA = 'America/Sao_Paulo';
+
+function desenharHorario(horario) {
+  const resumo = seletor('#horario-resumo');
+  if (resumo) resumo.textContent = frasePara(horario);
+
+  const despausar = seletor('#serena-despausar');
+  const pausar = seletor('#serena-pausar');
+  if (despausar) despausar.hidden = !horario?.pausada;
+  if (pausar) pausar.hidden = Boolean(horario?.pausada);
+
+  const marcador = seletor('#horario-ativo');
+  if (marcador) marcador.checked = horario?.agenda?.ativa === true;
+
+  desenharGradeDeHorario(horario?.agenda ?? null);
+}
+
+/** A frase do topo. É o que a equipe lê antes de decidir se precisa agir. */
+function frasePara(horario) {
+  if (!horario) return '—';
+
+  const ate = (instante) => new Date(instante).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  if (horario.pausada) return `pausada até ${ate(horario.pausada_ate)} — não responde ninguém`;
+  if (!horario.atendendo && !horario.dentro_do_horario) return 'fora do horário — não responde agora';
+  if (!horario.atendendo) return 'não está atendendo';
+  if (horario.em_plantao) return `atendendo em plantão até ${ate(horario.ligada_ate)}`;
+  return horario.agenda?.ativa ? 'atendendo, dentro do horário' : 'atendendo — sem limite de horário';
+}
+
+function desenharGradeDeHorario(agenda) {
+  const grade = seletor('#horario-grade');
+  if (!grade) return;
+
+  grade.replaceChildren(...DIAS_DA_SEMANA.map((nome, dia) => {
+    const janelas = agenda?.dias?.[String(dia)] ?? [];
+    const linha = criarElemento('div', { classe: 'horario-dia' });
+    linha.append(criarElemento('span', { texto: nome, classe: 'horario-nome' }));
+
+    // Uma faixa por dia cobre o caso real da clínica. Duas faixas (almoço) o
+    // banco e a API aceitam; a tela mostra a primeira e preserva o resto ao
+    // salvar, para não apagar em silêncio o que alguém configurou pela API.
+    const [inicio = '', fim = ''] = janelas[0] ?? [];
+    for (const [classe, valor] of [['inicio', inicio], ['fim', fim]]) {
+      const campo = document.createElement('input');
+      campo.type = 'time';
+      campo.className = `horario-${classe}`;
+      campo.dataset.dia = String(dia);
+      campo.value = valor;
+      linha.append(campo);
+    }
+
+    if (janelas.length > 1) {
+      linha.append(criarElemento('span', {
+        texto: `+${janelas.length - 1} faixa(s) definidas pela API`, classe: 'nota',
+      }));
+    }
+    return linha;
+  }));
+}
+
+/** Lê a grade da tela. Faixa pela metade é erro, não meia-configuração. */
+function lerGradeDaTela() {
+  const anterior = serenaPainel?.horario?.agenda?.dias ?? {};
+  const dias = {};
+
+  for (let dia = 0; dia <= 6; dia += 1) {
+    const inicio = seletor(`.horario-inicio[data-dia="${dia}"]`)?.value ?? '';
+    const fim = seletor(`.horario-fim[data-dia="${dia}"]`)?.value ?? '';
+
+    if (!inicio && !fim) { dias[String(dia)] = []; continue; }
+    if (!inicio || !fim) {
+      throw new Error(`${DIAS_DA_SEMANA[dia]}: preencha o início e o fim, ou deixe os dois vazios`);
+    }
+
+    // As faixas extras que só existem pela API seguem intactas.
+    dias[String(dia)] = [[inicio, fim], ...(anterior[String(dia)] ?? []).slice(1)];
+  }
+
+  return { ativa: seletor('#horario-ativo')?.checked === true, fuso: FUSO_DA_CLINICA, dias };
+}
+
+async function salvarHorario() {
+  const aviso = seletor('#horario-aviso');
+  if (aviso) aviso.textContent = '';
+
+  let grade;
+  try {
+    grade = lerGradeDaTela();
+  } catch (erro) {
+    if (aviso) aviso.textContent = erro.message;
+    return;
+  }
+
+  try {
+    const { horario } = await pedirJson('/api/serena/horario', { metodo: 'PUT', corpo: grade });
+    if (serenaPainel) serenaPainel.horario = horario;
+    desenharHorario(horario);
+    if (aviso) aviso.textContent = 'horário salvo';
+  } catch (erro) {
+    if (aviso) aviso.textContent = erro.detalhe ?? `não foi possível salvar: ${erro.message}`;
+  }
+}
+
+/** Pausa, retomada e plantão: uma chamada, e a tela se redesenha com a resposta. */
+async function mexerNoAtendimento(caminho, opcoes) {
+  try {
+    const { horario } = await pedirJson(caminho, opcoes);
+    if (serenaPainel) serenaPainel.horario = horario;
+    desenharHorario(horario);
+  } catch (erro) {
+    informar(erro.detalhe ?? `não foi possível: ${erro.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Conexão do WhatsApp da clínica.
 //
 // O QR do WhatsApp vive poucos segundos e é trocado por outro enquanto ninguém
@@ -2895,6 +3023,20 @@ document.addEventListener('click', (evento) => {
   if (!alvo) return;
   if (alvo.id === 'canal-conectar') conectarWhatsapp();
   if (alvo.id === 'qr-fechar') fecharModalDoQr();
+
+  // Horário. Os prazos são curtos de propósito: pausa e plantão existem para
+  // durar o tempo de uma intervenção, e voltar sozinhos é o que impede que
+  // alguém esqueça a Serena calada — ou falando num domingo.
+  if (alvo.id === 'horario-salvar') salvarHorario();
+  if (alvo.id === 'serena-pausar') {
+    mexerNoAtendimento('/api/serena/pausa', { metodo: 'POST', corpo: { minutos: 15 } });
+  }
+  if (alvo.id === 'serena-despausar') {
+    mexerNoAtendimento('/api/serena/pausa', { metodo: 'DELETE' });
+  }
+  if (alvo.id === 'serena-plantao') {
+    mexerNoAtendimento('/api/serena/plantao', { metodo: 'POST', corpo: { minutos: 60 } });
+  }
 });
 
 // Fechar com Esc: modal que só fecha no botão prende quem abriu por engano.

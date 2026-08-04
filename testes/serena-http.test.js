@@ -49,17 +49,25 @@ async function montar(t, opcoes = {}) {
 
 // ---------------------------------------------------------------- status
 
-test('o status separa OpenClaw, WhatsApp, Serena e entrega', async (t) => {
+test('o status separa OpenClaw, WhatsApp, Serena, entrega e horário', async (t) => {
   const { ambiente } = await montar(t);
 
   const resposta = await ambiente.pedir('/api/serena/status');
   assert.equal(resposta.status, 200);
   const corpo = await resposta.json();
 
-  // Quatro coisas distintas: cada uma pede uma ação diferente da equipe.
-  assert.deepEqual(Object.keys(corpo).sort(), ['entrega', 'openclaw', 'serena', 'whatsapp']);
+  // Cinco coisas distintas: cada uma pede uma ação diferente da equipe.
+  assert.deepEqual(Object.keys(corpo).sort(), ['entrega', 'horario', 'openclaw', 'serena', 'whatsapp']);
   assert.equal(corpo.serena.estado, 'ligada');
   assert.equal(corpo.serena.ativa, true);
+
+  // "O interruptor está ligado" e "ela está atendendo agora" são perguntas
+  // diferentes, e a tela precisa da segunda. Sem grade configurada, as duas
+  // coincidem — e é justamente por isso que o campo tem de existir separado,
+  // antes que alguém configure horário e a tela passe a mentir.
+  assert.equal(corpo.horario.atendendo, true);
+  assert.equal(corpo.horario.agenda, null);
+  assert.equal(corpo.horario.pausada, false);
   // Sem gateway configurado no teste, o estado é "não configurado" — e não
   // "offline", que faria alguém procurar um serviço fora do ar que não existe.
   assert.equal(corpo.openclaw.estado, 'nao_configurado');

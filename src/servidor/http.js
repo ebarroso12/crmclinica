@@ -322,6 +322,11 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/regras': () => rotasDaSerena.listarRegras(usuario, url.searchParams),
       'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
+      // Horário programado, pausa de intervenção e plantão esporádico.
+      'PUT /api/serena/horario': async () => rotasDaSerena.definirHorario(usuario, await lerJson(req)),
+      'POST /api/serena/pausa': async () => rotasDaSerena.pausar(usuario, await lerJson(req)),
+      'DELETE /api/serena/pausa': () => rotasDaSerena.despausar(usuario),
+      'POST /api/serena/plantao': async () => rotasDaSerena.ligarPorTempo(usuario, await lerJson(req)),
       'POST /api/serena/regras': async () => rotasDaSerena.criarRegra(usuario, await lerJson(req)),
     };
 

@@ -125,11 +125,48 @@ nada persiste. Em produção a variável é obrigatória.
 | `/api/conversas/:id/agenda` | GET | A agenda do paciente vista de dentro da conversa |
 | `/api/lembretes…` | GET/POST | Fila de lembretes: estado, falhas, sincronização, reenfileiramento |
 | `/api/contatos/:id/lembretes` | POST | Opt-out e opt-in do paciente |
+| `/api/serena…` | GET/POST | Estado, interruptor, prompt versionado e regras |
+| `/api/serena/horario` | PUT | Grade de horários; `null` remove o limite |
+| `/api/serena/pausa` | POST/DELETE | Pausa com prazo, para intervenção humana |
+| `/api/serena/plantao` | POST | Atende fora do horário, sem tocar na grade |
 | `/api/serena/voz…` | GET/POST | Laboratório interno de voz, consentimento, sessão e transcrição |
 
 O inbox completo está descrito em [`docs/INBOX_LOCAL.md`](docs/INBOX_LOCAL.md), a
 agenda em [`docs/AGENDA.md`](docs/AGENDA.md) e os lembretes em
 [`docs/LEMBRETES.md`](docs/LEMBRETES.md).
+
+
+## Quando a Serena atende
+
+Quatro controles, do mais forte para o mais fraco. A ordem é a regra: cada um
+vence os de baixo, e nenhum vence os de cima.
+
+| Controle | O que faz | Volta sozinho? |
+| --- | --- | --- |
+| **Interruptor** | Cala tudo, sem exceção. Exige motivo. | Não |
+| **Pausa** | Cala por N minutos — a intervenção humana. | Sim |
+| **Plantão** | Atende fora do horário por N minutos. | Sim |
+| **Horário** | A grade semanal, no fuso da clínica. | — |
+
+Pausa e plantão **têm prazo obrigatório**. Pausa sem fim é desligamento que
+ninguém lembra de desfazer, e o esquecimento é silencioso: uma Serena muda é
+indistinguível de uma Serena que ainda não recebeu mensagem. Pelo mesmo motivo o
+plantão não edita a grade — editar para um sábado e esquecer de desfazer faria a
+clínica atender todo sábado sem ninguém ter decidido isso.
+
+Os dois se limpam mutuamente ao serem acionados: são intenções opostas, e o
+conflito é resolvido na escrita, nunca na leitura.
+
+Sem grade configurada, a Serena atende sempre — ausência de configuração não
+vira silêncio. Um dia sem faixa nenhuma, por outro lado, é dia fechado; a tela
+diz a diferença.
+
+O horário vale no fuso da clínica (`America/Sao_Paulo`), não no do servidor. Em
+UTC, "até as 18h" calaria às 15h e voltaria a falar de madrugada — sem nada no
+código parecendo errado.
+
+Calada por qualquer um dos quatro, **a mensagem do paciente continua sendo
+gravada**. O que para é a resposta automática, não o inbox.
 
 ## Serena Voz (laboratório interno)
 

@@ -587,6 +587,39 @@
           </ol>
         </article>
 
+        <!-- Horário, pausa e plantão. Só quem gerencia a Serena vê. -->
+        <article class="card estreito" id="serena-horario-card" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3>Horário de atendimento</h3>
+              <!-- "Atendendo agora" é a única frase que a equipe realmente lê aqui:
+                   o interruptor pode estar ligado e a Serena calada pelo horário. -->
+              <p id="horario-resumo">—</p>
+            </div>
+            <div class="linha-acoes" id="horario-acoes-rapidas">
+              <button type="button" class="secundario" id="serena-pausar">Pausar 15 min</button>
+              <button type="button" class="primario" id="serena-despausar" hidden>Retomar agora</button>
+              <button type="button" class="secundario" id="serena-plantao">Atender por 1 h</button>
+            </div>
+          </div>
+
+          <label class="marcador">
+            <input type="checkbox" id="horario-ativo">
+            Limitar o atendimento a estes horários
+          </label>
+          <p class="nota">
+            Desmarcado, a Serena atende a qualquer hora. Dia sem faixa nenhuma é dia fechado —
+            deixar todos vazios cala a semana inteira.
+          </p>
+
+          <div id="horario-grade" class="horario-grade"></div>
+
+          <div class="linha-acoes">
+            <button type="button" class="primario" id="horario-salvar">Salvar horário</button>
+            <span class="nota" id="horario-aviso"></span>
+          </div>
+        </article>
+
         <!-- Prompt publicado -->
         <article class="card" id="serena-prompt-card">
           <div class="card-titulo">

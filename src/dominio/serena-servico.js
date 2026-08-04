@@ -1,7 +1,8 @@
 'use strict';
 
 const {
-  decidirResposta, montarPromptEfetivo, validarPrompt, validarRegra, ErroDaSerena, CATEGORIAS,
+  decidirResposta, montarPromptEfetivo, validarPrompt, validarRegra, validarAgenda,
+  ErroDaSerena, CATEGORIAS,
 } = require('./serena');
 
 // Serviço da Serena: o interruptor global, o prompt versionado e as regras.
@@ -64,6 +65,83 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
     await auditar(ativa ? 'serena_ligada' : 'serena_desligada', 1, {
       de: anterior.ativa, para: ativa, motivo: motivoLimpo,
     }, usuarioId);
+
+    return configuracao;
+  }
+
+  // ------------------------------------------------------- horário, pausa, plantão
+
+  const LIMITE_DE_MINUTOS = 24 * 60;
+
+  function minutosValidos(minutos, campo) {
+    const numero = Number(minutos);
+    if (!Number.isInteger(numero) || numero <= 0 || numero > LIMITE_DE_MINUTOS) {
+      throw new ErroDaSerena(
+        `${campo} deve ser um número de minutos entre 1 e ${LIMITE_DE_MINUTOS}`, 'minutos_invalidos',
+      );
+    }
+    return numero;
+  }
+
+  /** Grava a grade de horários. `null` remove o limite e volta a atender sempre. */
+  async function definirAgenda(agenda, { usuarioId = null } = {}) {
+    const limpa = validarAgenda(agenda);
+
+    const configuracao = await repositorio.definirHorarioDaSerena({ agenda: limpa, usuarioId });
+    await auditar('serena_agenda_definida', 1, {
+      ativa: limpa?.ativa ?? false, fuso: limpa?.fuso ?? null,
+    }, usuarioId);
+
+    return configuracao;
+  }
+
+  /**
+   * Cala a Serena por um tempo — a intervenção humana.
+   *
+   * O prazo é obrigatório de propósito. Pausa sem prazo é desligamento que
+   * ninguém lembra de desfazer, e o esquecimento é silencioso: mudo é
+   * indistinguível de "ainda não chegou mensagem".
+   *
+   * Limpa o plantão junto. Os dois são intenções opostas, e guardar as duas
+   * deixaria a decisão de responder dependendo de uma ordem de precedência que
+   * ninguém consegue ter em mente ao clicar num botão.
+   */
+  async function pausar(minutos, { motivo = null, usuarioId = null } = {}) {
+    const duracao = minutosValidos(minutos, 'a pausa');
+    const ate = new Date(agora().getTime() + duracao * 60_000);
+
+    const configuracao = await repositorio.definirHorarioDaSerena({
+      pausadaAte: ate, ligadaAte: null, usuarioId,
+    });
+    await auditar('serena_pausada', 1, {
+      minutos: duracao, ate: ate.toISOString(), motivo: motivo ? String(motivo).trim().slice(0, 300) : null,
+    }, usuarioId);
+
+    return configuracao;
+  }
+
+  /** Devolve a palavra à Serena antes do prazo. */
+  async function despausar({ usuarioId = null } = {}) {
+    const configuracao = await repositorio.definirHorarioDaSerena({ pausadaAte: null, usuarioId });
+    await auditar('serena_despausada', 1, null, usuarioId);
+    return configuracao;
+  }
+
+  /**
+   * Plantão: atende fora do horário por um tempo, sem tocar na grade.
+   *
+   * Editar a grade para um sábado e depois lembrar de desfazer é o mesmo
+   * esquecimento da pausa sem prazo, ao contrário — a clínica passaria a
+   * atender todo sábado sem ninguém ter decidido isso.
+   */
+  async function ligarPorTempo(minutos, { usuarioId = null } = {}) {
+    const duracao = minutosValidos(minutos, 'o plantão');
+    const ate = new Date(agora().getTime() + duracao * 60_000);
+
+    const configuracao = await repositorio.definirHorarioDaSerena({
+      ligadaAte: ate, pausadaAte: null, usuarioId,
+    });
+    await auditar('serena_plantao', 1, { minutos: duracao, ate: ate.toISOString() }, usuarioId);
 
     return configuracao;
   }
@@ -213,6 +291,10 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
     CATEGORIAS,
     obterConfiguracao,
     definirAtiva,
+    definirAgenda,
+    pausar,
+    despausar,
+    ligarPorTempo,
     podeResponder,
     listarPrompts,
     obterPromptAtivo,

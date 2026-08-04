@@ -1178,12 +1178,53 @@ function criarRepositorio(pool) {
     /** O interruptor global. Uma linha só, garantida pela constraint da tabela. */
     async obterConfiguracaoDaSerena() {
       const { rows } = await consultar(`
-        SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo, u.nome AS alterado_por_nome
+        SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo,
+               c.agenda, c.pausada_ate, c.ligada_ate,
+               u.nome AS alterado_por_nome
           FROM serena_configuracao c
           LEFT JOIN usuarios u ON u.id = c.alterado_por
          WHERE c.id = 1
       `);
-      if (!rows[0]) return { id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null };
+      // Linha ausente nasce ligada e sem limite: um sistema que sobe mudo sem
+      // ninguém pedir é pior que um que sobe falando.
+      if (!rows[0]) {
+        return {
+          id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
+          agenda: null, pausada_ate: null, ligada_ate: null,
+        };
+      }
+      return { ...rows[0], ativa: rows[0].ativa === true };
+    },
+
+    /**
+     * Grava horário, pausa e plantão — só os campos informados.
+     *
+     * `undefined` é "não mexa" e `null` é "apague", e a diferença importa:
+     * despausar é gravar `null` em `pausada_ate`, e um `COALESCE` ingênuo
+     * transformaria isso em "mantenha a pausa".
+     */
+    async definirHorarioDaSerena({ agenda, pausadaAte, ligadaAte, usuarioId = null }) {
+      const campos = [];
+      const valores = [];
+      const marcar = (coluna, valor) => {
+        valores.push(valor);
+        campos.push(`${coluna} = $${valores.length}`);
+      };
+
+      if (agenda !== undefined) marcar('agenda', agenda === null ? null : JSON.stringify(agenda));
+      if (pausadaAte !== undefined) marcar('pausada_ate', pausadaAte);
+      if (ligadaAte !== undefined) marcar('ligada_ate', ligadaAte);
+
+      valores.push(usuarioId);
+      campos.push(`alterado_por = $${valores.length}`, 'alterado_em = now()');
+
+      const { rows } = await consultar(`
+        UPDATE serena_configuracao SET ${campos.join(', ')}
+         WHERE id = 1
+        RETURNING id, ativa, alterado_por, alterado_em, motivo, agenda, pausada_ate, ligada_ate
+      `, valores);
+
+      if (!rows[0]) return this.obterConfiguracaoDaSerena();
       return { ...rows[0], ativa: rows[0].ativa === true };
     },
 
