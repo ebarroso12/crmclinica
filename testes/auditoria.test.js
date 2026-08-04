@@ -36,7 +36,10 @@ function listarArquivos(diretorio = RAIZ, acumulado = []) {
     // Mesma razão: a identidade do dispositivo no gateway OpenClaw guarda uma
     // chave privada Ed25519 e é coberta pelo .gitignore. O teste logo abaixo
     // confere essa proteção — que é o que realmente importa auditar.
-    if (entrada.name === '.openclaw-identidade.json') continue;
+    // São duas: a de comando e a da clínica. Separá-las foi de propósito — o
+    // cliente que vincula canal pede `operator.admin`, e o worker de lembretes
+    // roda sozinho a noite inteira; não podem ser o mesmo dispositivo.
+    if (entrada.name.startsWith('.openclaw-identidade')) continue;
     const caminho = path.join(diretorio, entrada.name);
 
     if (entrada.isDirectory()) {
@@ -197,6 +200,20 @@ test('o .gitignore protege a identidade do dispositivo no gateway', () => {
   // poder de mandar mensagem pelo WhatsApp da clínica.
   const conteudo = fs.readFileSync(path.join(RAIZ, '.gitignore'), 'utf8');
   assert.match(conteudo, /^\.openclaw-identidade\.json$/m);
+  // A da clínica carrega escopo de administração do canal: vazá-la é pior, não
+  // melhor, que vazar a de comando.
+  assert.match(conteudo, /^\.openclaw-identidade-clinica\.json$/m);
+});
+
+test('o painel não publica o endereço do servidor no arquivo servido sem login', () => {
+  // `app.js` é entregue antes de qualquer checagem de sessão. Um endereço de
+  // administração ali é um convite a quem só passou pela porta da frente — e o
+  // caminho manual de vinculação precisa justamente desse endereço, então ele
+  // vem da API, para quem é master.
+  const app = fs.readFileSync(path.join(RAIZ, 'public', 'app.js'), 'utf8');
+
+  assert.ok(!/\b\d{1,3}(\.\d{1,3}){3}\b/.test(app), 'há um endereço IP no bundle público');
+  assert.ok(!/ssh\s+\w+@/i.test(app), 'há um comando ssh com usuário no bundle público');
 });
 
 test('a interface não embute script nem estilo inline', () => {

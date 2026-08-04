@@ -27,3 +27,20 @@ Thumbs.db
 # Identidade do dispositivo no gateway OpenClaw: chave privada Ed25519.
 # Quem a tem fala pelo crmclinica com o orquestrador.
 .openclaw-identidade.json
+
+# Identidade do dispositivo da instância da clínica — separada da de comando.
+.openclaw-identidade-clinica.json
+
+# Redirecionamento de shell que erra o alvo cria arquivos com nome de código.
+# Já aconteceu: dez arquivos vazios chamados `console.log(...)`, `{`, `item`.
+#
+# Todos ancorados na raiz com `/`. Sem a barra, o padrão casaria em qualquer
+# profundidade — e um `item` ou `d.platform` legítimo dentro de `src/` sumiria
+# do git sem ninguém notar, que é um estrago maior que o lixo que isto evita.
+/console.log(*
+/{
+/{const
+/{try{const
+/Date.now()
+/d.platform
+/item

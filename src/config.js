@@ -115,12 +115,20 @@ function carregarConfiguracao(ambiente = process.env) {
         url: urlWebSocketValida(ambiente.OPENCLAW_CLINICA_GATEWAY_URL),
         token: texto(ambiente.OPENCLAW_CLINICA_GATEWAY_TOKEN),
         deviceToken: texto(ambiente.OPENCLAW_CLINICA_DEVICE_TOKEN),
-        chavePrivada: decodificarChave(ambiente.OPENCLAW_CLINICA_DEVICE_PRIVATE_KEY)
-          || decodificarChave(ambiente.OPENCLAW_DEVICE_PRIVATE_KEY),
-        identidadePath: texto(ambiente.OPENCLAW_DEVICE_IDENTITY_PATH)
-          || path.join(__dirname, '..', '.openclaw-identidade.json'),
-        timeoutMs: inteiro(ambiente.OPENCLAW_GATEWAY_TIMEOUT_MS, 30000),
+        // Identidade própria, sem herdar a do gateway de comando. Herdar
+        // parecia conveniente — uma chave a menos para gerir — mas este cliente
+        // pede `operator.admin` para vincular canal, e aprovar esse pareamento
+        // daria poder de administração à mesma identidade com que o worker de
+        // lembretes roda sozinho a noite inteira. São dois dispositivos.
+        chavePrivada: decodificarChave(ambiente.OPENCLAW_CLINICA_DEVICE_PRIVATE_KEY),
+        identidadePath: texto(ambiente.OPENCLAW_CLINICA_DEVICE_IDENTITY_PATH)
+          || path.join(__dirname, '..', '.openclaw-identidade-clinica.json'),
+        timeoutMs: inteiro(ambiente.OPENCLAW_CLINICA_GATEWAY_TIMEOUT_MS, 30000),
       },
+      // Endereço de administração do servidor do OpenClaw, para a instrução de
+      // vinculação manual. Fica fora do `app.js` — que é servido sem login — e
+      // só chega a quem é master, pela API.
+      hostDeAdministracao: texto(ambiente.OPENCLAW_SSH_HOST),
       // Linha da clínica. Usada só para exibir no painel quando o canal ainda
       // não respondeu qual número está vinculado — nunca para decidir envio.
       numeroWhatsapp: texto(ambiente.WHATSAPP_BUSINESS_PHONE),

@@ -2312,10 +2312,14 @@ async function carregarSerena() {
     const efetivo = seletor('#serena-prompt-efetivo');
     if (efetivo) efetivo.textContent = dados.prompt_efetivo ?? '—';
 
-    await desenharEstadoDoCanal();
     await carregarEstadoDaVoz();
     desenharVersoes(dados.versoes ?? [], dados.pode_gerenciar);
     desenharRegras(dados.regras ?? [], dados.pode_gerenciar);
+
+    // Sem await: esta consulta atravessa o gateway e pode demorar até 30s se a
+    // instância da clínica estiver fora. Segurar versões e regras por causa dela
+    // deixaria o painel inteiro em branco por um dado que é um detalhe da tela.
+    desenharEstadoDoCanal().catch(() => {});
   } catch (erro) {
     pintarEstado('#serena-openclaw', 'Indisponível', 'ruim');
     informar(`Não foi possível carregar a Serena: ${erro.message}`);
@@ -2694,6 +2698,9 @@ for (const alvo of ['#contatos-busca', '#contatos-excluidos']) {
 // ---------------------------------------------------------------------------
 
 let relogioDoQr = null;
+// Cada abertura da janela do QR ganha um número. Requisição que volta com número
+// velho pertence a uma janela já fechada e é descartada.
+let aberturaDoQr = 0;
 
 async function desenharEstadoDoCanal() {
   const descricao = seletor('#canal-descricao');
@@ -2733,8 +2740,14 @@ async function atualizarQr() {
   const imagem = seletor('#qr-imagem');
   if (imagem) imagem.hidden = true;
 
+  // Fechar a janela limpa o bloco da instrução, mas não cancela a requisição já
+  // em voo. Sem esta marca, a resposta atrasada escreveria de novo num modal
+  // fechado — e a próxima abertura começaria exibindo a instrução da anterior.
+  const abertura = aberturaDoQr;
+
   try {
     const resposta = await pedirJson('/api/serena/canal/qr', { metodo: 'POST' });
+    if (abertura !== aberturaDoQr) return;
 
     if (resposta.vinculado) {
       fecharModalDoQr();
@@ -2752,25 +2765,53 @@ async function atualizarQr() {
 
     // O gateway não expõe o QR por RPC — só pelo comando no servidor. Em vez
     // de um botão que gira sem entregar, a tela diz o caminho que funciona.
-    mostrarInstrucaoDeVinculo();
+    mostrarInstrucaoDeVinculo(resposta.instrucao ?? null);
   } catch {
-    mostrarInstrucaoDeVinculo();
+    if (abertura !== aberturaDoQr) return;
+    mostrarInstrucaoDeVinculo(null);
   }
 }
 
-function mostrarInstrucaoDeVinculo() {
-  const area = seletor('#qr-area');
+/**
+ * Mostra o caminho manual quando o gateway não entrega o QR.
+ *
+ * Escreve num bloco irmão, nunca por cima de `#qr-area`: sobrescrever o HTML
+ * apagava `#qr-imagem` do DOM, e uma única falha do gateway — um reinício, por
+ * exemplo — deixava a tela incapaz de exibir QR até recarregar a página.
+ *
+ * O endereço do servidor vem do servidor, em `instrucao`. Ele não pode morar
+ * aqui: `app.js` é baixado sem login por qualquer um.
+ */
+function mostrarInstrucaoDeVinculo(instrucao) {
+  const bloco = seletor('#qr-instrucao');
+  const aviso = seletor('#qr-aviso');
   pararRelogioDoQr();
-  if (!area) return;
+  if (aviso) aviso.hidden = true;
+  if (!bloco) return;
 
-  area.innerHTML = [
-    '<div class="instrucao-vinculo">',
-    '<p><b>A vinculação é feita no servidor.</b></p>',
-    '<p>Com o celular da clínica em <b>WhatsApp → Aparelhos conectados → Conectar aparelho</b>, rode:</p>',
-    '<pre>ssh root@193.203.182.112\nvincular-whatsapp</pre>',
-    '<p class="nota">O código aparece no terminal, e o comando o renova sozinho enquanto ninguém escaneia. Ao terminar, feche esta janela: o estado acima se atualiza.</p>',
-    '</div>',
-  ].join('');
+  if (!instrucao) {
+    bloco.textContent = 'Não foi possível gerar o código agora. Tente de novo em instantes.';
+    bloco.hidden = false;
+    return;
+  }
+
+  const linhas = [
+    criarElemento('p', { html: `<b>${escapar(instrucao.titulo)}</b>` }),
+    criarElemento('p', { texto: instrucao.antes }),
+    criarElemento('pre', { texto: instrucao.comandos.join('\n') }),
+    criarElemento('p', { texto: instrucao.depois, classe: 'nota' }),
+  ];
+
+  bloco.replaceChildren(...linhas);
+  bloco.hidden = false;
+}
+
+function criarElemento(tag, { texto, html, classe } = {}) {
+  const elemento = document.createElement(tag);
+  if (classe) elemento.className = classe;
+  if (html) elemento.innerHTML = html;
+  else if (texto) elemento.textContent = texto;
+  return elemento;
 }
 
 function pararRelogioDoQr() {
@@ -2781,11 +2822,14 @@ function pararRelogioDoQr() {
 }
 
 function fecharModalDoQr() {
+  aberturaDoQr += 1; // invalida qualquer requisição ainda em voo
   pararRelogioDoQr();
   const modal = seletor('#modal-qr');
   if (modal) modal.hidden = true;
   const imagem = seletor('#qr-imagem');
   if (imagem) { imagem.hidden = true; imagem.removeAttribute('src'); }
+  const instrucao = seletor('#qr-instrucao');
+  if (instrucao) { instrucao.hidden = true; instrucao.replaceChildren(); }
   pedirJson('/api/serena/canal/cancelar', { metodo: 'POST' }).catch(() => {});
 }
 
@@ -2797,7 +2841,13 @@ async function conectarWhatsapp() {
   const aviso = seletor('#qr-aviso');
   if (aviso) { aviso.hidden = false; aviso.textContent = 'gerando o código…'; }
 
+  // A primeira consulta pode levar até 30s (timeout do gateway). Se a janela for
+  // fechada nesse meio-tempo, armar o relógio depois deixaria a aba consultando
+  // a cada 5s para sempre — reabrindo no gateway a vinculação recém-cancelada.
+  const abertura = aberturaDoQr;
   await atualizarQr();
+  if (abertura !== aberturaDoQr) return;
+
   pararRelogioDoQr();
   // Cinco segundos: o QR do WhatsApp costuma durar cerca de vinte, e recarregar
   // antes disso mantém sempre um código válido na tela.

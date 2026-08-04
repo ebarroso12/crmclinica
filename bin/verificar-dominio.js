@@ -42,6 +42,10 @@ const amarelo = (t) => `\x1b[33m${t}\x1b[0m`;
 async function resolverPorHttps(nome, tipo) {
   const resposta = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(nome)}&type=${tipo}`, {
     headers: { accept: 'application/dns-json' },
+    // Mesmo motivo do fetch de `/health`: a rede que bloqueia DNS na porta 53
+    // costuma ser a mesma que engole HTTPS de saída, e sem prazo esta consulta
+    // penduraria o comando por minutos em vez de cair para a mensagem de erro.
+    signal: AbortSignal.timeout(10000),
   });
   if (!resposta.ok) throw new Error(`resolver público respondeu ${resposta.status}`);
 
@@ -88,23 +92,41 @@ async function conferir() {
   passos.push([naVercel, naVercel ? 'aponta para a Vercel' : 'aponta para outro lugar', enderecos.join(', ')]);
 
   // 3. a aplicação responde, com certificado válido?
+  let resposta;
   try {
-    const resposta = await fetch(`https://${DOMINIO}/health`, { redirect: 'manual' });
-    if (resposta.status === 200) {
-      const saude = await resposta.json();
-      passos.push([true, 'a aplicação responde por HTTPS',
-        `versão ${saude.versao}, banco ${saude.banco?.usuario ?? '—'}`]);
-      return { pronto: true, passos };
-    }
-    passos.push([false, `HTTPS respondeu ${resposta.status}`,
-      resposta.status === 404 ? 'o domínio ainda não está ligado ao projeto' : '']);
+    // Sem timeout explícito, o padrão do undici é 300s. Um IP que engole
+    // pacotes em silêncio — estado comum enquanto o DNS propaga — travaria uma
+    // única checagem por mais tempo que o laço inteiro deveria durar.
+    resposta = await fetch(`https://${DOMINIO}/health`, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10000),
+    });
   } catch (erro) {
     // Certificado ainda não emitido é o caso mais comum aqui, e é questão de
     // minutos depois de o DNS apontar certo.
     passos.push([false, 'HTTPS ainda não responde', erro.cause?.code ?? erro.message]);
+    return { pronto: false, passos };
   }
 
-  return { pronto: false, passos };
+  if (resposta.status !== 200) {
+    passos.push([false, `HTTPS respondeu ${resposta.status}`,
+      resposta.status === 404 ? 'o domínio ainda não está ligado ao projeto' : '']);
+    return { pronto: false, passos };
+  }
+
+  // Parse em bloco próprio: um 200 com corpo HTML — a página de erro da Vercel,
+  // por exemplo — é problema de aplicação. Junto do fetch, ele seria relatado
+  // como "HTTPS ainda não responde", mandando procurar o defeito no DNS.
+  try {
+    const saude = await resposta.json();
+    passos.push([true, 'a aplicação responde por HTTPS',
+      `versão ${saude.versao}, banco ${saude.banco?.usuario ?? '—'}`]);
+    return { pronto: true, passos };
+  } catch {
+    passos.push([false, 'o domínio responde, mas não é a aplicação',
+      'veio 200 sem JSON — provavelmente uma página de erro da Vercel']);
+    return { pronto: false, passos };
+  }
 }
 
 function imprimir(passos) {

@@ -23,7 +23,28 @@ const {
 // entregar um QR e deixá-lo na tela produziria um código morto que a pessoa
 // tenta escanear sem entender por que não funciona.
 
-const WIZARD_DO_WHATSAPP = 'whatsapp';
+/**
+ * Falhas de transporte: a pergunta não chegou ao gateway, ou a resposta não
+ * voltou. Só estas viram 503.
+ *
+ * O teste não pode ser o prefixo `gateway_`: o cliente carimba esse prefixo em
+ * cima do código que o *gateway* devolveu, então uma recusa de aplicação —
+ * método inexistente, nenhum assistente aberto — sairia daqui como 503 e
+ * esconderia a instrução manual, que é o caminho que funciona hoje.
+ *
+ * Estes três nascem deste lado, sem resposta do outro (ver as construções de
+ * `ErroDeGateway` em `openclaw-gateway.js`). Os de configuração —
+ * `gateway_sem_url`, `gateway_sem_identidade`, `identidade_invalida` — não
+ * entram porque `conectar()` os lança antes do `try`, e nunca chegam a este
+ * catch. `openclaw_nao_pareado` também fica de fora: é permanente, e "tente de
+ * novo" esconderia o que a pessoa precisa fazer — quando vier de
+ * `channels.status`, sobe direto para a rota, que o traduz.
+ */
+const FALHAS_DE_TRANSPORTE = new Set([
+  'gateway_timeout',
+  'gateway_desconectado',
+  'gateway_indisponivel',
+]);
 
 /** Acha o QR na resposta do wizard, sem depender de um caminho fixo. */
 function extrairQr(passo) {
@@ -109,23 +130,26 @@ function criarVinculoDeCanal(configuracao = {}, dependencias = {}) {
       const atual = await this.estado();
       if (atual.vinculado) return { vinculado: true, qr: null, ...atual };
 
-      let passo;
+      // Só leitura. A tela repete esta chamada a cada 5s, e qualquer coisa que
+      // altere estado aqui é executada dezenas de vezes por vinculação:
+      // `wizard.start` reiniciaria o assistente e trocaria o QR que a pessoa
+      // está no meio de escanear, e `wizard.next` empurraria um assistente de
+      // configuração geral às cegas, sem nenhuma resposta preenchida.
+      let passo = null;
       try {
-        passo = await gateway.chamar('wizard.start', { wizard: WIZARD_DO_WHATSAPP });
-      } catch (erro) {
-        // Wizard já aberto de uma tentativa anterior: seguir de onde parou é
-        // melhor que falhar e obrigar a reiniciar o gateway.
-        if (!/already|em andamento|in progress/i.test(erro.message)) throw erro;
         passo = await gateway.chamar('wizard.status', {});
+      } catch (erro) {
+        // "Não consegui perguntar" e "perguntei, e não há assistente aberto" são
+        // respostas opostas, e só a primeira é falha. Distinguir pelo prefixo
+        // `gateway_` não serve: o cliente carimba esse mesmo prefixo em cima do
+        // código que o gateway devolveu, então uma recusa de aplicação — método
+        // inexistente, nenhum wizard aberto — sairia daqui como 503, escondendo
+        // a instrução manual, que é justamente o caminho que funciona hoje.
+        if (FALHAS_DE_TRANSPORTE.has(erro.codigo)) throw erro;
+        return { vinculado: false, qr: null };
       }
 
-      let qr = extrairQr(passo);
-
-      // O QR costuma aparecer depois de um ou dois passos do wizard.
-      for (let avanco = 0; avanco < 4 && !qr; avanco += 1) {
-        passo = await gateway.chamar('wizard.next', {});
-        qr = extrairQr(passo);
-      }
+      const qr = extrairQr(passo);
 
       return {
         vinculado: false,
@@ -153,4 +177,4 @@ function criarVinculoDeCanal(configuracao = {}, dependencias = {}) {
   };
 }
 
-module.exports = { criarVinculoDeCanal, extrairQr };
+module.exports = { criarVinculoDeCanal, extrairQr, FALHAS_DE_TRANSPORTE };
