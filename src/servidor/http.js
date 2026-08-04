@@ -29,6 +29,7 @@ const { criarServicoDeLembretes } = require('../dominio/lembretes-servico');
 const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes');
 const { criarRotasDaSerena } = require('./rotas-serena');
 const { criarVinculoDeCanal } = require('../integracoes/openclaw-vinculo');
+const { criarConversaDeTeste } = require('../integracoes/openclaw-conversa');
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
@@ -144,6 +145,11 @@ function criarAplicacao(dependencias = {}) {
   const vinculoDoCanal = dependencias.vinculoDoCanal
     || (configuracao.openclaw.canalClinica.url ? criarVinculoDeCanal(configuracao.openclaw.canalClinica) : null);
 
+  // Conversa de teste: fala com a Serena pela sessão do painel, sem tocar no
+  // WhatsApp. É o que permite validar o prompt antes de expor ao paciente.
+  const conversaDeTeste = dependencias.conversaDeTeste
+    || (configuracao.openclaw.canalClinica.url ? criarConversaDeTeste(configuracao.openclaw.canalClinica) : null);
+
   const rotasDaSerena = criarRotasDaSerena({
     serena: servicoDaSerena,
     // O adaptador é quem sabe falar com o gateway: reaproveitá-lo para o status
@@ -152,6 +158,7 @@ function criarAplicacao(dependencias = {}) {
     entregaDeLembretes,
     configuracao,
     vinculo: vinculoDoCanal,
+    conversa: conversaDeTeste,
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
 
@@ -322,6 +329,9 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/regras': () => rotasDaSerena.listarRegras(usuario, url.searchParams),
       'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
       'GET /api/serena/canal/risco': () => rotasDaSerena.riscoDoCanal(usuario),
+      'GET /api/serena/teste': () => rotasDaSerena.lerTeste(usuario, url),
+      'POST /api/serena/teste': () => rotasDaSerena.abrirTeste(usuario),
+      'POST /api/serena/teste/mensagem': () => rotasDaSerena.enviarNoTeste(usuario, corpo),
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
       // Horário programado, pausa de intervenção e plantão esporádico.
       'PUT /api/serena/horario': async () => rotasDaSerena.definirHorario(usuario, await lerJson(req)),

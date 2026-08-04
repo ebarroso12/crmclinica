@@ -571,6 +571,38 @@
           <p class="nota" id="serena-motivo-atual" hidden></p>
         </article>
 
+        <!-- Ensaio do prompt. Existe porque antes disto a única forma de saber
+             como a Serena responde era escrever para o número real — e foi assim
+             que a equipe descobriu, com paciente na linha, que ela publicava o
+             próprio raciocínio na conversa. -->
+        <article class="card" id="serena-teste-card" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3>Testar a Serena</h3>
+              <p>Converse como se fosse um paciente. Nada sai para telefone nenhum.</p>
+            </div>
+            <div class="linha-acoes">
+              <button type="button" class="acao" id="teste-reiniciar">Nova conversa</button>
+            </div>
+          </div>
+
+          <div class="teste-conversa" id="teste-conversa">
+            <p class="vazio" id="teste-vazio">Escreva a primeira mensagem do paciente para começar.</p>
+          </div>
+
+          <form class="teste-entrada" id="teste-form">
+            <label class="oculto-visual" for="teste-texto">Mensagem do paciente</label>
+            <input id="teste-texto" type="text" autocomplete="off"
+                   placeholder="Oi, queria marcar uma consulta…" maxlength="1000">
+            <button type="submit" class="primario" id="teste-enviar">Enviar</button>
+          </form>
+
+          <p class="nota">
+            Esta conversa usa o prompt publicado, o mesmo que atende no WhatsApp. O paciente é
+            fictício: não vira contato, não entra no funil e nenhuma mensagem é enviada.
+          </p>
+        </article>
+
         <article class="card voz-card" id="serena-voz-card">
           <div class="card-titulo">
             <div>

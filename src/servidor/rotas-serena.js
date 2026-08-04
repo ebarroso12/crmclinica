@@ -30,7 +30,7 @@ function exigirIdentificador(valor, campo) {
   return numero;
 }
 
-function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null }) {
+function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null, conversa = null }) {
   /**
    * O que a tela precisa saber sobre horário, pausa e plantão — de uma vez.
    *
@@ -220,6 +220,61 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
           optouts: medidas.optouts,
         },
       };
+    },
+
+    // ------------------------------------------------------------- teste do prompt
+
+    /**
+     * POST /api/serena/teste — abre uma conversa de teste com a Serena.
+     *
+     * Serve para experimentar o prompt antes de soltá-lo no telefone da clínica.
+     * A conversa acontece na sessão do painel: nenhuma mensagem sai para número
+     * nenhum, e o paciente fictício não vira contato.
+     *
+     * Sem isto, a única forma de saber como ela responde era escrever para o
+     * número real — e foi assim que a equipe descobriu, com paciente na linha,
+     * que ela publicava o próprio raciocínio na conversa.
+     */
+    async abrirTeste(usuario) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      if (!conversa) {
+        const erro = new Error('gateway do canal não configurado');
+        erro.status = 503;
+        erro.codigo = 'canal_nao_configurado';
+        throw erro;
+      }
+      return conversa.abrir();
+    },
+
+    /** POST /api/serena/teste/mensagem — fala como paciente. */
+    async enviarNoTeste(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      if (!conversa) {
+        const erro = new Error('gateway do canal não configurado');
+        erro.status = 503;
+        throw erro;
+      }
+
+      const texto = String(corpo?.texto ?? '').trim();
+      if (!texto) throw new ErroDeContrato('escreva a mensagem do paciente', 'texto');
+
+      return conversa.enviar({ sessao: corpo?.sessao, texto });
+    },
+
+    /**
+     * GET /api/serena/teste?sessao=… — a conversa até agora.
+     *
+     * Separado do envio porque o modelo responde de forma assíncrona: a tela
+     * mostra a pergunta na hora e busca a resposta quando ela fica pronta.
+     */
+    async lerTeste(usuario, url) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+      if (!conversa) return { mensagens: [] };
+
+      const sessao = url?.searchParams?.get('sessao');
+      if (!sessao) throw new ErroDeContrato('informe a sessão do teste', 'sessao');
+
+      return conversa.historico(sessao);
     },
 
     /** POST /api/serena/estado — o interruptor. `{ "ativa": false, "motivo": "…" }` */

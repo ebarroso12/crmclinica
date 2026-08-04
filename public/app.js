@@ -2296,6 +2296,10 @@ async function carregarSerena() {
     if (controle) controle.hidden = !dados.pode_gerenciar;
     const cartaoDeHorario = seletor('#serena-horario-card');
     if (cartaoDeHorario) cartaoDeHorario.hidden = !dados.pode_gerenciar;
+    // Testar o prompt é mexer no que a clínica diz ao paciente: mesma permissão
+    // de quem publica a versão.
+    const cartaoDeTeste = seletor('#serena-teste-card');
+    if (cartaoDeTeste) cartaoDeTeste.hidden = !dados.pode_gerenciar;
     desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
       const bloco = seletor(alvo);
@@ -3094,4 +3098,97 @@ document.addEventListener('click', (evento) => {
 // Fechar com Esc: modal que só fecha no botão prende quem abriu por engano.
 document.addEventListener('keydown', (evento) => {
   if (evento.key === 'Escape' && !seletor('#modal-qr')?.hidden) fecharModalDoQr();
+});
+
+// ---------------------------------------------------------------- teste da Serena
+//
+// Ensaio do prompt dentro do painel. A conversa acontece na sessão do gateway,
+// não no canal: nada sai para telefone, e o paciente fictício não vira contato.
+//
+// O modelo responde de forma assíncrona — `enviar` volta antes de a resposta
+// existir. Por isso a tela pergunta pelo histórico algumas vezes até a resposta
+// aparecer, em vez de esperar uma única vez e desistir.
+
+let sessaoDeTeste = null;
+let testeOcupado = false;
+
+function desenharConversaDeTeste(mensagens) {
+  const area = seletor('#teste-conversa');
+  if (!area) return;
+
+  if (!mensagens.length) {
+    area.innerHTML = '<p class="vazio" id="teste-vazio">Escreva a primeira mensagem do paciente para começar.</p>';
+    return;
+  }
+
+  area.replaceChildren(...mensagens.map((mensagem) => {
+    const balao = document.createElement('div');
+    balao.className = `balao ${mensagem.de === 'serena' ? 'de-serena' : 'de-paciente'}`;
+    balao.textContent = mensagem.texto;
+    return balao;
+  }));
+
+  area.scrollTop = area.scrollHeight;
+}
+
+/** Pergunta pelo histórico até a Serena responder, ou até desistir. */
+async function esperarResposta(quantasAntes) {
+  for (let tentativa = 0; tentativa < 20; tentativa += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const historico = await pedirJson(`/api/serena/teste?sessao=${encodeURIComponent(sessaoDeTeste)}`);
+    if (historico.mensagens.length > quantasAntes) {
+      desenharConversaDeTeste(historico.mensagens);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function enviarNoTeste(texto) {
+  if (testeOcupado) return;
+  testeOcupado = true;
+
+  const botao = seletor('#teste-enviar');
+  const campo = seletor('#teste-texto');
+  if (botao) { botao.disabled = true; botao.textContent = 'Serena pensando…'; }
+
+  try {
+    if (!sessaoDeTeste) {
+      const aberta = await pedirJson('/api/serena/teste', { metodo: 'POST' });
+      sessaoDeTeste = aberta.sessao;
+    }
+
+    const antes = await pedirJson(`/api/serena/teste?sessao=${encodeURIComponent(sessaoDeTeste)}`);
+    desenharConversaDeTeste([...antes.mensagens, { de: 'paciente', texto }]);
+
+    await pedirJson('/api/serena/teste/mensagem', {
+      metodo: 'POST',
+      corpo: { sessao: sessaoDeTeste, texto },
+    });
+
+    if (campo) campo.value = '';
+    const respondeu = await esperarResposta(antes.mensagens.length + 1);
+    if (!respondeu) informar('A Serena não respondeu a tempo. Tente de novo.');
+  } catch (erro) {
+    informar(`Não foi possível testar: ${erro.message}`);
+  } finally {
+    testeOcupado = false;
+    if (botao) { botao.disabled = false; botao.textContent = 'Enviar'; }
+    if (campo) campo.focus();
+  }
+}
+
+seletor('#teste-form')?.addEventListener('submit', (evento) => {
+  evento.preventDefault();
+  const campo = seletor('#teste-texto');
+  const texto = campo?.value.trim();
+  if (texto) enviarNoTeste(texto);
+});
+
+seletor('#teste-reiniciar')?.addEventListener('click', () => {
+  // Sessão nova começa sem contexto: é o que permite repetir o mesmo caso e
+  // comparar a resposta depois de mexer no prompt.
+  sessaoDeTeste = null;
+  desenharConversaDeTeste([]);
 });

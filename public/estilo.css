@@ -1432,3 +1432,53 @@ button.perigo:hover { background: #fecaca; }
 }
 
 .aviso-risco .nota { color: inherit; opacity: 0.85; margin: 0; }
+
+/* Ensaio do prompt: conversa dentro do painel, sem tocar no WhatsApp. */
+.teste-conversa {
+  min-height: 180px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 0.9rem;
+  background: #f6f8fa;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.8rem 0;
+}
+
+.balao {
+  max-width: 78%;
+  padding: 0.6rem 0.85rem;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+/* O paciente à direita, como no WhatsApp: quem lê reconhece a conversa de
+   imediato e não precisa procurar quem falou o quê. */
+.balao.de-paciente {
+  align-self: flex-end;
+  background: #d9fdd3;
+  color: #111b21;
+}
+
+.balao.de-serena {
+  align-self: flex-start;
+  background: #fff;
+  color: #111b21;
+  border: 1px solid #e3e8ee;
+}
+
+.teste-entrada { display: flex; gap: 0.5rem; }
+.teste-entrada input { flex: 1; }
+.teste-entrada button:disabled { opacity: 0.6; cursor: progress; }
+
+.oculto-visual {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
