@@ -30,6 +30,24 @@ function exigirIdentificador(valor, campo) {
 
 function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null }) {
   /**
+   * Passo a passo da vinculação manual, com o endereço do servidor.
+   *
+   * Fica no servidor de propósito: o host vem de `OPENCLAW_SSH_HOST`, e devolvê-lo
+   * só a quem é master evita publicá-lo no `app.js`, que qualquer um baixa.
+   */
+  function instrucaoDeVinculo() {
+    const host = configuracao.openclaw.hostDeAdministracao;
+    if (!host) return null;
+
+    return {
+      titulo: 'A vinculação é feita no servidor.',
+      antes: 'No celular da clínica, abra WhatsApp → Aparelhos conectados → Conectar aparelho. Depois rode:',
+      comandos: [`ssh ${host}`, 'vincular-whatsapp'],
+      depois: 'O código aparece no terminal e se renova sozinho enquanto ninguém escaneia.',
+    };
+  }
+
+  /**
    * GET /api/serena/status
    *
    * Consulta o gateway de verdade. A consulta é `channels.status` — leitura
@@ -176,7 +194,15 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
       try {
         return { disponivel: true, ...(await vinculo.estado()) };
       } catch (erro) {
-        return { disponivel: false, motivo: erro.message, codigo: erro.codigo ?? null };
+        // A mensagem crua do gateway carrega URL, identificador de dispositivo e
+        // escopos. Quem tem `serena:ler` é a recepção, não quem administra o
+        // servidor: o detalhe vai para o log, a tela recebe o que dá para agir.
+        console.error('[crmclinica] estado do canal falhou:', erro.message);
+        return {
+          disponivel: false,
+          motivo: 'não foi possível falar com o WhatsApp agora',
+          codigo: erro.codigo ?? null,
+        };
       }
     },
 
@@ -202,7 +228,32 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
         throw erro;
       }
 
-      return vinculo.obterQr();
+      try {
+        const resultado = await vinculo.obterQr();
+        if (resultado.qr || resultado.vinculado) return resultado;
+
+        // Sem QR pelo gateway, resta o comando no servidor — e ele carrega o
+        // endereço da máquina. Isso não pode viajar no `app.js`, que é servido
+        // sem autenticação: sai daqui, numa resposta que só o master recebe.
+        return { ...resultado, instrucao: instrucaoDeVinculo() };
+      } catch (erro) {
+        // Gateway fora do ar não é defeito do servidor: sem isto, `ErroDeGateway`
+        // caía no 500 genérico e a tela não distinguia "tente de novo" de bug.
+        //
+        // Vai um erro novo, não o original com um campo a mais: o tratador de
+        // `http.js` responde com `erro.message`, e a mensagem do gateway carrega
+        // URL, dispositivo e escopos. Reaproveitar o objeto entregaria ao cliente
+        // exatamente o detalhe que `estadoDoCanal` acabou de parar de entregar.
+        if (!erro.codigo?.startsWith('gateway_') && erro.codigo !== 'openclaw_nao_pareado') throw erro;
+
+        console.error('[crmclinica] vinculação do canal falhou:', erro.message);
+        const publico = new Error(erro.codigo === 'openclaw_nao_pareado'
+          ? 'o dispositivo ainda não foi aprovado no gateway do WhatsApp'
+          : 'o gateway do WhatsApp não respondeu');
+        publico.status = 503;
+        publico.codigo = erro.codigo;
+        throw publico;
+      }
     },
 
     /** POST /api/serena/canal/cancelar — fecha a vinculação em andamento. */

@@ -889,6 +889,9 @@
       <div class="qr-area" id="qr-area">
         <p class="vazio" id="qr-aviso">gerando o código…</p>
         <img id="qr-imagem" alt="Código QR para conectar o WhatsApp" hidden>
+        <!-- Bloco irmão: a instrução manual nunca substitui a área do QR, para
+             que uma falha passageira do gateway não apague a imagem do DOM. -->
+        <div class="instrucao-vinculo" id="qr-instrucao" hidden></div>
       </div>
       <p class="nota" id="qr-nota">O código troca a cada poucos segundos — é normal.</p>
       <div class="linha-acoes">
