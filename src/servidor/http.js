@@ -330,7 +330,7 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
       'GET /api/serena/canal/risco': () => rotasDaSerena.riscoDoCanal(usuario),
       'GET /api/serena/teste': () => rotasDaSerena.lerTeste(usuario, url),
-      'POST /api/serena/teste': () => rotasDaSerena.abrirTeste(usuario),
+      'POST /api/serena/teste': () => rotasDaSerena.abrirTeste(usuario, corpo),
       'POST /api/serena/teste/mensagem': () => rotasDaSerena.enviarNoTeste(usuario, corpo),
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
       // Horário programado, pausa de intervenção e plantão esporádico.

@@ -70,13 +70,23 @@ function criarConversaDeTeste(configuracao = {}, dependencias = {}) {
   }
 
   return {
-    /** Abre uma conversa nova. Cada teste começa do zero, sem herdar contexto. */
-    async abrir({ agente = 'serena' } = {}) {
-      const sessao = await conectar().chamar('sessions.create', { agentId: agente });
+    /**
+     * Abre uma conversa nova. Cada teste começa do zero, sem herdar contexto.
+     *
+     * O modelo é escolhido aqui, na abertura, e vale para a conversa inteira.
+     * Trocar no meio compararia respostas com históricos diferentes, que é
+     * justamente o que impede saber qual modelo se saiu melhor.
+     */
+    async abrir({ agente = 'serena', modelo = null } = {}) {
+      const sessao = await conectar().chamar('sessions.create', {
+        agentId: agente,
+        ...(modelo ? { model: modelo } : {}),
+      });
+
       if (!sessao?.key) {
         throw new ErroDeGateway('o gateway não devolveu a sessão', 'sessao_ausente');
       }
-      return { sessao: sessao.key };
+      return { sessao: sessao.key, modelo };
     },
 
     /**
@@ -110,6 +120,9 @@ function criarConversaDeTeste(configuracao = {}, dependencias = {}) {
             de: mensagem.role === 'assistant' ? 'serena' : 'paciente',
             texto: textoDaMensagem(mensagem),
             em: mensagem.timestamp ?? null,
+            // Quem respondeu, dito pelo próprio gateway. Sem isto, comparar dois
+            // modelos dependeria de lembrar qual foi escolhido em qual aba.
+            modelo: mensagem.role === 'assistant' ? (mensagem.model ?? null) : null,
           }))
           // Mensagem sem texto é chamada de ferramenta ou marcação interna do
           // provedor: mostrá-la vazia sugeriria que a Serena respondeu nada.

@@ -31,6 +31,20 @@ function exigirIdentificador(valor, campo) {
 }
 
 function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null, conversa = null }) {
+  // Modelos oferecidos no ensaio. A lista é curta de propósito: comparar quinze
+  // opções não responde "qual serve para a clínica", e cada uma custa dinheiro
+  // por conversa. Ficam os três que fazem sentido comparar — o barato que está
+  // em uso, o equilibrado e o mais capaz — de cada família com credencial.
+  const MODELOS_DE_TESTE = Object.freeze([
+    { id: 'deepseek/deepseek-v4-flash', nome: 'DeepSeek V4 Flash', nota: 'em uso hoje — o mais barato' },
+    { id: 'anthropic/claude-haiku-4-5', nome: 'Claude Haiku 4.5', nota: 'rápido e barato' },
+    { id: 'anthropic/claude-sonnet-4-6', nome: 'Claude Sonnet 4.6', nota: 'equilíbrio entre custo e cuidado' },
+    { id: 'anthropic/claude-opus-4-5', nome: 'Claude Opus 4.5', nota: 'o mais capaz — segue instrução longa melhor' },
+    { id: 'openai/gpt-4.1-mini', nome: 'GPT-4.1 Mini', nota: 'barato' },
+    { id: 'openai/gpt-4o', nome: 'GPT-4o', nota: 'o mais capaz da OpenAI aqui' },
+    { id: 'google/gemini-2.5-flash', nome: 'Gemini 2.5 Flash', nota: 'rápido e barato' },
+  ]);
+
   /**
    * O que a tela precisa saber sobre horário, pausa e plantão — de uma vez.
    *
@@ -235,7 +249,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
      * número real — e foi assim que a equipe descobriu, com paciente na linha,
      * que ela publicava o próprio raciocínio na conversa.
      */
-    async abrirTeste(usuario) {
+    async abrirTeste(usuario, corpo) {
       exigirPermissao(usuario, 'serena:gerenciar');
       if (!conversa) {
         const erro = new Error('gateway do canal não configurado');
@@ -243,7 +257,10 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
         erro.codigo = 'canal_nao_configurado';
         throw erro;
       }
-      return conversa.abrir();
+      return {
+        ...(await conversa.abrir({ modelo: corpo?.modelo ?? null })),
+        modelos: MODELOS_DE_TESTE,
+      };
     },
 
     /** POST /api/serena/teste/mensagem — fala como paciente. */

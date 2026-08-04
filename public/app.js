@@ -3124,7 +3124,19 @@ function desenharConversaDeTeste(mensagens) {
   area.replaceChildren(...mensagens.map((mensagem) => {
     const balao = document.createElement('div');
     balao.className = `balao ${mensagem.de === 'serena' ? 'de-serena' : 'de-paciente'}`;
-    balao.textContent = mensagem.texto;
+    const corpo = document.createElement('span');
+    corpo.textContent = mensagem.texto;
+    balao.appendChild(corpo);
+
+    // Qual modelo respondeu, no próprio balão. Sem isto, comparar duas conversas
+    // exigiria lembrar o que estava selecionado quando cada resposta chegou.
+    if (mensagem.modelo) {
+      const etiqueta = document.createElement('small');
+      etiqueta.className = 'modelo-usado';
+      etiqueta.textContent = mensagem.modelo;
+      balao.appendChild(etiqueta);
+    }
+
     return balao;
   }));
 
@@ -3155,8 +3167,12 @@ async function enviarNoTeste(texto) {
 
   try {
     if (!sessaoDeTeste) {
-      const aberta = await pedirJson('/api/serena/teste', { metodo: 'POST' });
+      const aberta = await pedirJson('/api/serena/teste', {
+        metodo: 'POST',
+        corpo: { modelo: seletor('#teste-modelo')?.value || null },
+      });
       sessaoDeTeste = aberta.sessao;
+      preencherModelos(aberta.modelos);
     }
 
     const antes = await pedirJson(`/api/serena/teste?sessao=${encodeURIComponent(sessaoDeTeste)}`);
@@ -3191,4 +3207,36 @@ seletor('#teste-reiniciar')?.addEventListener('click', () => {
   // comparar a resposta depois de mexer no prompt.
   sessaoDeTeste = null;
   desenharConversaDeTeste([]);
+});
+
+/**
+ * Preenche o seletor de modelos com a lista que o servidor manda.
+ *
+ * A lista vem de lá, e não daqui, porque nome de modelo inválido só dá erro
+ * quando alguém já está no meio de um teste — e a tela não tem como saber quais
+ * provedores têm credencial configurada.
+ */
+function preencherModelos(modelos) {
+  const campo = seletor('#teste-modelo');
+  if (!campo || !Array.isArray(modelos) || campo.options.length > 0) return;
+
+  const escolhido = campo.value;
+
+  campo.replaceChildren(...modelos.map((modelo) => {
+    const opcao = document.createElement('option');
+    opcao.value = modelo.id;
+    opcao.textContent = modelo.nota ? `${modelo.nome} — ${modelo.nota}` : modelo.nome;
+    return opcao;
+  }));
+
+  if (escolhido) campo.value = escolhido;
+}
+
+// Trocar de modelo começa conversa nova. Continuar a mesma conversa com outro
+// modelo compararia respostas sobre históricos diferentes — que é justamente o
+// que impede concluir qual se saiu melhor.
+seletor('#teste-modelo')?.addEventListener('change', () => {
+  sessaoDeTeste = null;
+  desenharConversaDeTeste([]);
+  informar('Conversa reiniciada para testar o modelo escolhido.');
 });
