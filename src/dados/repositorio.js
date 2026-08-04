@@ -1177,23 +1177,37 @@ function criarRepositorio(pool) {
 
     /** O interruptor global. Uma linha só, garantida pela constraint da tabela. */
     async obterConfiguracaoDaSerena() {
-      const { rows } = await consultar(`
+      const PADRAO = {
+        id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
+        agenda: null, pausada_ate: null, ligada_ate: null,
+      };
+
+      const consulta = (colunasNovas) => consultar(`
         SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo,
-               c.agenda, c.pausada_ate, c.ligada_ate,
+               ${colunasNovas ? 'c.agenda, c.pausada_ate, c.ligada_ate,' : ''}
                u.nome AS alterado_por_nome
           FROM serena_configuracao c
           LEFT JOIN usuarios u ON u.id = c.alterado_por
          WHERE c.id = 1
       `);
+
+      let rows;
+      try {
+        ({ rows } = await consulta(true));
+      } catch (erro) {
+        // 42703 = coluna inexistente: o código subiu antes da migração 013.
+        // Deploy e migração não são atômicos, e o intervalo entre os dois não
+        // pode derrubar o painel inteiro da Serena — o horário é um detalhe
+        // dela, não a razão de ela existir. Sem as colunas, a leitura degrada
+        // para "sem limite de horário", que é o padrão de quem nunca configurou.
+        if (erro.code !== '42703') throw erro;
+        ({ rows } = await consulta(false));
+      }
+
       // Linha ausente nasce ligada e sem limite: um sistema que sobe mudo sem
       // ninguém pedir é pior que um que sobe falando.
-      if (!rows[0]) {
-        return {
-          id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
-          agenda: null, pausada_ate: null, ligada_ate: null,
-        };
-      }
-      return { ...rows[0], ativa: rows[0].ativa === true };
+      if (!rows[0]) return PADRAO;
+      return { ...PADRAO, ...rows[0], ativa: rows[0].ativa === true };
     },
 
     /**
@@ -1218,11 +1232,23 @@ function criarRepositorio(pool) {
       valores.push(usuarioId);
       campos.push(`alterado_por = $${valores.length}`, 'alterado_em = now()');
 
-      const { rows } = await consultar(`
-        UPDATE serena_configuracao SET ${campos.join(', ')}
-         WHERE id = 1
-        RETURNING id, ativa, alterado_por, alterado_em, motivo, agenda, pausada_ate, ligada_ate
-      `, valores);
+      let rows;
+      try {
+        ({ rows } = await consultar(`
+          UPDATE serena_configuracao SET ${campos.join(', ')}
+           WHERE id = 1
+          RETURNING id, ativa, alterado_por, alterado_em, motivo, agenda, pausada_ate, ligada_ate
+        `, valores));
+      } catch (erro) {
+        // Mesmo intervalo entre deploy e migração da leitura. Aqui não dá para
+        // degradar — não há onde gravar —, mas "falha interna" mandaria procurar
+        // bug onde falta um passo de operação.
+        if (erro.code !== '42703') throw erro;
+        const falta = new Error('o horário da Serena exige a migração 013_serena_horario, ainda não aplicada');
+        falta.status = 503;
+        falta.codigo = 'migracao_pendente';
+        throw falta;
+      }
 
       if (!rows[0]) return this.obterConfiguracaoDaSerena();
       return { ...rows[0], ativa: rows[0].ativa === true };
