@@ -28,7 +28,7 @@ function exigirIdentificador(valor, campo) {
   return numero;
 }
 
-function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao }) {
+function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null }) {
   /**
    * GET /api/serena/status
    *
@@ -159,6 +159,60 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao }) {
           motivo: configuracaoNova.motivo,
         },
       };
+    },
+
+    // ---------------------------------------------------------------- canal
+
+    /**
+     * GET /api/serena/canal — estado da vinculação do WhatsApp.
+     *
+     * Separado do status geral porque responde outra pergunta: não é "o canal
+     * está no ar?", é "qual telefone está conectado, e preciso reconectar?".
+     */
+    async estadoDoCanal(usuario) {
+      exigirPermissao(usuario, 'serena:ler');
+      if (!vinculo) return { disponivel: false, motivo: 'gateway do canal não configurado' };
+
+      try {
+        return { disponivel: true, ...(await vinculo.estado()) };
+      } catch (erro) {
+        return { disponivel: false, motivo: erro.message, codigo: erro.codigo ?? null };
+      }
+    },
+
+    /**
+     * POST /api/serena/canal/qr — abre a vinculação e devolve o QR do momento.
+     *
+     * Só o master: vincular troca o telefone por onde a clínica inteira atende,
+     * e desvincular sem querer deixaria os pacientes sem resposta.
+     *
+     * Chamar de novo é esperado — o QR troca sozinho a cada poucos segundos, e
+     * a tela repete a chamada para acompanhar.
+     */
+    async obterQrDoCanal(usuario) {
+      if (!usuario?.master) {
+        const erro = new Error('apenas o administrador master conecta o WhatsApp da clínica');
+        erro.status = 403;
+        throw erro;
+      }
+      if (!vinculo) {
+        const erro = new Error('gateway do canal não configurado');
+        erro.status = 503;
+        erro.codigo = 'canal_nao_configurado';
+        throw erro;
+      }
+
+      return vinculo.obterQr();
+    },
+
+    /** POST /api/serena/canal/cancelar — fecha a vinculação em andamento. */
+    async cancelarVinculo(usuario) {
+      if (!usuario?.master) {
+        const erro = new Error('apenas o administrador master');
+        erro.status = 403;
+        throw erro;
+      }
+      return vinculo ? vinculo.cancelar() : { cancelado: false };
     },
 
     // ---------------------------------------------------------------- prompt

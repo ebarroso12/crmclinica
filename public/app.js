@@ -2312,6 +2312,7 @@ async function carregarSerena() {
     const efetivo = seletor('#serena-prompt-efetivo');
     if (efetivo) efetivo.textContent = dados.prompt_efetivo ?? '—';
 
+    await desenharEstadoDoCanal();
     desenharVersoes(dados.versoes ?? [], dados.pode_gerenciar);
     desenharRegras(dados.regras ?? [], dados.pode_gerenciar);
   } catch (erro) {
@@ -2584,3 +2585,135 @@ for (const alvo of ['#contatos-busca', '#contatos-excluidos']) {
   const campo = seletor(alvo);
   if (campo) campo.addEventListener('change', () => carregarContatos());
 }
+
+
+// ---------------------------------------------------------------------------
+// Conexão do WhatsApp da clínica.
+//
+// O QR do WhatsApp vive poucos segundos e é trocado por outro enquanto ninguém
+// escaneia. Mostrar um e deixar na tela produz um código morto que a pessoa
+// tenta escanear sem entender por que não funciona — então a tela repede.
+// ---------------------------------------------------------------------------
+
+let relogioDoQr = null;
+
+async function desenharEstadoDoCanal() {
+  const descricao = seletor('#canal-descricao');
+  const acoes = seletor('#canal-acoes');
+  if (!descricao) return;
+
+  try {
+    const canal = await pedirJson('/api/serena/canal');
+
+    if (!canal.disponivel) {
+      descricao.textContent = `conexão indisponível — ${canal.motivo ?? 'gateway não configurado'}`;
+      if (acoes) acoes.hidden = true;
+      return;
+    }
+
+    if (canal.vinculado) {
+      descricao.textContent = canal.conectado
+        ? `conectado no ${formatarTelefone(canal.numero)}`
+        : `vinculado ao ${formatarTelefone(canal.numero)}, mas fora do ar agora`;
+    } else {
+      descricao.textContent = 'nenhum telefone conectado — os pacientes não são atendidos';
+    }
+
+    // Só o master conecta: trocar o telefone muda por onde a clínica atende.
+    if (acoes) {
+      acoes.hidden = !usuarioAtual?.master;
+      const botao = seletor('#canal-conectar');
+      if (botao) botao.textContent = canal.vinculado ? 'Reconectar' : 'Conectar WhatsApp';
+    }
+  } catch (erro) {
+    descricao.textContent = `não foi possível verificar: ${erro.message}`;
+  }
+}
+
+async function atualizarQr() {
+  const aviso = seletor('#qr-aviso');
+  const imagem = seletor('#qr-imagem');
+  if (imagem) imagem.hidden = true;
+
+  try {
+    const resposta = await pedirJson('/api/serena/canal/qr', { metodo: 'POST' });
+
+    if (resposta.vinculado) {
+      fecharModalDoQr();
+      informar(`WhatsApp conectado: ${formatarTelefone(resposta.numero)}`);
+      await desenharEstadoDoCanal();
+      return;
+    }
+
+    if (resposta.qr && imagem) {
+      imagem.src = resposta.qr;
+      imagem.hidden = false;
+      if (aviso) aviso.hidden = true;
+      return;
+    }
+
+    // O gateway não expõe o QR por RPC — só pelo comando no servidor. Em vez
+    // de um botão que gira sem entregar, a tela diz o caminho que funciona.
+    mostrarInstrucaoDeVinculo();
+  } catch {
+    mostrarInstrucaoDeVinculo();
+  }
+}
+
+function mostrarInstrucaoDeVinculo() {
+  const area = seletor('#qr-area');
+  pararRelogioDoQr();
+  if (!area) return;
+
+  area.innerHTML = [
+    '<div class="instrucao-vinculo">',
+    '<p><b>A vinculação é feita no servidor.</b></p>',
+    '<p>Com o celular da clínica em <b>WhatsApp → Aparelhos conectados → Conectar aparelho</b>, rode:</p>',
+    '<pre>ssh root@193.203.182.112\nvincular-whatsapp</pre>',
+    '<p class="nota">O código aparece no terminal, e o comando o renova sozinho enquanto ninguém escaneia. Ao terminar, feche esta janela: o estado acima se atualiza.</p>',
+    '</div>',
+  ].join('');
+}
+
+function pararRelogioDoQr() {
+  if (relogioDoQr) {
+    clearInterval(relogioDoQr);
+    relogioDoQr = null;
+  }
+}
+
+function fecharModalDoQr() {
+  pararRelogioDoQr();
+  const modal = seletor('#modal-qr');
+  if (modal) modal.hidden = true;
+  const imagem = seletor('#qr-imagem');
+  if (imagem) { imagem.hidden = true; imagem.removeAttribute('src'); }
+  pedirJson('/api/serena/canal/cancelar', { metodo: 'POST' }).catch(() => {});
+}
+
+async function conectarWhatsapp() {
+  const modal = seletor('#modal-qr');
+  if (!modal) return;
+
+  modal.hidden = false;
+  const aviso = seletor('#qr-aviso');
+  if (aviso) { aviso.hidden = false; aviso.textContent = 'gerando o código…'; }
+
+  await atualizarQr();
+  pararRelogioDoQr();
+  // Cinco segundos: o QR do WhatsApp costuma durar cerca de vinte, e recarregar
+  // antes disso mantém sempre um código válido na tela.
+  relogioDoQr = setInterval(atualizarQr, 5000);
+}
+
+document.addEventListener('click', (evento) => {
+  const alvo = evento.target.closest('button');
+  if (!alvo) return;
+  if (alvo.id === 'canal-conectar') conectarWhatsapp();
+  if (alvo.id === 'qr-fechar') fecharModalDoQr();
+});
+
+// Fechar com Esc: modal que só fecha no botão prende quem abriu por engano.
+document.addEventListener('keydown', (evento) => {
+  if (evento.key === 'Escape' && !seletor('#modal-qr')?.hidden) fecharModalDoQr();
+});

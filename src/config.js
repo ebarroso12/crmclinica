@@ -108,6 +108,19 @@ function carregarConfiguracao(ambiente = process.env) {
         canal: texto(ambiente.OPENCLAW_CANAL) || 'whatsapp',
         contaId: texto(ambiente.OPENCLAW_ACCOUNT_ID),
       },
+      // Gateway da instância da clínica: outro processo, outro token, outro
+      // WhatsApp. É por ele que os pacientes são atendidos, e é ele que o
+      // painel vincula pelo QR. Separado do de comando de propósito.
+      canalClinica: {
+        url: urlWebSocketValida(ambiente.OPENCLAW_CLINICA_GATEWAY_URL),
+        token: texto(ambiente.OPENCLAW_CLINICA_GATEWAY_TOKEN),
+        deviceToken: texto(ambiente.OPENCLAW_CLINICA_DEVICE_TOKEN),
+        chavePrivada: decodificarChave(ambiente.OPENCLAW_CLINICA_DEVICE_PRIVATE_KEY)
+          || decodificarChave(ambiente.OPENCLAW_DEVICE_PRIVATE_KEY),
+        identidadePath: texto(ambiente.OPENCLAW_DEVICE_IDENTITY_PATH)
+          || path.join(__dirname, '..', '.openclaw-identidade.json'),
+        timeoutMs: inteiro(ambiente.OPENCLAW_GATEWAY_TIMEOUT_MS, 30000),
+      },
       // Linha da clínica. Usada só para exibir no painel quando o canal ainda
       // não respondeu qual número está vinculado — nunca para decidir envio.
       numeroWhatsapp: texto(ambiente.WHATSAPP_BUSINESS_PHONE),

@@ -43,6 +43,31 @@ documentos/     material de referência do cliente (PRD, roadmap, schema)
 docs/           decisões e contratos deste repositório
 ```
 
+## Onde roda
+
+| Ambiente | Endereço |
+| --- | --- |
+| Produção | https://crmclinica.edsonbarrosojr.com.br |
+| Produção (endereço da Vercel) | https://crmclinica-nu.vercel.app |
+| Local | http://127.0.0.1:4100 |
+
+O domínio próprio depende de um registro DNS no provedor do domínio:
+`A crmclinica → 76.76.21.21`, ou `CNAME crmclinica → cname.vercel-dns.com`.
+
+```bash
+npm run verificar-dominio            # em qual etapa o domínio está
+npm run verificar-dominio -- --esperar   # acompanha a propagação
+```
+
+O comando separa três coisas que falham por motivos diferentes — o nome
+resolve, aponta para a Vercel, responde com HTTPS. Sem essa distinção, é fácil
+trocar o registro DNS quando o que falta é só o certificado ser emitido.
+
+O **worker de lembretes não roda na Vercel**: função serverless não mantém
+processo vivo, então a fila encheria sem nada sair. Ele roda como serviço no
+servidor do OpenClaw (`crmclinica-lembretes.service`), e é ele que faz as
+mensagens saírem.
+
 ## Como rodar
 
 Requer **Node.js 22 ou superior**. Única dependência: `pg`, o driver do PostgreSQL.

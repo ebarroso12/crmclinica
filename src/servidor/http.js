@@ -28,6 +28,7 @@ const { criarRotasDeLembretes } = require('./rotas-lembretes');
 const { criarServicoDeLembretes } = require('../dominio/lembretes-servico');
 const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes');
 const { criarRotasDaSerena } = require('./rotas-serena');
+const { criarVinculoDeCanal } = require('../integracoes/openclaw-vinculo');
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
@@ -132,6 +133,12 @@ function criarAplicacao(dependencias = {}) {
     || criarServicoDeAgenda({ repositorio, lembretes: lembretesLigados });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
   const rotasDeLembretes = criarRotasDeLembretes({ lembretes: servicoDeLembretes, repositorio });
+  // A vinculação fala com a instância da clínica — outro gateway, outro token,
+  // outro WhatsApp. Sem ela configurada, o painel mostra o botão desabilitado
+  // em vez de falhar quando alguém clica.
+  const vinculoDoCanal = dependencias.vinculoDoCanal
+    || (configuracao.openclaw.canalClinica.url ? criarVinculoDeCanal(configuracao.openclaw.canalClinica) : null);
+
   const rotasDaSerena = criarRotasDaSerena({
     serena: servicoDaSerena,
     // O adaptador é quem sabe falar com o gateway: reaproveitá-lo para o status
@@ -139,6 +146,7 @@ function criarAplicacao(dependencias = {}) {
     // onde as mensagens realmente saem.
     entregaDeLembretes,
     configuracao,
+    vinculo: vinculoDoCanal,
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
 
@@ -288,6 +296,9 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/prompts': () => rotasDaSerena.listarPrompts(usuario),
       'POST /api/serena/prompts': async () => rotasDaSerena.criarPrompt(usuario, await lerJson(req)),
       'GET /api/serena/regras': () => rotasDaSerena.listarRegras(usuario, url.searchParams),
+      'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
+      'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
+      'POST /api/serena/canal/cancelar': () => rotasDaSerena.cancelarVinculo(usuario),
       'POST /api/serena/regras': async () => rotasDaSerena.criarRegra(usuario, await lerJson(req)),
     };
 

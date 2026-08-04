@@ -527,6 +527,23 @@
           </article>
         </div>
 
+
+        <!-- Conexão do WhatsApp da clínica -->
+        <article class="card estreito" id="canal-card">
+          <div class="card-titulo">
+            <div>
+              <h3>WhatsApp da clínica</h3>
+              <p id="canal-descricao">verificando a conexão…</p>
+            </div>
+            <div class="linha-acoes" id="canal-acoes" hidden>
+              <button type="button" class="primario" id="canal-conectar">Conectar WhatsApp</button>
+            </div>
+          </div>
+          <p class="nota">
+            É o telefone por onde os pacientes falam com a Serena. Se a sessão cair — troca de
+            aparelho, celular desligado por dias —, reconecte por aqui.
+          </p>
+        </article>
         <!-- Interruptor global: só o admin vê os botões. -->
         <article class="card estreito" id="serena-controle" hidden>
           <div class="card-titulo">
@@ -859,5 +876,25 @@
   </div>
 
   <script src="/app.js"></script>
+
+  <!-- Vinculação do WhatsApp: o QR troca sozinho, então a tela o recarrega. -->
+  <div class="modal" id="modal-qr" hidden role="dialog" aria-modal="true" aria-labelledby="modal-qr-titulo">
+    <div class="modal-caixa">
+      <h3 id="modal-qr-titulo">Conectar o WhatsApp da clínica</h3>
+      <ol class="passos">
+        <li>Pegue o celular do número da clínica</li>
+        <li>Abra <b>WhatsApp → Aparelhos conectados</b></li>
+        <li>Toque em <b>Conectar aparelho</b> e aponte para o código</li>
+      </ol>
+      <div class="qr-area" id="qr-area">
+        <p class="vazio" id="qr-aviso">gerando o código…</p>
+        <img id="qr-imagem" alt="Código QR para conectar o WhatsApp" hidden>
+      </div>
+      <p class="nota" id="qr-nota">O código troca a cada poucos segundos — é normal.</p>
+      <div class="linha-acoes">
+        <button type="button" class="secundario" id="qr-fechar">Fechar</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

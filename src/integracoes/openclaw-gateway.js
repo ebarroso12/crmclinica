@@ -64,6 +64,15 @@ const PLATAFORMA = 'crmclinica';
 // do canal antes. Pedir mais que isso seria pedir poder que o lembrete não usa.
 const ESCOPOS = Object.freeze(['operator.read', 'operator.write']);
 
+/**
+ * Escopos para administrar o canal — vincular e desvincular o WhatsApp.
+ *
+ * Separados dos de envio de propósito: o worker de lembretes, que roda sozinho
+ * o dia inteiro, não precisa poder trocar o telefone da clínica. Quem precisa
+ * é a tela de configuração, e só quando o master clica em conectar.
+ */
+const ESCOPOS_DE_CANAL = Object.freeze(['operator.admin', 'operator.read', 'operator.write']);
+
 const PREFIXO_SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex');
 
 class ErroDeGateway extends Error {
@@ -212,6 +221,7 @@ function criarClienteGateway({
   timeoutMs = 20000,
   WebSocketImpl = globalThis.WebSocket,
   agora = () => Date.now(),
+  escopos = ESCOPOS,
 } = {}) {
   if (!url) throw new ErroDeGateway('gateway sem URL', 'gateway_sem_url', { permanente: true });
   if (!identidade) throw new ErroDeGateway('gateway sem identidade de dispositivo', 'gateway_sem_identidade', { permanente: true });
@@ -305,7 +315,7 @@ function criarClienteGateway({
       clientId: CLIENTE_ID,
       clientMode: CLIENTE_MODO,
       role: PAPEL,
-      scopes: ESCOPOS,
+      scopes: escopos,
       signedAtMs,
       token: tokenDaAssinatura,
       nonce: desafio.nonce,
@@ -328,7 +338,7 @@ function criarClienteGateway({
           ...(deviceToken ? { deviceToken } : {}),
         },
         role: PAPEL,
-        scopes: [...ESCOPOS],
+        scopes: [...escopos],
         device: {
           id: identidade.deviceId,
           publicKey: base64url(chavePublicaCrua(identidade.publicKeyPem)),
@@ -425,6 +435,7 @@ module.exports = {
   ErroDeGateway,
   PROTOCOLO,
   ESCOPOS,
+  ESCOPOS_DE_CANAL,
   PLATAFORMA,
   CLIENTE_ID,
   CLIENTE_MODO,

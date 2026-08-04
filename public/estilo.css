@@ -1278,3 +1278,66 @@ button.perigo:hover { background: #fecaca; }
 
 .marcador { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--apoio); }
 .marcador input { width: auto; }
+
+
+/* ---------------------------------------------------------------- modal do QR */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+
+.modal-caixa {
+  background: var(--superficie);
+  border-radius: 14px;
+  padding: 22px 24px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.25);
+}
+
+.modal-caixa h3 { margin: 0 0 12px; font-size: 18px; }
+
+.passos { margin: 0 0 16px; padding-left: 20px; font-size: 14px; color: var(--apoio); line-height: 1.7; }
+
+/* Altura fixa para o QR: sem ela, cada troca de código faz a caixa pular de
+   tamanho, e a pessoa perde a mira no meio do escaneamento. */
+.qr-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 264px;
+  background: #fff;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  margin-bottom: 10px;
+}
+
+.qr-area img { width: 248px; height: 248px; image-rendering: pixelated; }
+
+/* Instrução de vinculação: aparece quando o QR não pode ser trazido para a tela. */
+.instrucao-vinculo {
+  text-align: left;
+  line-height: 1.55;
+}
+
+.instrucao-vinculo pre {
+  background: #10202c;
+  color: #cfe8f5;
+  padding: 0.9rem 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.9rem;
+  margin: 0.8rem 0;
+}
+
+.instrucao-vinculo .nota {
+  color: #5b7183;
+  font-size: 0.85rem;
+}
