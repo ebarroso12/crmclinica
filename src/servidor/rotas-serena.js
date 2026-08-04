@@ -42,8 +42,8 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
     if (!host && !controle) return null;
 
     return {
-      titulo: 'A vinculação é feita na tela do OpenClaw.',
-      antes: 'No celular da clínica, abra WhatsApp → Aparelhos conectados → Conectar aparelho. Depois abra:',
+      titulo: 'Não foi possível gerar o código aqui.',
+      antes: 'O caminho normal é o QR desta janela. Se ele não veio, dá para vincular pela tela do OpenClaw:',
       // O link é o caminho de quem está na clínica: é um navegador, não um
       // terminal. O comando fica como segunda opção, para quem já tem SSH — e
       // some quando `OPENCLAW_SSH_HOST` não está configurado, porque instrução

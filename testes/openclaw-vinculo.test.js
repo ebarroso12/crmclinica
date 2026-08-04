@@ -61,14 +61,14 @@ test('canal já vinculado não abre assistente nenhum', async () => {
   assert.deepEqual(cliente.chamadas.map((c) => c.metodo), ['channels.status']);
 });
 
-test('obter o QR é só leitura: nunca inicia nem avança o assistente', async () => {
-  // O contrato que importa. `wizard.start` reiniciaria o assistente e trocaria o
-  // QR que a pessoa está no meio de escanear; `wizard.next` empurraria um
-  // assistente de configuração geral às cegas, sem resposta nenhuma preenchida.
-  // A cada 5 segundos, dezenas de vezes por vinculação.
+test('o QR vem de web.login.start — e o wizard nunca é tocado', async () => {
+  // O contrato que importa. `web.login.start` é idempotente enquanto o código
+  // está vivo: devolve o mesmo QR e diz "QR already active". Já `wizard.start`
+  // reiniciaria o assistente e trocaria o código no meio do escaneamento — a
+  // cada 5 segundos, dezenas de vezes por vinculação.
   const cliente = clienteFalso({
     'channels.status': canalDesvinculado,
-    'wizard.status': { step: { id: 'scanQr' }, qr: QR },
+    'web.login.start': { qrDataUrl: QR, message: 'Scan this QR in WhatsApp → Linked Devices.' },
   });
   const vinculo = criarVinculoDeCanal({}, { cliente });
 
@@ -77,7 +77,7 @@ test('obter o QR é só leitura: nunca inicia nem avança o assistente', async (
   assert.equal(resultado.qr, QR);
   assert.equal(resultado.vinculado, false);
   const metodos = cliente.chamadas.map((c) => c.metodo);
-  assert.deepEqual(metodos, ['channels.status', 'wizard.status']);
+  assert.deepEqual(metodos, ['channels.status', 'web.login.start']);
   assert.ok(!metodos.includes('wizard.start'), 'wizard.start altera estado e não pode ser chamado');
   assert.ok(!metodos.includes('wizard.next'), 'wizard.next altera estado e não pode ser chamado');
 });
@@ -89,7 +89,7 @@ test('recusa do gateway vira "sem QR", não falha — é o que libera a instruç
   for (const codigo of ['gateway_wizard_not_found', 'gateway_method_not_found', 'gateway_erro']) {
     const cliente = clienteFalso({
       'channels.status': canalDesvinculado,
-      'wizard.status': new ErroDeGateway('nenhum assistente aberto', codigo),
+      'web.login.start': new ErroDeGateway('nenhum assistente aberto', codigo),
     });
     const vinculo = criarVinculoDeCanal({}, { cliente });
 
@@ -102,7 +102,7 @@ test('falha de transporte propaga — a tela precisa saber que a pergunta não c
   for (const codigo of ['gateway_timeout', 'gateway_desconectado', 'gateway_indisponivel']) {
     const cliente = clienteFalso({
       'channels.status': canalDesvinculado,
-      'wizard.status': new ErroDeGateway('sem resposta', codigo),
+      'web.login.start': new ErroDeGateway('sem resposta', codigo),
     });
     const vinculo = criarVinculoDeCanal({}, { cliente });
 

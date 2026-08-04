@@ -4,40 +4,40 @@ const {
   criarClienteGateway, carregarOuCriarIdentidade, ErroDeGateway, ESCOPOS_DE_CANAL,
 } = require('./openclaw-gateway');
 
-// Estado do WhatsApp da clínica, para o painel.
+// Vinculação do WhatsApp da clínica, pelo painel.
 //
-// ----------------------------------------------------------- o que isto NÃO faz
+// --------------------------------------------------------------- o que faz
 //
-// Não vincula — e isto foi **medido** contra o gateway 2026.7.1-2, sondando com
-// os escopos de administração, não suposto:
+// O método é `web.login.start`, e ele devolve `{ qrDataUrl, message }` — o QR
+// pronto, como PNG em data URL. O painel mostra, a pessoa escaneia, acabou.
 //
-//   • a lista de métodos vem no `hello`, e não há `channels.login`, `.link`,
-//     `.pair` nem `.qr` — o gateway responde "unknown method" a todos;
-//   • `channels.start` devolve `started: false` enquanto `linked` é falso, e
-//     nenhum evento de QR sai depois (só `health` e `tick`);
-//   • o esquema de `channels.whatsapp` não tem campo algum de vínculo;
-//   • `wizard.*` é o assistente de configuração geral e trava numa nota com
-//     `executor: "client"` — espera ser executado pela interface do OpenClaw,
-//     não por RPC. Foi essa a pista que explicou todo o resto.
+// Duas rodadas anteriores concluíram que "o gateway não expõe vinculação". A
+// conclusão era falsa, e vale registrar como se erra assim: a lista de métodos
+// vem no `hello` e tem **220 nomes**; a primeira sondagem imprimiu os primeiros
+// ~150 e eu li a lista truncada como se fosse inteira. `web.login.start` e
+// `web.login.wait` estavam logo depois do corte.
 //
-// Quem vincula é a interface **OpenClaw Control**, servida pela própria
-// instância (ver `urlDoControle`): o QR aparece lá, num navegador, sem terminal.
-// O comando `vincular-whatsapp` faz o mesmo, e serve a quem já tem SSH.
+// O que de fato não existe: `channels.login`, `.link`, `.pair`, `.qr` — o
+// gateway responde "unknown method". E `wizard.*` é o assistente de
+// configuração geral, que trava numa nota com `executor: "client"`. Procurar
+// pelo nome errado durante duas rodadas foi o custo de não ter lido a lista até
+// o fim logo na primeira.
 //
-// Este módulo apenas **lê**: diz qual telefone está conectado, e devolve o QR se
-// algum dia o gateway passar a publicá-lo.
+// `channels.logout` existe, para desvincular — ainda não usado aqui.
 //
-// ------------------------------------------------------- por que só leitura
+// --------------------------------------------- por que a tela pode repetir
 //
-// A tela repete a consulta a cada 5s. Qualquer chamada que altere estado seria
-// executada dezenas de vezes por vinculação: `wizard.start` reiniciaria o
-// assistente e trocaria o QR que a pessoa está no meio de escanear, e
-// `wizard.next` empurraria o assistente às cegas, sem resposta preenchida.
+// A tela pede o QR a cada 5s. Isso só é seguro porque `web.login.start` é
+// idempotente enquanto o código está vivo: devolve o mesmo `qrDataUrl` e diz
+// "QR already active". Foi medido — duas chamadas seguidas retornam a mesma
+// string.
 //
-// Pelo mesmo motivo não há `cancelar`: cancelar um assistente que este módulo
-// nunca abriu só poderia derrubar o de outra pessoa — na prática, o do admin com
-// o `vincular-whatsapp` rodando no terminal, no exato momento em que ele fecha a
-// janela do navegador.
+// É exatamente o que o `wizard.*` não fazia: lá, chamar de novo reiniciava o
+// assistente e trocava o código no meio do escaneamento.
+//
+// Não há `cancelar`. O QR expira sozinho, e um cancelamento disparado ao fechar
+// a janela derrubaria também o login que outra pessoa tivesse aberto pela
+// interface do OpenClaw.
 
 /**
  * Falhas de transporte: a pergunta não chegou ao gateway, ou a resposta não
@@ -156,43 +156,42 @@ function criarVinculoDeCanal(configuracao = {}, dependencias = {}) {
     },
 
     /**
-     * Devolve o QR do momento, se houver um assistente aberto publicando um.
+     * Abre o login do WhatsApp Web e devolve o QR — o de verdade, para escanear.
      *
-     * Não abre nada: quem abre é o `vincular-whatsapp` no servidor. Chamar de
-     * novo é seguro e esperado — é como a tela acompanharia a troca do código,
-     * que expira em segundos, sem o operador perceber.
-     *
-     * Sem QR, a resposta é `{ vinculado: false, qr: null }` e a rota completa
-     * com o passo a passo manual. Esse é o caminho normal hoje, não o de exceção.
+     * `web.login.start` devolve `{ qrDataUrl, message }`, com o QR já pronto
+     * como PNG em data URL. Chamar de novo **não** reinicia nada: enquanto o
+     * código está vivo, o gateway devolve o mesmo e responde "QR already
+     * active". É isso que torna o polling da tela seguro — e é a diferença
+     * entre este método e o `wizard.*`, que reiniciava o assistente a cada
+     * chamada e trocava o código no meio do escaneamento.
      */
     async obterQr() {
       const gateway = conectar();
 
-      // Já vinculado não tem QR a mostrar, e a pergunta seguinte seria inútil.
+      // Já vinculado não tem QR a mostrar, e abrir o login derrubaria a sessão.
       const atual = await this.estado();
       if (atual.vinculado) return { vinculado: true, qr: null, ...atual };
 
-      let passo = null;
+      let login = null;
       try {
-        passo = await gateway.chamar('wizard.status', {});
+        login = await gateway.chamar('web.login.start', {});
       } catch (erro) {
-        // "Não consegui perguntar" e "perguntei, e não há assistente aberto" são
-        // respostas opostas, e só a primeira é falha. Distinguir pelo prefixo
-        // `gateway_` não serve: o cliente carimba esse mesmo prefixo em cima do
-        // código que o gateway devolveu, então uma recusa de aplicação — método
-        // inexistente, nenhum wizard aberto — sairia daqui como 503, escondendo
-        // a instrução manual, que é justamente o caminho que funciona hoje.
+        // "Não consegui perguntar" e "perguntei, e o gateway recusou" são
+        // respostas opostas, e só a primeira é indisponibilidade. Distinguir
+        // pelo prefixo `gateway_` não serve: o cliente carimba esse mesmo
+        // prefixo em cima do código que o gateway devolveu, então uma recusa de
+        // aplicação sairia daqui como 503 e esconderia o caminho manual.
         if (FALHAS_DE_TRANSPORTE.has(erro.codigo)) throw erro;
         return { vinculado: false, qr: null };
       }
 
-      const qr = extrairQr(passo);
+      const qr = extrairQr(login);
 
       return {
         vinculado: false,
         qr,
-        passo: passo?.step?.id ?? passo?.id ?? null,
-        ...(qr ? {} : { motivo: 'o gateway não devolveu um QR neste passo' }),
+        mensagem: login?.message ?? null,
+        ...(qr ? {} : { motivo: 'o gateway não devolveu um QR desta vez' }),
       };
     },
 
