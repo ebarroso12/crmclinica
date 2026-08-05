@@ -22,7 +22,7 @@ const { ehPedidoDeOptOut } = require('./lembretes');
  *   serviço, vale só a regra por conversa — que é como o sistema funcionava
  *   antes de o interruptor existir.
  */
-function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes = null, serena = null }) {
+function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null }) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -266,9 +266,58 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
     if (!privada) {
       const conversa = await repositorio.obterConversa(conversaId);
       if (!conversa.assumida_por_humano) await assumir(conversaId, usuarioId);
+
+      // A resposta precisa chegar ao paciente. Sem este envio, ela ficava
+      // gravada no CRM e nunca saía — a equipe respondia, via a mensagem na
+      // tela, e do outro lado ninguém recebia nada.
+      const entrega = await entregarAoPaciente(conversa, texto, mensagem.id);
+      if (!entrega.enviada) {
+        // A mensagem já está gravada. O que falta é a tela saber que ela não
+        // saiu — sem isso, quem respondeu fica esperando resposta de alguém que
+        // nunca recebeu nada.
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversaId,
+          acao: 'resposta_nao_entregue',
+          detalhe: { mensagem_id: mensagem.id, motivo: entrega.motivo },
+          usuarioId,
+        }).catch(() => {});
+
+        return { ...mensagem, enviada: false, motivo_falha: entrega.motivo };
+      }
+
+      return { ...mensagem, enviada: true, id_externo: entrega.identificador ?? null };
     }
 
     return mensagem;
+  }
+
+  /**
+   * Entrega ao paciente pelo canal de onde a conversa veio.
+   *
+   * Falha de envio não desfaz o registro: a resposta da equipe é um fato que
+   * aconteceu, e apagá-la esconderia da própria equipe o que ela já escreveu.
+   * O que muda é a marca — enviada ou não —, para a tela poder dizer a verdade.
+   */
+  async function entregarAoPaciente(conversa, texto, mensagemId) {
+    if (!canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
+
+    try {
+      const contato = await repositorio.obterContato(conversa.contato_id);
+      if (!contato?.telefone) return { enviada: false, motivo: 'contato_sem_telefone' };
+
+      const resultado = await canal.enviar({
+        telefone: contato.telefone,
+        texto,
+        // Determinística: um clique duplo, ou uma retentativa da rede, não faz
+        // o paciente receber a mesma resposta duas vezes.
+        chave: `equipe:${conversa.id}:${mensagemId}`,
+      });
+
+      return { enviada: true, identificador: resultado?.identificador ?? null };
+    } catch (erro) {
+      return { enviada: false, motivo: erro.message };
+    }
   }
 
   async function escalonar(conversaId, motivo) {

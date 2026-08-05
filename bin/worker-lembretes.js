@@ -40,6 +40,11 @@ const { sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena } = require('../s
 const { decidirAtendimento } = require('../src/dominio/sincronia-serena');
 const { criarVinculoDeCanal } = require('../src/integracoes/openclaw-vinculo');
 const { conferirConexao } = require('../src/dados/conferir-conexao');
+const { criarSincronizadorDeConversas } = require('../src/dominio/sincronia-conversas');
+const { criarAtendimento } = require('../src/dominio/atendimento');
+const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
+const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
+const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('../src/integracoes/openclaw-gateway');
 const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 
@@ -174,6 +179,48 @@ async function main() {
     }
   }
 
+
+  // Traz para o CRM as conversas que acontecem no WhatsApp. O OpenClaw desta
+  // versao nao expoe webhook de saida, entao a leitura e por consulta:
+  // sessions.list devolve as conversas, chat.history as mensagens de cada uma.
+  //
+  // Fica no worker porque ele ja vive conectado ao gateway e ja roda a cada
+  // minuto — e porque a Vercel dorme entre requisicoes e nunca leria sozinha.
+  const conversasDoCanal = configuracao.openclaw.canalClinica?.url
+    ? criarSincronizadorDeConversas({
+      gateway: criarClienteGateway({
+        url: configuracao.openclaw.canalClinica.url,
+        token: configuracao.openclaw.canalClinica.token || null,
+        deviceToken: configuracao.openclaw.canalClinica.deviceToken || null,
+        identidade: carregarOuCriarIdentidade(
+          configuracao.openclaw.canalClinica.identidadePath,
+          configuracao.openclaw.canalClinica.chavePrivada,
+        ),
+        timeoutMs: 45000,
+        escopos: ESCOPOS_DE_CANAL,
+      }),
+      atendimento: criarAtendimento({
+        repositorio,
+        orquestrador: null,
+        leads: criarServicoDeLeads({ repositorio }),
+        lembretes,
+        serena: servicoDaSerena,
+        canal: criarCanalDeConversas(configuracao.openclaw.canalClinica),
+      }),
+      repositorio,
+      registrar: (mensagem, dados) => console.error(`[conversas] ${mensagem}`, JSON.stringify(dados)),
+    })
+    : null;
+
+  async function sincronizarConversas() {
+    if (!conversasDoCanal) return;
+    try {
+      await conversasDoCanal.sincronizar();
+    } catch (erro) {
+      // Falha aqui não pode parar a fila de lembretes que já estava pronta.
+      console.error(`[conversas] sincronia falhou: ${erro.message}`);
+    }
+  }
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
     // ciclos se sobreporem dentro do mesmo processo.
@@ -210,7 +257,11 @@ async function main() {
     return;
   }
 
-  const cicloCompleto = async () => { await sincronizarSerena(); await umLote(); };
+  const cicloCompleto = async () => {
+    await sincronizarSerena();
+    await sincronizarConversas();
+    await umLote();
+  };
 
   const relogioDaVarredura = setInterval(varreduraSemanal, UMA_SEMANA);
   relogioDaVarredura.unref();

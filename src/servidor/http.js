@@ -35,6 +35,7 @@ const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
 const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
 const { criarPoliticaDoCanal } = require('../integracoes/openclaw-politica');
+const { criarCanalDeConversas } = require('../integracoes/canal-conversas');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -114,6 +115,10 @@ function criarAplicacao(dependencias = {}) {
     repositorio, serena: servicoDaSerena, configuracao,
   });
 
+  const canalDeConversas = dependencias.canalDeConversas
+    || (configuracao.openclaw.canalClinica.url
+      ? criarCanalDeConversas(configuracao.openclaw.canalClinica) : null);
+
   const atendimento = dependencias.atendimento
     || criarAtendimento({
       repositorio,
@@ -121,6 +126,7 @@ function criarAplicacao(dependencias = {}) {
       leads: servicoDeLeads,
       lembretes: lembretesLigados,
       serena: servicoDaSerena,
+      canal: canalDeConversas,
     });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
