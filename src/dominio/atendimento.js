@@ -271,6 +271,12 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       // gravada no CRM e nunca saía — a equipe respondia, via a mensagem na
       // tela, e do outro lado ninguém recebia nada.
       const entrega = await entregarAoPaciente(conversa, texto, mensagem.id);
+
+      // Instalação sem canal não é falha de envio: é um sistema que nunca
+      // prometeu entregar. Alarmar aqui faria a tela gritar em todo ambiente de
+      // desenvolvimento, e o alarme que soa sempre deixa de ser lido.
+      if (entrega.motivo === 'canal_nao_configurado') return mensagem;
+
       if (!entrega.enviada) {
         // A mensagem já está gravada. O que falta é a tela saber que ela não
         // saiu — sem isso, quem respondeu fica esperando resposta de alguém que

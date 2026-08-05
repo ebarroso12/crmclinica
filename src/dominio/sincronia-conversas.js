@@ -1,34 +1,34 @@
 'use strict';
 
 const { validarEvento } = require('../contratos/evento');
+const { normalizarTelefone } = require('./serena');
 
 // Traz para o CRM as conversas que acontecem no WhatsApp.
 //
 // O circuito estava aberto: o paciente escrevia, o OpenClaw entregava à Serena,
 // ela respondia — e o CRM nunca ficava sabendo. A aba Conversas ficava vazia, o
-// funil não se alimentava, ninguém virava contato, e a equipe não tinha como
-// assumir um atendimento pelo painel. Duas metades do mesmo sistema, sem fio
-// entre elas.
+// funil não se alimentava, e a equipe não tinha como assumir um atendimento.
 //
 // Esta versão do OpenClaw não expõe webhook de saída. O caminho que existe é
-// perguntar: `sessions.list` devolve as conversas, `chat.history` devolve as
-// mensagens de cada uma. O worker já vive conectado ao gateway, então a leitura
-// entra no ciclo que já roda.
+// perguntar: `sessions.list` devolve as conversas, `chat.history` as mensagens.
 //
 // ------------------------------------------------------------------ garantias
 //
-// **Nada é duplicado.** Cada mensagem entra pelo contrato de eventos, com um
-// `id_externo` estável derivado da sessão e da posição da mensagem. A
-// idempotência do contrato — `sha256(versão|canal|tipo|id_externo)` — recusa a
-// segunda entrada da mesma mensagem, e é isso que permite reler o histórico
-// inteiro a cada ciclo sem encher o inbox de repetições.
+// **Identidade vem do gateway, não da posição.** Cada mensagem traz
+// `__openclaw.id`, estável entre leituras. A primeira versão usava o índice no
+// array — que parece fixo e não é: basta a janela do histórico ser limitada ou a
+// sessão ser compactada para todos os índices deslizarem, e aí a conversa
+// inteira reentra como nova, refazendo leads e reaplicando opt-outs antigos.
 //
-// **A resposta da Serena entra como mensagem dela**, não do paciente. Sem essa
-// separação, a equipe abriria a conversa e leria o paciente dizendo coisas que
-// nunca disse.
+// **Só `user` é o paciente.** O histórico traz `assistant`, `toolResult`,
+// `system`. Tratar tudo que não é resposta como fala do paciente gravaria
+// resultado de ferramenta como se ele tivesse escrito — e o texto passaria pelo
+// detector de "PARAR", podendo desligar os lembretes de quem não pediu nada.
 //
-// **Falha de uma conversa não impede as outras.** Uma sessão com histórico
-// corrompido não pode travar a sincronização de todas as demais.
+// **O que o CRM mandou não volta como novidade.** A resposta da equipe sai pelo
+// gateway e reaparece no histórico na leitura seguinte. Sem barrar, ela seria
+// gravada de novo, atribuída à Serena — a equipe veria a própria mensagem duas
+// vezes, uma delas assinada por quem não a escreveu.
 
 /** Só as sessões que vieram do WhatsApp. As do painel são ensaio, não paciente. */
 function ehDoWhatsapp(sessao) {
@@ -37,27 +37,37 @@ function ehDoWhatsapp(sessao) {
 }
 
 /**
- * O telefone de quem escreveu, em E.164 sem o `+`.
+ * O telefone de quem escreveu.
  *
- * O contrato guarda assim, e é como o resto do sistema compara telefone. Deixar
- * o `+` passar criaria dois contatos para a mesma pessoa — um com, outro sem.
+ * Usa o mesmo normalizador do resto do sistema. Uma normalização própria aqui
+ * criaria um segundo contato para o paciente já cadastrado — um com código de
+ * país, outro sem — e ninguém perceberia até a ficha aparecer duplicada.
  */
 function telefoneDaSessao(sessao) {
   const bruto = sessao?.origin?.from ?? sessao?.displayName ?? '';
-  const digitos = String(bruto).replace(/\D+/g, '');
-  return digitos.length >= 10 ? digitos : null;
+
+  // Grupo não é paciente. O JID de grupo passa em qualquer teste de tamanho, e
+  // sem esta linha um grupo viraria contato com vinte dígitos de telefone.
+  if (/@g\.us|-\d{6,}$/.test(String(bruto))) return null;
+
+  try {
+    return normalizarTelefone(bruto);
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Identificador estável de uma mensagem dentro da conversa.
+ * Identificador estável da mensagem, para a idempotência do contrato.
  *
- * Precisa ser o mesmo em toda releitura, ou a idempotência não reconheceria a
- * mensagem já gravada e ela entraria de novo a cada ciclo. Por isso usa a
- * posição — que não muda — e não o instante, que o gateway reescreve.
+ * Sem `__openclaw.id` não há como reconhecer a mensagem numa releitura — e
+ * inventar um identificador faria mensagens de pacientes diferentes colidirem
+ * no mesmo índice e serem descartadas como duplicadas. Devolver `null` faz a
+ * mensagem ser pulada, que é a única saída honesta.
  */
-function idDaMensagem(sessao, indice) {
-  const sufixo = sessao.sessionId ?? sessao.key ?? 'sessao';
-  return `wa:${sufixo}:${indice}`;
+function idDaMensagem(mensagem) {
+  const id = mensagem?.__openclaw?.id;
+  return id ? `wa:${id}` : null;
 }
 
 function textoDaMensagem(mensagem) {
@@ -73,23 +83,40 @@ function textoDaMensagem(mensagem) {
   return '';
 }
 
+/**
+ * O instante da mensagem, quando dá para confiar nele.
+ *
+ * `new Date(x).toISOString()` estoura com `RangeError` em qualquer valor que o
+ * `Date` não entenda. Se isso acontecesse dentro do laço, a mensagem seria
+ * recusada e descartada — em toda leitura, para sempre, enquanto a
+ * sincronização relatasse sucesso.
+ */
+function instanteDaMensagem(mensagem) {
+  const bruto = mensagem?.timestamp;
+  if (bruto === null || bruto === undefined) return null;
+
+  const data = new Date(typeof bruto === 'string' && /^\d+$/.test(bruto) ? Number(bruto) : bruto);
+  return Number.isNaN(data.getTime()) ? null : data.toISOString();
+}
+
 function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, registrar = null }) {
   if (!gateway) throw new Error('sincronizador de conversas exige o gateway');
   if (!atendimento) throw new Error('sincronizador de conversas exige o atendimento');
   if (!repositorio) throw new Error('sincronizador de conversas exige o repositório');
 
-  /**
-   * Grava a resposta que a Serena já deu no WhatsApp.
-   *
-   * Entra como saída da automação, no mesmo histórico que a equipe lê — e não
-   * dispara envio nenhum: a mensagem já foi entregue ao paciente pelo OpenClaw.
-   * Reenviar aqui faria o paciente receber tudo de novo a cada sincronização.
-   */
-  async function registrarRespostaDaSerena({ telefone, texto, idExterno }) {
+  /** Grava uma resposta que já foi entregue ao paciente — pela Serena ou pela equipe. */
+  async function registrarSaida({ telefone, texto, idExterno }) {
     const contato = await repositorio.encontrarOuCriarContato({
       telefone, nome: null, canal: 'whatsapp',
     });
     const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+
+    // Eco do que o próprio CRM enviou: a resposta da equipe volta no histórico
+    // como saída do agente. Regravá-la duplicaria a mensagem na tela, com a
+    // segunda cópia assinada pela Serena em vez de por quem escreveu.
+    if (await repositorio.existeSaidaComTexto?.(conversa.id, texto)) {
+      return false;
+    }
 
     const { duplicada } = await repositorio.registrarMensagem(conversa.id, {
       direcao: 'saida',
@@ -105,27 +132,31 @@ function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, regi
 
   async function sincronizarUma(sessao) {
     const telefone = telefoneDaSessao(sessao);
-    if (!telefone) return { ignorada: true, motivo: 'sessão sem telefone' };
+    if (!telefone) return { ignorada: true, motivo: 'sessão sem telefone utilizável' };
 
     const historico = await gateway.chamar('chat.history', { sessionKey: sessao.key });
     const mensagens = Array.isArray(historico?.messages) ? historico.messages : [];
 
     let gravadas = 0;
 
-    for (let indice = 0; indice < mensagens.length; indice += 1) {
-      const mensagem = mensagens[indice];
+    for (const mensagem of mensagens) {
+      // `toolResult`, `system` e afins são mecânica interna do agente, não
+      // conversa. Só o que o paciente escreveu e o que a Serena respondeu.
+      const papel = mensagem?.role;
+      if (papel !== 'user' && papel !== 'assistant') continue;
+
       const texto = textoDaMensagem(mensagem);
       if (!texto) continue;
 
-      const idExterno = idDaMensagem(sessao, indice);
+      const idExterno = idDaMensagem(mensagem);
+      if (!idExterno) {
+        registrar?.('mensagem sem identificador do gateway', { sessao: sessao.key });
+        continue;
+      }
 
       try {
-        if (mensagem.role === 'assistant') {
-          // A resposta da Serena entra como saída da automação. Passá-la por
-          // `receberMensagem` a gravaria como `autor_tipo: 'contato'` — e a
-          // equipe abriria o inbox lendo o paciente dizer o que a Serena disse.
-          const gravou = await registrarRespostaDaSerena({ telefone, texto, idExterno, mensagem });
-          if (gravou) gravadas += 1;
+        if (papel === 'assistant') {
+          if (await registrarSaida({ telefone, texto, idExterno })) gravadas += 1;
           continue;
         }
 
@@ -142,61 +173,86 @@ function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, regi
             : null,
           texto,
           origem: 'whatsapp',
-          ocorrido_em: mensagem.timestamp ? new Date(mensagem.timestamp).toISOString() : null,
+          ocorrido_em: instanteDaMensagem(mensagem),
         });
 
         const resultado = await atendimento.receberMensagem(evento);
         if (resultado?.acao !== 'mensagem_duplicada') gravadas += 1;
       } catch (erro) {
-        // Uma mensagem que o contrato recusa — texto vazio depois de limpar,
-        // telefone estranho — não pode interromper as outras da mesma conversa.
-        registrar?.('mensagem recusada', { sessao: sessao.key, indice, erro: erro.message });
+        // Uma mensagem que o contrato recusa não pode interromper as outras da
+        // mesma conversa.
+        registrar?.('mensagem recusada', { sessao: sessao.key, erro: erro.message });
       }
     }
 
     return { telefone, mensagens: mensagens.length, gravadas };
   }
 
+  let emAndamento = false;
+
   return {
     /**
      * Lê as conversas do WhatsApp e as traz para o CRM.
      *
-     * Relê o histórico inteiro de cada conversa a cada ciclo, de propósito: é
-     * mais simples e mais seguro que guardar marcador de posição, e a
-     * idempotência do contrato torna a releitura barata — mensagem já gravada é
-     * recusada antes de tocar o banco.
+     * Uma passada por vez: cada ciclo faz uma chamada por conversa, e o ciclo do
+     * worker é de um minuto. Duas passadas simultâneas disputariam
+     * `encontrarOuCriarConversaAberta`, que é SELECT seguido de INSERT — e o
+     * resultado seriam duas conversas abertas para o mesmo paciente, com as
+     * mensagens divididas entre elas.
      */
     async sincronizar() {
-      const lista = await gateway.chamar('sessions.list', {});
-      const sessoes = (lista?.sessions ?? lista?.entries ?? lista?.items ?? [])
-        .filter(ehDoWhatsapp);
+      if (emAndamento) return { pulada: true, motivo: 'sincronização anterior ainda rodando' };
+      emAndamento = true;
 
-      let conversas = 0;
-      let gravadas = 0;
-      const falhas = [];
+      try {
+        const lista = await gateway.chamar('sessions.list', {});
+        const todas = lista?.sessions ?? lista?.entries ?? lista?.items ?? [];
+        const sessoes = todas.filter(ehDoWhatsapp);
 
-      for (const sessao of sessoes) {
-        try {
-          const resultado = await sincronizarUma(sessao);
-          if (!resultado.ignorada) {
-            conversas += 1;
-            gravadas += resultado.gravadas;
-          }
-        } catch (erro) {
-          // Uma conversa com histórico corrompido não pode travar as demais.
-          falhas.push({ sessao: sessao.key, erro: erro.message });
+        // Nenhuma sessão de WhatsApp entre várias sessões é sinal de que o
+        // formato mudou — e silêncio aqui faria a função virar um nada que
+        // ninguém percebe.
+        if (todas.length > 0 && sessoes.length === 0) {
+          registrar?.('nenhuma sessão de WhatsApp reconhecida', { total: todas.length });
         }
-      }
 
-      if (gravadas > 0) {
-        console.log(`[conversas] ${gravadas} mensagem(ns) nova(s) em ${conversas} conversa(s)`);
-      }
+        let conversas = 0;
+        let gravadas = 0;
+        const falhas = [];
 
-      return { conversas, gravadas, falhas, sessoes: sessoes.length };
+        for (const sessao of sessoes) {
+          try {
+            const resultado = await sincronizarUma(sessao);
+            if (!resultado.ignorada) {
+              conversas += 1;
+              gravadas += resultado.gravadas;
+            }
+          } catch (erro) {
+            // Uma conversa com histórico corrompido não pode travar as demais.
+            falhas.push({ sessao: sessao.key, erro: erro.message });
+          }
+        }
+
+        if (gravadas > 0) {
+          console.log(`[conversas] ${gravadas} mensagem(ns) nova(s) em ${conversas} conversa(s)`);
+        }
+        if (falhas.length > 0) {
+          registrar?.('conversas que falharam', { quantas: falhas.length, primeira: falhas[0] });
+        }
+
+        return { conversas, gravadas, falhas, sessoes: sessoes.length };
+      } finally {
+        emAndamento = false;
+      }
     },
   };
 }
 
 module.exports = {
-  criarSincronizadorDeConversas, ehDoWhatsapp, telefoneDaSessao, idDaMensagem, textoDaMensagem,
+  criarSincronizadorDeConversas,
+  ehDoWhatsapp,
+  telefoneDaSessao,
+  idDaMensagem,
+  textoDaMensagem,
+  instanteDaMensagem,
 };

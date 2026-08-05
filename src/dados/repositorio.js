@@ -968,6 +968,28 @@ function criarRepositorio(pool) {
      * fila que parou de ser processada — o sintoma mais direto de worker fora do
      * ar, e o único que ninguém percebe até um paciente não receber o lembrete.
      */
+    /**
+     * Já existe uma saída com este texto nesta conversa?
+     *
+     * A resposta que a equipe manda pelo painel sai pelo gateway e reaparece no
+     * histórico do OpenClaw na leitura seguinte, como saída do agente. Sem esta
+     * pergunta, a sincronização a gravaria de novo — e a equipe veria a própria
+     * mensagem duas vezes, a segunda assinada pela Serena.
+     *
+     * A janela é curta porque o eco chega em minutos: uma frase repetida de
+     * propósito daqui a uma hora ("Bom dia!") é mensagem nova, e deve entrar.
+     */
+    async existeSaidaComTexto(conversaId, texto) {
+      const { rows } = await consultar(
+        `SELECT 1 FROM mensagens
+          WHERE conversa_id = $1 AND direcao = 'saida' AND conteudo = $2
+            AND criado_em > now() - interval '30 minutes'
+          LIMIT 1`,
+        [conversaId, texto],
+      );
+      return rows.length > 0;
+    },
+
     async resumirFilaDeLembretes() {
       const { rows } = await consultar(
         `SELECT

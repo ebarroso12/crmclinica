@@ -1,6 +1,7 @@
 'use strict';
 
 const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('./openclaw-gateway');
+const { normalizarTelefone } = require('../dominio/serena');
 
 // Envio de mensagem da equipe para o paciente, pelo WhatsApp da clínica.
 //
@@ -43,9 +44,13 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
       const gateway = conectar();
       if (!gateway) throw new Error('canal do WhatsApp não configurado');
 
+      // O contato guarda o telefone como o canal o entregou, e isso inclui
+      // mascara. Normalizar aqui evita mandar para um numero que nao existe.
+      const destino = normalizarTelefone(telefone);
+
       const resposta = await gateway.chamar('send', {
         channel: 'whatsapp',
-        to: telefone.startsWith('+') ? telefone : `+${telefone}`,
+        to: destino.startsWith('+') ? destino : `+${destino}`,
         message: texto,
         idempotencyKey: chave,
       });

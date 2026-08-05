@@ -146,10 +146,21 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
         privada,
       });
 
+      // Dizer "enviada" quando o envio falhou é o pior desfecho possível: quem
+      // respondeu vai embora achando que resolveu, e o paciente continua sem
+      // resposta. A tela precisa saber a diferença.
+      const naoSaiu = mensagem?.enviada === false;
+
       return {
         mensagem,
+        enviada: privada ? null : mensagem?.enviada !== false,
+        ...(naoSaiu ? { motivo_falha: mensagem.motivo_falha ?? null } : {}),
         // Responder assume a conversa: é o gesto que diz "eu cuido deste".
-        detalhe: privada ? 'Nota interna registrada.' : 'Mensagem enviada. A resposta automática está pausada.',
+        detalhe: privada
+          ? 'Nota interna registrada.'
+          : (naoSaiu
+            ? 'A mensagem foi gravada, mas NÃO chegou ao paciente. Verifique o WhatsApp e reenvie.'
+            : 'Mensagem enviada. A resposta automática está pausada.'),
       };
     },
 

@@ -186,8 +186,13 @@ async function main() {
   //
   // Fica no worker porque ele ja vive conectado ao gateway e ja roda a cada
   // minuto — e porque a Vercel dorme entre requisicoes e nunca leria sozinha.
-  const conversasDoCanal = configuracao.openclaw.canalClinica?.url
-    ? criarSincronizadorDeConversas({
+  let conversasDoCanal = null;
+  function montarLeitorDeConversas() {
+    if (conversasDoCanal !== null) return conversasDoCanal;
+    if (!configuracao.openclaw.canalClinica?.url) return (conversasDoCanal = false);
+
+    try {
+      conversasDoCanal = criarSincronizadorDeConversas({
       gateway: criarClienteGateway({
         url: configuracao.openclaw.canalClinica.url,
         token: configuracao.openclaw.canalClinica.token || null,
@@ -208,14 +213,22 @@ async function main() {
         canal: criarCanalDeConversas(configuracao.openclaw.canalClinica),
       }),
       repositorio,
-      registrar: (mensagem, dados) => console.error(`[conversas] ${mensagem}`, JSON.stringify(dados)),
-    })
-    : null;
+        registrar: (m, d) => console.error(`[conversas] ${m}`, JSON.stringify(d)),
+      });
+    } catch (erro) {
+      // Sem leitura de conversas o worker ainda entrega lembretes, que e a
+      // razao de ele existir. Derrubar tudo por isto seria pior.
+      console.error(`[conversas] leitor indisponivel: ${erro.message}`);
+      conversasDoCanal = false;
+    }
+    return conversasDoCanal;
+  }
 
   async function sincronizarConversas() {
-    if (!conversasDoCanal) return;
+    const leitor = montarLeitorDeConversas();
+    if (!leitor) return;
     try {
-      await conversasDoCanal.sincronizar();
+      await leitor.sincronizar();
     } catch (erro) {
       // Falha aqui não pode parar a fila de lembretes que já estava pronta.
       console.error(`[conversas] sincronia falhou: ${erro.message}`);
@@ -257,10 +270,17 @@ async function main() {
     return;
   }
 
+  let cicloEmAndamento = false;
   const cicloCompleto = async () => {
-    await sincronizarSerena();
-    await sincronizarConversas();
-    await umLote();
+    if (cicloEmAndamento) return;
+    cicloEmAndamento = true;
+    try {
+      await sincronizarSerena();
+      await sincronizarConversas();
+      await umLote();
+    } finally {
+      cicloEmAndamento = false;
+    }
   };
 
   const relogioDaVarredura = setInterval(varreduraSemanal, UMA_SEMANA);
