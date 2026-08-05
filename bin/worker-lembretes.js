@@ -44,6 +44,7 @@ const { criarSincronizadorDeConversas } = require('../src/dominio/sincronia-conv
 const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
 const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
+const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
 const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('../src/integracoes/openclaw-gateway');
 const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
@@ -234,6 +235,30 @@ async function main() {
       console.error(`[conversas] sincronia falhou: ${erro.message}`);
     }
   }
+
+  // Resumo do atendimento para a equipe. Fica no worker porque o gatilho e o
+  // silencio: ninguem se despede no WhatsApp, e so um processo que roda sozinho
+  // percebe que a conversa esfriou.
+  const resumoParaEquipe = criarResumoDeAtendimento({
+    repositorio,
+    canal: configuracao.openclaw.canalClinica?.url
+      ? criarCanalDeConversas(configuracao.openclaw.canalClinica) : null,
+    destinatarios: configuracao.resumoDeAtendimento.destinatarios,
+    silencioMin: configuracao.resumoDeAtendimento.silencioMin,
+  });
+
+  if (!resumoParaEquipe.ativo) {
+    console.warn('[resumo] sem destinatarios configurados: a equipe nao recebe resumo de atendimento.');
+  }
+
+  async function enviarResumos() {
+    if (!resumoParaEquipe.ativo) return;
+    try {
+      await resumoParaEquipe.enviarPendentes();
+    } catch (erro) {
+      console.error(`[resumo] falhou: ${erro.message}`);
+    }
+  }
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
     // ciclos se sobreporem dentro do mesmo processo.
@@ -278,6 +303,7 @@ async function main() {
       await sincronizarSerena();
       await sincronizarConversas();
       await umLote();
+      await enviarResumos();
     } finally {
       cicloEmAndamento = false;
     }

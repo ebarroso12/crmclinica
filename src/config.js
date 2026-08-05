@@ -160,6 +160,14 @@ function carregarConfiguracao(ambiente = process.env) {
     agente: {
       token: texto(ambiente.CRMCLINICA_AGENTE_TOKEN),
     },
+    // Resumo do atendimento, enviado à equipe quando a conversa esfria. Os
+    // telefones vêm do ambiente: número de pessoa não se escreve em código, e a
+    // lista muda quando alguém entra ou sai da clínica.
+    resumoDeAtendimento: {
+      destinatarios: texto(ambiente.CRMCLINICA_RESUMO_DESTINATARIOS)
+        .split(',').map((numero) => numero.trim()).filter(Boolean),
+      silencioMin: inteiro(ambiente.CRMCLINICA_RESUMO_SILENCIO_MIN, 30),
+    },
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),

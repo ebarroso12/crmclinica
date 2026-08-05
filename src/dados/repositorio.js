@@ -990,6 +990,45 @@ function criarRepositorio(pool) {
       return rows.length > 0;
     },
 
+    /**
+     * Conversas que esfriaram e ainda não foram resumidas para a equipe.
+     *
+     * Silêncio é o único sinal honesto de que o atendimento acabou: ninguém se
+     * despede no WhatsApp. O filtro exige mensagem do paciente para não resumir
+     * conversa em que só a Serena falou — disparo sem resposta não é atendimento.
+     */
+    async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
+      const { rows } = await consultar(
+        `SELECT c.id, c.contato_id, c.ultima_msg_em
+           FROM conversas c
+          WHERE c.resumo_enviado_em IS NULL
+            AND c.ultima_msg_em < now() - ($1 || ' minutes')::interval
+            AND EXISTS (
+              SELECT 1 FROM mensagens m
+               WHERE m.conversa_id = c.id AND m.autor_tipo = 'contato'
+            )
+          ORDER BY c.ultima_msg_em
+          LIMIT $2`,
+        [String(silencioMin), limite],
+      );
+      return rows;
+    },
+
+    async marcarResumoEnviado(conversaId) {
+      await consultar('UPDATE conversas SET resumo_enviado_em = now() WHERE id = $1', [conversaId]);
+    },
+
+    /** O agendamento futuro do contato, para o resumo dizer se ele marcou. */
+    async obterAgendamentoDoContato(contatoId) {
+      const { rows } = await consultar(
+        `SELECT id, inicio, fim, tipo FROM agendamentos
+          WHERE contato_id = $1 AND status <> 'cancelado' AND inicio > now() - interval '1 hour'
+          ORDER BY inicio LIMIT 1`,
+        [contatoId],
+      );
+      return rows[0] ?? null;
+    },
+
     async resumirFilaDeLembretes() {
       const { rows } = await consultar(
         `SELECT
