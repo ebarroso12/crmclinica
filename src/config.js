@@ -163,6 +163,14 @@ function carregarConfiguracao(ambiente = process.env) {
     // Resumo do atendimento, enviado à equipe quando a conversa esfria. Os
     // telefones vêm do ambiente: número de pessoa não se escreve em código, e a
     // lista muda quando alguém entra ou sai da clínica.
+    // Números da clínica: quem opera, não quem é atendido. Os administradores
+    // comandam a Serena e recebem os resumos — o que eles escrevem não é
+    // atendimento, não vira contato e não entra no funil.
+    numerosInternos: [
+      ...texto(ambiente.CRMCLINICA_NUMEROS_INTERNOS).split(',').map((n) => n.trim()).filter(Boolean),
+      ...texto(ambiente.CRMCLINICA_RESUMO_DESTINATARIOS).split(',').map((n) => n.trim()).filter(Boolean),
+      texto(ambiente.WHATSAPP_BUSINESS_PHONE),
+    ].filter(Boolean),
     resumoDeAtendimento: {
       destinatarios: texto(ambiente.CRMCLINICA_RESUMO_DESTINATARIOS)
         .split(',').map((numero) => numero.trim()).filter(Boolean),

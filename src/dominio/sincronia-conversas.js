@@ -2,6 +2,7 @@
 
 const { validarEvento } = require('../contratos/evento');
 const { normalizarTelefone } = require('./serena');
+const { criarNumerosInternos } = require('./numeros-internos');
 
 // Traz para o CRM as conversas que acontecem no WhatsApp.
 //
@@ -99,7 +100,8 @@ function instanteDaMensagem(mensagem) {
   return Number.isNaN(data.getTime()) ? null : data.toISOString();
 }
 
-function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, registrar = null }) {
+function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, registrar = null, numerosInternos = [] }) {
+  const equipe = criarNumerosInternos(numerosInternos);
   if (!gateway) throw new Error('sincronizador de conversas exige o gateway');
   if (!atendimento) throw new Error('sincronizador de conversas exige o atendimento');
   if (!repositorio) throw new Error('sincronizador de conversas exige o repositório');
@@ -133,6 +135,12 @@ function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, regi
   async function sincronizarUma(sessao) {
     const telefone = telefoneDaSessao(sessao);
     if (!telefone) return { ignorada: true, motivo: 'sessão sem telefone utilizável' };
+
+    // Administrador não é paciente: ele comanda a Serena e recebe os resumos.
+    // Sem esta linha, cada resumo enviado voltaria como conversa nova.
+    if (equipe.ehInterno(telefone)) {
+      return { ignorada: true, motivo: 'número da equipe — comanda, não é atendido' };
+    }
 
     const historico = await gateway.chamar('chat.history', { sessionKey: sessao.key });
     const mensagens = Array.isArray(historico?.messages) ? historico.messages : [];

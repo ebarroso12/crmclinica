@@ -214,8 +214,11 @@ async function main() {
         canal: criarCanalDeConversas(configuracao.openclaw.canalClinica),
       }),
       repositorio,
-        registrar: (m, d) => console.error(`[conversas] ${m}`, JSON.stringify(d)),
-      });
+      // Os administradores comandam a Serena e recebem os resumos: o que eles
+      // escrevem não é atendimento, não vira contato e não entra no funil.
+      numerosInternos: configuracao.numerosInternos,
+      registrar: (m, d) => console.error(`[conversas] ${m}`, JSON.stringify(d)),
+    });
     } catch (erro) {
       // Sem leitura de conversas o worker ainda entrega lembretes, que e a
       // razao de ele existir. Derrubar tudo por isto seria pior.
