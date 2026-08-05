@@ -2328,7 +2328,12 @@ async function carregarSerena() {
     // Testar o prompt é mexer no que a clínica diz ao paciente: mesma permissão
     // de quem publica a versão.
     const cartaoDeTeste = seletor('#serena-teste-card');
-    if (cartaoDeTeste) cartaoDeTeste.hidden = !dados.pode_gerenciar;
+    if (cartaoDeTeste) {
+      cartaoDeTeste.hidden = !dados.pode_gerenciar;
+      // A lista de modelos precisa existir antes da primeira mensagem: quem vai
+      // testar escolhe o modelo primeiro, não depois de já ter conversado.
+      if (dados.pode_gerenciar) carregarModelosDoTeste().catch(() => {});
+    }
     // A varredura mostra o estado interno da infraestrutura — nome do usuário do
     // banco, serviços parados. Quem atende paciente não precisa disso.
     const cartaoDeDiagnostico = seletor('#diagnostico-card');
@@ -3251,7 +3256,11 @@ seletor('#teste-reiniciar')?.addEventListener('click', () => {
  */
 function preencherModelos(modelos) {
   const campo = seletor('#teste-modelo');
-  if (!campo || !Array.isArray(modelos) || campo.options.length > 0) return;
+  if (!campo || !Array.isArray(modelos) || !modelos.length) return;
+
+  // Só preenche uma vez: repovoar a cada mensagem descartaria a escolha de quem
+  // está testando, e a conversa passaria a alternar de modelo sozinha.
+  if (campo.dataset.preenchido === 'sim') return;
 
   const escolhido = campo.value;
 
@@ -3262,13 +3271,39 @@ function preencherModelos(modelos) {
     return opcao;
   }));
 
+  campo.dataset.preenchido = 'sim';
   if (escolhido) campo.value = escolhido;
+}
+
+/**
+ * Busca a lista de modelos antes da primeira mensagem.
+ *
+ * Sem isto, o seletor ficava vazio até alguém enviar algo — e a lista só chegava
+ * junto da primeira sessão, quando já era tarde para escolher o modelo que se
+ * queria testar.
+ */
+async function carregarModelosDoTeste() {
+  const campo = seletor('#teste-modelo');
+  if (!campo || campo.dataset.preenchido === 'sim') return;
+
+  try {
+    const aberta = await pedirJson('/api/serena/teste', { metodo: 'POST', corpo: {} });
+    preencherModelos(aberta.modelos);
+    // A sessão aberta aqui é aproveitada: descartá-la faria a primeira mensagem
+    // abrir outra, e a conversa começaria na segunda tentativa.
+    sessaoDeTeste = aberta.sessao;
+  } catch {
+    // Sem lista, o teste ainda funciona no modelo padrão do agente — que é o
+    // caso mais comum. Travar a tela por causa do seletor seria pior.
+  }
 }
 
 // Trocar de modelo começa conversa nova. Continuar a mesma conversa com outro
 // modelo compararia respostas sobre históricos diferentes — que é justamente o
 // que impede concluir qual se saiu melhor.
-seletor('#teste-modelo')?.addEventListener('change', () => {
+seletor('#teste-modelo')?.addEventListener('change', (evento) => {
+  // Seletor vazio disparando `change` zerava a sessão antes de a mensagem sair.
+  if (!evento.target.value) return;
   sessaoDeTeste = null;
   desenharConversaDeTeste([]);
   informar('Conversa reiniciada para testar o modelo escolhido.');
