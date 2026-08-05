@@ -681,7 +681,7 @@ async function carregarLeads() {
         // Clicar no lead abre a conversa que o originou.
         const botao = document.createElement('button');
         botao.type = 'button';
-        botao.className = 'card-lead';
+        botao.className = `card-lead t-${lead.temperatura ?? 'frio'}`;
         botao.textContent = lead.nome || lead.telefone || 'Lead sem nome';
 
         const detalhe = document.createElement('small');
@@ -697,9 +697,38 @@ async function carregarLeads() {
           botao.disabled = true;
         }
 
+        // Arrastar move o lead de etapa. O card carrega o próprio estágio junto
+        // do id: soltar na coluna de origem não deve gerar uma escrita nem uma
+        // linha de auditoria dizendo que alguém moveu algo que ficou no lugar.
+        item.draggable = true;
+        item.dataset.leadId = lead.id;
+        item.dataset.estagio = coluna.estagio ?? '';
+        item.addEventListener('dragstart', (evento) => {
+          evento.dataTransfer.setData('text/plain', String(lead.id));
+          evento.dataTransfer.effectAllowed = 'move';
+          item.classList.add('arrastando');
+        });
+        item.addEventListener('dragend', () => item.classList.remove('arrastando'));
+
         item.append(botao);
         lista.append(item);
       }
+
+      // A coluna inteira recebe, não só a lista: soltar no espaço vazio abaixo
+      // do último card é o gesto mais natural quando a coluna tem poucos leads.
+      secao.dataset.estagio = coluna.estagio ?? '';
+      secao.addEventListener('dragover', (evento) => {
+        evento.preventDefault();
+        evento.dataTransfer.dropEffect = 'move';
+        secao.classList.add('recebendo');
+      });
+      secao.addEventListener('dragleave', () => secao.classList.remove('recebendo'));
+      secao.addEventListener('drop', (evento) => {
+        evento.preventDefault();
+        secao.classList.remove('recebendo');
+        const leadId = evento.dataTransfer.getData('text/plain');
+        if (leadId) moverLead(leadId, secao.dataset.estagio);
+      });
 
       secao.append(titulo, lista);
       kanban.append(secao);
@@ -3312,3 +3341,30 @@ async function varrerSistema() {
 }
 
 seletor('#diagnostico-verificar')?.addEventListener('click', varrerSistema);
+
+/**
+ * Move um lead de etapa no funil.
+ *
+ * Recarrega o quadro depois de gravar, em vez de mexer no DOM na mão: mover o
+ * card antes da confirmação mostraria a etapa nova mesmo quando a gravação
+ * falha, e aí o funil na tela deixa de ser o funil do banco.
+ */
+async function moverLead(leadId, estagio) {
+  if (!estagio) return;
+
+  const card = document.querySelector(`[data-lead-id="${leadId}"]`);
+  if (card?.dataset.estagio === estagio) return; // soltou onde já estava
+
+  try {
+    await pedirJson(`/api/leads/${leadId}/estagio`, {
+      metodo: 'POST',
+      corpo: { estagio },
+    });
+    await carregarLeads();
+  } catch (erro) {
+    informar(`Não foi possível mover o lead: ${erro.message}`);
+    // Recarrega mesmo em caso de falha: sem isto o card fica onde o navegador o
+    // largou, sugerindo uma mudança que o banco recusou.
+    await carregarLeads();
+  }
+}

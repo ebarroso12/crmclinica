@@ -1501,3 +1501,23 @@ button.perigo:hover { background: #fecaca; }
   background: #fff;
   max-width: 280px;
 }
+
+/* Kanban arrastável. O card é o objeto que se move; a coluna inteira recebe,
+   inclusive o espaço vazio abaixo do último card — que é onde a mão vai
+   naturalmente quando a coluna tem poucos leads. */
+.kanban li[draggable="true"] { cursor: grab; }
+.kanban li.arrastando { opacity: 0.4; cursor: grabbing; }
+
+.kanban section.recebendo {
+  background: #eef6ff;
+  outline: 2px dashed #2f6feb;
+  outline-offset: -4px;
+  border-radius: 10px;
+}
+
+/* A temperatura vira uma faixa na lateral do card: dá para varrer a coluna e
+   ver onde está o lead quente sem ler cada linha. */
+.card-lead { border-left: 4px solid transparent; }
+.card-lead.t-quente { border-left-color: #dc2626; }
+.card-lead.t-morno  { border-left-color: #d97706; }
+.card-lead.t-frio   { border-left-color: #94a3b8; }
