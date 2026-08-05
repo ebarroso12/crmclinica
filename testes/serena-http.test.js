@@ -363,3 +363,70 @@ test('apagar uma regra guarda o conteúdo na auditoria', async (t) => {
   // Apagar sem rastro impediria explicar depois por que a Serena mudou.
   assert.equal(registro.detalhe.conteudo, 'Texto que será apagado.');
 });
+
+// ---------------------------------------------------------------- teste do prompt
+//
+// Estes testes existem porque a rota foi publicada quebrada: ela passava `corpo`,
+// uma variável que não existe naquele ponto do servidor, e toda chamada devolvia
+// 500. Chamar a função do módulo direto não pegava — o defeito estava no fio
+// entre a porta HTTP e a função, que é justamente o que só a porta exercita.
+
+function conversaFalsa() {
+  const enviadas = [];
+  return {
+    enviadas,
+    async abrir({ modelo = null } = {}) { return { sessao: 'agent:serena:dashboard:teste', modelo }; },
+    async enviar({ sessao, texto }) { enviadas.push({ sessao, texto }); return { enviado: true }; },
+    async historico() { return { mensagens: [{ de: 'paciente', texto: 'oi', modelo: null }] }; },
+  };
+}
+
+test('POST /api/serena/teste abre a conversa de ensaio', async (t) => {
+  const conversa = conversaFalsa();
+  const { ambiente } = await montar(t, { conversaDeTeste: conversa });
+
+  const resposta = await ambiente.pedir('/api/serena/teste', { method: 'POST', body: JSON.stringify({}) });
+  assert.equal(resposta.status, 200);
+
+  const corpo = await resposta.json();
+  assert.ok(corpo.sessao);
+  assert.ok(Array.isArray(corpo.modelos) && corpo.modelos.length > 0);
+});
+
+test('POST /api/serena/teste/mensagem entrega o texto do paciente', async (t) => {
+  const conversa = conversaFalsa();
+  const { ambiente } = await montar(t, { conversaDeTeste: conversa });
+
+  const resposta = await ambiente.pedir('/api/serena/teste/mensagem', {
+    method: 'POST',
+    body: JSON.stringify({ sessao: 'agent:serena:dashboard:teste', texto: 'OI' }),
+  });
+
+  assert.equal(resposta.status, 200);
+  assert.equal(conversa.enviadas.length, 1);
+  assert.equal(conversa.enviadas[0].texto, 'OI');
+});
+
+test('o modelo escolhido chega ao gateway', async (t) => {
+  // Sem isto, o seletor da tela seria enfeite: a escolha morreria no corpo da
+  // requisição e toda conversa rodaria no modelo padrão.
+  const escolhidos = [];
+  const conversa = { ...conversaFalsa(), async abrir({ modelo }) { escolhidos.push(modelo); return { sessao: 's', modelo }; } };
+  const { ambiente } = await montar(t, { conversaDeTeste: conversa });
+
+  await ambiente.pedir('/api/serena/teste', {
+    method: 'POST', body: JSON.stringify({ modelo: 'anthropic/claude-sonnet-4-6' }),
+  });
+
+  assert.deepEqual(escolhidos, ['anthropic/claude-sonnet-4-6']);
+});
+
+test('mensagem sem texto é recusada com 400, não com 500', async (t) => {
+  const { ambiente } = await montar(t, { conversaDeTeste: conversaFalsa() });
+
+  const resposta = await ambiente.pedir('/api/serena/teste/mensagem', {
+    method: 'POST', body: JSON.stringify({ sessao: 's', texto: '   ' }),
+  });
+
+  assert.equal(resposta.status, 400);
+});

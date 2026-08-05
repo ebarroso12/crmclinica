@@ -353,8 +353,10 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/canal/risco': () => rotasDaSerena.riscoDoCanal(usuario),
       'GET /api/diagnostico': () => rotasDeDiagnostico.varrer(usuario),
       'GET /api/serena/teste': () => rotasDaSerena.lerTeste(usuario, url),
-      'POST /api/serena/teste': () => rotasDaSerena.abrirTeste(usuario, corpo),
-      'POST /api/serena/teste/mensagem': () => rotasDaSerena.enviarNoTeste(usuario, corpo),
+      // Abrir não exige corpo: o modelo é opcional, e recusar com "corpo vazio"
+      // faria a rota rejeitar exatamente o uso mais simples que ela suporta.
+      'POST /api/serena/teste': async () => rotasDaSerena.abrirTeste(usuario, await lerJson(req).catch(() => ({}))),
+      'POST /api/serena/teste/mensagem': async () => rotasDaSerena.enviarNoTeste(usuario, await lerJson(req)),
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
       // Horário programado, pausa de intervenção e plantão esporádico.
       'PUT /api/serena/horario': async () => rotasDaSerena.definirHorario(usuario, await lerJson(req)),
@@ -869,6 +871,17 @@ function criarAplicacao(dependencias = {}) {
         // chamada de rede lenta seguraria a conexão do pool durante a espera.
         await receberEventoDoOrquestrador(req, res);
         return;
+      }
+
+      // O ensaio da Serena fala com o gateway, que pode levar até um minuto para
+      // responder. Dentro da transação, isso seria uma conexão do pool parada
+      // esperando serviço externo — dez ensaios simultâneos esgotariam o pool e
+      // travariam inbox, agenda e contatos, que não têm nada a ver com o teste.
+      //
+      // Estas rotas não tocam tabela nenhuma, então saem antes do `comIdentidade`.
+      if (rota.startsWith('/api/serena/teste')) {
+        const tratouTeste = await tratarRotasDaSerena(req, res, rota, metodo, url, usuario);
+        if (tratouTeste) return;
       }
 
       // Daqui para baixo, tudo que toca o banco corre numa transação com o
