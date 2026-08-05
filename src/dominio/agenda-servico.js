@@ -26,7 +26,7 @@ const VALIDADE_PROPOSTA_MS = 15 * 60 * 1000;
  *   enfileirado. E porque uma falha na fila nunca pode impedir a clínica de
  *   marcar uma consulta — por isso toda chamada aqui é embrulhada.
  */
-function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null }) {
+function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null , google = null, clinica = null }) {
   /** A fila é acessório do agendamento: se ela falhar, o agendamento continua de pé. */
   async function comFila(descricao, acao) {
     if (!lembretes) return null;
@@ -212,6 +212,12 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
       // registrado — a clínica precisa poder ver que não houve 24h para avisar.
       await comFila('enfileirar', () => lembretes.enfileirarPara(agendamento, { usuarioId }));
 
+      // O espelho no Google vem por último e nunca derruba o agendamento: a
+      // consulta já está marcada e a trava de conflito já valeu. Se o Google
+      // estiver fora do ar, a clínica atende do mesmo jeito — o que se perde é
+      // a consulta aparecer no celular do médico, não a consulta.
+      await espelharNoGoogle(agendamento);
+
       return agendamento;
     } catch (erro) {
       if (ehConflitoDoBanco(erro)) throw await descreverConflito(profissionalId, inicio, fim);
@@ -219,6 +225,31 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
     }
   }
 
+
+  /**
+   * Espelha o agendamento no Google Calendar do médico.
+   *
+   * Silencioso por escolha: o espelho é conveniência. Fazer o agendamento
+   * falhar porque o Google não respondeu seria trocar a consulta — que é o
+   * negócio — por uma linha no calendário.
+   */
+  async function espelharNoGoogle(agendamento) {
+    if (!google?.configurada) return;
+
+    try {
+      const contato = await repositorio.obterContato(agendamento.contato_id);
+      const { evento_id: eventoId } = await google.espelhar({ agendamento, contato, clinica });
+
+      // Guardar o identificador é o que permite atualizar e cancelar depois.
+      // Sem ele, cada remarcação criaria um evento novo e o calendário
+      // acumularia consultas fantasmas do mesmo paciente.
+      if (eventoId) {
+        await repositorio.atualizarAgendamento?.(agendamento.id, { google_evento_id: eventoId });
+      }
+    } catch (erro) {
+      console.error(`[agenda] espelho no Google falhou: ${erro.message}`);
+    }
+  }
   /**
    * Descobre qual agendamento ocupou o horário.
    *

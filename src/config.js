@@ -144,6 +144,22 @@ function carregarConfiguracao(ambiente = process.env) {
       lote: inteiro(ambiente.LEMBRETES_LOTE, 20),
       maxTentativas: inteiro(ambiente.LEMBRETES_MAX_TENTATIVAS, 5),
     },
+    // Espelho da agenda no Google Calendar do médico. A agenda do crmclinica
+    // continua sendo a fonte de verdade — é ela que impede dois pacientes no
+    // mesmo horário. O Google é para o dia aparecer no celular, sem abrir o
+    // painel. Fica desligado enquanto a credencial não existir.
+    googleAgenda: {
+      credencial: texto(ambiente.GOOGLE_AGENDA_CREDENCIAL),
+      usuario: texto(ambiente.GOOGLE_AGENDA_USUARIO),
+      calendario: texto(ambiente.GOOGLE_AGENDA_CALENDARIO) || 'primary',
+      timeoutMs: inteiro(ambiente.GOOGLE_AGENDA_TIMEOUT_MS, 15000),
+    },
+    // Token da API que a Serena usa para operar o CRM: registrar contato,
+    // qualificar e mover lead. Próprio, e não o da aplicação — um agente com a
+    // credencial da aplicação teria, na prática, todo o poder dela.
+    agente: {
+      token: texto(ambiente.CRMCLINICA_AGENTE_TOKEN),
+    },
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),

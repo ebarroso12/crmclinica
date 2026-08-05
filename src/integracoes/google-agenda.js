@@ -1,0 +1,182 @@
+'use strict';
+
+// Espelha a agenda da clínica no Google Calendar do médico.
+//
+// A agenda do crmclinica continua sendo a fonte de verdade: é ela que impede
+// dois pacientes no mesmo horário, e essa trava vive no banco, numa restrição
+// que nenhuma automação contorna. O Google não substitui isso — ele resolve
+// outro problema, que é o médico enxergar o dia no celular, junto do resto da
+// vida dele, sem abrir o painel.
+//
+// Por isso o espelho é de mão única: o CRM escreve no Google. Sincronizar de
+// volta significaria aceitar que um evento criado no celular vire consulta sem
+// passar pela trava de conflito — e aí dois pacientes marcam o mesmo horário.
+//
+// ------------------------------------------------------------------ o desenho
+//
+// Autenticação por conta de serviço com delegação, não OAuth de usuário. OAuth
+// exigiria alguém reautorizar quando o refresh token expirasse — e isso
+// aconteceria num sábado, sem ninguém perceber, com as consultas da semana
+// deixando de aparecer no celular do médico.
+//
+// Falha do Google nunca derruba o agendamento. A consulta já está marcada no
+// banco quando este módulo é chamado; se o espelho falhar, a clínica atende do
+// mesmo jeito e o painel continua certo.
+
+const CALENDAR = 'https://www.googleapis.com/calendar/v3';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const ESCOPO = 'https://www.googleapis.com/auth/calendar.events';
+
+/** JWT assinado para a conta de serviço, com delegação para o calendário do médico. */
+function montarAsserção(credencial, assunto, agora = Date.now()) {
+  const crypto = require('node:crypto');
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+
+  const emitido = Math.floor(agora / 1000);
+  const cabecalho = b64({ alg: 'RS256', typ: 'JWT' });
+  const corpo = b64({
+    iss: credencial.client_email,
+    scope: ESCOPO,
+    aud: TOKEN_URL,
+    // Delegação: o token age em nome do médico, não da conta de serviço. Sem
+    // isto o evento nasceria num calendário que ninguém abre.
+    sub: assunto,
+    iat: emitido,
+    exp: emitido + 3600,
+  });
+
+  const assinatura = crypto
+    .sign('RSA-SHA256', Buffer.from(`${cabecalho}.${corpo}`), credencial.private_key)
+    .toString('base64url');
+
+  return `${cabecalho}.${corpo}.${assinatura}`;
+}
+
+/**
+ * Monta o evento a partir do agendamento.
+ *
+ * O que vai para o Google é deliberadamente magro: nome, horário e telefone. O
+ * calendário sincroniza com o celular, com o relógio, às vezes com uma agenda
+ * compartilhada — e motivo de consulta psiquiátrica não é coisa que se deixa
+ * aparecer na tela de bloqueio de um aparelho.
+ */
+function montarEvento({ agendamento, contato, clinica, fuso = 'America/Sao_Paulo' }) {
+  const nome = contato?.nome?.trim() || 'Paciente';
+
+  return {
+    summary: `Consulta — ${nome}`,
+    description: [
+      contato?.telefone ? `Telefone: ${contato.telefone}` : null,
+      clinica ? `Local: ${clinica}` : null,
+      'Agendado pelo crmclinica.',
+    ].filter(Boolean).join('\n'),
+    start: { dateTime: new Date(agendamento.inicio).toISOString(), timeZone: fuso },
+    end: { dateTime: new Date(agendamento.fim).toISOString(), timeZone: fuso },
+    // O identificador amarra o evento ao agendamento: é o que permite atualizar
+    // e cancelar depois, em vez de acumular duplicatas a cada remarcação.
+    extendedProperties: { private: { crmclinica_agendamento: String(agendamento.id) } },
+    reminders: { useDefault: true },
+  };
+}
+
+function criarAgendaDoGoogle(configuracao = {}, dependencias = {}) {
+  const buscar = dependencias.fetch ?? globalThis.fetch;
+  const calendario = configuracao.calendario || 'primary';
+  const timeoutMs = configuracao.timeoutMs ?? 15000;
+
+  let credencial = null;
+  try {
+    credencial = configuracao.credencial ? JSON.parse(configuracao.credencial) : null;
+  } catch {
+    credencial = null;
+  }
+
+  const configurada = Boolean(credencial?.client_email && credencial?.private_key && configuracao.usuario);
+
+  let tokenEmCache = null;
+  let tokenExpiraEm = 0;
+
+  async function obterToken() {
+    // Um minuto de folga: renovar no limite faz a chamada seguinte falhar por
+    // token expirado no meio do caminho.
+    if (tokenEmCache && Date.now() < tokenExpiraEm - 60_000) return tokenEmCache;
+
+    const resposta = await buscar(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: montarAsserção(credencial, configuracao.usuario),
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!resposta.ok) {
+      throw new Error(`Google recusou a autenticação (${resposta.status})`);
+    }
+
+    const dados = await resposta.json();
+    tokenEmCache = dados.access_token;
+    tokenExpiraEm = Date.now() + (Number(dados.expires_in ?? 3600) * 1000);
+    return tokenEmCache;
+  }
+
+  async function chamar(caminho, opcoes = {}) {
+    const token = await obterToken();
+    const resposta = await buscar(`${CALENDAR}${caminho}`, {
+      ...opcoes,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        ...(opcoes.headers ?? {}),
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (resposta.status === 404) return null;
+    if (!resposta.ok) {
+      throw new Error(`Google Calendar respondeu ${resposta.status}`);
+    }
+    return resposta.status === 204 ? true : resposta.json();
+  }
+
+  return {
+    configurada,
+
+    /** Cria (ou atualiza) o evento da consulta no calendário do médico. */
+    async espelhar({ agendamento, contato, clinica }) {
+      if (!configurada) return { espelhado: false, motivo: 'google_nao_configurado' };
+
+      const evento = montarEvento({ agendamento, contato, clinica });
+      const existente = agendamento.google_evento_id;
+
+      const resultado = existente
+        ? await chamar(`/calendars/${encodeURIComponent(calendario)}/events/${existente}`, {
+          method: 'PATCH', body: JSON.stringify(evento),
+        })
+        : null;
+
+      // Evento apagado à mão no Google devolve 404 na atualização. Recriar é o
+      // comportamento certo: a consulta existe, e quem apagou provavelmente
+      // limpou o calendário sem saber que aquilo era um agendamento real.
+      const criado = resultado ?? await chamar(
+        `/calendars/${encodeURIComponent(calendario)}/events`,
+        { method: 'POST', body: JSON.stringify(evento) },
+      );
+
+      return { espelhado: true, evento_id: criado?.id ?? null };
+    },
+
+    /** Remove o evento quando a consulta é cancelada. */
+    async remover(eventoId) {
+      if (!configurada || !eventoId) return { removido: false };
+
+      await chamar(`/calendars/${encodeURIComponent(calendario)}/events/${eventoId}`, {
+        method: 'DELETE',
+      });
+      return { removido: true };
+    },
+  };
+}
+
+module.exports = { criarAgendaDoGoogle, montarEvento, montarAsserção };
