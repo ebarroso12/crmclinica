@@ -27,7 +27,15 @@ const CALENDAR = 'https://www.googleapis.com/calendar/v3';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const ESCOPO = 'https://www.googleapis.com/auth/calendar.events';
 
-/** JWT assinado para a conta de serviço, com delegação para o calendário do médico. */
+/**
+ * JWT assinado para a conta de serviço.
+ *
+ * `assunto` só é usado em Google Workspace, onde o administrador pode delegar a
+ * conta de serviço a agir em nome de um usuário do domínio. Numa conta Gmail
+ * comum essa delegação não existe, e pedi-la faz o Google devolver 401 sem
+ * explicar por quê — o caminho ali é a conta agir como ela mesma, e o médico
+ * compartilhar o calendário com o e-mail dela.
+ */
 function montarAsserção(credencial, assunto, agora = Date.now()) {
   const crypto = require('node:crypto');
   const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -38,9 +46,9 @@ function montarAsserção(credencial, assunto, agora = Date.now()) {
     iss: credencial.client_email,
     scope: ESCOPO,
     aud: TOKEN_URL,
-    // Delegação: o token age em nome do médico, não da conta de serviço. Sem
-    // isto o evento nasceria num calendário que ninguém abre.
-    sub: assunto,
+    // Delegação só quando o assunto for informado — e ele só é informado em
+    // Workspace. Em conta Gmail comum, a conta de serviço age como ela mesma.
+    ...(assunto ? { sub: assunto } : {}),
     iat: emitido,
     exp: emitido + 3600,
   });
@@ -81,7 +89,9 @@ function montarEvento({ agendamento, contato, clinica, fuso = 'America/Sao_Paulo
 
 function criarAgendaDoGoogle(configuracao = {}, dependencias = {}) {
   const buscar = dependencias.fetch ?? globalThis.fetch;
-  const calendario = configuracao.calendario || 'primary';
+  // O calendário é o do médico, não o 'primary' da conta de serviço: aquele
+  // existe, ninguém abre, e o evento sumiria lá dentro sem erro nenhum.
+  const calendario = configuracao.calendario || configuracao.usuario || 'primary';
   const timeoutMs = configuracao.timeoutMs ?? 15000;
 
   let credencial = null;
@@ -106,7 +116,7 @@ function criarAgendaDoGoogle(configuracao = {}, dependencias = {}) {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: montarAsserção(credencial, configuracao.usuario),
+        assertion: montarAsserção(credencial, configuracao.delegar ? configuracao.usuario : null),
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
