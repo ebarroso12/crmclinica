@@ -44,6 +44,35 @@ function paraData(valor, campo) {
   return data;
 }
 
+/** A clínica atende no horário de São Paulo, independente de onde o código roda. */
+const FUSO_DA_CLINICA = 'America/Sao_Paulo';
+
+/**
+ * Data, dia da semana e minuto do dia — no fuso da clínica.
+ *
+ * `getDay` e `getHours` leem o relógio do processo, que em produção é UTC. Toda
+ * decisão de agenda precisa da hora de São Paulo, ou o sistema oferece um
+ * horário e recusa esse mesmo horário na hora de marcar.
+ */
+function partesLocais(instante, fuso = FUSO_DA_CLINICA) {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: fuso,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false,
+  }).formatToParts(instante);
+
+  const pegar = (tipo) => partes.find((p) => p.type === tipo)?.value ?? '';
+  const SEMANA = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  // 24h devolve "24" na virada da meia-noite em alguns ambientes; ali é 0.
+  const hora = Number(pegar('hour')) % 24;
+
+  return {
+    data: `${pegar('year')}-${pegar('month')}-${pegar('day')}`,
+    diaSemana: SEMANA.indexOf(pegar('weekday')),
+    minutos: (hora * 60) + Number(pegar('minute')),
+  };
+}
+
 /** Dois intervalos se sobrepõem? Fim aberto: 14–15 e 15–16 são vizinhos. */
 function seSobrepoe(inicioA, fimA, inicioB, fimB) {
   return inicioA < fimB && inicioB < fimA;
@@ -72,15 +101,21 @@ function validarPeriodo(inicio, fim, { agora = new Date(), duracaoMaximaMin = 48
 }
 
 /** O horário cai dentro de alguma janela de atendimento do profissional? */
-function dentroDaDisponibilidade(inicio, fim, disponibilidades = []) {
+function dentroDaDisponibilidade(inicio, fim, disponibilidades = [], fuso = FUSO_DA_CLINICA) {
   if (disponibilidades.length === 0) return false;
 
-  const dia = inicio.getDay();
-  const minutosDe = inicio.getHours() * 60 + inicio.getMinutes();
-  const minutosAte = fim.getHours() * 60 + fim.getMinutes();
+  // No fuso da clínica, como `horariosLivres`. Enquanto uma função lia o relógio
+  // do processo e a outra o da clínica, o sistema oferecia um horário e recusava
+  // esse mesmo horário na hora de marcar — em produção, que roda em UTC.
+  const de = partesLocais(inicio, fuso);
+  const ate = partesLocais(fim, fuso);
+
+  const dia = de.diaSemana;
+  const minutosDe = de.minutos;
+  const minutosAte = ate.minutos;
 
   // Atravessar a meia-noite não é atendimento de clínica; é erro de data.
-  if (inicio.toDateString() !== fim.toDateString()) return false;
+  if (de.data !== ate.data) return false;
 
   return disponibilidades.some((janela) => {
     if (janela.dia_semana !== dia) return false;
@@ -118,9 +153,6 @@ function conflitante(inicio, fim, agendamentos = [], { ignorarId = null } = {}) 
  * agendamentos. Serve para a automação oferecer horários que existem de verdade
  * em vez de perguntar "que dia você prefere?" e descobrir depois que não dá.
  */
-/** A clínica atende no horário de São Paulo, independente de onde o código roda. */
-const FUSO_DA_CLINICA = 'America/Sao_Paulo';
-
 /**
  * O instante em que, no fuso da clínica, é tal minuto do dia.
  *
@@ -155,9 +187,7 @@ function horariosLivres({
   const data = paraData(dia, 'dia');
   // Qual dia da semana é na clínica, não onde o código roda: 21h de sexta em
   // São Paulo já é sábado em UTC, e a grade de sexta desapareceria.
-  const diaSemana = Number(new Intl.DateTimeFormat('en-US', { timeZone: fuso, weekday: 'short' })
-    .format(data)
-    .replace(/Sun|Mon|Tue|Wed|Thu|Fri|Sat/, (d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(d)));
+  const diaSemana = partesLocais(data, fuso).diaSemana;
   const intervalo = passo ?? duracaoMin;
 
   const janelas = disponibilidades.filter((janela) => janela.dia_semana === diaSemana);
