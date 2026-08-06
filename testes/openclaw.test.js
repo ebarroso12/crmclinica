@@ -6,30 +6,40 @@ const { criarClienteOpenClaw, assinar, assinaturaValida } = require('../src/inte
 // Todos os testes usam um cliente gateway falso.
 // Nenhuma conexão WebSocket é aberta e nenhum segredo real é lido.
 
-// Configuração com gateway WebSocket (nova interface).
+// Configuração com gateway WebSocket e a sessão INTERNA do CRM — o despacho
+// nunca toca sessão de paciente. Timeout curto: os testes de "não achou
+// resposta nova" esperam o timeout de verdade, e ninguém quer 20 s disso.
 const CONFIGURACAO = Object.freeze({
+  sessao: 'sessao-interna-do-crm',
   gateway: {
     url: 'wss://gateway.invalido',
     token: 'token-sintetico-de-teste',
-    timeoutMs: 10000,
+    timeoutMs: 3000,
   },
 });
 
 /**
  * Cria um cliente gateway falso que simula as respostas do OpenClaw.
  *
- * `respostas` é um mapa de método → valor retornado.
- * Permite verificar quais chamadas foram feitas e com quais parâmetros.
+ * `respostas` é um mapa de método → valor retornado. Valor-função é chamado
+ * com (parametros, nº da chamada daquele método) — é como um histórico "muda"
+ * entre a linha de base e o polling da resposta.
  */
 function clienteFalso(respostas = {}) {
   const chamadas = [];
+  const contadores = new Map();
   return {
     chamadas,
     disponivel: true,
     async chamar(metodo, parametros) {
       chamadas.push({ metodo, parametros });
-      if (respostas[metodo] instanceof Error) throw respostas[metodo];
-      return respostas[metodo] ?? null;
+      const vez = (contadores.get(metodo) ?? 0) + 1;
+      contadores.set(metodo, vez);
+      const valor = typeof respostas[metodo] === 'function'
+        ? respostas[metodo](parametros, vez)
+        : respostas[metodo];
+      if (valor instanceof Error) throw valor;
+      return valor ?? null;
     },
     async encerrar() {},
   };
@@ -59,134 +69,138 @@ test('cliente indisponível recusa despacho com código próprio, sem tocar o ga
 });
 
 // ---------------------------------------------------------------- despacharEvento
+//
+// O despacho é o fluxo `crm_despacha`: sessão INTERNA configurada, linha de
+// base antes do envio, e só resposta NOVA volta. O que estes testes vigiam é
+// o mecanismo exato da resposta duplicada e da resposta velha.
 
-test('sem telefone no contexto, devolve resposta nula sem chamar o gateway', async () => {
+const EVENTO_DE_DESPACHO = Object.freeze({
+  chave_idempotencia: 'evt:1',
+  tipo: 'conversa.mensagem_recebida',
+  contexto: Object.freeze({
+    contato: Object.freeze({ telefone: '5516999999999' }),
+    mensagens: Object.freeze([{ autor: 'contato', texto: 'Olá' }]),
+  }),
+});
+
+test('sem sessão interna configurada, falha fechado sem tocar o gateway', async () => {
   const cliente = clienteFalso();
-  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
-  const resultado = await orquestrador.despacharEvento({
-    chave_idempotencia: 'evt:1',
-    tipo: 'conversa.mensagem_recebida',
-    contexto: { contato: {}, mensagens: [] },
-  });
-  assert.deepEqual(resultado, { resposta: null });
+  const orquestrador = criarClienteOpenClaw({ gateway: CONFIGURACAO.gateway }, { cliente });
+
+  const resultado = await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+
+  // Nada de cair de volta para a sessão de um paciente: sem motor próprio, a
+  // conversa vai para a equipe com o motivo dizendo o que falta ligar.
+  assert.deepEqual(resultado, { resposta: null, escalonar: true, motivo: 'motor_ia_nao_configurado' });
   assert.equal(cliente.chamadas.length, 0);
 });
 
-test('sem sessão ativa para o telefone, devolve resposta nula', async () => {
+test('nunca localiza sessão de paciente: o despacho fala só com a sessão interna', async () => {
   const cliente = clienteFalso({
-    'sessions.list': { sessions: [] },
-  });
-  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
-  const resultado = await orquestrador.despacharEvento({
-    chave_idempotencia: 'evt:2',
-    tipo: 'conversa.mensagem_recebida',
-    contexto: {
-      contato: { telefone: '5516999999999' },
-      mensagens: [{ autor: 'contato', texto: 'Olá' }],
-    },
-  });
-  assert.deepEqual(resultado, { resposta: null });
-  // Só sessions.list foi chamado; chat.send não deve ter sido chamado.
-  assert.ok(cliente.chamadas.some((c) => c.metodo === 'sessions.list'));
-  assert.ok(!cliente.chamadas.some((c) => c.metodo === 'chat.send'));
-});
-
-test('com sessão ativa, envia via chat.send e aguarda resposta no histórico', async () => {
-  const cliente = clienteFalso({
-    'sessions.list': {
-      sessions: [{
-        key: 'sess-abc',
-        origin: { from: '+5516999999999', provider: 'whatsapp' },
-      }],
-    },
-    'chat.send': { status: 'started', runId: 'run-1' },
-    'chat.history': {
-      messages: [
-        { role: 'user', content: 'Olá', __openclaw: { id: 'msg-1' } },
-        { role: 'assistant', content: 'Olá! Como posso ajudar?', __openclaw: { id: 'msg-2' } },
-      ],
-    },
-  });
-  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
-  const resultado = await orquestrador.despacharEvento({
-    chave_idempotencia: 'evt:3',
-    tipo: 'conversa.mensagem_recebida',
-    contexto: {
-      contato: { telefone: '5516999999999' },
-      mensagens: [{ autor: 'contato', texto: 'Olá' }],
-    },
-  });
-  assert.equal(resultado.resposta, 'Olá! Como posso ajudar?');
-  // Verifica que chat.send foi chamado com os parâmetros corretos.
-  const envio = cliente.chamadas.find((c) => c.metodo === 'chat.send');
-  assert.ok(envio, 'chat.send deve ter sido chamado');
-  assert.equal(envio.parametros.sessionKey, 'sess-abc');
-  assert.equal(envio.parametros.message, 'Olá');
-  assert.ok(envio.parametros.idempotencyKey, 'deve ter chave de idempotência');
-});
-
-test('localiza sessão pelo sufixo do telefone (com ou sem código de país)', async () => {
-  const cliente = clienteFalso({
-    'sessions.list': {
-      sessions: [{
-        key: 'sess-xyz',
-        origin: { from: '+5516999999999', provider: 'whatsapp' },
-      }],
-    },
+    'chat.history': { messages: [] },
     'chat.send': { status: 'started' },
-    'chat.history': {
-      messages: [
-        { role: 'assistant', content: 'Boa tarde!' },
-      ],
-    },
   });
   const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
-  // Telefone sem código de país — deve encontrar a sessão pelo sufixo.
-  const resultado = await orquestrador.despacharEvento({
-    chave_idempotencia: 'evt:4',
-    tipo: 'conversa.mensagem_recebida',
-    contexto: {
-      contato: { telefone: '16999999999' },
-      mensagens: [{ autor: 'contato', texto: 'Boa tarde' }],
-    },
+  await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+
+  assert.ok(!cliente.chamadas.some((c) => c.metodo === 'sessions.list'),
+    'sessions.list era o mecanismo da resposta duplicada — não pode voltar');
+  for (const chamada of cliente.chamadas) {
+    if (chamada.metodo === 'chat.send' || chamada.metodo === 'chat.history') {
+      assert.equal(chamada.parametros.sessionKey, 'sessao-interna-do-crm');
+    }
+  }
+});
+
+test('lê a linha de base antes do envio e devolve só a resposta nova', async () => {
+  const antiga = { role: 'assistant', content: 'Resposta da pergunta anterior', __openclaw: { id: 'msg-1' } };
+  const nova = { role: 'assistant', content: 'Resposta desta pergunta', __openclaw: { id: 'msg-3' } };
+  let enviou = false;
+
+  const cliente = clienteFalso({
+    'chat.history': () => ({ messages: enviou ? [antiga, nova] : [antiga] }),
+    'chat.send': () => { enviou = true; return { status: 'started', runId: 'run-1' }; },
   });
-  assert.equal(resultado.resposta, 'Boa tarde!');
+  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
+
+  const resultado = await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+  assert.equal(resultado.resposta, 'Resposta desta pergunta');
+
+  const envio = cliente.chamadas.find((c) => c.metodo === 'chat.send');
+  assert.equal(envio.parametros.message, 'Olá');
+  assert.equal(envio.parametros.idempotencyKey, 'evt:1',
+    'a chave do evento é a chave do envio: retentativa reusa a mesma');
+
+  // A primeira consulta ao histórico veio ANTES do envio: é a linha de base.
+  const ordem = cliente.chamadas.map((c) => c.metodo);
+  assert.ok(ordem.indexOf('chat.history') < ordem.indexOf('chat.send'));
+});
+
+test('resposta antiga nunca é devolvida como nova: sem mensagem nova, timeout devolve null', async () => {
+  const antiga = { role: 'assistant', content: 'Resposta de ontem', __openclaw: { id: 'msg-1' } };
+  const cliente = clienteFalso({
+    'chat.history': { messages: [antiga] },
+    'chat.send': { status: 'started' },
+  });
+  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
+
+  const resultado = await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+  assert.equal(resultado.resposta, null,
+    'devolver "Resposta de ontem" seria responder o paciente com história');
+});
+
+test('resposta de outra execução (runId divergente) não é aceita', async () => {
+  const deOutraExecucao = {
+    role: 'assistant', content: 'Sou de outro envio', __openclaw: { id: 'msg-9', runId: 'run-OUTRO' },
+  };
+  let enviou = false;
+  const cliente = clienteFalso({
+    'chat.history': () => ({ messages: enviou ? [deOutraExecucao] : [] }),
+    'chat.send': () => { enviou = true; return { status: 'started', runId: 'run-1' }; },
+  });
+  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
+
+  const resultado = await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+  assert.equal(resultado.resposta, null);
+});
+
+test('retentativa do mesmo evento envia com a mesma chave de idempotência', async () => {
+  const cliente = clienteFalso({
+    'chat.history': { messages: [] },
+    'chat.send': { status: 'started' },
+  });
+  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
+
+  await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+  await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+
+  const envios = cliente.chamadas.filter((c) => c.metodo === 'chat.send');
+  assert.equal(envios.length, 2);
+  assert.equal(envios[0].parametros.idempotencyKey, envios[1].parametros.idempotencyKey,
+    'é a chave repetida que permite ao gateway recusar a duplicata');
 });
 
 test('sem texto na última mensagem, devolve resposta nula sem chamar chat.send', async () => {
-  const cliente = clienteFalso({
-    'sessions.list': {
-      sessions: [{ key: 'sess-1', origin: { from: '+5516999999999', provider: 'whatsapp' } }],
-    },
-  });
+  const cliente = clienteFalso({ 'chat.history': { messages: [] } });
   const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
   const resultado = await orquestrador.despacharEvento({
-    chave_idempotencia: 'evt:5',
-    tipo: 'conversa.mensagem_recebida',
-    contexto: {
-      contato: { telefone: '5516999999999' },
-      mensagens: [],
-    },
+    ...EVENTO_DE_DESPACHO,
+    contexto: { contato: { telefone: '5516999999999' }, mensagens: [] },
   });
   assert.deepEqual(resultado, { resposta: null });
   assert.ok(!cliente.chamadas.some((c) => c.metodo === 'chat.send'));
 });
 
-test('falha no sessions.list vira erro identificável', async () => {
+test('falha ao ler a linha de base vira erro identificável, sem envio', async () => {
   const falha = Object.assign(new Error('gateway fora do ar'), { codigo: 'gateway_timeout' });
-  const cliente = clienteFalso({ 'sessions.list': falha });
+  const cliente = clienteFalso({ 'chat.history': falha });
   const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
   await assert.rejects(
-    () => orquestrador.despacharEvento({
-      chave_idempotencia: 'evt:6',
-      tipo: 'conversa.mensagem_recebida',
-      contexto: {
-        contato: { telefone: '5516999999999' },
-        mensagens: [{ autor: 'contato', texto: 'Oi' }],
-      },
-    }),
+    () => orquestrador.despacharEvento(EVENTO_DE_DESPACHO),
     (erro) => typeof erro.codigo === 'string',
   );
+  assert.ok(!cliente.chamadas.some((c) => c.metodo === 'chat.send'),
+    'sem linha de base não há envio: enviar às cegas é aceitar resposta velha');
 });
 
 // ---------------------------------------------------------------- verificarSaude
