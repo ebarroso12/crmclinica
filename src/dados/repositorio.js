@@ -7,6 +7,7 @@
 // Consultas sempre parametrizadas ($1, $2…): nada de concatenar valor em SQL.
 
 const contexto = require('./contexto');
+const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 
 const SELECAO_CONVERSA = `
   c.id, c.contato_id, c.canal, c.status, c.prioridade, c.atribuido_a,
@@ -882,9 +883,14 @@ function criarRepositorio(pool) {
     async registrarAuditoria({ entidade, entidadeId, acao, detalhe = null, usuarioId = null }) {
       const autor = usuarioId ?? contexto.atual()?.usuarioId ?? null;
 
+      // Segredo não entra na trilha nem por engano: o detalhe passa pelo
+      // redator antes de virar linha. O trigger do banco (017) protege o que
+      // nasce lá; isto protege o que nasce aqui.
+      const detalheLimpo = detalhe ? redigirAuditoria(detalhe) : null;
+
       await comoSistema((cliente) => cliente.query(
         'INSERT INTO audit_log (entidade, entidade_id, acao, detalhe, usuario_id) VALUES ($1, $2, $3, $4::jsonb, $5)',
-        [entidade, entidadeId, acao, detalhe ? JSON.stringify(detalhe) : null, autor],
+        [entidade, entidadeId, acao, detalheLimpo ? JSON.stringify(detalheLimpo) : null, autor],
       ));
     },
 
