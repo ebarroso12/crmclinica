@@ -117,7 +117,12 @@ function criarConversaDeTeste(configuracao = {}, dependencias = {}) {
       return {
         mensagens: mensagens
           .map((mensagem) => ({
-            de: mensagem.role === 'assistant' ? 'serena' : 'paciente',
+            // `toolResult` é o retorno de uma ferramenta, não fala de ninguém.
+            // Rotulá-lo como paciente fazia a tela mostrar JSON e mensagem de
+            // erro como se a pessoa tivesse escrito aquilo — e quem testa
+            // concluiria que a Serena estava confusa, não que a ferramenta falhou.
+            de: mensagem.role === 'assistant' ? 'serena'
+              : (mensagem.role === 'user' ? 'paciente' : 'ferramenta'),
             texto: textoDaMensagem(mensagem),
             em: mensagem.timestamp ?? null,
             // Quem respondeu, dito pelo próprio gateway. Sem isto, comparar dois

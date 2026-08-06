@@ -78,7 +78,13 @@ const FERRAMENTAS = [
         telefone: { type: 'string' },
         qualificacao: {
           type: 'object',
-          description: 'Campos como interesse, primeira_consulta, disponibilidade.',
+          description: 'O que a conversa revelou: interesse, primeira_consulta, '
+            + 'disponibilidade, pagamento, urgencia.',
+          // Aberto de propósito. Um esquema fechado recusava a chamada inteira
+          // quando a Serena mandava um campo a mais — e a qualificação se perdia
+          // por causa de um dado extra, não de um dado errado. O CRM já ignora
+          // o que não reconhece, então filtrar aqui só criava atrito.
+          additionalProperties: true,
         },
       },
       required: ['telefone'],
