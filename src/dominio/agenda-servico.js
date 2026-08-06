@@ -26,7 +26,7 @@ const VALIDADE_PROPOSTA_MS = 15 * 60 * 1000;
  *   enfileirado. E porque uma falha na fila nunca pode impedir a clínica de
  *   marcar uma consulta — por isso toda chamada aqui é embrulhada.
  */
-function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null , google = null, clinica = null }) {
+function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null, google = null, clinica = null, carenciaEmDias = 3 }) {
   /** A fila é acessório do agendamento: se ela falhar, o agendamento continua de pé. */
   async function comFila(descricao, acao) {
     if (!lembretes) return null;
@@ -80,18 +80,71 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
 
     const dados = await contexto(profissionalId, inicioDoDia.toISOString(), fimDoDia.toISOString());
 
+    // O que está no Google e não veio do CRM é consulta marcada por fora — pelo
+    // celular, por outra pessoa. Sem trazer para cá, o CRM ofereceria um horário
+    // que o médico já tem ocupado, e dois pacientes chegariam na mesma hora.
+    //
+    // Os que vieram do CRM já estão em `dados.agendamentos`: contá-los de novo
+    // não muda o resultado, mas duplicar sem necessidade é ruído.
+    const doGoogle = await ocupadosNoGoogle(inicioDoDia, fimDoDia);
+
+    const livres = horariosLivres({
+      dia: inicioDoDia,
+      duracaoMin: duracaoMin ?? dados.profissional.duracao_min,
+      disponibilidades: dados.disponibilidades,
+      bloqueios: dados.bloqueios,
+      agendamentos: [...dados.agendamentos, ...doGoogle],
+      agora: agora(),
+    });
+
     return {
       profissional: dados.profissional,
       dia: inicioDoDia.toISOString(),
-      horarios: horariosLivres({
-        dia: inicioDoDia,
-        duracaoMin: duracaoMin ?? dados.profissional.duracao_min,
-        disponibilidades: dados.disponibilidades,
-        bloqueios: dados.bloqueios,
-        agendamentos: dados.agendamentos,
-        agora: agora(),
-      }),
+      // A carência existe porque a clínica não marca para amanhã: o paciente
+      // precisa de tempo para preencher o questionário de pré-consulta, e o
+      // médico para lê-lo antes de atender.
+      horarios: livres.filter((h) => new Date(h.inicio) >= limiteDeCarencia()),
     };
+  }
+
+  /**
+   * Nada antes disto: a marcação começa a valer alguns dias após o contato.
+   *
+   * Conta dias inteiros, não horas. Quem procura a clínica às 18h e quem procura
+   * às 8h do mesmo dia têm direito ao mesmo primeiro horário — e sem zerar a
+   * hora, o contato do fim da tarde perderia a manhã do terceiro dia, que já
+   * está dentro do prazo.
+   */
+  function limiteDeCarencia() {
+    const limite = new Date(agora());
+    limite.setHours(0, 0, 0, 0);
+    limite.setDate(limite.getDate() + carenciaEmDias);
+    return limite;
+  }
+
+  /**
+   * O que o Google já tem ocupado no período.
+   *
+   * Falha do Google não pode impedir a clínica de oferecer horário: sem esta
+   * tolerância, o Google fora do ar deixaria a agenda inteira parecer cheia. O
+   * risco assumido é o oposto — oferecer um horário que só existe lá — e ele é
+   * menor que não oferecer nenhum.
+   */
+  async function ocupadosNoGoogle(de, ate) {
+    if (!google?.configurada) return [];
+
+    try {
+      const eventos = await google.ocupados({ de, ate });
+      return eventos
+        .filter((evento) => !evento.doCrm)
+        // `status: 'confirmado'` é exigência de `conflitante`, que ignora o que
+        // não ocupa horário. Sem ele, o evento do Google entraria na lista e
+        // seria descartado em silêncio — a agenda pareceria livre.
+        .map((evento) => ({ inicio: evento.inicio, fim: evento.fim, status: 'confirmado' }));
+    } catch (erro) {
+      console.error(`[agenda] não foi possível ler o Google: ${erro.message}`);
+      return [];
+    }
   }
 
   /**

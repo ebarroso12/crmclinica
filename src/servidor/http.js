@@ -36,6 +36,7 @@ const { criarRotasDeContatos } = require('./rotas-contatos');
 const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
 const { criarPoliticaDoCanal } = require('../integracoes/openclaw-politica');
 const { criarCanalDeConversas } = require('../integracoes/canal-conversas');
+const { criarAgendaDoGoogle } = require('../integracoes/google-agenda');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 
@@ -144,7 +145,12 @@ function criarAplicacao(dependencias = {}) {
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
 
   const servicoDeAgenda = dependencias.servicoDeAgenda
-    || criarServicoDeAgenda({ repositorio, lembretes: lembretesLigados });
+    || criarServicoDeAgenda({
+      repositorio,
+      lembretes: lembretesLigados,
+      google: criarAgendaDoGoogle(configuracao.googleAgenda),
+      clinica: configuracao.lembretes.clinica,
+    });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
   const rotasDeLembretes = criarRotasDeLembretes({ lembretes: servicoDeLembretes, repositorio });
   // A vinculação fala com a instância da clínica — outro gateway, outro token,

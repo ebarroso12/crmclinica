@@ -177,6 +177,45 @@ function criarAgendaDoGoogle(configuracao = {}, dependencias = {}) {
       return { espelhado: true, evento_id: criado?.id ?? null };
     },
 
+
+    /**
+     * Os eventos já ocupados no calendário, num período.
+     *
+     * O Google é a agenda de verdade: consulta marcada direto lá — pelo celular,
+     * por outra pessoa — não passa pelo CRM, e oferecer aquele horário a um
+     * paciente colocaria dois na mesma hora. Por isso a oferta consulta aqui.
+     */
+    async ocupados({ de, ate }) {
+      if (!configurada) return [];
+
+      const busca = new URLSearchParams({
+        timeMin: new Date(de).toISOString(),
+        timeMax: new Date(ate).toISOString(),
+        // Sem isto, um evento semanal apareceria uma vez só e os demais dias
+        // ficariam livres no CRM enquanto estão ocupados no Google.
+        singleEvents: 'true',
+        orderBy: 'startTime',
+        maxResults: '250',
+      });
+
+      const dados = await chamar(
+        `/calendars/${encodeURIComponent(calendario)}/events?${busca}`,
+      );
+
+      return (dados?.items ?? [])
+        // Evento recusado ou cancelado não ocupa nada, e dia inteiro sem hora
+        // ('date' em vez de 'dateTime') é feriado ou aviso, não consulta.
+        .filter((e) => e.status !== 'cancelled' && e.start?.dateTime && e.end?.dateTime)
+        .map((e) => ({
+          inicio: e.start.dateTime,
+          fim: e.end.dateTime,
+          titulo: e.summary ?? null,
+          // O que o próprio CRM criou já está no banco: marcar a origem evita
+          // contar a mesma consulta duas vezes.
+          doCrm: Boolean(e.extendedProperties?.private?.crmclinica_agendamento),
+        }));
+    },
+
     /** Remove o evento quando a consulta é cancelada. */
     async remover(eventoId) {
       if (!configurada || !eventoId) return { removido: false };
