@@ -139,19 +139,23 @@ envio pelo canal e handoff **ainda não ativados nem comprovados por E2E**.
 
 ## 9. Rollback
 
-- A branch não toca banco nem produção: **rollback = fechar o PR sem merge**.
-- Depois de um eventual merge: `git revert` dos commits (todos aditivos), ou o
-  botão de rollback da Vercel para o deploy anterior (`isRollbackCandidate`).
+- Este PR não contém migration nem escrita SQL direta no Supabase. Antes do
+  merge, rollback significa fechar o PR. Após o merge, o rollback deverá
+  ocorrer por `git revert` dos commits (todos aditivos) ou rollback do
+  deployment na Vercel (`isRollbackCandidate`). Os registros de ensaio 35 e 36
+  serão preservados até o protocolo pós-merge e depois cancelados pela
+  aplicação, mantendo a trilha de auditoria.
 - A migration 016 (já em produção, da fase anterior) tem rollback documentado no
   próprio arquivo — não faz parte desta branch.
 
 ## 10. Veredito
 
-> **NÃO PRONTO PARA MERGE** — aguarda CI verde nos três jobs e revisão externa
-> do ChatGPT.
+> **APTO PARA MERGE CONDICIONAL** — CI verde nos três ambientes e revisão
+> externa do ChatGPT concluída em 06/08/2026.
 >
-> **NÃO PRONTO PARA RELIGAR A SERENA** — handoff por conversa não comprovado em
-> canal real (E2E E), e E2E A–D pendentes de ambiente de ensaio.
+> **NÃO PRONTO PARA RELIGAR A SERENA** — a Serena deve permanecer desligada até
+> a aprovação dos E2E A–E em ambiente de ensaio, incluindo o handoff humano
+> por conversa como pré-condição.
 
 O que muda cada veredito:
 
