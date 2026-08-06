@@ -189,6 +189,19 @@ async function carregarResumo() {
     definirTexto('#metrica-consultas', mostrar(consultasHoje));
     definirTexto('#metrica-escalonamentos', mostrar(escalonamentos));
 
+    // Atualiza o card de próximos compromissos no painel principal.
+    const statusProximos = seletor('#proximos-compromissos-status');
+    if (statusProximos) {
+      if (consultasHoje === null || consultasHoje === undefined) {
+        statusProximos.textContent = 'Carregando dados da agenda…';
+      } else if (consultasHoje === 0) {
+        statusProximos.textContent = 'Nenhuma consulta agendada para hoje.';
+      } else {
+        const n = consultasHoje;
+        statusProximos.textContent = `${n} consulta${n > 1 ? 's' : ''} agendada${n > 1 ? 's' : ''} hoje. Acesse a Agenda para detalhes.`;
+      }
+    }
+
     const aviso = seletor('#aviso-ambiente');
     if (aviso) {
       aviso.hidden = resumo.origem === 'banco';
