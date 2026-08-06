@@ -180,7 +180,15 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
         // O lead avança sozinho: quem marcou não está mais pesquisando, e deixar
         // o funil parado obrigaria alguém a arrastar o card para refletir algo
         // que já aconteceu.
-        await leads.moverEstagio(lead.id, 'agendamento', { origem: 'automacao' }).catch(() => {});
+        //
+        // O nome é o do funil ('agendado'), não o do ato ('agendamento') — a
+        // auditoria pegou esta rota avançando para uma etapa que não existe, com
+        // o catch engolindo a recusa: 34 consultas marcadas, nenhum card movido.
+        // A consulta vale mais que o card, então a falha continua não desfazendo
+        // o agendamento — mas agora ela aparece no log em vez de sumir.
+        await leads.moverEstagio(lead.id, 'agendado', { origem: 'automacao' }).catch((erro) => {
+          console.error(`[agente] lead ${lead.id} não avançou para "agendado": ${erro.message}`);
+        });
 
         return {
           lead_id: lead.id,
