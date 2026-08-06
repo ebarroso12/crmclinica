@@ -281,3 +281,73 @@ test('falha ao registrar o opt-out não derruba o atendimento', async () => {
   assert.equal(resultado.acao, 'respondida_pela_automacao');
   assert.equal((await repositorio.listarConversas({})).length, 1);
 });
+
+// ---------------------------------------------------------------- P0.3: fluxo openclaw_gerencia
+// Verifica que mensagens com estrategia_ia='openclaw_gerencia' NÃO acionam o orquestrador.
+
+const EVENTO_OPENCLAW = Object.freeze({
+  canal: 'whatsapp',
+  id_externo: 'wa:oc:1',
+  remetente: '5516999999999',
+  nome: 'Marina Souza',
+  texto: 'Quero saber sobre a primeira consulta',
+  origem: 'whatsapp',
+  estrategia_ia: 'openclaw_gerencia',
+});
+
+test('mensagem openclaw_gerencia nao aciona o orquestrador', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+  const resultado = await atendimento.receberMensagem(EVENTO_OPENCLAW);
+  assert.equal(resultado.acao, 'importada_do_canal',
+    'mensagem do OpenClaw deve retornar importada_do_canal, nao respondida_pela_automacao');
+  assert.equal(orquestrador.despachos.length, 0,
+    'o orquestrador nao deve ser acionado para mensagens do OpenClaw');
+});
+
+test('mensagem openclaw_gerencia e gravada no banco mesmo sem despacho', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO_OPENCLAW);
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 1);
+  const mensagens = await repositorio.listarMensagens(conversas[0].id);
+  assert.equal(mensagens.length, 1, 'a mensagem do paciente deve estar no banco');
+  assert.equal(mensagens[0].conteudo, 'Quero saber sobre a primeira consulta');
+  assert.equal(mensagens[0].autor_tipo, 'contato');
+});
+
+test('mensagem openclaw_gerencia nao gera sem_resposta_do_orquestrador', async () => {
+  const { repositorio, orquestrador, atendimento } = montar({ resposta: null });
+  const resultado = await atendimento.receberMensagem(EVENTO_OPENCLAW);
+  assert.notEqual(resultado.acao, 'sem_resposta_do_orquestrador',
+    'nao deve haver sem_resposta_do_orquestrador para mensagens do OpenClaw');
+  assert.equal(orquestrador.despachos.length, 0);
+});
+
+test('mensagem openclaw_gerencia com conversa assumida por humano retorna importada_do_canal', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+  // Primeiro, criar a conversa
+  await atendimento.receberMensagem({ ...EVENTO_OPENCLAW, id_externo: 'wa:oc:setup' });
+  const [conversa] = await repositorio.listarConversas({});
+  await atendimento.assumir(conversa.id, null);
+  // Nova mensagem openclaw_gerencia na conversa assumida
+  const resultado = await atendimento.receberMensagem({ ...EVENTO_OPENCLAW, id_externo: 'wa:oc:2', texto: 'nova mensagem' });
+  assert.equal(resultado.acao, 'importada_do_canal',
+    'mensagem openclaw_gerencia sempre retorna importada_do_canal, independente do estado da conversa');
+  assert.equal(orquestrador.despachos.length, 0, 'orquestrador nunca e acionado para openclaw_gerencia');
+});
+
+test('canal nao-WhatsApp com estrategia_ia=crm_despacha aciona o orquestrador', async () => {
+  const { repositorio, orquestrador, atendimento } = montar();
+  const eventoSite = {
+    canal: 'site',
+    id_externo: 'site:1',
+    remetente: '5516999999999',
+    nome: 'Marina Souza',
+    texto: 'Quero saber sobre a primeira consulta',
+    estrategia_ia: 'crm_despacha',
+  };
+  const resultado = await atendimento.receberMensagem(eventoSite);
+  assert.equal(resultado.acao, 'respondida_pela_automacao',
+    'canal site com crm_despacha deve acionar o orquestrador');
+  assert.equal(orquestrador.despachos.length, 1);
+});

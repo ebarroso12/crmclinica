@@ -103,3 +103,44 @@ test('POST em /api/resumo é recusado', async (t) => {
   const resposta = await app.pedir('/api/resumo', { method: 'POST' });
   assert.equal(resposta.status, 405);
 });
+
+// ---------------------------------------------------------------- P1.2: indicadores do card de compromissos
+// Verifica os cenários que o app.js usa para atualizar o card de próximos compromissos.
+
+const { calcularIndicadores } = require('../src/dominio/resumo');
+
+test('consultasHoje é null quando a agenda não está implementada', () => {
+  const indicadores = calcularIndicadores([], []);
+  assert.equal(indicadores.consultasHoje, null,
+    'sem agenda, consultasHoje deve ser null para o card mostrar "Carregando dados da agenda..."');
+});
+
+test('pendentes zero com inbox vazio', () => {
+  const indicadores = calcularIndicadores([], []);
+  assert.equal(indicadores.pendentes, 0);
+  assert.equal(indicadores.leadsHoje, 0);
+  assert.equal(indicadores.escalonamentos, 0);
+});
+
+test('pendentes conta conversas não resolvidas', () => {
+  const conversas = [
+    { status: 'aberta', assumida_por_humano: false },
+    { status: 'resolvida', assumida_por_humano: false },
+    { status: 'aberta', assumida_por_humano: true },
+  ];
+  const indicadores = calcularIndicadores(conversas, []);
+  assert.equal(indicadores.pendentes, 2, 'duas conversas não resolvidas');
+  assert.equal(indicadores.escalonamentos, 1, 'uma assumida por humano');
+});
+
+test('GET /api/resumo com API indisponível retorna 200 com indicadores zerados', async (t) => {
+  // Verifica que a API retorna sempre 200 — o catch do app.js é acionado
+  // quando a resposta não é 200 ou quando o JSON está malformado.
+  const app = await subirServidor({ repositorio: criarRepositorioEmMemoria() });
+  t.after(() => app.encerrar());
+  const resposta = await app.pedir('/api/resumo');
+  assert.equal(resposta.status, 200, 'a API deve retornar 200 mesmo sem banco');
+  const resumo = await resposta.json();
+  assert.ok('indicadores' in resumo, 'deve ter indicadores');
+  assert.ok('consultasHoje' in resumo.indicadores, 'deve ter consultasHoje');
+});

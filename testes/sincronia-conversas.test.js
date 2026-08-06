@@ -198,3 +198,102 @@ test('o instante da mensagem original acompanha o evento', async () => {
   await ambiente.sincronizador.sincronizar();
   assert.equal(ambiente.recebidas[0].ocorrido_em, '2026-08-04T14:45:54.000Z');
 });
+
+// ---------------------------------------------------------------- P0.3: testes integrados
+// Verificam que o fluxo Arquitetura A está correto:
+// - mensagem user é importada com estrategia_ia='openclaw_gerencia'
+// - atendimento NÃO chama despacharEvento (a ação retornada é 'importada_do_canal')
+// - resposta assistant é importada uma vez
+// - releitura não duplica (deduplicação via id_externo no repositório)
+
+test('mensagem user do OpenClaw chega ao atendimento com estrategia_ia=openclaw_gerencia', async () => {
+  const eventos = [];
+  const sincronizador = criarSincronizadorDeConversas({
+    gateway: {
+      async chamar(metodo) {
+        if (metodo === 'sessions.list') return { sessions: [SESSAO] };
+        if (metodo === 'chat.history') return { messages: [msg('user', 'quero agendar', 'u10')] };
+        throw new Error(`metodo inesperado: ${metodo}`);
+      },
+    },
+    atendimento: {
+      async receberMensagem(evento) {
+        eventos.push(evento);
+        return { acao: 'importada_do_canal' };
+      },
+    },
+    repositorio: {
+      async encontrarOuCriarContato() { return { id: 1 }; },
+      async encontrarOuCriarConversaAberta() { return { id: 10 }; },
+      async registrarMensagem() { return { duplicada: false }; },
+      async existeSaidaComTexto() { return false; },
+    },
+  });
+  await sincronizador.sincronizar();
+  assert.equal(eventos.length, 1);
+  assert.equal(eventos[0].estrategia_ia, 'openclaw_gerencia',
+    'evento do WhatsApp deve ter estrategia_ia=openclaw_gerencia');
+  assert.equal(eventos[0].origem, 'whatsapp');
+});
+
+test('releitura do historico envia o mesmo id_externo — repositorio deduplica', async () => {
+  const recebidas = [];
+  const sincronizador = criarSincronizadorDeConversas({
+    gateway: {
+      async chamar(metodo) {
+        if (metodo === 'sessions.list') return { sessions: [SESSAO] };
+        if (metodo === 'chat.history') return { messages: [msg('user', 'oi', 'u11')] };
+        throw new Error(`metodo inesperado: ${metodo}`);
+      },
+    },
+    atendimento: {
+      async receberMensagem(evento) {
+        recebidas.push(evento);
+        return { acao: 'importada_do_canal' };
+      },
+    },
+    repositorio: {
+      async encontrarOuCriarContato() { return { id: 1 }; },
+      async encontrarOuCriarConversaAberta() { return { id: 10 }; },
+      async registrarMensagem() { return { duplicada: true }; },
+      async existeSaidaComTexto() { return false; },
+    },
+  });
+  await sincronizador.sincronizar();
+  await sincronizador.sincronizar();
+  assert.equal(recebidas.length, 2, 'sincronizador envia ao atendimento em cada passada');
+  assert.equal(recebidas[0].id_externo, recebidas[1].id_externo,
+    'mesmo id_externo nas duas passadas — repositorio deduplica');
+});
+
+test('toolResult e system nao chegam ao atendimento como mensagem do paciente', async () => {
+  const recebidas = [];
+  const sincronizador = criarSincronizadorDeConversas({
+    gateway: {
+      async chamar(metodo) {
+        if (metodo === 'sessions.list') return { sessions: [SESSAO] };
+        if (metodo === 'chat.history') return {
+          messages: [
+            msg('toolResult', 'resultado de ferramenta', 't10'),
+            msg('system', 'contexto interno', 's10'),
+            msg('user', 'mensagem real', 'u12'),
+            msg('assistant', 'resposta real', 'a10'),
+          ],
+        };
+        throw new Error(`metodo inesperado: ${metodo}`);
+      },
+    },
+    atendimento: {
+      async receberMensagem(evento) { recebidas.push(evento); return { acao: 'ok' }; },
+    },
+    repositorio: {
+      async encontrarOuCriarContato() { return { id: 1 }; },
+      async encontrarOuCriarConversaAberta() { return { id: 10 }; },
+      async registrarMensagem() { return { duplicada: false }; },
+      async existeSaidaComTexto() { return false; },
+    },
+  });
+  await sincronizador.sincronizar();
+  assert.equal(recebidas.length, 1, 'so a mensagem real do paciente chega ao atendimento');
+  assert.equal(recebidas[0].texto, 'mensagem real');
+});

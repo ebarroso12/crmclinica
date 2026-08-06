@@ -96,3 +96,90 @@ Portanto, o OpenClaw já controla a conversa. O erro na migração recente foi t
 2. A Serena gera exatamente 1 resposta no WhatsApp.
 3. A resposta da Serena gera exatamente 1 registro de saída no CRM.
 4. Não há duplicação de mensagens `user` ou `assistant` no histórico do OpenClaw.
+
+---
+
+## P0.1 — Handoff Humano por Conversa: Análise das Capacidades do OpenClaw
+
+**Data da análise:** 2026-08-06
+
+### Pergunta
+
+Quando um humano assume uma conversa no CRM, a Serena deve parar de responder **aquele paciente específico** enquanto continua respondendo os demais. O OpenClaw oferece algum mecanismo para isso?
+
+### Capacidades verificadas no protocolo v4 (build `0790d9f`)
+
+| Capacidade | Existe? | Evidência |
+|---|---|---|
+| Pausa por `sessionKey` | **Não documentada** | Nenhum método `sessions.pause`, `sessions.stop` ou `sessions.policy` encontrado no código ou na documentação |
+| Política por sessão | **Não documentada** | `dmPolicy` e `allowFrom` são campos globais do canal, não por sessão |
+| `allowlist`/`denylist` por telefone | **Parcialmente** | `allowFrom` aceita lista de strings; `['*']` = todos; `[]` = ninguém; lista de telefones = apenas esses |
+| Roteamento por agente | **Não documentado** | Nenhum campo de roteamento por agente encontrado |
+| Hook antes da execução do agente | **Não documentado** | Nenhum método de interceptação encontrado |
+| Middleware ou filtro de mensagens | **Não documentado** | Nenhum método de filtro encontrado |
+| Configuração dinâmica sem reinício | **Sim** | `config.set` com `baseHash` — verificado em produção |
+| Bloqueio seguro contra corrida | **Parcialmente** | `baseHash` previne sobreposição de escritas, mas não resolve corrida entre leitura e escrita |
+
+### Conclusão
+
+O OpenClaw v4 **não oferece pausa por sessão individual**. O mecanismo disponível é a `allowlist` global (`dmPolicy` + `allowFrom`).
+
+### Opções para implementar handoff humano
+
+#### Opção 1: `allowFrom` como lista de telefones ativos (excluindo assumidos)
+
+Quando o humano assume uma conversa, o CRM remove o telefone do paciente da `allowFrom` via `config.set`. Quando libera, adiciona de volta.
+
+**Vantagens:**
+- Funciona com o protocolo real.
+- A Serena para de responder aquele paciente imediatamente.
+
+**Problemas:**
+- A lista pode ter centenas de telefones — `config.set` com payload grande a cada handoff.
+- Risco de corrida: dois handoffs simultâneos podem sobrescrever um ao outro (mitigado pelo `baseHash`, mas não eliminado).
+- Formato do telefone no `allowFrom` não está documentado (número puro? JID? `+55...`?). **Não verificado em produção.**
+- Requer `operator.admin` escopo — o worker de lembretes não tem esse poder.
+
+#### Opção 2: Controle pelo CRM via `estrategia_ia` (implementado neste PR)
+
+O CRM já controla o fluxo via `estrategia_ia='openclaw_gerencia'`: mensagens do WhatsApp são importadas sem redespacho. Quando o humano assume, o CRM marca `assumida_por_humano=true` no banco.
+
+**O que isso resolve:**
+- O CRM não redespacha mensagens de conversas assumidas (já implementado em `responderSePossivel`).
+- A Serena não recebe mensagens do CRM para conversas assumidas.
+
+**O que isso NÃO resolve:**
+- A Serena ainda responde diretamente no WhatsApp, pois o OpenClaw não sabe que o humano assumiu.
+- O CRM só controla o redespacho — não controla o canal.
+
+#### Opção 3: Arquitetura híbrida (CRM controla o canal para conversas assumidas)
+
+Para conversas assumidas, o CRM usa `Opção 1` (remove da `allowFrom`). Para conversas não assumidas, usa `Opção 2` (importa sem redespacho).
+
+**Problemas:**
+- Complexidade alta.
+- Requer `operator.admin` — escopo separado, dispositivo separado.
+- Formato do telefone no `allowFrom` não verificado.
+
+### Decisão para este PR
+
+**A Opção 1 e a Opção 3 são BLOQUEADAS** até que:
+
+1. O formato do telefone no `allowFrom` seja verificado em produção (número puro, JID ou `+55...`).
+2. O escopo `operator.admin` seja provisionado em dispositivo separado.
+3. O comportamento do `config.set` com lista de telefones seja testado com o gateway real.
+
+**A Opção 2 é implementada neste PR** como medida parcial: o CRM não redespacha mensagens de conversas assumidas. A Serena pode ainda responder diretamente no WhatsApp para essas conversas — esse é o bloqueio P0.1 que impede o merge.
+
+### Teste E2E obrigatório (antes do merge)
+
+1. Serena ligada (`dmPolicy=open`).
+2. Paciente de teste envia mensagem.
+3. Serena responde uma vez.
+4. Equipe assume a conversa no CRM.
+5. Mesmo paciente envia nova mensagem.
+6. **Verificar:** Serena envia zero respostas no WhatsApp.
+7. Outro paciente de teste envia mensagem.
+8. **Verificar:** Serena continua respondendo ao segundo paciente.
+
+**Status:** PENDENTE — aguarda Opção 1 implementada e testada.

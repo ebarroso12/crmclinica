@@ -85,6 +85,23 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
 
     await sincronizarTemperatura(conversa.id);
 
+    // FLUXO 1: mensagem originada no WhatsApp e já processada pelo OpenClaw.
+    // A Serena já respondeu no canal (Arquitetura A). O CRM importa, persiste
+    // e qualifica, mas não despacha ao orquestrador para gerar resposta.
+    // Identificado pelo campo estrategia_ia='openclaw_gerencia' no evento.
+    //
+    // FLUXO 2: mensagem originada em canal sem agente conectado (site, formulário,
+    // Instagram sem bot, webhook externo). O CRM aciona o orquestrador.
+    // Identificado por estrategia_ia='crm_despacha' ou null (ambíguo → despacha).
+    if (evento.estrategia_ia === 'openclaw_gerencia') {
+      await repositorio.registrarAuditoria({
+        entidade: 'conversa',
+        entidadeId: conversa.id,
+        acao: 'importada_do_canal',
+        detalhe: { motivo: 'openclaw_gerencia', canal: evento.canal },
+      });
+      return { acao: 'importada_do_canal', conversa_id: conversa.id };
+    }
     return responderSePossivel(conversa.id);
   }
 

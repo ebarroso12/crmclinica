@@ -160,11 +160,22 @@ test('a agenda também grava o usuário do token', async (t) => {
     dia_semana: dia, hora_inicio: '08:00', hora_fim: '18:00',
   })));
 
+  // Calcular offset SP→UTC para garantir que 10h SP seja enviado,
+  // independente do TZ do processo (UTC no sandbox, SP em produção).
+  const ref = new Date();
+  ref.setUTCDate(ref.getUTCDate() + 1);
+  ref.setUTCHours(12, 0, 0, 0);
+  const horaSPdoMeiodia = Number(
+    new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric', timeZone: 'America/Sao_Paulo', hour12: false,
+    }).format(ref),
+  );
+  const offsetHoras = 12 - horaSPdoMeiodia;
   const inicio = new Date();
-  inicio.setDate(inicio.getDate() + 1);
-  inicio.setHours(10, 0, 0, 0);
+  inicio.setUTCDate(inicio.getUTCDate() + 1);
+  inicio.setUTCHours(10 + offsetHoras, 0, 0, 0);
   const fim = new Date(inicio);
-  fim.setHours(11, 0, 0, 0);
+  fim.setUTCHours(11 + offsetHoras, 0, 0, 0);
 
   const { token } = await (await postar('/api/agenda/propor', {
     profissional_id: profissional.id,

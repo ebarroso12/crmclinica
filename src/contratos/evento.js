@@ -10,9 +10,26 @@ const { ErroDeContrato } = require('./erros');
 const VERSAO_CONTRATO = '1';
 
 const CANAIS = Object.freeze(['whatsapp', 'instagram', 'site', 'formulario', 'interno']);
+
+// Estratégia de IA: quem aciona a resposta automática para este evento.
+//
+//   openclaw_gerencia — o OpenClaw já controla a conversa (Arquitetura A).
+//     A Serena responde diretamente no canal. O CRM importa, persiste e
+//     qualifica, mas não despacha ao orquestrador para gerar resposta.
+//     Usado por sincronia-conversas.js (polling do histórico do WhatsApp).
+//
+//   crm_despacha — o CRM é responsável por acionar a IA (Arquitetura B).
+//     O evento veio de um canal que não tem agente conectado (site, formulário,
+//     Instagram sem bot) ou de um webhook externo. O CRM chama o orquestrador.
+//
+// Quando ausente (null), o comportamento é determinado pelo canal:
+//   canal='whatsapp' com origem='whatsapp' → openclaw_gerencia (retrocompatível)
+//   demais canais → crm_despacha (retrocompatível)
+const ESTRATEGIAS_IA = Object.freeze(['openclaw_gerencia', 'crm_despacha']);
 const TIPOS = Object.freeze(['mensagem.recebida', 'lead.criado', 'agendamento.solicitado', 'tarefa.concluida']);
 
 const LIMITES = Object.freeze({
+  estrategiaIa: 20,
   idExterno: 200,
   remetente: 120,
   nome: 160,
@@ -81,6 +98,30 @@ function validarEvento(entrada) {
     ? exigirTexto(entrada.texto, 'texto', LIMITES.texto)
     : textoOpcional(entrada.texto, 'texto', LIMITES.texto);
 
+  // Estratégia de IA: campo explícito tem precedência.
+  // Sem campo explícito, inferir pelo canal e pela origem (retrocompatível).
+  let estrategiaIa = null;
+  if (entrada.estrategia_ia) {
+    const bruto = String(entrada.estrategia_ia).trim().toLowerCase();
+    if (!ESTRATEGIAS_IA.includes(bruto)) {
+      throw new ErroDeContrato(
+        `campo "estrategia_ia" deve ser um de: ${ESTRATEGIAS_IA.join(', ')}`,
+        'estrategia_ia',
+      );
+    }
+    estrategiaIa = bruto;
+  } else {
+    // Retrocompatibilidade: sincronia-conversas.js passa origem='whatsapp',
+    // que indica que o OpenClaw já gerencia a conversa.
+    const origemBruta = typeof entrada.origem === 'string' ? entrada.origem.trim().toLowerCase() : null;
+    if (origemBruta === 'whatsapp') {
+      estrategiaIa = 'openclaw_gerencia';
+    } else if (entrada.canal && entrada.canal !== 'whatsapp') {
+      estrategiaIa = 'crm_despacha';
+    }
+    // canal='whatsapp' sem origem='whatsapp' → null (ambíguo, não inferir)
+  }
+
   const evento = {
     versao: VERSAO_CONTRATO,
     tipo,
@@ -90,6 +131,7 @@ function validarEvento(entrada) {
     nome: textoOpcional(entrada.nome, 'nome', LIMITES.nome),
     texto,
     origem: textoOpcional(entrada.origem, 'origem', LIMITES.origem),
+    estrategia_ia: estrategiaIa,
     ocorrido_em: ocorridoEm,
   };
 
@@ -106,6 +148,7 @@ module.exports = {
   VERSAO_CONTRATO,
   CANAIS,
   TIPOS,
+  ESTRATEGIAS_IA,
   LIMITES,
   validarEvento,
   validarEventoMensagem,

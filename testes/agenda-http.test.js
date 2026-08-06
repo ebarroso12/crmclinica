@@ -44,12 +44,32 @@ async function subirAgenda() {
   return { app, repositorio, profissional };
 }
 
-/** Amanhã às 10h: dentro da janela e sempre no futuro. */
+/** Amanhã às `hora` no fuso America/Sao_Paulo — independente do TZ do processo.
+ *
+ * setHours() usa o TZ local do processo. Em UTC (sandbox, Vercel), setHours(10)
+ * produz 10h UTC = 7h SP, que fica fora da janela 8h-18h e causa 400 em vez de 200.
+ * Esta versão calcula o offset SP→UTC e ajusta antes de criar o Date.
+ */
 function amanhaAs(hora) {
-  const data = new Date();
-  data.setDate(data.getDate() + 1);
-  data.setHours(hora, 0, 0, 0);
-  return data;
+  // Calcular o offset de SP em relação ao UTC para amanhã.
+  // Usa Intl.DateTimeFormat para extrair a hora em SP de um instante UTC conhecido,
+  // depois calcula a diferença. Funciona com horário de verão.
+  const amanha = new Date();
+  amanha.setUTCDate(amanha.getUTCDate() + 1);
+  amanha.setUTCHours(12, 0, 0, 0); // meio-dia UTC como referência
+  const horaSPdoMeiodia = Number(
+    new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric', timeZone: 'America/Sao_Paulo', hour12: false,
+    }).format(amanha),
+  );
+  // offset = hora_UTC_ref - hora_SP_ref = 12 - horaSPdoMeiodia
+  const offsetHoras = 12 - horaSPdoMeiodia;
+  // hora desejada em SP → hora UTC = hora_SP + offset
+  const horaUTC = hora + offsetHoras;
+  const resultado = new Date();
+  resultado.setUTCDate(resultado.getUTCDate() + 1);
+  resultado.setUTCHours(horaUTC, 0, 0, 0);
+  return resultado;
 }
 
 function comPapel(app, sessao) {

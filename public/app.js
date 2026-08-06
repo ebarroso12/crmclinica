@@ -220,6 +220,11 @@ async function carregarResumo() {
     for (const alvo of ['#saude-orquestrador', '#saude-atendimento', '#saude-inbox', '#saude-crm']) {
       aplicarEstado(alvo, 'indisponivel');
     }
+    // P1.2: atualizar o card de próximos compromissos com mensagem de erro explícita.
+    const statusProximosCatch = seletor('#proximos-compromissos-status');
+    if (statusProximosCatch) {
+      statusProximosCatch.textContent = 'Não foi possível carregar os compromissos. Tente novamente.';
+    }
   }
 }
 

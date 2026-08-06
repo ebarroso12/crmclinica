@@ -158,31 +158,50 @@ O card "Próximos compromissos" agora exibe o número real de consultas do dia, 
 
 | Componente | Estado | Evidência | Risco | Decisão | Próxima ação |
 |---|---|---|---|---|---|
-| Transporte WebSocket | Corrigido | `openclaw.js` usa `criarClienteGateway` | Nenhum | Mantido | Validar com gateway real |
-| Ingresso WhatsApp | Operacional | `sincronia-conversas.js` + `sessions.list` | Baixo | Mantido | Teste E2E |
-| `chat.send` | Removido do fluxo principal | `despacharEvento` retorna `null` | Eliminado | Removido | — |
+| Transporte WebSocket | Implementado (sem E2E) | `openclaw.js` usa `criarClienteGateway` | Médio — sem teste real | Mantido | Teste E2E com gateway real (Fase 6) |
+| Ingresso WhatsApp | Implementado (sem E2E) | `sincronia-conversas.js` + `sessions.list` | Médio — sem teste real | Mantido | Teste E2E com número reservado |
+| `chat.send` | Removido do fluxo principal | `despacharEvento` retorna `null` | Baixo | Removido | — |
 | `chat.history` | Usado apenas para importação | `sincronia-conversas.js:145` | Baixo | Mantido | — |
-| Correlação de resposta | Resolvida (Arq. A) | Sem polling de resposta no CRM | Nenhum | Resolvida | — |
-| Seleção de sessão | Resolvida (Arq. A) | Sem `sessions.list` no `despacharEvento` | Nenhum | Resolvida | — |
-| Idempotência | Operacional | `id_externo` no `registrarMensagem` | Baixo | Mantida | — |
-| Duplicação | Eliminada | `despacharEvento` não chama `chat.send` | Eliminado | Corrigida | Confirmar com teste E2E |
-| Sincronização CRM | Operacional | `sincronia-conversas.js` + polling | Baixo | Mantida | — |
-| Interface | Corrigida | Textos "não implementada" removidos | Nenhum | Corrigida | — |
-| Agenda | Operacional | 40 testes passando | Baixo | Corrigida | — |
-| Testes | 694 pass, 0 fail | `npm test` com `TZ=America/Sao_Paulo` | Nenhum | Corrigidos | CI/CD |
-| Produção (`main`) | Aguardando PR | Branch `fix/auditoria-arquitetural-completa` | Alto | Pendente | Revisão e merge do PR #4 |
-
----
-
+| Separação de fluxos (P0.2) | Implementado | `atendimento.js:96` — `estrategia_ia='openclaw_gerencia'` | Baixo | Implementado | Teste E2E |
+| Campo `estrategia_ia` no contrato | Implementado | `src/contratos/evento.js` — ESTRATEGIAS_IA | Baixo | Implementado | — |
+| Correlação de resposta | Resolvida (Arq. A) | Sem polling de resposta no CRM | Baixo | Resolvida | — |
+| Seleção de sessão | Resolvida (Arq. A) | Sem `sessions.list` no `despacharEvento` | Baixo | Resolvida | — |
+| Idempotência | Implementada | `id_externo` no `registrarMensagem` | Baixo | Mantida | — |
+| Duplicação | Eliminada no CRM | `despacharEvento` não chama `chat.send` | Médio — sem E2E | Corrigida | Confirmar com teste E2E |
+| Handoff humano (P0.1) | **BLOQUEIO** | `assumida_por_humano` existe no CRM, mas OpenClaw não tem pausa por sessão | **Alto** | Pendente | Implementar `allowFrom` por telefone (Opção 1) + teste E2E |
+| Sincronização CRM | Implementada | `sincronia-conversas.js` + polling | Baixo | Mantida | — |
+| Interface | Corrigida | Textos "não implementada" removidos; catch atualizado | Baixo | Corrigida | — |
+| Testes TZ-independentes (P1.1) | Corrigidos | `agenda.test.js`, `agenda-http.test.js`, `identidade-da-requisicao.test.js` | Baixo | Corrigidos | CI/CD com matriz TZ |
+| Testes de fluxo (P0.3) | Adicionados | `atendimento.test.js` +5, `sincronia-conversas.test.js` +3, `resumo.test.js` +4 | Baixo | Adicionados | — |
+| Suíte de testes | 706 pass, 0 fail | `node --test` sem TZ e com TZ=America/Sao_Paulo | Baixo | Corrigida | CI/CD |
+| Produção (`main`) | Aguardando PR | Branch `fix/auditoria-arquitetural-completa` | Alto | Pendente | Revisão do PR #4 |
 ## Veredito
 
+> **NÃO PRONTO PARA MERGE**
 > **NÃO PRONTO PARA RELIGAR A SERENA**
 
-Pendências antes de religar:
+### Bloqueios P0 (impedem o merge)
 
-1. **PR #4 revisado e aprovado** por pelo menos um revisor humano.
-2. **Teste E2E** com número reservado (Fase 3): confirmar 1 entrada → 1 resposta → 1 saída.
-3. **Teste de integração real** contra o gateway (Fase 6): confirmar protocolo WebSocket.
-4. **Auditoria revisada** pelo ChatGPT com evidências do GitHub, Vercel e Supabase.
+| Bloqueio | Estado | O que falta |
+|---|---|---|
+| P0.1 — Handoff humano por sessão | **ABERTO** | Implementar `allowFrom` por telefone (Opção 1 na ADR) + teste E2E de handoff |
+| P0.2 — Separação de fluxos | **RESOLVIDO** | `estrategia_ia='openclaw_gerencia'` implementado em `atendimento.js` |
+| P0.3 — Testes contraditórios | **RESOLVIDO** | Suíte unificada: 706 pass, 0 fail |
 
-Quando os quatro itens acima estiverem comprovados, o veredito pode ser revisado para **PRONTO PARA RELIGAR**.
+### Bloqueios P1 (qualidade)
+
+| Bloqueio | Estado | O que falta |
+|---|---|---|
+| P1.1 — Testes TZ-independentes | **RESOLVIDO** | `amanhaAs()` usa `Intl.DateTimeFormat`; TZ removido do `npm test` |
+| P1.2 — Interface: catch de carregarResumo | **RESOLVIDO** | Mensagem de erro explícita no catch |
+| P1.3 — Teste E2E antes do merge | **PENDENTE** | Número reservado + E2E de duplicação, handoff, MCP e releitura |
+
+### Pendências antes de religar
+
+1. **P0.1 resolvido:** Implementar `allowFrom` por telefone e testar com gateway real.
+2. **Teste E2E de duplicação:** 1 entrada → 1 resposta → 1 saída, zero duplicações.
+3. **Teste E2E de handoff humano:** assumir conversa → nova mensagem → zero respostas da Serena.
+4. **Teste E2E de outro paciente:** com conversa assumida, outro paciente → uma resposta da Serena.
+5. **Teste E2E de MCP:** consultar horários, agendar, confirmar banco, Google Calendar, lead, lembretes.
+6. **Teste E2E de releitura:** polling duas vezes → nenhuma mensagem duplicada.
+7. **PR #4 revisado e aprovado** com evidências dos testes acima.
