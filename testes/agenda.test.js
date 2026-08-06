@@ -16,6 +16,12 @@ const QUINTA = '2026-08-06T00:00:00.000-03:00';
 function em(hora, dia = '2026-08-06') {
   return new Date(`${dia}T${hora}:00.000-03:00`);
 }
+/** Extrai a hora no fuso da clínica (America/Sao_Paulo) — independente do TZ do processo. */
+function horaEmSP(instante) {
+  return Number(new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', timeZone: 'America/Sao_Paulo', hour12: false,
+  }).format(new Date(instante)));
+}
 
 /** Monta agenda com um profissional que atende quinta, das 8h às 18h. */
 async function montar({ agora = em('07:00') } = {}) {
@@ -151,7 +157,7 @@ test('os horários livres respeitam janela, bloqueio e ocupação', () => {
     agora: em('07:00'),
   });
 
-  const inicios = livres.map((h) => new Date(h.inicio).getHours());
+  const inicios = livres.map((h) => horaEmSP(h.inicio));
   assert.deepEqual(inicios, [9, 11], '8h ocupado, 10h bloqueado; sobram 9h e 11h');
 });
 
@@ -163,7 +169,7 @@ test('horário que já passou não é oferecido', () => {
     agora: em('10:30'),
   });
 
-  const inicios = livres.map((h) => new Date(h.inicio).getHours());
+  const inicios = livres.map((h) => horaEmSP(h.inicio));
   assert.deepEqual(inicios, [11], 'oferecer horário passado é constrangimento');
 });
 
@@ -416,7 +422,7 @@ test('remarcar move o horário e desfaz a confirmação', async () => {
     inicio: em('16:00').toISOString(), fim: em('17:00').toISOString(),
   });
 
-  assert.equal(new Date(remarcado.inicio).getHours(), 16);
+  assert.equal(horaEmSP(remarcado.inicio), 16);
   // A pessoa confirmou o horário antigo; o novo precisa de confirmação nova.
   assert.equal(remarcado.status, 'agendado');
   assert.equal(remarcado.confirmado_em, null);

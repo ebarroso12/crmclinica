@@ -31,7 +31,8 @@ async function subir() {
   const atendimento = criarAtendimento({ repositorio, orquestrador });
 
   await atendimento.receberMensagem({
-    canal: 'whatsapp', id_externo: 'id:1', remetente: '5516999999999',
+    canal: 'whatsapp', estrategia_ia: 'crm_despacha',
+    id_externo: 'id:1', remetente: '5516999999999',
     nome: 'Marina', texto: 'Olá',
   });
 
@@ -160,11 +161,20 @@ test('a agenda também grava o usuário do token', async (t) => {
     dia_semana: dia, hora_inicio: '08:00', hora_fim: '18:00',
   })));
 
+  // Amanhã às 10h NO FUSO DA CLÍNICA, seja qual for o TZ do processo:
+  // `setHours(10)` em CI UTC produziria 7h em São Paulo — fora da janela — e o
+  // teste falharia pelo relógio da máquina, não pelo que ele testa.
+  const referencia = new Date();
+  referencia.setUTCDate(referencia.getUTCDate() + 1);
+  referencia.setUTCHours(12, 0, 0, 0);
+  const desvioHoras = 12 - Number(new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', timeZone: 'America/Sao_Paulo', hour12: false,
+  }).format(referencia));
   const inicio = new Date();
-  inicio.setDate(inicio.getDate() + 1);
-  inicio.setHours(10, 0, 0, 0);
+  inicio.setUTCDate(inicio.getUTCDate() + 1);
+  inicio.setUTCHours(10 + desvioHoras, 0, 0, 0);
   const fim = new Date(inicio);
-  fim.setHours(11, 0, 0, 0);
+  fim.setUTCHours(11 + desvioHoras, 0, 0, 0);
 
   const { token } = await (await postar('/api/agenda/propor', {
     profissional_id: profissional.id,
