@@ -163,3 +163,58 @@ O que muda cada veredito:
 - **Religar:** merge feito + ambiente de ensaio montado + E2E A–E aprovados,
   com o handoff (E2E E) demonstrando conversa assumida em silêncio e os demais
   pacientes atendidos.
+
+---
+
+## 11. Adendo pós-merge — 06/08/2026
+
+Registro do merge e do protocolo pós-merge. Toda verificação abaixo foi feita
+por leitura (GET/SELECT); nenhuma escrita partiu desta auditoria.
+
+### Merge e deploy
+
+| Verificação | Evidência | Resultado |
+| --- | --- | --- |
+| Merge pelo PR #5, merge commit, head travado | merge commit `7d93c88` (head `c1c57c3`, `--match-head-commit`), 06:02:47 UTC | **COMPROVADO** |
+| Vercel publicou o SHA da main | deployment `dpl_EUq2R9BwLBFuvaLR1RpB5unfc5RD`, production READY, `gitSource.sha = 7d93c88` | **COMPROVADO** |
+| Smoke somente leitura | `/health`: ok, banco alcançável (`crmclinica_app`, papel `backend`, RLS efetivo) | **COMPROVADO** |
+| Defeito da oferta corrigido em produção | Com 35/36 ativos, segunda 10/08 não oferecia 08:30 nem 10:00 (só 13:00/14:30/16:00); terça 08:30 oferecida | **COMPROVADO** |
+
+### Cancelamento dos ensaios 35 e 36 (pelo painel, usuário admin)
+
+| Verificação | Evidência | Resultado |
+| --- | --- | --- |
+| 35 cancelado | `status=cancelado`, `cancelado_em=2026-08-06T03:20:42-03:00`, `cancelado_motivo=null` (nenhum motivo informado no painel), `google_evento_id` preservado | **COMPROVADO** |
+| 36 cancelado | `status=cancelado`, `cancelado_em=2026-08-06T03:20:48-03:00`, `cancelado_motivo=null`, `google_evento_id` preservado | **COMPROVADO** |
+| Lembretes não elegíveis | 63/64 (ag. 35) e 65/66 (ag. 36) em `estado=ignorado`, motivo `agendamento_cancelado`, nada enviado, nada apagado | **COMPROVADO** |
+| Trilha de auditoria | `audit_log` 1017 (ag. 35) e 1020 (ag. 36), ação `agendamento_cancelado`, usuário 1 (admin), com timestamps; 1018/1019/1021/1022 para os lembretes | **COMPROVADO** |
+| Horários liberados | Oferta volta a listar segunda 10/08 08:30 e 10:00 após o cancelamento | **COMPROVADO** |
+| Google Calendar | O contrato implementado de `cancelar` **não remove nem atualiza o evento no Google** — os eventos dos ensaios permanecem no calendário do médico (não bloqueiam a oferta: o filtro `doCrm` os exclui da ocupação). Leitura direta do calendário não está disponível a esta sessão | **PARCIALMENTE COMPROVADO** (comportamento conforme o contrato; eventos remanescentes inferidos, remoção manual pelo médico se desejar) |
+| Contato/lead preservados | contatos 31014 e 31017, leads 131 e 132 existem; nenhum DELETE executado | **COMPROVADO** |
+| Nenhum agendamento novo | Nenhum `agendamento` com id > 36 | **COMPROVADO** |
+| Serena desligada, política intacta | Sonda no gateway antes e depois: `dmPolicy=allowlist`, `allowFrom=[]` | **COMPROVADO** |
+
+### Confirmação ao vivo da pendência de segurança P1 (item 8)
+
+Os registros `audit_log` 1015 e 1016 (trigger de `usuarios` no login do admin,
+06/08 03:19–03:20 BRT) gravaram a linha completa do usuário em `detalhe.old` e
+`detalhe.new`, **incluindo `senha_hash`** (e gravariam `totp_segredo_cifrado`
+se houvesse). A pendência P1 do item 8 deixa de ser hipótese: está ocorrendo em
+produção a cada login/atualização de usuário. Mantida a classificação **P1 de
+alta prioridade, em PR separado**: redigir/excluir segredos antes de gravar o
+detalhe da auditoria.
+
+### Pendências abertas ao fim do protocolo
+
+1. **P1** — redação de segredos na auditoria de `usuarios` (confirmada ao vivo).
+2. Eventos dos ensaios 35 e 36 remanescentes no Google Calendar (só visual;
+   remoção manual, ou incluir a limpeza do Google no contrato de `cancelar` em
+   PR futuro).
+3. E2E A–E em ambiente de ensaio — pré-condição para religar a Serena.
+
+### Veredito final do protocolo
+
+> **PR #5 INTEGRADO EM PRODUÇÃO.**
+> **ENSAIOS 35 E 36 CANCELADOS E AUDITADOS.**
+> **SERENA PERMANECE DESLIGADA.**
+> **RELIGAMENTO PROIBIDO ATÉ E2E A–E APROVADOS.**
