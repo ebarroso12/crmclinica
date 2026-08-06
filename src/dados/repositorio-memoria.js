@@ -4,6 +4,8 @@
 // Serve aos testes e ao desenvolvimento local sem banco: o resto do sistema
 // não distingue um do outro. Não persiste nada entre reinícios, de propósito.
 
+const { redigirAuditoria } = require('../seguranca/redator-auditoria');
+
 const ETIQUETAS_INICIAIS = [
   { nome: 'lead_quente', descricao: 'Lead quente', cor: '#dc2626', do_sistema: true },
   { nome: 'lead_morno', descricao: 'Lead morno', cor: '#d97706', do_sistema: true },
@@ -627,7 +629,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     },
 
     async registrarAuditoria(registro) {
-      auditoria.push({ ...registro, criado_em: agora().toISOString() });
+      // Mesmo contrato do repositório real: o detalhe é redigido na entrada.
+      const detalhe = registro?.detalhe ? redigirAuditoria(registro.detalhe) : registro?.detalhe ?? null;
+      auditoria.push({ ...registro, detalhe, criado_em: agora().toISOString() });
     },
 
     // ---------------------------------------------------------------- usuários e sessões
