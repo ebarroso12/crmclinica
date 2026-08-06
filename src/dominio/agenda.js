@@ -118,25 +118,58 @@ function conflitante(inicio, fim, agendamentos = [], { ignorarId = null } = {}) 
  * agendamentos. Serve para a automação oferecer horários que existem de verdade
  * em vez de perguntar "que dia você prefere?" e descobrir depois que não dá.
  */
+/** A clínica atende no horário de São Paulo, independente de onde o código roda. */
+const FUSO_DA_CLINICA = 'America/Sao_Paulo';
+
+/**
+ * O instante em que, no fuso da clínica, é tal minuto do dia.
+ *
+ * `setHours` opera no fuso do processo — que em produção é UTC. Aqui o cálculo
+ * é feito ao contrário: descobre-se o deslocamento real daquele dia (que muda
+ * com horário de verão) e aplica-se sobre o minuto pedido.
+ */
+function comHoraLocal(dia, minutosNoDia, fuso = FUSO_DA_CLINICA) {
+  // A data do calendário no fuso da clínica — não a do processo. Perto da
+  // meia-noite as duas divergem, e usar a errada joga o horário para o dia
+  // anterior ou seguinte.
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: fuso, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(dia));
+
+  // O deslocamento do fuso naquele dia, medido — e não presumido, porque ele
+  // muda com horário de verão. Em São Paulo no inverno dá −3h.
+  const meioDia = new Date(`${partes}T12:00:00Z`);
+  const deslocamentoMs = new Date(meioDia.toLocaleString('en-US', { timeZone: fuso }))
+    - new Date(meioDia.toLocaleString('en-US', { timeZone: 'UTC' }));
+
+  // 08:30 na clínica é 08:30 menos o deslocamento, em UTC: com −3h, 11:30Z.
+  return new Date(
+    new Date(`${partes}T00:00:00Z`).getTime() + (minutosNoDia * 60_000) - deslocamentoMs,
+  );
+}
+
 function horariosLivres({
   dia, duracaoMin = 30, disponibilidades = [], bloqueios = [], agendamentos = [],
-  agora = new Date(), passo = null,
+  agora = new Date(), passo = null, fuso = FUSO_DA_CLINICA,
 }) {
   const data = paraData(dia, 'dia');
-  const diaSemana = data.getDay();
+  // Qual dia da semana é na clínica, não onde o código roda: 21h de sexta em
+  // São Paulo já é sábado em UTC, e a grade de sexta desapareceria.
+  const diaSemana = Number(new Intl.DateTimeFormat('en-US', { timeZone: fuso, weekday: 'short' })
+    .format(data)
+    .replace(/Sun|Mon|Tue|Wed|Thu|Fri|Sat/, (d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(d)));
   const intervalo = passo ?? duracaoMin;
 
   const janelas = disponibilidades.filter((janela) => janela.dia_semana === diaSemana);
   const livres = [];
 
   for (const janela of janelas) {
-    const inicioJanela = new Date(data);
-    inicioJanela.setHours(0, 0, 0, 0);
-    inicioJanela.setMinutes(paraMinutos(janela.hora_inicio));
-
-    const fimJanela = new Date(data);
-    fimJanela.setHours(0, 0, 0, 0);
-    fimJanela.setMinutes(paraMinutos(janela.hora_fim));
+    // "08:30" na grade é 08:30 na clínica, não no fuso de quem roda o código.
+    // `setHours` usa o fuso do processo: na Vercel, que roda em UTC, a grade da
+    // manhã virava madrugada e a tarde virava manhã. O paciente receberia um
+    // horário três horas antes do que o médico atende.
+    const inicioJanela = comHoraLocal(data, paraMinutos(janela.hora_inicio), fuso);
+    const fimJanela = comHoraLocal(data, paraMinutos(janela.hora_fim), fuso);
 
     for (let cursor = new Date(inicioJanela); cursor < fimJanela; cursor = new Date(cursor.getTime() + intervalo * 60_000)) {
       const fim = new Date(cursor.getTime() + duracaoMin * 60_000);
