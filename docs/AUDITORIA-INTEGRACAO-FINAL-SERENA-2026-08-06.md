@@ -94,7 +94,9 @@ credencial de painel. Por isso o E2E F usou ensaio novo, como o plano permite.
 
 ## 5. Evidências de banco, Google e OpenClaw
 
-- **Banco:** somente SELECT nesta fase (nenhum DELETE/UPDATE/DDL); evidências acima.
+- **Banco:** não houve escrita direta no Supabase, migration ou SQL manual nesta
+  fase. O E2E F realizou escritas controladas exclusivamente pelo fluxo
+  MCP → API → domínio → repositório; evidências acima.
 - **Google:** `google_evento_id` gravado nos agendamentos 35 e 36; sem erros de
   Google nos logs de runtime da Vercel nas janelas dos ensaios.
 - **OpenClaw:** sonda somente-leitura no gateway da clínica (2026-08-06): 220
@@ -110,7 +112,8 @@ COMPROVADO**). Pelo critério do plano, a **Arquitetura A é incompatível com
 handoff humano por conversa**. A Arquitetura B (canal conectado e calado; CRM
 importa, aplica as gates existentes — interruptor, horário, assumida, pausa,
 duplicada — e aciona a Serena headless desta branch, respondendo pelo método
-`send`) está preparada em código e **pendente de E2E em ambiente de ensaio**.
+`send`) tem as **primitivas implementadas em código**. Roteamento produtivo,
+envio pelo canal e handoff **ainda não ativados nem comprovados por E2E**.
 `allowFrom` com "todos menos um" segue **vetado**.
 
 ## 7. Riscos e bloqueios
@@ -127,7 +130,14 @@ duplicada — e aciona a Serena headless desta branch, respondendo pelo método
    10:00), espelhados no Google — cancelar pelo painel quando deixarem de servir
    de evidência.
 
-## 8. Rollback
+## 8. Pendências de segurança
+
+1. **P1 — alta prioridade, em PR separado:** o mecanismo de auditoria de
+   `usuarios` deve excluir/redigir `senha_hash`, `totp_segredo_cifrado`,
+   tokens de recuperação, tokens de sessão e qualquer segredo equivalente
+   antes de gravar `detalhe.old` ou `detalhe.new`.
+
+## 9. Rollback
 
 - A branch não toca banco nem produção: **rollback = fechar o PR sem merge**.
 - Depois de um eventual merge: `git revert` dos commits (todos aditivos), ou o
@@ -135,7 +145,7 @@ duplicada — e aciona a Serena headless desta branch, respondendo pelo método
 - A migration 016 (já em produção, da fase anterior) tem rollback documentado no
   próprio arquivo — não faz parte desta branch.
 
-## 9. Veredito
+## 10. Veredito
 
 > **NÃO PRONTO PARA MERGE** — aguarda CI verde nos três jobs e revisão externa
 > do ChatGPT.
