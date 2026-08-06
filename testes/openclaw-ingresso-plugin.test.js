@@ -105,7 +105,12 @@ test('persiste antes de entregar, mantém a fila na falha e a remove após suces
 
   const [arquivo] = await readdir(pasta);
   assert.match(arquivo, /^[0-9a-f]{64}\.json$/);
-  assert.equal((await stat(path.join(pasta, arquivo))).mode & 0o777, 0o600);
+  // O Windows não implementa os bits POSIX de modo e costuma reportar 0666,
+  // mesmo quando o arquivo foi criado com 0600. A garantia é verificável nos
+  // sistemas POSIX, inclusive no Linux usado pelo servidor de produção.
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(path.join(pasta, arquivo))).mode & 0o777, 0o600);
+  }
   assert.equal(JSON.parse(await readFile(path.join(pasta, arquivo), 'utf8')).id_externo, 'openclaw:duravel-1');
 
   falhar = false;
