@@ -15,9 +15,10 @@ const {
 // ------------------------------------------------------------- de quem é a sessão
 //
 // Este cliente atende SÓ o fluxo `crm_despacha`: eventos de canais em que o CRM
-// é o responsável por acionar a IA (site, formulário). Mensagens de WhatsApp
-// nunca chegam aqui — o agente do canal já as gerencia, e o atendimento as
-// importa sem redespachar (`estrategia_ia = openclaw_gerencia`).
+// é o responsável por acionar a IA. Isso inclui site e formulário e, na
+// Arquitetura B, o WhatsApp conectado com o agente direto globalmente calado.
+// No modo anterior (`openclaw_gerencia`), o atendimento apenas importa o que o
+// agente do canal já respondeu e nunca redespacha a mensagem.
 //
 // A conversa acontece numa sessão INTERNA do CRM (`OPENCLAW_SESSION_ID`),
 // nunca na sessão WhatsApp de um paciente. A versão anterior localizava a

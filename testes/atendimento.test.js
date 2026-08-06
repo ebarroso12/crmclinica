@@ -25,6 +25,18 @@ function montar(resposta) {
   return { repositorio, orquestrador, atendimento: criarAtendimento({ repositorio, orquestrador }) };
 }
 
+function canalFalso({ falhar = false } = {}) {
+  const envios = [];
+  return {
+    envios,
+    async enviar(carga) {
+      envios.push(carga);
+      if (falhar) throw new Error('WhatsApp indisponível');
+      return { identificador: 'wa-saida-1' };
+    },
+  };
+}
+
 const EVENTO = Object.freeze({
   canal: 'whatsapp',
   // O ciclo completo — despacho, resposta, escalonação — é o fluxo em que o
@@ -61,6 +73,38 @@ test('a resposta do orquestrador é gravada no mesmo histórico da equipe', asyn
   assert.equal(mensagens[1].conteudo, 'Olá! Posso ajudar?');
   assert.equal(mensagens[1].autor_tipo, 'automacao');
   assert.equal(mensagens[1].direcao, 'saida');
+});
+
+test('Arquitetura B entrega a resposta automática pelo WhatsApp uma única vez', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal });
+
+  const resultado = await atendimento.receberMensagem(EVENTO);
+  assert.equal(resultado.acao, 'respondida_pela_automacao');
+  assert.equal(resultado.entregue, true);
+  assert.equal(canal.envios.length, 1);
+  assert.equal(canal.envios[0].telefone, '5516999999999');
+  assert.match(canal.envios[0].chave, /^serena:/);
+
+  await atendimento.receberMensagem(EVENTO);
+  assert.equal(canal.envios.length, 1, 'releitura não reenvia a resposta');
+});
+
+test('falha de entrega automática escala sem afirmar resposta entregue', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({
+    repositorio,
+    orquestrador: orquestradorFalso(),
+    canal: canalFalso({ falhar: true }),
+  });
+
+  const resultado = await atendimento.receberMensagem(EVENTO);
+  assert.equal(resultado.acao, 'escalonada_por_falha_entrega');
+  const [conversa] = await repositorio.listarConversas({});
+  assert.equal((await repositorio.obterConversa(conversa.id)).assumida_por_humano, true);
+  assert.ok(repositorio._auditoria.some((r) => r.acao === 'resposta_automacao_nao_entregue'));
 });
 
 test('o orquestrador recebe só o contexto mínimo', async () => {

@@ -136,6 +136,11 @@ function validarEvento(entrada) {
  *     A conversa JÁ está com o agente por definição: tudo vira
  *     `openclaw_gerencia`, e qualquer outra reivindicação é recusada.
  *
+ *   `sincronia_whatsapp_crm` — importador da Arquitetura B. O agente direto do
+ *     canal está globalmente calado e o CRM é o único dono da resposta; tudo
+ *     vira `crm_despacha`. Este adaptador só é escolhido por configuração do
+ *     processo, nunca pelo payload do canal.
+ *
  *   `openclaw_webhook` — a rota autenticada por HMAC (`POST /api/eventos`).
  *     • WhatsApp sem estratégia: recusado (`estrategia_ia_ambigua`). A mensagem
  *       pode já ter sido respondida pelo agente no canal; adivinhar aqui é
@@ -164,6 +169,22 @@ function exigirEstrategiaDoAdaptador(evento, adaptador) {
       );
     }
     return Object.freeze({ ...evento, estrategia_ia: 'openclaw_gerencia' });
+  }
+
+  if (adaptador === 'sincronia_whatsapp_crm') {
+    if (evento.canal !== 'whatsapp') {
+      throw new ErroDeEstrategia(
+        'o sincronizador do WhatsApp só importa eventos do canal whatsapp',
+        'estrategia_ia_incompativel',
+      );
+    }
+    if (declarada && declarada !== 'crm_despacha') {
+      throw new ErroDeEstrategia(
+        'na Arquitetura B a resposta pertence exclusivamente ao CRM',
+        'estrategia_ia_incompativel',
+      );
+    }
+    return Object.freeze({ ...evento, estrategia_ia: 'crm_despacha' });
   }
 
   if (adaptador === 'openclaw_webhook') {

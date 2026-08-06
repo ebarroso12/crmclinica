@@ -1,6 +1,6 @@
 'use strict';
 
-const { validarEvento } = require('../contratos/evento');
+const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
 const { normalizarTelefone } = require('./serena');
 const { criarNumerosInternos } = require('./numeros-internos');
 
@@ -100,11 +100,25 @@ function instanteDaMensagem(mensagem) {
   return Number.isNaN(data.getTime()) ? null : data.toISOString();
 }
 
-function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, registrar = null, numerosInternos = [] }) {
+function criarSincronizadorDeConversas({
+  gateway,
+  atendimento,
+  repositorio,
+  registrar = null,
+  numerosInternos = [],
+  estrategiaIa = 'openclaw_gerencia',
+}) {
   const equipe = criarNumerosInternos(numerosInternos);
   if (!gateway) throw new Error('sincronizador de conversas exige o gateway');
   if (!atendimento) throw new Error('sincronizador de conversas exige o atendimento');
   if (!repositorio) throw new Error('sincronizador de conversas exige o repositório');
+  if (!['openclaw_gerencia', 'crm_despacha'].includes(estrategiaIa)) {
+    throw new Error('estratégia de IA inválida no sincronizador de conversas');
+  }
+
+  const adaptador = estrategiaIa === 'crm_despacha'
+    ? 'sincronia_whatsapp_crm'
+    : 'sincronia_whatsapp';
 
   /** Grava uma resposta que já foi entregue ao paciente — pela Serena ou pela equipe. */
   async function registrarSaida({ telefone, texto, idExterno }) {
@@ -168,7 +182,7 @@ function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, regi
           continue;
         }
 
-        const evento = validarEvento({
+        const evento = exigirEstrategiaDoAdaptador(validarEvento({
           tipo: 'mensagem.recebida',
           canal: 'whatsapp',
           id_externo: idExterno,
@@ -181,13 +195,8 @@ function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, regi
             : null,
           texto,
           origem: 'whatsapp',
-          // O carimbo do adaptador confiável: esta mensagem veio do histórico
-          // do próprio agente, que portanto já a viu — e já respondeu no canal.
-          // É o que impede o atendimento de despachá-la de volta e fazer o
-          // paciente receber a mesma resposta duas vezes.
-          estrategia_ia: 'openclaw_gerencia',
           ocorrido_em: instanteDaMensagem(mensagem),
-        });
+        }), adaptador);
 
         const resultado = await atendimento.receberMensagem(evento);
         if (resultado?.acao !== 'mensagem_duplicada') gravadas += 1;

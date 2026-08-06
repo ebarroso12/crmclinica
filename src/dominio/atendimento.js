@@ -203,18 +203,47 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       if (texto) {
         // A resposta da IA entra no mesmo histórico que a equipe lê. Não há
         // registro paralelo: quem abre a conversa vê tudo em ordem.
-        await repositorio.registrarMensagem(conversaId, {
+        const { mensagem } = await repositorio.registrarMensagem(conversaId, {
           direcao: 'saida',
           conteudo: texto,
           autor_tipo: 'automacao',
           autor_nome: 'Serena',
         });
+
+        // Na Arquitetura B o agente direto do canal está calado: gravar a saída
+        // sem enviá-la faria o CRM afirmar que respondeu quando o paciente não
+        // recebeu nada. A mesma chave determinística protege retentativas.
+        const entrega = await entregarAoPaciente(conversa, texto, mensagem.id, 'serena');
+        if (entrega.motivo !== 'canal_nao_configurado' && !entrega.enviada) {
+          await repositorio.registrarAuditoria({
+            entidade: 'conversa',
+            entidadeId: conversaId,
+            acao: 'resposta_automacao_nao_entregue',
+            detalhe: { mensagem_id: mensagem.id, motivo: entrega.motivo },
+          }).catch(() => {});
+          await escalonar(conversaId, 'falha_na_entrega_da_automacao');
+          return {
+            acao: 'escalonada_por_falha_entrega',
+            conversa_id: conversaId,
+            motivo: entrega.motivo,
+          };
+        }
+
         await repositorio.registrarAuditoria({
           entidade: 'conversa',
           entidadeId: conversaId,
           acao: 'respondida_pela_automacao',
+          detalhe: {
+            mensagem_id: mensagem.id,
+            entregue: entrega.enviada,
+            id_externo: entrega.identificador ?? null,
+          },
         });
-        return { acao: 'respondida_pela_automacao', conversa_id: conversaId };
+        return {
+          acao: 'respondida_pela_automacao',
+          conversa_id: conversaId,
+          entregue: entrega.enviada,
+        };
       }
 
       if (resposta?.escalonar) {
@@ -343,7 +372,7 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
    * aconteceu, e apagá-la esconderia da própria equipe o que ela já escreveu.
    * O que muda é a marca — enviada ou não —, para a tela poder dizer a verdade.
    */
-  async function entregarAoPaciente(conversa, texto, mensagemId) {
+  async function entregarAoPaciente(conversa, texto, mensagemId, origem = 'equipe') {
     if (!canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
 
     try {
@@ -355,7 +384,7 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
         texto,
         // Determinística: um clique duplo, ou uma retentativa da rede, não faz
         // o paciente receber a mesma resposta duas vezes.
-        chave: `equipe:${conversa.id}:${mensagemId}`,
+        chave: `${origem}:${conversa.id}:${mensagemId}`,
       });
 
       return { enviada: true, identificador: resultado?.identificador ?? null };

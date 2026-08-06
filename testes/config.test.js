@@ -15,6 +15,7 @@ test('valores padrão são seguros quando o ambiente está vazio', () => {
   assert.equal(configuracao.endereco, '127.0.0.1', 'fora de produção o servidor fica no loopback');
   assert.equal(configuracao.banco.configurado, false);
   assert.equal(configuracao.kimi.habilitado, false, 'o provedor de modelo é opcional');
+  assert.equal(configuracao.serena.transporteWhatsapp, 'openclaw_gerencia');
 });
 
 test('URLs inválidas ou com protocolo estranho são descartadas', () => {
@@ -175,4 +176,29 @@ test('entrega real exige o gateway — não as variáveis do cliente HTTP antigo
     OPENCLAW_DEVICE_TOKEN: 'device-token-sintetico',
   });
   assert.deepEqual(validarConfiguracao(completo), []);
+});
+
+test('Arquitetura B só liga com sessão interna e os dois gateways', () => {
+  const incompleta = carregarConfiguracao({ SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha' });
+  const problemas = validarConfiguracao(incompleta);
+  assert.ok(problemas.some((p) => /gateway de comando/.test(p)));
+  assert.ok(problemas.some((p) => /OPENCLAW_SESSION_ID/.test(p)));
+  assert.ok(problemas.some((p) => /gateway do WhatsApp/.test(p)));
+
+  const completa = carregarConfiguracao({
+    SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha',
+    OPENCLAW_GATEWAY_URL: 'wss://comando.exemplo/ws',
+    OPENCLAW_DEVICE_TOKEN: 'device-comando',
+    OPENCLAW_SESSION_ID: 'agent:serena:crm',
+    OPENCLAW_CLINICA_GATEWAY_URL: 'wss://clinica.exemplo/ws',
+    OPENCLAW_CLINICA_DEVICE_TOKEN: 'device-clinica',
+  });
+  assert.deepEqual(validarConfiguracao(completa), []);
+});
+
+test('estratégia de WhatsApp inventada é recusada', () => {
+  const problemas = validarConfiguracao(carregarConfiguracao({
+    SERENA_TRANSPORTE_WHATSAPP: 'automatico',
+  }));
+  assert.ok(problemas.some((p) => /SERENA_TRANSPORTE_WHATSAPP/.test(p)));
 });
