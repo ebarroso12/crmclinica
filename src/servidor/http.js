@@ -34,6 +34,7 @@ const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
 const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
+const { criarRotasDoAgente } = require('./rotas-agente');
 const { criarPoliticaDoCanal } = require('../integracoes/openclaw-politica');
 const { criarCanalDeConversas } = require('../integracoes/canal-conversas');
 const { criarAgendaDoGoogle } = require('../integracoes/google-agenda');
@@ -152,6 +153,11 @@ function criarAplicacao(dependencias = {}) {
       clinica: configuracao.lembretes.clinica,
     });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
+  // A Serena opera o CRM por aqui: registra contato, consulta agenda e marca.
+  const rotasDoAgente = criarRotasDoAgente({
+    repositorio, leads: servicoDeLeads, agenda: servicoDeAgenda, configuracao,
+  });
+
   const rotasDeLembretes = criarRotasDeLembretes({ lembretes: servicoDeLembretes, repositorio });
   // A vinculação fala com a instância da clínica — outro gateway, outro token,
   // outro WhatsApp. Sem ela configurada, o painel mostra o botão desabilitado
@@ -885,6 +891,11 @@ function criarAplicacao(dependencias = {}) {
       // travariam inbox, agenda e contatos, que não têm nada a ver com o teste.
       //
       // Estas rotas não tocam tabela nenhuma, então saem antes do `comIdentidade`.
+      if (rota === '/api/agente/acao' && metodo === 'POST') {
+        responderJson(res, 200, await rotasDoAgente.executar(req.headers, await lerJson(req)));
+        return;
+      }
+
       if (rota.startsWith('/api/serena/teste')) {
         const tratouTeste = await tratarRotasDaSerena(req, res, rota, metodo, url, usuario);
         if (tratouTeste) return;

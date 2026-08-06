@@ -24,9 +24,14 @@ const { ErroDeContrato } = require('../contratos/erros');
 // aplicação teria, na prática, todo o poder da aplicação.
 
 /** Ações permitidas, uma a uma. Lista fechada: o que não está aqui não existe. */
-const ACOES = Object.freeze(['registrar_contato', 'qualificar_lead', 'mover_lead']);
+const ACOES = Object.freeze([
+  'registrar_contato', 'qualificar_lead', 'mover_lead',
+  // A Serena oferecia horario sem ter como consultar a agenda: dizia 'posso
+  // verificar' e, se a pessoa aceitasse, nao tinha o que verificar.
+  'consultar_horarios', 'agendar',
+]);
 
-function criarRotasDoAgente({ repositorio, leads, configuracao }) {
+function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao }) {
   const segredo = configuracao?.agente?.token ?? '';
 
   /**
@@ -69,6 +74,54 @@ function criarRotasDoAgente({ repositorio, leads, configuracao }) {
         throw new ErroDeContrato(`ação desconhecida: "${acao}"`, 'acao');
       }
 
+      // Consultar horário não é sobre ninguém: a pessoa pode perguntar "quando
+      // tem vaga?" antes de dizer quem é, e exigir telefone aqui obrigaria a
+      // Serena a pedir o número para responder uma pergunta que não precisa dele.
+      if (acao === 'consultar_horarios') {
+        if (!agenda) {
+          const erro = new Error('agenda não configurada');
+          erro.status = 503;
+          throw erro;
+        }
+
+        const profissionais = await repositorio.listarProfissionais?.({ apenasAtivos: true }) ?? [];
+        const profissional = profissionais[0];
+        if (!profissional) return { horarios: [], motivo: 'nenhum profissional ativo' };
+
+        // Uma semana à frente. Mais que isso devolveria uma lista que ninguém
+        // lê no WhatsApp; menos deixaria a agenda parecer vazia por causa da
+        // carência de três dias, que come os primeiros.
+        const dias = Math.min(Number(corpo?.dias) || 7, 14);
+        const encontrados = [];
+
+        for (let salto = 0; salto <= dias && encontrados.length < 6; salto += 1) {
+          const dia = new Date();
+          dia.setDate(dia.getDate() + salto);
+          dia.setHours(12, 0, 0, 0);
+
+          const { horarios } = await agenda.oferecerHorarios({
+            profissionalId: profissional.id, dia: dia.toISOString(),
+          });
+          encontrados.push(...horarios.slice(0, 3));
+        }
+
+        return {
+          profissional: profissional.nome,
+          duracao_min: profissional.duracao_min,
+          horarios: encontrados.slice(0, 6).map((h) => ({
+            inicio: h.inicio,
+            fim: h.fim,
+            // Já formatado: pedir ao modelo que converta ISO para "quinta, 14h"
+            // é como ele erra data — e data errada vira paciente no dia errado.
+            quando: new Date(h.inicio).toLocaleString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              weekday: 'long', day: '2-digit', month: '2-digit',
+              hour: '2-digit', minute: '2-digit',
+            }),
+          })),
+        };
+      }
+
       const telefone = String(corpo?.telefone ?? '').trim();
       if (!telefone) throw new ErroDeContrato('informe o telefone do paciente', 'telefone');
 
@@ -94,6 +147,50 @@ function criarRotasDoAgente({ repositorio, leads, configuracao }) {
         const campos = corpo?.qualificacao ?? {};
         await leads.qualificar(lead.id, campos, { origem: 'automacao' });
         return { lead_id: lead.id, qualificado: true };
+      }
+
+      if (acao === 'agendar') {
+        if (!agenda) {
+          const erro = new Error('agenda não configurada');
+          erro.status = 503;
+          throw erro;
+        }
+
+        const profissionais = await repositorio.listarProfissionais?.({ apenasAtivos: true }) ?? [];
+        const profissional = profissionais[0];
+        if (!profissional) throw new ErroDeContrato('nenhum profissional ativo', 'profissional');
+
+        const proposta = await agenda.propor({
+          profissionalId: profissional.id,
+          contatoId: contato.id,
+          leadId: lead.id,
+          inicio: corpo?.inicio,
+          fim: corpo?.fim,
+          tipo: 'consulta',
+        });
+
+        // Confirma na mesma ação: o paciente já escolheu o horário na conversa,
+        // e deixar a consulta "proposta" a faria existir para ele e não para a
+        // clínica — ninguém confirmaria, e ele apareceria num dia sem vaga.
+        //
+        // A trava de conflito continua sendo do banco: se alguém pegou o horário
+        // entre a oferta e este ponto, a gravação falha e o erro sobe.
+        const agendamento = await agenda.confirmar(proposta.token, { observacoes: corpo?.observacoes ?? null });
+
+        // O lead avança sozinho: quem marcou não está mais pesquisando, e deixar
+        // o funil parado obrigaria alguém a arrastar o card para refletir algo
+        // que já aconteceu.
+        await leads.moverEstagio(lead.id, 'agendamento', { origem: 'automacao' }).catch(() => {});
+
+        return {
+          lead_id: lead.id,
+          agendamento_id: agendamento.id,
+          confirmado: true,
+          quando: new Date(agendamento.inicio).toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            weekday: 'long', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+          }),
+        };
       }
 
       // mover_lead

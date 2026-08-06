@@ -1312,6 +1312,10 @@ function criarRepositorio(pool) {
         ['observacoes', 'observacoes'], ['local', 'local'],
         ['confirmadoEm', 'confirmado_em'], ['canceladoEm', 'cancelado_em'],
         ['canceladoMotivo', 'cancelado_motivo'], ['profissionalId', 'profissional_id'],
+        // Sem esta linha o identificador do evento era descartado em silêncio:
+        // a consulta ia para o Google e o CRM não guardava o vínculo, então
+        // remarcar criaria um evento novo e cancelar não teria o que apagar.
+        ['google_evento_id', 'google_evento_id'],
       ]);
 
       const partes = [];
