@@ -4,6 +4,12 @@
 **Estado:** código preparado; produção permanece inalterada e o religamento segue
 condicionado aos E2E A–E.
 
+**Destino confirmado pelo administrador:** OpenClaw em
+`https://openclaw.edsonbarrosojr.com.br`, gateway
+`wss://openclaw.edsonbarrosojr.com.br/ws` e linha da clínica
+`+55 16 99312-0938`. O vínculo existente deve ser preservado; não gerar novo QR
+se o gateway já informar essa linha como conectada.
+
 Este roteiro ativa o desenho decidido em `ADR-HANDOFF-HUMANO-SERENA.md`: o canal
 do WhatsApp continua conectado e recebe mensagens, mas o agente direto fica calado.
 O CRM aplica horário, pausa, handoff e idempotência, chama a sessão interna da Serena
@@ -28,7 +34,7 @@ SERENA_TRANSPORTE_WHATSAPP=crm_despacha
 OPENCLAW_SESSION_ID=<sessao-interna-dedicada>
 OPENCLAW_GATEWAY_URL=<gateway-de-comando>
 OPENCLAW_DEVICE_TOKEN=<token-ou-use-OPENCLAW_GATEWAY_TOKEN>
-OPENCLAW_CLINICA_GATEWAY_URL=<gateway-do-canal-da-clinica>
+OPENCLAW_CLINICA_GATEWAY_URL=wss://openclaw.edsonbarrosojr.com.br/ws
 OPENCLAW_CLINICA_DEVICE_TOKEN=<token-ou-use-OPENCLAW_CLINICA_GATEWAY_TOKEN>
 ```
 
