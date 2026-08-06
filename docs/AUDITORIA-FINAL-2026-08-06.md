@@ -68,7 +68,7 @@ anteriores via Supabase MCP. **Recomendação:** exportar esses objetos para uma
 |---|---|---|---|
 | Agendar pela Serena não movia o lead: a rota avançava para `'agendamento'` (etapa inexistente) e o catch engolia a recusa — 34 consultas marcadas, nenhum card movido | `'agendado'` + falha logada + primeira suíte de testes da porta do agente (4 testes) | `825c63e` | Em produção: `audit_log` id 1007, lead 131 `qualificando → agendado` |
 | Exclusão sem testemunha nas tabelas clínicas | Migration `db/016`: triggers `trg_audit_del_*` em agendamentos, lembretes, leads, contatos, lead_eventos, notas_internas — disparam para qualquer papel, inclusive `postgres` | `6e8d32b` | Aplicada em produção 06/08, seis triggers confirmados no catálogo |
-| 36 arquivos-lixo commitados na raiz (fragmentos de shell: `1)`, `({`, `AGORA`…) | Removidos do índice e do disco | `127fe61` | Raiz limpa; causa provável: hooks globais do claude-flow rodando via `cmd /c` transformam fragmentos `=> ...)` em redirecionamentos; **vigiar recorrência** (um novo apareceu e foi apagado durante esta própria sessão) |
+| 36 arquivos-lixo commitados na raiz (fragmentos de shell: `1)`, `({`, `AGORA`…) | Removidos do índice e do disco | `127fe61` | Raiz limpa; causa **confirmada nesta sessão**: os hooks globais do claude-flow (`~/.claude/settings.json`) repassam o comando do Bash pelo `cmd /c`, e o `>` de arrow functions (`=>`) vira redirecionamento — três arquivos novos nasceram durante a auditoria, cada um com o fragmento exato de um comando `node -e` recém-executado, e foram apagados. Enquanto os hooks existirem, comandos com `=>` no Bash recriarão lixo |
 | Política da Serena não proibia publicar bastidores (incidente real: notas internas na conversa do paciente; Serena desligada pelo admin às 23:33 UTC de 05/08, `audit_log` 987) | Regra "sem bastidores" na política oficial (semeada em produção, `audit_log` 1001, 16 regras ativas) | `90f3603` | `serena_regras` |
 
 Suíte após as correções: **701 testes, 0 falhas** (fuso de São Paulo).
@@ -129,8 +129,10 @@ Google, cancela os lembretes e, desde a 016, deixa rastro).
 4. **Token do Supabase CLI** — nesta máquina, dá acesso de **dono** ao banco via
    Management API (foi como a 016 entrou, e provavelmente como a limpeza saiu). Ciência
    e, se preferir, rotação: `supabase logout`.
-5. **Arquivos-lixo** — vigiar; se voltar, o suspeito são os hooks globais do
-   claude-flow (`~/.claude/settings.json` → `hook-handler.cjs` via `cmd /c`).
+5. **Arquivos-lixo** — mecanismo confirmado: hooks globais do claude-flow
+   (`~/.claude/settings.json` → `hook-handler.cjs` via `cmd /c`). Correção definitiva é
+   remover ou reescrever esses hooks sem `cmd /c` — decisão do dono da máquina, porque
+   afeta todos os projetos, não só o crmclinica.
 6. **SMTP ausente** — recuperação de senha por e-mail não sai (aviso recorrente nos
    logs da Vercel).
 7. **Supabase MCP do claude.ai** — sem permissão neste projeto (org gerida pela
