@@ -17,6 +17,7 @@ const TIPOS = Object.freeze(['consulta', 'retorno', 'avaliacao', 'procedimento',
 const STATUS_QUE_OCUPAM = Object.freeze(['agendado', 'confirmado', 'compareceu', 'faltou']);
 
 const DIAS = Object.freeze(['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado']);
+const FUSO_DA_CLINICA = 'America/Sao_Paulo';
 
 /** Erro de conflito, com o horário que atrapalhou — a mensagem precisa ser útil. */
 class ErroDeConflito extends Error {
@@ -71,19 +72,48 @@ function validarPeriodo(inicio, fim, { agora = new Date(), duracaoMaximaMin = 48
   return { inicio: de, fim: ate, minutos };
 }
 
+/**
+ * Componentes civis de um instante no fuso da clínica.
+ *
+ * Em produção a Vercel executa em UTC. `getHours()` e `getDay()` sobre uma data
+ * ISO devolvem o horário do processo, não o horário em que a clínica atende.
+ * Um horário local de 08:30 chega como 11:30Z e era comparado com a grade como
+ * se a consulta fosse às 11:30. A oferta estava correta, mas a confirmação era
+ * recusada como "fora da disponibilidade".
+ */
+function partesNoFuso(data, fuso = FUSO_DA_CLINICA) {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: fuso,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    weekday: 'short',
+  }).formatToParts(data);
+  const valor = (tipo) => partes.find((p) => p.type === tipo)?.value;
+  const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    ano: Number(valor('year')),
+    mes: Number(valor('month')),
+    dia: Number(valor('day')),
+    hora: Number(valor('hour')),
+    minuto: Number(valor('minute')),
+    diaSemana: dias[valor('weekday')],
+  };
+}
+
 /** O horário cai dentro de alguma janela de atendimento do profissional? */
-function dentroDaDisponibilidade(inicio, fim, disponibilidades = []) {
+function dentroDaDisponibilidade(inicio, fim, disponibilidades = [], { fuso = FUSO_DA_CLINICA } = {}) {
   if (disponibilidades.length === 0) return false;
 
-  const dia = inicio.getDay();
-  const minutosDe = inicio.getHours() * 60 + inicio.getMinutes();
-  const minutosAte = fim.getHours() * 60 + fim.getMinutes();
+  const de = partesNoFuso(inicio, fuso);
+  const ate = partesNoFuso(fim, fuso);
+  const minutosDe = de.hora * 60 + de.minuto;
+  const minutosAte = ate.hora * 60 + ate.minuto;
 
-  // Atravessar a meia-noite não é atendimento de clínica; é erro de data.
-  if (inicio.toDateString() !== fim.toDateString()) return false;
+  // Atravessar a meia-noite local não é atendimento de clínica; é erro de data.
+  if (de.ano !== ate.ano || de.mes !== ate.mes || de.dia !== ate.dia) return false;
 
   return disponibilidades.some((janela) => {
-    if (janela.dia_semana !== dia) return false;
+    if (Number(janela.dia_semana) !== de.diaSemana) return false;
     const janelaDe = paraMinutos(janela.hora_inicio);
     const janelaAte = paraMinutos(janela.hora_fim);
     return minutosDe >= janelaDe && minutosAte <= janelaAte;
@@ -112,69 +142,50 @@ function conflitante(inicio, fim, agendamentos = [], { ignorarId = null } = {}) 
 }
 
 /**
- * Monta os horários livres de um dia.
- *
- * Devolve encaixes de `duracaoMin` em `duracaoMin`, descontando bloqueios e
- * agendamentos. Serve para a automação oferecer horários que existem de verdade
- * em vez de perguntar "que dia você prefere?" e descobrir depois que não dá.
- */
-/** A clínica atende no horário de São Paulo, independente de onde o código roda. */
-const FUSO_DA_CLINICA = 'America/Sao_Paulo';
-
-/**
  * O instante em que, no fuso da clínica, é tal minuto do dia.
  *
  * `setHours` opera no fuso do processo — que em produção é UTC. Aqui o cálculo
- * é feito ao contrário: descobre-se o deslocamento real daquele dia (que muda
- * com horário de verão) e aplica-se sobre o minuto pedido.
+ * é feito ao contrário: descobre-se o deslocamento real daquele dia e aplica-se
+ * sobre o minuto pedido.
  */
 function comHoraLocal(dia, minutosNoDia, fuso = FUSO_DA_CLINICA) {
-  // A data do calendário no fuso da clínica — não a do processo. Perto da
-  // meia-noite as duas divergem, e usar a errada joga o horário para o dia
-  // anterior ou seguinte.
   const partes = new Intl.DateTimeFormat('en-CA', {
     timeZone: fuso, year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(new Date(dia));
 
-  // O deslocamento do fuso naquele dia, medido — e não presumido, porque ele
-  // muda com horário de verão. Em São Paulo no inverno dá −3h.
   const meioDia = new Date(`${partes}T12:00:00Z`);
   const deslocamentoMs = new Date(meioDia.toLocaleString('en-US', { timeZone: fuso }))
     - new Date(meioDia.toLocaleString('en-US', { timeZone: 'UTC' }));
 
-  // 08:30 na clínica é 08:30 menos o deslocamento, em UTC: com −3h, 11:30Z.
   return new Date(
     new Date(`${partes}T00:00:00Z`).getTime() + (minutosNoDia * 60_000) - deslocamentoMs,
   );
 }
 
+/**
+ * Monta os horários livres de um dia.
+ *
+ * Devolve encaixes de `duracaoMin` em `duracaoMin`, descontando bloqueios e
+ * agendamentos. Serve para a automação oferecer horários que existem de verdade.
+ */
 function horariosLivres({
   dia, duracaoMin = 30, disponibilidades = [], bloqueios = [], agendamentos = [],
   agora = new Date(), passo = null, fuso = FUSO_DA_CLINICA,
 }) {
   const data = paraData(dia, 'dia');
-  // Qual dia da semana é na clínica, não onde o código roda: 21h de sexta em
-  // São Paulo já é sábado em UTC, e a grade de sexta desapareceria.
-  const diaSemana = Number(new Intl.DateTimeFormat('en-US', { timeZone: fuso, weekday: 'short' })
-    .format(data)
-    .replace(/Sun|Mon|Tue|Wed|Thu|Fri|Sat/, (d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(d)));
+  const diaSemana = partesNoFuso(data, fuso).diaSemana;
   const intervalo = passo ?? duracaoMin;
 
-  const janelas = disponibilidades.filter((janela) => janela.dia_semana === diaSemana);
+  const janelas = disponibilidades.filter((janela) => Number(janela.dia_semana) === diaSemana);
   const livres = [];
 
   for (const janela of janelas) {
-    // "08:30" na grade é 08:30 na clínica, não no fuso de quem roda o código.
-    // `setHours` usa o fuso do processo: na Vercel, que roda em UTC, a grade da
-    // manhã virava madrugada e a tarde virava manhã. O paciente receberia um
-    // horário três horas antes do que o médico atende.
     const inicioJanela = comHoraLocal(data, paraMinutos(janela.hora_inicio), fuso);
     const fimJanela = comHoraLocal(data, paraMinutos(janela.hora_fim), fuso);
 
     for (let cursor = new Date(inicioJanela); cursor < fimJanela; cursor = new Date(cursor.getTime() + intervalo * 60_000)) {
       const fim = new Date(cursor.getTime() + duracaoMin * 60_000);
       if (fim > fimJanela) break;
-      // Horário que já passou não é oferta, é constrangimento.
       if (cursor < agora) continue;
       if (bloqueado(cursor, fim, bloqueios)) continue;
       if (conflitante(cursor, fim, agendamentos)) continue;
@@ -186,18 +197,13 @@ function horariosLivres({
   return livres.sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
 }
 
-/**
- * Reconhece o erro de exclusão do PostgreSQL e o traduz.
- *
- * `23P01` é `exclusion_violation` — a constraint fez seu trabalho. Sem esta
- * tradução, a recepção veria um erro de banco em vez de "horário ocupado".
- */
+/** Reconhece o erro de exclusão do PostgreSQL e o traduz. */
 function ehConflitoDoBanco(erro) {
   return erro?.code === '23P01' || erro?.constraint === 'agendamentos_sem_conflito';
 }
 
-function descreverDia(data) {
-  return DIAS[paraData(data, 'data').getDay()];
+function descreverDia(data, fuso = FUSO_DA_CLINICA) {
+  return DIAS[partesNoFuso(paraData(data, 'data'), fuso).diaSemana];
 }
 
 module.exports = {
@@ -205,6 +211,7 @@ module.exports = {
   TIPOS,
   STATUS_QUE_OCUPAM,
   DIAS,
+  FUSO_DA_CLINICA,
   seSobrepoe,
   validarPeriodo,
   dentroDaDisponibilidade,
@@ -213,6 +220,7 @@ module.exports = {
   horariosLivres,
   ehConflitoDoBanco,
   descreverDia,
+  partesNoFuso,
   ErroDeConflito,
   ErroDeAgenda,
 };
