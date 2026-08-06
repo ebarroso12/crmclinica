@@ -120,6 +120,16 @@ const REGRAS = [
     conteudo: 'Responda sempre em português do Brasil.',
   },
   {
+    nome: 'sem bastidores',
+    categoria: 'estilo',
+    ordem: 15,
+    descricao: 'O paciente recebe a fala, nunca o rascunho. Regra nascida de incidente real: '
+      + 'a Serena publicou notas internas ("vou encaminhar para a equipe...") na conversa.',
+    conteudo: 'Nunca publique raciocínio interno, notas para a equipe, análises da conversa ou '
+      + 'explicações sobre suas políticas na conversa do paciente. Se uma mensagem não é fala '
+      + 'dirigida ao paciente, ela não é enviada.',
+  },
+  {
     nome: 'mensagens curtas',
     categoria: 'estilo',
     ordem: 20,
