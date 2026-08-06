@@ -92,6 +92,10 @@ function carregarConfiguracao(ambiente = process.env) {
       token: texto(ambiente.OPENCLAW_TOKEN),
       sessao: texto(ambiente.OPENCLAW_SESSION_ID),
       segredoWebhook: texto(ambiente.OPENCLAW_WEBHOOK_SECRET),
+      // Segredo exclusivo da ponte de ingresso do WhatsApp. Separá-lo do
+      // webhook genérico impede que uma integração autorizada para importar
+      // eventos antigos ganhe, por acidente, o direito de acionar respostas.
+      segredoIngressoWhatsapp: texto(ambiente.WHATSAPP_WEBHOOK_SECRET),
       tempoLimiteMs: inteiro(ambiente.OPENCLAW_TIMEOUT_MS, 10000),
       // Gateway WebSocket: é por aqui que a mensagem sai de verdade. O token
       // compartilhado sozinho não concede escopo — quem envia precisa ser um
@@ -260,6 +264,9 @@ function validarTransporteWhatsapp(configuracao) {
     }
     if (!canal.url || (!canal.token && !canal.deviceToken)) {
       problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige o gateway do WhatsApp da clínica');
+    }
+    if (configuracao.openclaw.segredoIngressoWhatsapp.length < 32) {
+      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige WHATSAPP_WEBHOOK_SECRET com ao menos 32 caracteres');
     }
   }
 

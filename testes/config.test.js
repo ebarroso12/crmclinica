@@ -192,6 +192,7 @@ test('Arquitetura B só liga com sessão interna e os dois gateways', () => {
     OPENCLAW_SESSION_ID: 'agent:serena:crm',
     OPENCLAW_CLINICA_GATEWAY_URL: 'wss://clinica.exemplo/ws',
     OPENCLAW_CLINICA_DEVICE_TOKEN: 'device-clinica',
+    WHATSAPP_WEBHOOK_SECRET: 'segredo-sintetico-de-ingresso-com-mais-de-32-caracteres',
   });
   assert.deepEqual(validarConfiguracao(completa), []);
 });

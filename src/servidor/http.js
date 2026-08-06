@@ -210,19 +210,25 @@ function criarAplicacao(dependencias = {}) {
     ficha: 'contatos:editar',
   });
 
-  async function receberEventoDoOrquestrador(req, res) {
+  async function receberEventoAssinado(req, res, {
+    segredo,
+    adaptador,
+    cabecalhosDeAssinatura,
+    nomeDaPorta,
+  }) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
 
     // A assinatura é conferida antes de interpretar o corpo: nada não autenticado é processado.
-    const segredo = configuracao.openclaw.segredoWebhook;
     if (segredo) {
-      const recebida = req.headers['x-openclaw-assinatura'] || req.headers['x-openclaw-signature'];
+      const recebida = cabecalhosDeAssinatura
+        .map((cabecalho) => req.headers[cabecalho])
+        .find(Boolean);
       if (!assinaturaValida({ corpoBruto, assinaturaRecebida: recebida, segredo })) {
         responderJson(res, 401, { erro: 'assinatura inválida' });
         return;
       }
     } else if (configuracao.producao) {
-      responderJson(res, 503, { erro: 'recepção de eventos indisponível sem segredo configurado' });
+      responderJson(res, 503, { erro: `${nomeDaPorta} indisponível sem segredo configurado` });
       return;
     }
 
@@ -234,7 +240,7 @@ function criarAplicacao(dependencias = {}) {
     // o agente talvez já tenha respondido — e o paciente receberia duas vezes.
     let evento;
     try {
-      evento = exigirEstrategiaDoAdaptador(validado, 'openclaw_webhook');
+      evento = exigirEstrategiaDoAdaptador(validado, adaptador);
     } catch (erro) {
       if (erro instanceof ErroDeEstrategia) {
         // A recusa fica no livro: sem isso, um integrador com o payload errado
@@ -282,6 +288,24 @@ function criarAplicacao(dependencias = {}) {
 
     await repositorio.registrarEvento(evento.chave_idempotencia, recibo);
     responderJson(res, 202, recibo);
+  }
+
+  async function receberEventoDoOrquestrador(req, res) {
+    return receberEventoAssinado(req, res, {
+      segredo: configuracao.openclaw.segredoWebhook,
+      adaptador: 'openclaw_webhook',
+      cabecalhosDeAssinatura: ['x-openclaw-assinatura', 'x-openclaw-signature'],
+      nomeDaPorta: 'recepção de eventos',
+    });
+  }
+
+  async function receberMensagemDoWhatsapp(req, res) {
+    return receberEventoAssinado(req, res, {
+      segredo: configuracao.openclaw.segredoIngressoWhatsapp,
+      adaptador: 'openclaw_ingresso_crm',
+      cabecalhosDeAssinatura: ['x-whatsapp-assinatura', 'x-whatsapp-signature'],
+      nomeDaPorta: 'ingresso do WhatsApp',
+    });
   }
 
   async function lerJson(req) {
@@ -913,6 +937,18 @@ function criarAplicacao(dependencias = {}) {
         // Webhook também fica fora: é aqui que o orquestrador é acionado, e uma
         // chamada de rede lenta seguraria a conexão do pool durante a espera.
         await receberEventoDoOrquestrador(req, res);
+        return;
+      }
+
+      if (rota === '/api/canais/whatsapp/eventos') {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return;
+        }
+        // Porta exclusiva da ponte instalada no OpenClaw. A assinatura e o
+        // adaptador são diferentes de /api/eventos para que o payload nunca
+        // possa se promover a dono da resposta automática.
+        await receberMensagemDoWhatsapp(req, res);
         return;
       }
 

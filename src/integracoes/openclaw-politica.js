@@ -22,10 +22,10 @@ const {
 //   • `open`      — qualquer pessoa; é o modo de atendimento
 //   • `allowlist` — só quem está em `allowFrom`; com a lista vazia, ninguém
 //
-// Calar com uma lista vazia, e não desligando o canal, é deliberado: o telefone
-// continua vinculado e conectado, as mensagens continuam chegando, e a equipe
-// segue atendendo pelo celular. Desligar o canal exigiria escanear o QR de novo
-// toda vez que a Serena tirasse um turno de folga.
+// No modo legado, calar com uma lista vazia mantém o telefone vinculado, mas o
+// OpenClaw descarta as DMs antes do agente e dos hooks. Por isso esta política
+// NÃO é usada na Arquitetura B: ali o canal admite a mensagem e um plugin
+// confiável silencia o agente antes do modelo, persistindo o inbound no CRM.
 
 /** Reescreve a política de conversa direta preservando o resto do arquivo. */
 function aplicarPoliticaNoTexto(textoBruto, atender) {

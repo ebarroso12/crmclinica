@@ -9,9 +9,11 @@ qualquer papel em tempo de execução.
 ## OpenClaw — o orquestrador
 
 O OpenClaw orquestra eventos, ferramentas e tarefas. O CRM fala com ele por um único arquivo,
-`src/integracoes/openclaw.js`, e por dois caminhos:
+`src/integracoes/openclaw.js`, e por três caminhos:
 
 - **entrada**: o orquestrador entrega eventos em `POST /api/eventos`, assinados com HMAC-SHA256;
+- **WhatsApp**: o plugin confiável persiste cada inbound e o entrega em
+  `POST /api/canais/whatsapp/eventos`, com segredo independente;
 - **saída**: o CRM despacha eventos já validados e consulta a saúde do orquestrador.
 
 Se o orquestrador estiver fora do ar, `verificarSaude` devolve `indisponivel` e o CRM segue
@@ -25,6 +27,7 @@ OPENCLAW_API_URL=                  # endpoint oficial da API, quando difere da i
 OPENCLAW_TOKEN=
 OPENCLAW_SESSION_ID=
 OPENCLAW_WEBHOOK_SECRET=           # mínimo 32 caracteres, obrigatório em produção
+WHATSAPP_WEBHOOK_SECRET=           # segredo exclusivo do ingresso WhatsApp
 OPENCLAW_TIMEOUT_MS=10000
 ```
 

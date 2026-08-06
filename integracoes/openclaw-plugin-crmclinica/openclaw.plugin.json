@@ -1,0 +1,12 @@
+{
+  "id": "crmclinica-ingresso-whatsapp",
+  "name": "CRM Clínica — ingresso WhatsApp",
+  "description": "Persiste cada mensagem recebida no WhatsApp e a entrega ao inbox do CRM, mantendo o agente direto silencioso.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

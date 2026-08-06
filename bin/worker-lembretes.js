@@ -149,21 +149,16 @@ async function main() {
     : null;
 
   async function sincronizarSerena() {
-    if (!sincronia) return false;
-
-    // Arquitetura B: o canal recebe mensagens, mas o agente conectado jamais
-    // responde diretamente. Se não conseguirmos confirmar esse silêncio, o
-    // ciclo não importa nem despacha nada — duplicidade falha fechada.
+    // Arquitetura B: o silêncio não é mais `allowFrom=[]` — essa política
+    // descarta a mensagem antes de ela chegar ao plugin. O hook
+    // `before_agent_reply` bloqueia a chamada ao modelo, enquanto o hook
+    // `message_received` entrega o inbound ao CRM. O worker não pode reescrever
+    // a política do canal nesse modo.
     if (crmDespachaWhatsapp) {
-      try {
-        await sincronia.definir(false);
-        return true;
-      } catch (erro) {
-        console.error(`[serena] não foi possível confirmar o canal silencioso: ${erro.message}`);
-        return false;
-      }
+      return true;
     }
 
+    if (!sincronia) return false;
     if (!sincronizador) return true;
     const resultado = await sincronizador.sincronizar();
     if (resultado?.erro) console.error(`[serena] sincronia falhou: ${resultado.erro}`);
@@ -257,7 +252,12 @@ async function main() {
   }
 
   async function sincronizarConversas({ canalSeguro = true } = {}) {
-    if (crmDespachaWhatsapp && !canalSeguro) return;
+    // Na Arquitetura B o ingresso é push e durável: o plugin do OpenClaw envia
+    // cada mensagem à rota HMAC do CRM. Consultar `chat.history` aqui seria uma
+    // segunda fonte de entrada e, pior, poderia importar texto interno do agente
+    // como se fosse uma resposta visível. O leitor permanece apenas no modo A.
+    if (crmDespachaWhatsapp) return;
+    if (!canalSeguro) return;
     const leitor = montarLeitorDeConversas();
     if (!leitor) return;
     try {

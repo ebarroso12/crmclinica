@@ -118,6 +118,7 @@ nada persiste. Em produção a variável é obrigatória.
 | `/health` | GET | Identidade, versão e instante |
 | `/api/resumo` | GET | Indicadores do painel e saúde da plataforma |
 | `/api/eventos` | POST | Recepção de mensagem de canal, assinada e idempotente |
+| `/api/canais/whatsapp/eventos` | POST | Ingresso exclusivo e HMAC do WhatsApp para **Conversas** |
 | `/api/conversas…` | GET/POST/PUT | Inbox: lista, thread, resposta, assumir, etiquetas, ficha |
 | `/api/contatos?busca=` | GET | Busca por nome ou telefone, para escolher o paciente |
 | `/api/leads` | GET | Kanban de leads |
