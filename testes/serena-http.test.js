@@ -27,6 +27,9 @@ function orquestradorFalso() {
 
 const EVENTO = Object.freeze({
   canal: 'whatsapp',
+  // O interruptor da Serena governa o fluxo em que o CRM aciona a IA; é esse
+  // caminho que estes testes percorrem, daí o carimbo crm_despacha.
+  estrategia_ia: 'crm_despacha',
   remetente: '5516993120938',
   nome: 'Marina Souza',
   texto: 'Gostaria de marcar uma consulta',

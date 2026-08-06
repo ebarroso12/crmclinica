@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { carregarConfiguracao } = require('../config');
-const { validarEvento } = require('../contratos/evento');
-const { ErroDeContrato } = require('../contratos/erros');
+const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
+const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
@@ -226,7 +226,32 @@ function criarAplicacao(dependencias = {}) {
       return;
     }
 
-    const evento = validarEvento(interpretarJson(corpoBruto));
+    const validado = validarEvento(interpretarJson(corpoBruto));
+
+    // Quem responde por este evento é decisão desta porta, não do payload.
+    // Um evento de WhatsApp sem dono declarado é recusado aqui, fechado: se ele
+    // caísse no fluxo de despacho, o CRM reenviaria ao agente uma mensagem que
+    // o agente talvez já tenha respondido — e o paciente receberia duas vezes.
+    let evento;
+    try {
+      evento = exigirEstrategiaDoAdaptador(validado, 'openclaw_webhook');
+    } catch (erro) {
+      if (erro instanceof ErroDeEstrategia) {
+        // A recusa fica no livro: sem isso, um integrador com o payload errado
+        // veria 422 e ninguém da clínica saberia que eventos estão sendo barrados.
+        await repositorio.registrarAuditoria({
+          entidade: 'evento',
+          entidadeId: null,
+          acao: 'evento_recusado_estrategia',
+          detalhe: {
+            canal: validado.canal,
+            estrategia_declarada: validado.estrategia_ia,
+            codigo: erro.codigo,
+          },
+        }).catch(() => {});
+      }
+      throw erro;
+    }
 
     // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
     const jaProcessado = await repositorio.consultarEvento(evento.chave_idempotencia);
@@ -244,6 +269,12 @@ function criarAplicacao(dependencias = {}) {
       chave_idempotencia: evento.chave_idempotencia,
       tipo: evento.tipo,
       canal: evento.canal,
+      // Quem é o dono da resposta, e o que o transporte fez de fato: junto com
+      // `decisao`, é o que permite auditar "importou sem reenviar" de fora.
+      estrategia_ia: evento.estrategia_ia,
+      decisao_transporte: resultado.ia_despachada === false
+        ? 'importada_sem_despacho'
+        : 'despacho_pelo_crm',
       conversa_id: resultado.conversa_id ?? null,
       decisao: resultado.acao,
       recebido_em: new Date().toISOString(),
@@ -967,6 +998,12 @@ function criarAplicacao(dependencias = {}) {
       // saber com o quê bateu, não só que "deu erro".
       if (erro.status === 409 && erro.codigo === 'conflito_de_agenda') {
         responderJson(res, 409, { erro: erro.message, codigo: erro.codigo, conflito: erro.conflito ?? null });
+        return;
+      }
+      // 422: o corpo é bem formado, mas a semântica foi recusada — hoje, a
+      // estratégia de IA ambígua ou incompatível com a porta de entrada.
+      if (erro instanceof ErroDeEstrategia) {
+        responderJson(res, 422, { erro: erro.message, codigo: erro.codigo });
         return;
       }
       if ([400, 403, 404, 409, 503].includes(erro.status)) {

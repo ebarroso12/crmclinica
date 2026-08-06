@@ -23,6 +23,7 @@ async function subirComPapel(papel = 'admin') {
 
   await atendimento.receberMensagem({
     canal: 'whatsapp',
+    estrategia_ia: 'crm_despacha',
     id_externo: 'wa:1',
     remetente: '5516999999999',
     nome: 'Marina Souza',
@@ -330,7 +331,8 @@ test('a rota de canal continua fora da autenticação — quem chama é o webhoo
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      canal: 'whatsapp', id_externo: 'wa:sem-auth', remetente: '5516988887777', texto: 'Oi',
+      canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
+      id_externo: 'wa:sem-auth', remetente: '5516988887777', texto: 'Oi',
     }),
   });
 

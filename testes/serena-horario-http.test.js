@@ -27,6 +27,9 @@ function orquestradorFalso() {
 
 const EVENTO = Object.freeze({
   canal: 'whatsapp',
+  // As gates de horário, pausa e plantão guardam o fluxo em que o CRM aciona a
+  // IA — é isso que estes testes exercitam. Por isso o carimbo é crm_despacha.
+  estrategia_ia: 'crm_despacha',
   remetente: '5516993120938',
   nome: 'Marina Souza',
   texto: 'Gostaria de marcar uma consulta',

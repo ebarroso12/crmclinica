@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { ErroDeContrato } = require('./erros');
+const { ErroDeContrato, ErroDeEstrategia } = require('./erros');
 
 // Contrato único de entrada do crmclinica.
 // Todo evento externo — canal, formulário ou tarefa do OpenClaw — atravessa este arquivo
@@ -11,6 +11,22 @@ const VERSAO_CONTRATO = '1';
 
 const CANAIS = Object.freeze(['whatsapp', 'instagram', 'site', 'formulario', 'interno']);
 const TIPOS = Object.freeze(['mensagem.recebida', 'lead.criado', 'agendamento.solicitado', 'tarefa.concluida']);
+
+// Estratégia de IA: quem é o dono da resposta automática deste evento.
+//
+//   openclaw_gerencia — a conversa já pertence ao agente do OpenClaw, que
+//     responde direto no canal. O CRM importa, persiste e qualifica; despachar
+//     de novo faria o agente processar a mesma mensagem duas vezes, e o
+//     paciente receber duas respostas.
+//
+//   crm_despacha — o evento veio de um canal em que ninguém responde sozinho
+//     (site, formulário). Aí o CRM é quem aciona a IA.
+//
+// O contrato valida a forma; quem decide o valor é o ADAPTADOR confiável que
+// recebeu o evento (a rota autenticada, o sincronizador do WhatsApp) — nunca o
+// payload por conta própria. A função `exigirEstrategiaDoAdaptador` é essa
+// decisão, e ela falha fechado: WhatsApp sem dono declarado não entra.
+const ESTRATEGIAS_IA = Object.freeze(['openclaw_gerencia', 'crm_despacha']);
 
 const LIMITES = Object.freeze({
   idExterno: 200,
@@ -81,6 +97,15 @@ function validarEvento(entrada) {
     ? exigirTexto(entrada.texto, 'texto', LIMITES.texto)
     : textoOpcional(entrada.texto, 'texto', LIMITES.texto);
 
+  // Só a forma: o valor declarado no payload é uma REIVINDICAÇÃO, não uma
+  // decisão. Quem confirma (ou recusa) é o adaptador, via
+  // `exigirEstrategiaDoAdaptador` — inferir aqui daria ao remetente do JSON o
+  // poder de escolher quem responde pela conversa.
+  let estrategiaIa = null;
+  if (entrada.estrategia_ia !== undefined && entrada.estrategia_ia !== null && entrada.estrategia_ia !== '') {
+    estrategiaIa = exigirEnum(entrada.estrategia_ia, 'estrategia_ia', ESTRATEGIAS_IA);
+  }
+
   const evento = {
     versao: VERSAO_CONTRATO,
     tipo,
@@ -90,11 +115,85 @@ function validarEvento(entrada) {
     nome: textoOpcional(entrada.nome, 'nome', LIMITES.nome),
     texto,
     origem: textoOpcional(entrada.origem, 'origem', LIMITES.origem),
+    estrategia_ia: estrategiaIa,
     ocorrido_em: ocorridoEm,
   };
 
   evento.chave_idempotencia = calcularChaveIdempotencia({ canal, tipo, idExterno });
   return Object.freeze(evento);
+}
+
+/**
+ * A decisão de propriedade do fluxo de IA, tomada pelo adaptador que recebeu o
+ * evento — o único que sabe por qual porta autenticada ele entrou.
+ *
+ * Devolve o evento com `estrategia_ia` definitiva (novo objeto, congelado).
+ * Recusa com `ErroDeEstrategia` (HTTP 422) tudo que for ambíguo ou incompatível.
+ *
+ * Regras por adaptador:
+ *
+ *   `sincronia_whatsapp` — o importador oficial do histórico do WhatsApp.
+ *     A conversa JÁ está com o agente por definição: tudo vira
+ *     `openclaw_gerencia`, e qualquer outra reivindicação é recusada.
+ *
+ *   `openclaw_webhook` — a rota autenticada por HMAC (`POST /api/eventos`).
+ *     • WhatsApp sem estratégia: recusado (`estrategia_ia_ambigua`). A mensagem
+ *       pode já ter sido respondida pelo agente no canal; adivinhar aqui é
+ *       apostar a resposta duplicada do paciente.
+ *     • WhatsApp com `crm_despacha`: recusado (`estrategia_ia_incompativel`).
+ *       Quem entra autenticado como OpenClaw não pode pedir que o CRM redispare
+ *       a IA sobre uma conversa que o próprio OpenClaw carrega.
+ *     • Canal sem agente conectado (site, formulário…): `crm_despacha` — e
+ *       `openclaw_gerencia` é recusado, porque não existe adaptador autorizado
+ *       dizendo que o agente gerencia esses canais.
+ */
+function exigirEstrategiaDoAdaptador(evento, adaptador) {
+  const declarada = evento.estrategia_ia ?? null;
+
+  if (adaptador === 'sincronia_whatsapp') {
+    if (evento.canal !== 'whatsapp') {
+      throw new ErroDeEstrategia(
+        'o sincronizador do WhatsApp só importa eventos do canal whatsapp',
+        'estrategia_ia_incompativel',
+      );
+    }
+    if (declarada && declarada !== 'openclaw_gerencia') {
+      throw new ErroDeEstrategia(
+        'mensagem importada do WhatsApp já pertence ao agente do canal',
+        'estrategia_ia_incompativel',
+      );
+    }
+    return Object.freeze({ ...evento, estrategia_ia: 'openclaw_gerencia' });
+  }
+
+  if (adaptador === 'openclaw_webhook') {
+    if (evento.canal === 'whatsapp') {
+      if (!declarada) {
+        throw new ErroDeEstrategia(
+          'evento de WhatsApp precisa declarar quem responde por ele',
+          'estrategia_ia_ambigua',
+        );
+      }
+      if (declarada !== 'openclaw_gerencia') {
+        throw new ErroDeEstrategia(
+          'evento autenticado do OpenClaw não pode pedir redespacho pelo CRM',
+          'estrategia_ia_incompativel',
+        );
+      }
+      return evento;
+    }
+
+    if (declarada === 'openclaw_gerencia') {
+      throw new ErroDeEstrategia(
+        `nenhum adaptador autorizado gerencia o canal ${evento.canal} pelo agente`,
+        'estrategia_ia_incompativel',
+      );
+    }
+    // Sem declaração, a porta decide: nesses canais é o CRM que aciona a IA.
+    return declarada ? evento : Object.freeze({ ...evento, estrategia_ia: 'crm_despacha' });
+  }
+
+  throw new ErroDeEstrategia(`adaptador desconhecido: ${adaptador}`, 'adaptador_desconhecido');
 }
 
 // Compatibilidade com o contrato inicial, que só conhecia mensagens.
@@ -106,8 +205,10 @@ module.exports = {
   VERSAO_CONTRATO,
   CANAIS,
   TIPOS,
+  ESTRATEGIAS_IA,
   LIMITES,
   validarEvento,
   validarEventoMensagem,
+  exigirEstrategiaDoAdaptador,
   calcularChaveIdempotencia,
 };

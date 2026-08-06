@@ -4,6 +4,7 @@ const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
 const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
 const { ehPedidoDeOptOut } = require('./lembretes');
+const { ErroDeEstrategia } = require('../contratos/erros');
 
 // O ciclo de atendimento do crmclinica.
 //
@@ -28,6 +29,18 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
    */
   async function receberMensagem(evento) {
+    // Defesa em profundidade: a porta HTTP já recusa WhatsApp sem dono, mas
+    // este método tem outros chamadores — e um deles esquecer o carimbo não
+    // pode virar resposta duplicada ao paciente. Falha ANTES de gravar de
+    // propósito: quem chamou errado precisa ver o erro, não um sucesso parcial.
+    // O sincronizador oficial sempre carimba, então nada legítimo cai aqui.
+    if (evento.canal === 'whatsapp' && !evento.estrategia_ia) {
+      throw new ErroDeEstrategia(
+        'evento de WhatsApp precisa declarar quem responde por ele',
+        'estrategia_ia_ambigua',
+      );
+    }
+
     const contato = await repositorio.encontrarOuCriarContato({
       telefone: evento.remetente,
       nome: evento.nome,
@@ -84,6 +97,25 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
     }
 
     await sincronizarTemperatura(conversa.id);
+
+    // Mensagem que o agente do canal já gerencia: o trabalho do CRM termina na
+    // importação. Nada de sessions.list, chat.send ou espera por resposta — o
+    // agente já respondeu (ou vai responder) no próprio canal, e redespachar
+    // aqui é o que fazia a mesma pergunta ser processada duas vezes.
+    if (evento.estrategia_ia === 'openclaw_gerencia') {
+      await repositorio.registrarAuditoria({
+        entidade: 'conversa',
+        entidadeId: conversa.id,
+        acao: 'importada_do_canal',
+        detalhe: { canal: evento.canal, estrategia_ia: evento.estrategia_ia },
+      });
+      return {
+        acao: 'importada_do_canal',
+        ia_despachada: false,
+        conversa_id: conversa.id,
+        mensagem_id: mensagem.id,
+      };
+    }
 
     return responderSePossivel(conversa.id);
   }
@@ -187,6 +219,12 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
 
       if (resposta?.escalonar) {
         await escalonar(conversaId, resposta.motivo || 'escalonamento_do_orquestrador');
+        // Motor de IA sem sessão própria configurada é falha fechada, não
+        // silêncio: a conversa vai para a equipe com o motivo dizendo o que
+        // falta ligar — em vez de o CRM fingir que despachou para algum lugar.
+        if (resposta.motivo === 'motor_ia_nao_configurado') {
+          return { acao: 'escalonada_para_equipe', conversa_id: conversaId, motivo: resposta.motivo };
+        }
         return { acao: 'escalonada', conversa_id: conversaId, motivo: resposta.motivo };
       }
 
