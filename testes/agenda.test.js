@@ -585,3 +585,55 @@ test('toda alteração na agenda deixa rastro, com quem fez', async () => {
   const cancelamento = doAgendamento.find((registro) => registro.acao === 'agendamento_cancelado');
   assert.equal(cancelamento.detalhe.motivo, 'paciente desmarcou');
 });
+
+// ------------------------------------------------- oferta enxerga o dia da clínica
+
+test('a oferta não mostra horário já marcado — em qualquer fuso do processo', async () => {
+  const { repositorio, agenda, profissional, contato } = await montar({ agora: em('07:00') });
+
+  // Consulta já marcada às 08:30 de quinta, no fuso da clínica.
+  await repositorio.criarAgendamento({
+    profissionalId: profissional.id,
+    contatoId: contato.id,
+    inicio: em('08:30').toISOString(),
+    fim: em('09:00').toISOString(),
+  });
+
+  // Sem carência, para olhar o próprio dia: o que este teste vigia é a janela.
+  const semCarencia = criarServicoDeAgenda({ repositorio, agora: () => em('07:00'), carenciaEmDias: 0 });
+
+  // O dia chega como a rota do agente o monta: um instante dentro do dia.
+  const { horarios } = await semCarencia.oferecerHorarios({
+    profissionalId: profissional.id,
+    dia: em('12:00').toISOString(),
+  });
+
+  assert.ok(horarios.length > 0, 'quinta tem grade 08:00–18:00; a oferta não pode vir vazia');
+
+  const inicios = horarios.map((h) => new Date(h.inicio).toISOString());
+  assert.ok(!inicios.includes(em('08:30').toISOString()),
+    'o defeito real de produção: em UTC a janela do dia deslizava 3h, o 08:30 '
+    + 'ocupado ficava fora da consulta, e a oferta o mostrava como livre');
+
+  // E o dia oferecido é o dia pedido NA CLÍNICA, não o dia UTC do processo.
+  for (const inicio of inicios) {
+    assert.equal(new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric',
+    }).format(new Date(inicio)), '2026-08-06');
+  }
+});
+
+test('a carência conta dias inteiros no calendário da clínica', async () => {
+  const { agenda } = await montar({ agora: em('18:00') });
+
+  // Carência padrão de 3 dias a partir de quinta 06/08: nada antes de 09/08
+  // 00:00 DE SÃO PAULO — não 00:00 do fuso onde o processo roda.
+  const { horarios } = await agenda.oferecerHorarios({
+    profissionalId: 1,
+    dia: em('12:00', '2026-08-13').toISOString(),
+  });
+
+  for (const horario of horarios) {
+    assert.ok(new Date(horario.inicio) >= new Date('2026-08-09T00:00:00.000-03:00'));
+  }
+});
