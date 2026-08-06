@@ -241,6 +241,7 @@ module.exports = {
   bloqueado,
   conflitante,
   horariosLivres,
+  comHoraLocal,
   ehConflitoDoBanco,
   descreverDia,
   ErroDeConflito,

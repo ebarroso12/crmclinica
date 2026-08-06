@@ -24,6 +24,7 @@ async function subirInbox({ comConversa = true } = {}) {
   if (comConversa) {
     await atendimento.receberMensagem({
       canal: 'whatsapp',
+      estrategia_ia: 'crm_despacha',
       id_externo: 'wa:1',
       remetente: '5516999999999',
       nome: 'Marina Souza',
@@ -325,12 +326,13 @@ test('GET /api/contatos/:id/conversas devolve o histórico do contato', async (t
 
 // ---------------------------------------------------------------- fluxo completo
 
-test('webhook de canal grava no inbox e a resposta entra no histórico', async (t) => {
+test('webhook de canal grava no inbox sem redespachar ao agente', async (t) => {
   const { app, repositorio } = await subirInbox({ comConversa: false });
   t.after(() => app.encerrar());
 
   const resposta = await enviar(app, '/api/eventos', {
     canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
     id_externo: 'wa:novo-1',
     remetente: '5516988887777',
     nome: 'João Lima',
@@ -339,11 +341,13 @@ test('webhook de canal grava no inbox e a resposta entra no histórico', async (
 
   assert.equal(resposta.status, 202);
   const recibo = await resposta.json();
-  assert.equal(recibo.decisao, 'respondida_pela_automacao');
+  // A conversa já é do agente do canal: o CRM importa e para. A resposta da
+  // Serena chega pelo sincronizador do histórico, nunca por redespacho daqui.
+  assert.equal(recibo.decisao, 'importada_do_canal');
 
   const mensagens = await repositorio.listarMensagens(recibo.conversa_id);
-  assert.equal(mensagens.length, 2);
-  assert.equal(mensagens[1].autor_tipo, 'automacao');
+  assert.equal(mensagens.length, 1, 'só a entrada do paciente — nenhuma resposta gerada aqui');
+  assert.equal(mensagens[0].autor_tipo, 'contato');
 });
 
 test('o resumo mostra o inbox local, não um serviço externo', async (t) => {

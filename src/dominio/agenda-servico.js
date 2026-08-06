@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const {
   validarPeriodo, dentroDaDisponibilidade, bloqueado, conflitante,
-  horariosLivres, ehConflitoDoBanco, ErroDeConflito, ErroDeAgenda, TIPOS,
+  horariosLivres, comHoraLocal, ehConflitoDoBanco, ErroDeConflito, ErroDeAgenda, TIPOS,
 } = require('./agenda');
 
 // Serviço da agenda.
@@ -73,10 +73,16 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
     const data = new Date(dia);
     if (Number.isNaN(data.getTime())) throw new ErroDeAgenda('dia inválido', 'data_invalida');
 
-    const inicioDoDia = new Date(data);
-    inicioDoDia.setHours(0, 0, 0, 0);
-    const fimDoDia = new Date(data);
-    fimDoDia.setHours(23, 59, 59, 999);
+    // O dia é o da CLÍNICA, não o do processo. `setHours(0…23:59)` aqui usava o
+    // fuso da máquina: em UTC, a "janela do dia" nascia deslocada três horas do
+    // dia de São Paulo cujos horários seriam gerados — e os agendamentos da
+    // manhã ficavam FORA da janela consultada. Nada os via, nada bloqueava, e a
+    // oferta mostrava como livre um horário já marcado; o paciente escolhia, e
+    // só a trava do banco o parava, com uma recusa que a conversa não explicava.
+    // Em São Paulo os dois relógios coincidem — por isso os testes locais nunca
+    // pegaram. É a mesma família do defeito de f4c23ac, uma camada acima.
+    const inicioDoDia = comHoraLocal(data, 0);
+    const fimDoDia = comHoraLocal(data, 24 * 60);
 
     const dados = await contexto(profissionalId, inicioDoDia.toISOString(), fimDoDia.toISOString());
 
@@ -116,10 +122,11 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
    * está dentro do prazo.
    */
   function limiteDeCarencia() {
-    const limite = new Date(agora());
-    limite.setHours(0, 0, 0, 0);
-    limite.setDate(limite.getDate() + carenciaEmDias);
-    return limite;
+    // "Dia inteiro" no calendário da CLÍNICA: `setHours(0)` aqui era a meia-
+    // noite do fuso do processo, e em UTC o limite nascia às 21h de São Paulo
+    // do dia anterior — três horas de carência a menos, silenciosamente.
+    const alvo = new Date(agora().getTime() + carenciaEmDias * 86_400_000);
+    return comHoraLocal(alvo, 0);
   }
 
   /**

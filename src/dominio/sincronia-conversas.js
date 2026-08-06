@@ -181,6 +181,11 @@ function criarSincronizadorDeConversas({ gateway, atendimento, repositorio, regi
             : null,
           texto,
           origem: 'whatsapp',
+          // O carimbo do adaptador confiável: esta mensagem veio do histórico
+          // do próprio agente, que portanto já a viu — e já respondeu no canal.
+          // É o que impede o atendimento de despachá-la de volta e fazer o
+          // paciente receber a mesma resposta duas vezes.
+          estrategia_ia: 'openclaw_gerencia',
           ocorrido_em: instanteDaMensagem(mensagem),
         });
 

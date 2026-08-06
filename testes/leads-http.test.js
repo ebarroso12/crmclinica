@@ -24,7 +24,8 @@ async function subirComLead({ papel = 'admin', resposta } = {}) {
   const atendimento = criarAtendimento({ repositorio, orquestrador, leads: servicoDeLeads });
 
   await atendimento.receberMensagem({
-    canal: 'whatsapp', id_externo: 'wa:1', remetente: '5516999999999',
+    canal: 'whatsapp', estrategia_ia: 'crm_despacha',
+    id_externo: 'wa:1', remetente: '5516999999999',
     nome: 'Marina Souza', texto: 'Quero saber sobre a primeira consulta',
     utm_source: 'instagram', utm_campaign: 'verao2026',
   });

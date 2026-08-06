@@ -11,6 +11,10 @@ const SEGREDO_DE_TESTE = 'segredo-apenas-para-teste-com-32-caracteres';
 const EVENTO = {
   tipo: 'mensagem.recebida',
   canal: 'whatsapp',
+  // Pela porta autenticada do OpenClaw, WhatsApp só entra declarando que o
+  // agente do canal já gerencia a conversa. Sem isso, 422 — coberto em
+  // estrategia-ia.test.js.
+  estrategia_ia: 'openclaw_gerencia',
   id_externo: 'wa:teste-1',
   remetente: '551199999999',
   texto: 'Olá, gostaria de agendar uma avaliação',
@@ -38,8 +42,10 @@ test('aceita um evento válido e devolve recibo com a chave de idempotência', a
   assert.match(recibo.chave_idempotencia, /^[0-9a-f]{64}$/);
   // A mensagem virou conversa no inbox — não ficou só registrada em lugar nenhum.
   assert.equal(typeof recibo.conversa_id, 'number');
-  // Sem orquestrador configurado, a conversa fica esperando a equipe.
-  assert.equal(recibo.decisao, 'sem_orquestrador');
+  // O agente do canal já gerencia a conversa: o CRM importa e não redespacha.
+  assert.equal(recibo.decisao, 'importada_do_canal');
+  assert.equal(recibo.estrategia_ia, 'openclaw_gerencia');
+  assert.equal(recibo.decisao_transporte, 'importada_sem_despacho');
 });
 
 test('reenvio do mesmo evento é idempotente e não reprocessa', async (t) => {

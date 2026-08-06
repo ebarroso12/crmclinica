@@ -8,28 +8,37 @@ const {
 //
 // ------------------------------------------------------------------ o transporte
 //
-// O cliente HTTP original (`POST /eventos`) foi migrado para o gateway WebSocket.
-// O endpoint HTTP não existe no OpenClaw real — o transporte é sempre WebSocket,
-// e o método de conversa é `chat.send` com uma `sessionKey`.
+// O transporte é o gateway WebSocket (`openclaw-gateway.js`); o método de
+// conversa é `chat.send` com uma `sessionKey`. O endpoint HTTP `POST /eventos`
+// do desenho original nunca existiu no OpenClaw real.
 //
-// O caminho estava documentado em `docs/OPENCLAW.md` (seção "O que continua fora"):
+// ------------------------------------------------------------- de quem é a sessão
 //
-//   > `src/integracoes/openclaw.js` — o cliente de **eventos de conversa** —
-//   > ainda fala HTTP (`POST /eventos`), desenho que não corresponde ao transporte
-//   > real. Quando for migrado, o caminho está pronto: `openclaw-gateway.js` já
-//   > fala o protocolo, e o método de conversa é `chat.send`.
+// Este cliente atende SÓ o fluxo `crm_despacha`: eventos de canais em que o CRM
+// é o responsável por acionar a IA (site, formulário). Mensagens de WhatsApp
+// nunca chegam aqui — o agente do canal já as gerencia, e o atendimento as
+// importa sem redespachar (`estrategia_ia = openclaw_gerencia`).
 //
-// Esta migração fecha esse circuito.
+// A conversa acontece numa sessão INTERNA do CRM (`OPENCLAW_SESSION_ID`),
+// nunca na sessão WhatsApp de um paciente. A versão anterior localizava a
+// sessão do paciente pelo telefone (`sessions.list`) e fazia `chat.send` nela —
+// o que injetava a mensagem de volta na conversa que o agente já carregava, e
+// era o mecanismo exato da resposta duplicada.
 //
-// ------------------------------------------------------------------ o mecanismo
+// Sem sessão interna configurada, o despacho falha FECHADO: devolve
+// `escalonar` com `motor_ia_nao_configurado`, e a conversa vai para a equipe.
+// A alternativa — cair de volta para a sessão de alguém — é como um lead de
+// formulário acabaria conversando dentro do WhatsApp de outro paciente.
 //
-// `despacharEvento` recebe o contexto da conversa e:
-//   1. Localiza a sessão existente pelo telefone do contato (`sessions.list`)
-//   2. Envia a última mensagem via `chat.send` com a `sessionKey` da sessão
-//   3. Aguarda a resposta via `chat.history` (polling até o modelo terminar)
+// --------------------------------------------------------------- a correlação
 //
-// A resposta da Serena é lida do histórico e devolvida como `{ resposta: texto }`,
-// mantendo a mesma interface que o atendimento espera.
+// `chat.send` retorna antes de o modelo terminar; a resposta aparece depois no
+// histórico. Numa sessão compartilhada por eventos consecutivos, "a última
+// mensagem do assistente" pode ser a resposta da pergunta ANTERIOR. Por isso o
+// despacho tira uma linha de base do histórico antes de enviar e só aceita
+// como resposta uma mensagem do assistente que não existia nessa linha de base
+// (e, quando o gateway devolve `runId`, que pertença à execução deste envio).
+// Timeout devolve `resposta: null` — nunca uma resposta velha.
 //
 // ------------------------------------------------------------------ verificarSaude
 //
@@ -72,54 +81,76 @@ function textoDaResposta(mensagem) {
   return '';
 }
 
+/** Identificador de uma mensagem do histórico, quando o gateway fornece um. */
+function idDaMensagem(mensagem) {
+  return mensagem?.__openclaw?.id ?? mensagem?.id ?? null;
+}
+
+/** `runId` da execução a que a mensagem pertence, quando o gateway informa. */
+function runIdDaMensagem(mensagem) {
+  return mensagem?.__openclaw?.runId ?? mensagem?.runId ?? null;
+}
+
 /**
- * Aguarda a resposta do agente consultando o histórico.
+ * A linha de base do histórico: o que já existia antes deste envio.
  *
- * O `chat.send` retorna imediatamente com `status: started`. A resposta
- * aparece no histórico quando o modelo termina. Polling com backoff exponencial
- * até encontrar uma mensagem do assistente, ou esgotar o tempo.
+ * Identidade por id quando há id; sem id, o tamanho do histórico serve de
+ * marca — mensagem em posição nova é mensagem nova.
  */
-async function aguardarResposta(gateway, sessionKey, { timeoutMs = 25000, intervaloMs = 600 } = {}) {
+async function lerLinhaDeBase(gateway, sessionKey) {
+  const dados = await gateway.chamar('chat.history', { sessionKey });
+  const mensagens = Array.isArray(dados?.messages) ? dados.messages : [];
+  const ids = new Set(mensagens.map((m) => idDaMensagem(m)).filter(Boolean));
+  return { ids, tamanho: mensagens.length };
+}
+
+/**
+ * Aguarda a resposta DESTE envio, nunca uma resposta antiga.
+ *
+ * Só aceita mensagem do assistente que não existia na linha de base — e, quando
+ * o envio recebeu `runId` e a mensagem declara o dela, os dois têm de bater.
+ * Polling com backoff até encontrar ou esgotar o tempo; timeout devolve `null`.
+ */
+async function aguardarRespostaNova(gateway, sessionKey, {
+  linhaDeBase, runId = null, timeoutMs = 25000, intervaloMs = 600,
+} = {}) {
   const inicio = Date.now();
   let intervalo = intervaloMs;
   while (Date.now() - inicio < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, intervalo));
     intervalo = Math.min(intervalo * 1.5, 3000);
+
     const dados = await gateway.chamar('chat.history', { sessionKey });
     const mensagens = Array.isArray(dados?.messages) ? dados.messages : [];
-    // A última mensagem do assistente é a resposta. Mensagens de ferramenta
-    // (`toolResult`, `system`) não são resposta ao paciente.
-    const resposta = [...mensagens].reverse().find(
-      (m) => m?.role === 'assistant' && textoDaResposta(m).length > 0,
-    );
-    if (resposta) return textoDaResposta(resposta);
+
+    for (let posicao = mensagens.length - 1; posicao >= 0; posicao -= 1) {
+      const mensagem = mensagens[posicao];
+      if (mensagem?.role !== 'assistant') continue;
+      if (!textoDaResposta(mensagem)) continue;
+
+      // O teste de novidade: id fora da linha de base, ou — sem id — posição
+      // além do tamanho que o histórico tinha antes do envio.
+      const id = idDaMensagem(mensagem);
+      const nova = id ? !linhaDeBase.ids.has(id) : posicao >= linhaDeBase.tamanho;
+      if (!nova) break; // daqui para trás é passado; devolver seria responder com história
+
+      const runDaMensagem = runIdDaMensagem(mensagem);
+      if (runId && runDaMensagem && runDaMensagem !== runId) continue;
+
+      return textoDaResposta(mensagem);
+    }
   }
   return null;
 }
 
 /**
- * Localiza a sessão WhatsApp do contato pelo telefone.
- *
- * `sessions.list` devolve todas as sessões. A sessão do paciente é identificada
- * pelo telefone no campo `origin.from` — o mesmo que `sincronia-conversas.js` usa.
- */
-async function localizarSessao(gateway, telefone) {
-  const lista = await gateway.chamar('sessions.list', {});
-  const todas = lista?.sessions ?? lista?.entries ?? lista?.items ?? [];
-  // Normaliza o telefone para comparação: remove caracteres não numéricos.
-  const normalizado = String(telefone).replace(/\D/g, '');
-  return todas.find((sessao) => {
-    const from = String(sessao?.origin?.from ?? '').replace(/\D/g, '');
-    return from && from.endsWith(normalizado);
-  }) ?? null;
-}
-
-/**
- * @param {object} configuracao  `configuracao.openclaw` — com `.gateway` para WebSocket.
+ * @param {object} configuracao  `configuracao.openclaw` — com `.gateway` para
+ *   WebSocket e `.sessao` (OPENCLAW_SESSION_ID) para a sessão interna do CRM.
  * @param {object} dependencias  `cliente` para injeção nos testes.
  */
 function criarClienteOpenClaw(configuracao, dependencias = {}) {
   const gateway = configuracao?.gateway ?? {};
+  const sessaoInterna = configuracao?.sessao || null;
   const disponivel = Boolean(gateway.url && (gateway.token || gateway.deviceToken));
 
   // Cliente injetado é a via dos testes: exercita o caminho real sem abrir socket.
@@ -145,14 +176,12 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
     disponivel: disponivel && !erroDeMontagem,
 
     /**
-     * Entrega ao orquestrador um evento de conversa.
+     * Aciona a IA para um evento cuja resposta é responsabilidade do CRM
+     * (`crm_despacha`): envia a última mensagem à sessão interna e espera a
+     * resposta NOVA correlacionada a este envio.
      *
-     * Localiza a sessão do paciente pelo telefone, envia a última mensagem via
-     * `chat.send` e aguarda a resposta no histórico. Devolve `{ resposta: texto }`
-     * para o atendimento gravar no histórico local.
-     *
-     * Sem sessão ativa (paciente ainda não escreveu pelo WhatsApp), devolve
-     * `{ resposta: null }` — a conversa fica com a equipe, sem erro.
+     * Nunca toca a sessão WhatsApp de um paciente. Sem sessão interna
+     * configurada, falha fechado: `escalonar` com `motor_ia_nao_configurado`.
      */
     async despacharEvento(evento) {
       if (!disponivel || erroDeMontagem) {
@@ -165,46 +194,38 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
         throw erro;
       }
 
-      const telefone = evento?.contexto?.contato?.telefone;
-      if (!telefone) {
-        // Sem telefone não há sessão a localizar. A conversa fica com a equipe.
-        return { resposta: null };
+      if (!sessaoInterna) {
+        return { resposta: null, escalonar: true, motivo: 'motor_ia_nao_configurado' };
       }
 
-      // Localiza a sessão ativa do paciente no gateway.
-      let sessao;
+      // A última mensagem do contexto é o que a pessoa acabou de escrever.
+      const mensagens = evento?.contexto?.mensagens ?? [];
+      const texto = mensagens.at(-1)?.texto ?? '';
+      if (!texto) return { resposta: null };
+
+      // Linha de base ANTES do envio: é ela que separa a resposta desta
+      // pergunta das respostas que a sessão já continha.
+      let linhaDeBase;
       try {
-        sessao = await localizarSessao(cliente, telefone);
+        linhaDeBase = await lerLinhaDeBase(cliente, sessaoInterna);
       } catch (erro) {
-        // Falha ao listar sessões é indisponibilidade, não ausência de sessão.
-        const e = new Error(`falha ao localizar sessão: ${erro.message}`);
+        const e = new Error(`falha ao ler histórico da sessão interna: ${erro.message}`);
         e.codigo = erro.codigo ?? 'gateway_erro';
         throw e;
       }
 
-      if (!sessao?.key) {
-        // Sem sessão ativa, a Serena ainda não conhece este paciente no gateway.
-        // A conversa fica com a equipe — sem erro, sem escalonamento forçado.
-        return { resposta: null };
-      }
-
-      // A última mensagem do contexto é o que o paciente acabou de escrever.
-      const mensagens = evento?.contexto?.mensagens ?? [];
-      const ultimaMensagem = mensagens.at(-1);
-      const texto = ultimaMensagem?.texto ?? '';
-
-      if (!texto) return { resposta: null };
-
-      // Chave de idempotência derivada do evento: reenvio não duplica resposta.
+      // Chave derivada do evento: a retentativa do mesmo evento reusa a mesma
+      // chave, e o gateway não executa o envio duas vezes.
       const chave = evento.chave_idempotencia
         ?? `crmclinica:evento:${crypto.createHash('sha256')
-          .update(`${sessao.key}|${texto}`)
+          .update(`${sessaoInterna}|${texto}`)
           .digest('hex')
           .slice(0, 32)}`;
 
+      let envio;
       try {
-        await cliente.chamar('chat.send', {
-          sessionKey: sessao.key,
+        envio = await cliente.chamar('chat.send', {
+          sessionKey: sessaoInterna,
           message: String(texto).slice(0, 4000),
           idempotencyKey: chave,
         });
@@ -214,9 +235,12 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
         throw e;
       }
 
-      // Aguarda a resposta da Serena no histórico.
-      const resposta = await aguardarResposta(cliente, sessao.key, {
-        timeoutMs: Math.max((gateway.timeoutMs ?? 20000) - 2000, 5000),
+      const resposta = await aguardarRespostaNova(cliente, sessaoInterna, {
+        linhaDeBase,
+        runId: envio?.runId ?? envio?.run_id ?? null,
+        // Piso baixo de propósito: quem configura um timeout curto no gateway
+        // (os testes, um ambiente de ensaio) precisa que a espera encolha junto.
+        timeoutMs: Math.max((gateway.timeoutMs ?? 20000) - 2000, 1000),
       });
 
       return { resposta };

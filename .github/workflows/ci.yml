@@ -1,0 +1,55 @@
+# CI do crmclinica.
+#
+# A matriz existe por causa de um defeito real: testes que liam getHours() no
+# fuso do processo passavam em São Paulo e falhavam em UTC — que é onde a
+# Vercel e este runner rodam. Ubuntu roda nos DOIS fusos de propósito; Windows
+# cobre a máquina de desenvolvimento.
+#
+# O deploy da Vercel NÃO substitui esta CI: build que compila não é suíte que
+# passa.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# O workflow só lê o repositório. Nenhum secret é necessário — e PR de fork
+# não recebe nenhum.
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    name: ${{ matrix.rotulo }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rotulo: ubuntu-utc
+            os: ubuntu-latest
+            tz: UTC
+          - rotulo: ubuntu-sao-paulo
+            os: ubuntu-latest
+            tz: America/Sao_Paulo
+          - rotulo: windows
+            os: windows-latest
+            tz: ''
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run verificar
+
+      - run: npm test

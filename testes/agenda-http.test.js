@@ -27,7 +27,8 @@ async function subirAgenda() {
   const atendimento = criarAtendimento({ repositorio, orquestrador });
 
   await atendimento.receberMensagem({
-    canal: 'whatsapp', id_externo: 'ag:1', remetente: '5516999999999',
+    canal: 'whatsapp', estrategia_ia: 'crm_despacha',
+    id_externo: 'ag:1', remetente: '5516999999999',
     nome: 'Marina', texto: 'Quero marcar',
   });
 
@@ -44,11 +45,24 @@ async function subirAgenda() {
   return { app, repositorio, profissional };
 }
 
-/** Amanhã às 10h: dentro da janela e sempre no futuro. */
+/** Amanhã às `hora` no fuso America/Sao_Paulo — independente do TZ do processo.
+ *
+ * `setHours()` usa o fuso local do processo. Em UTC (CI, Vercel), setHours(10)
+ * produziria 10h UTC = 7h em São Paulo — fora da janela 8h–18h, e o teste
+ * falharia por causa do relógio da máquina, não do código.
+ */
 function amanhaAs(hora) {
+  const referencia = new Date();
+  referencia.setUTCDate(referencia.getUTCDate() + 1);
+  referencia.setUTCHours(12, 0, 0, 0);
+  const horaSPdoMeioDiaUTC = Number(new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', timeZone: 'America/Sao_Paulo', hour12: false,
+  }).format(referencia));
+  const desvioHoras = 12 - horaSPdoMeioDiaUTC;
+
   const data = new Date();
-  data.setDate(data.getDate() + 1);
-  data.setHours(hora, 0, 0, 0);
+  data.setUTCDate(data.getUTCDate() + 1);
+  data.setUTCHours(hora + desvioHoras, 0, 0, 0);
   return data;
 }
 

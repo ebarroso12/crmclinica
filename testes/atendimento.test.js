@@ -27,6 +27,10 @@ function montar(resposta) {
 
 const EVENTO = Object.freeze({
   canal: 'whatsapp',
+  // O ciclo completo — despacho, resposta, escalonação — é o fluxo em que o
+  // CRM aciona a IA. WhatsApp sem estratégia é recusado fechado (teste próprio
+  // em estrategia-ia.test.js); aqui o interesse é a mecânica do ciclo.
+  estrategia_ia: 'crm_despacha',
   id_externo: 'wa:1',
   remetente: '5516999999999',
   nome: 'Marina Souza',

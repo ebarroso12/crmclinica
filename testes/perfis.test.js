@@ -34,7 +34,8 @@ async function subir() {
   const atendimento = criarAtendimento({ repositorio, orquestrador });
 
   await atendimento.receberMensagem({
-    canal: 'whatsapp', id_externo: 'perfis:1', remetente: '5516999999999',
+    canal: 'whatsapp', estrategia_ia: 'crm_despacha',
+    id_externo: 'perfis:1', remetente: '5516999999999',
     nome: 'Marina', texto: 'Olá',
   });
 
@@ -159,6 +160,7 @@ test('backend: o webhook entra por assinatura, não por papel', async (t) => {
 
   const evento = {
     canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
     id_externo: 'perfis:backend:1',
     remetente: '5516988887777',
     nome: 'Paciente Novo',
