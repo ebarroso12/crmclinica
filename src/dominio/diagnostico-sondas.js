@@ -88,4 +88,18 @@ function sondaDaSerena(serena, politica, decidir) {
   };
 }
 
-module.exports = { sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena };
+function sondaDoGoogle(agenda) {
+  if (!agenda?.verificar) return null;
+  return () => agenda.verificar();
+}
+
+function sondaDoWorker(repositorio, limiteMs = 3 * 60 * 1000) {
+  return async () => {
+    const heartbeat = await repositorio.obterHeartbeat?.('lembretes_worker');
+    if (!heartbeat?.visto_em) return { ativo: false, detalhe: 'nenhum heartbeat do worker foi registrado' };
+    const idadeMs = Date.now() - new Date(heartbeat.visto_em).getTime();
+    return { ativo: Number.isFinite(idadeMs) && idadeMs <= limiteMs, detalhe: heartbeat.instancia ?? null, idade_ms: idadeMs };
+  };
+}
+
+module.exports = { sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena, sondaDoGoogle, sondaDoWorker };

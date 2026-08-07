@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 20733)
+Total output lines: 2004
+
 'use strict';
 
 // Repositório do inbox. Todo SQL do produto mora aqui — nenhuma outra camada
@@ -939,6 +942,22 @@ function criarRepositorio(pool) {
       return { itens, proximoCursor: itens.length === limite ? itens.at(-1).id : null };
     },
 
+    async registrarHeartbeat(componente, instancia, versao = null) {
+      await consultar(
+        `INSERT INTO operacao_heartbeats (componente, instancia, versao, visto_em)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (componente) DO UPDATE SET instancia = EXCLUDED.instancia, versao = EXCLUDED.versao, visto_em = now()`,
+        [componente, instancia, versao],
+      );
+    },
+
+    async obterHeartbeat(componente) {
+      const { rows } = await consultar(
+        'SELECT componente, instancia, versao, visto_em FROM operacao_heartbeats WHERE componente = $1', [componente],
+      );
+      return rows[0] ?? null;
+    },
+
     // ---------------------------------------------------------------- usuários e sessões
 
     async obterUsuarioPorEmail(email) {
@@ -969,70 +988,7 @@ function criarRepositorio(pool) {
       const { rows } = await consultar(`
         INSERT INTO usuarios (nome, email, senha_hash, papel, situacao, master, precisa_trocar_senha, google_sub, telefone)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING ${CAMPOS_USUARIO}
-      `, [nome, email, senhaHash, papel, situacao, master, precisaTrocarSenha, googleSub, telefone]);
-
-      return { ...rows[0], id: Number(rows[0].id) };
-    },
-
-    async atualizarUsuario(id, campos) {
-      const permitidos = new Map([
-        ['nome', 'nome'], ['telefone', 'telefone'], ['papel', 'papel'],
-        // `master` só é escrito pela semeadura do administrador: nenhuma rota HTTP
-        // passa este campo, e promover a si mesmo não é um caminho existente.
-        ['master', 'master'],
-        ['situacao', 'situacao'], ['ativo', 'ativo'], ['senhaHash', 'senha_hash'],
-        ['precisaTrocarSenha', 'precisa_trocar_senha'], ['googleSub', 'google_sub'],
-        ['totpSegredoCifrado', 'totp_segredo_cifrado'], ['totpAtivo', 'totp_ativo'],
-        ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
-        ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
-        ['avatarUrl', 'avatar_url'],
-      ]);
-
-      const partes = [];
-      const valores = [];
-      for (const [campo, valor] of Object.entries(campos)) {
-        const coluna = permitidos.get(campo);
-        if (!coluna) continue;
-        valores.push(valor);
-        partes.push(`${coluna} = $${valores.length}`);
-      }
-      if (partes.length === 0) return this.obterUsuarioPorId(id);
-
-      valores.push(id);
-      await consultar(`UPDATE usuarios SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
-      return this.obterUsuarioPorId(id);
-    },
-
-    /**
-     * Números do canal nos últimos `dias`, para julgar risco de bloqueio.
-     *
-     * Uma consulta só: são quatro medidas do mesmo período, e buscá-las
-     * separadamente abriria janela para uma contar dias que a outra não conta —
-     * uma taxa calculada sobre dois períodos diferentes é pior que nenhuma.
-     */
-    /**
-     * Saúde da fila de lembretes, para o centro operacional.
-     *
-     * Três contagens que denunciam falhas diferentes: preso é worker que morreu
-     * no meio do lote, falhado é entrega que esgotou as tentativas, e atrasado é
-     * fila que parou de ser processada — o sintoma mais direto de worker fora do
-     * ar, e o único que ninguém percebe até um paciente não receber o lembrete.
-     */
-    /**
-     * Já existe uma saída com este texto nesta conversa?
-     *
-     * A resposta que a equipe manda pelo painel sai pelo gateway e reaparece no
-     * histórico do OpenClaw na leitura seguinte, como saída do agente. Sem esta
-     * pergunta, a sincronização a gravaria de novo — e a equipe veria a própria
-     * mensagem duas vezes, a segunda assinada pela Serena.
-     *
-     * A janela é curta porque o eco chega em minutos: uma frase repetida de
-     * propósito daqui a uma hora ("Bom dia!") é mensagem nova, e deve entrar.
-     */
-    async existeSaidaComTexto(conversaId, texto) {
-      const { rows } = await consultar(
-        `SELECT 1 FROM mensagens
+        RETURNING $…733 tokens truncated…       `SELECT 1 FROM mensagens
           WHERE conversa_id = $1 AND direcao = 'saida' AND conteudo = $2
             AND criado_em > now() - interval '30 minutes'
           LIMIT 1`,

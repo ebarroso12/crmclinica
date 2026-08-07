@@ -153,6 +153,17 @@ function criarAgendaDoGoogle(configuracao = {}, dependencias = {}) {
   return {
     configurada,
 
+    /** Sonda mínima: autentica e confirma acesso ao calendário sem ler eventos. */
+    async verificar() {
+      if (!configurada) return { configurada: false, alcancavel: false, motivo: 'Google Agenda não configurado' };
+      try {
+        const dados = await chamar(`/calendars/${encodeURIComponent(calendario)}`);
+        return { configurada: true, alcancavel: Boolean(dados?.id) };
+      } catch (erro) {
+        return { configurada: true, alcancavel: false, motivo: erro.message };
+      }
+    },
+
     /** Cria (ou atualiza) o evento da consulta no calendário do médico. */
     async espelhar({ agendamento, contato, clinica }) {
       if (!configurada) return { espelhado: false, motivo: 'google_nao_configurado' };

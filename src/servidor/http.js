@@ -146,11 +146,12 @@ function criarAplicacao(dependencias = {}) {
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
 
+  const agendaDoGoogle = dependencias.agendaDoGoogle || criarAgendaDoGoogle(configuracao.googleAgenda);
   const servicoDeAgenda = dependencias.servicoDeAgenda
     || criarServicoDeAgenda({
       repositorio,
       lembretes: lembretesLigados,
-      google: criarAgendaDoGoogle(configuracao.googleAgenda),
+      google: agendaDoGoogle,
       clinica: configuracao.lembretes.clinica,
     });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
@@ -183,6 +184,7 @@ function criarAplicacao(dependencias = {}) {
     pool: dependencias.pool ?? null,
     vinculo: vinculoDoCanal,
     politica: politicaDoCanal,
+    googleAgenda: agendaDoGoogle,
   });
 
   const rotasDaSerena = criarRotasDaSerena({
@@ -789,6 +791,16 @@ function criarAplicacao(dependencias = {}) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const rota = url.pathname;
     const metodo = req.method;
+    const requestId = String(req.headers['x-vercel-id'] || req.headers['x-request-id'] || require('node:crypto').randomUUID());
+    const inicio = Date.now();
+    res.setHeader('x-request-id', requestId);
+    // Observabilidade sem dado clínico: rota, método, status e duração bastam
+    // para ligar erro de produção ao pedido, sem registrar corpo, telefone ou usuário.
+    res.once('finish', () => console.log(JSON.stringify({
+      level: res.statusCode >= 500 ? 'error' : 'info',
+      evento: 'http_request', request_id: requestId, rota, metodo,
+      status: res.statusCode, duracao_ms: Date.now() - inicio,
+    })));
 
     /**
      * Roda a ação com o usuário declarado ao banco, numa transação.
