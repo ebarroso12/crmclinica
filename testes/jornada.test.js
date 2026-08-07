@@ -171,8 +171,11 @@ test('a temperatura manual sincroniza a etiqueta da conversa', async () => {
 test('mover de etapa registra de-para e audita', async () => {
   const { repositorio, leads, lead } = await montar();
 
-  await leads.moverEstagio(lead.id, 'qualificando', { origem: 'equipe', usuarioId: null });
-  const resultado = await leads.moverEstagio(lead.id, 'agendado', { origem: 'equipe' });
+  // O movimento explícito da equipe exige dono e próximo passo (P1-11).
+  await leads.moverEstagio(lead.id, 'qualificando', {
+    origem: 'equipe', usuarioId: 1, proximoPasso: 'Qualificar interesse e convênio',
+  });
+  const resultado = await leads.moverEstagio(lead.id, 'agendado', { origem: 'equipe', usuarioId: 1 });
 
   assert.equal(resultado.de, 'qualificando');
   assert.equal(resultado.para, 'agendado');

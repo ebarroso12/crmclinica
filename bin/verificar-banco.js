@@ -106,6 +106,16 @@ const ESPERADO = {
       ['contatos', 'lembretes_optout'],
     ],
   },
+  '025_crm_fluxo': {
+    tabelas: ['tarefas', 'formularios_pre_consulta'],
+    colunas: [
+      ['leads', 'estagio_desde'], ['leads', 'proprietario_id'],
+      ['leads', 'proximo_passo'], ['leads', 'proximo_passo_em'],
+      ['conversas', 'aguardando_resposta_desde'],
+      ['conversas', 'resumo_interno'], ['conversas', 'resumo_interno_em'],
+      ['tarefas', 'chave'], ['formularios_pre_consulta', 'token'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
@@ -115,6 +125,8 @@ const CONSTRAINTS = [
   ['lembretes', 'lembretes_unicos', 'idempotência por agendamento, tipo e janela'],
   ['agendamentos', 'agendamentos_sem_conflito', 'dois agendamentos não se sobrepõem'],
   ['serena_prompts', 'serena_prompt_versao_uk', 'versão de prompt não se repete'],
+  ['tarefas', 'tarefas_chave_unica', 'o sino não duplica: uma inatividade, uma tarefa'],
+  ['formularios_pre_consulta', 'formularios_um_por_agendamento', 'um formulário por agendamento'],
 ];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
@@ -136,6 +148,7 @@ const TABELAS_COM_RLS = [
   'recuperacoes_senha', 'tentativas_autenticacao', 'lead_eventos',
   'profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos', 'lembretes',
   'serena_configuracao', 'serena_prompts', 'serena_regras',
+  'tarefas', 'formularios_pre_consulta',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;

@@ -187,7 +187,31 @@ function montarMensagem(linha) {
     autor_tipo: linha.autor_tipo,
     autor_nome: linha.autor_nome,
     privada: linha.privada,
+    // O id externo viaja junto: é ele que permite ao ciclo de atendimento
+    // reconhecer, num retry, que a resposta deste inbound já foi gravada.
+    id_externo: linha.id_externo ?? null,
     criado_em: linha.criado_em,
+  };
+}
+
+function montarTarefa(linha) {
+  if (!linha) return null;
+  return {
+    ...linha,
+    id: Number(linha.id),
+    lead_id: linha.lead_id ? Number(linha.lead_id) : null,
+    conversa_id: linha.conversa_id ? Number(linha.conversa_id) : null,
+    contato_id: linha.contato_id ? Number(linha.contato_id) : null,
+  };
+}
+
+function montarFormulario(linha) {
+  if (!linha) return null;
+  return {
+    ...linha,
+    id: Number(linha.id),
+    agendamento_id: Number(linha.agendamento_id),
+    contato_id: Number(linha.contato_id),
   };
 }
 
@@ -433,9 +457,24 @@ function criarRepositorio(pool) {
           return { mensagem: montarMensagem(existente.rows[0]), duplicada: true };
         }
 
-        // Nota interna não conta como atividade do atendimento.
+        // Nota interna não conta como atividade do atendimento. A marca de SLA
+        // anda junto: entrada abre a espera (preservando o início se o paciente
+        // mandou duas seguidas); saída visível encerra a espera.
         if (!mensagem.privada) {
-          await cliente.query('UPDATE conversas SET ultima_msg_em = now() WHERE id = $1', [conversaId]);
+          if (mensagem.direcao === 'entrada') {
+            await cliente.query(`
+              UPDATE conversas
+              SET ultima_msg_em = now(),
+                  aguardando_resposta_desde = COALESCE(aguardando_resposta_desde, now())
+              WHERE id = $1
+            `, [conversaId]);
+          } else {
+            await cliente.query(`
+              UPDATE conversas
+              SET ultima_msg_em = now(), aguardando_resposta_desde = NULL
+              WHERE id = $1
+            `, [conversaId]);
+          }
         }
 
         await cliente.query('COMMIT');
@@ -777,6 +816,8 @@ function criarRepositorio(pool) {
         ['scoreMotivos', 'score_motivos'], ['scoreCalculadoEm', 'score_calculado_em'],
         ['qualificadoEm', 'qualificado_em'], ['perdidoMotivo', 'perdido_motivo'],
         ['proximoPasso', 'proximo_passo'], ['conversaId', 'conversa_id'],
+        ['proprietarioId', 'proprietario_id'], ['proximoPassoEm', 'proximo_passo_em'],
+        ['estagioDesde', 'estagio_desde'],
       ]);
 
       const partes = [];
@@ -852,6 +893,147 @@ function criarRepositorio(pool) {
       `, [contatoId, conversaId, temperatura, estagio, origem]);
 
       return { ...rows[0], id: Number(rows[0].id), contato_id: Number(rows[0].contato_id) };
+    },
+
+    /**
+     * Leads sem atividade há N dias — a matéria-prima do sino de acompanhamento.
+     * Convertido e perdido ficam de fora: acompanhamento é para quem ainda está
+     * no funil.
+     */
+    async listarLeadsInativos({ dias = 15, limite = 200 } = {}) {
+      const { rows } = await consultar(`
+        SELECT l.*, ct.nome, ct.telefone,
+               (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id) AS ultima_msg_em
+        FROM leads l JOIN contatos ct ON ct.id = l.contato_id
+        WHERE l.estagio NOT IN ('convertido', 'perdido')
+          AND ct.excluido_em IS NULL
+          AND COALESCE(
+            (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id),
+            l.atualizado_em
+          ) < now() - make_interval(days => $1)
+        ORDER BY l.atualizado_em
+        LIMIT $2
+      `, [dias, limite]);
+      return rows.map(montarLead);
+    },
+
+    // ---------------------------------------------------------------- tarefas (sino)
+
+    /**
+     * Cria uma tarefa idempotente. A chave determinística faz a segunda chamada
+     * devolver a tarefa existente em vez de criar outra — o worker pode rodar
+     * de minuto em minuto sem encher o sino.
+     */
+    async criarTarefa({ chave, tipo, titulo, detalhe = null, leadId = null, conversaId = null, contatoId = null, devidaEm = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO tarefas (chave, tipo, titulo, detalhe, lead_id, conversa_id, contato_id, devida_em)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()))
+        ON CONFLICT (chave) DO NOTHING
+        RETURNING *
+      `, [chave, tipo, titulo, detalhe, leadId, conversaId, contatoId, devidaEm]);
+
+      if (rows.length > 0) return { tarefa: montarTarefa(rows[0]), duplicada: false };
+
+      const { rows: existentes } = await consultar('SELECT * FROM tarefas WHERE chave = $1', [chave]);
+      return { tarefa: montarTarefa(existentes[0]), duplicada: true };
+    },
+
+    async listarTarefas({ abertas = true, limite = 100 } = {}) {
+      const { rows } = await consultar(`
+        SELECT t.*, ct.nome AS contato_nome
+        FROM tarefas t LEFT JOIN contatos ct ON ct.id = t.contato_id
+        ${abertas ? 'WHERE t.concluida_em IS NULL' : ''}
+        ORDER BY t.devida_em, t.id
+        LIMIT $1
+      `, [limite]);
+      return rows.map(montarTarefa);
+    },
+
+    async concluirTarefa(id, { usuarioId = null } = {}) {
+      const { rows } = await consultar(`
+        UPDATE tarefas SET concluida_em = now(), concluida_por = $2
+        WHERE id = $1 AND concluida_em IS NULL
+        RETURNING *
+      `, [id, usuarioId]);
+      return rows[0] ? montarTarefa(rows[0]) : null;
+    },
+
+    // ---------------------------------------------------------------- SLA
+
+    /** Conversas em que o paciente fala por último, da espera mais antiga para a mais nova. */
+    async listarConversasAguardando({ limite = 100 } = {}) {
+      const { rows } = await consultar(`
+        SELECT c.*, ct.nome AS contato_nome, ct.telefone AS contato_telefone
+        FROM conversas c JOIN contatos ct ON ct.id = c.contato_id
+        WHERE c.aguardando_resposta_desde IS NOT NULL
+          AND c.status <> 'resolvida'
+        ORDER BY c.aguardando_resposta_desde
+        LIMIT $1
+      `, [limite]);
+      return rows.map((linha) => ({
+        ...linha,
+        id: Number(linha.id),
+        contato_id: Number(linha.contato_id),
+      }));
+    },
+
+    // ------------------------------------------------------ resumo interno
+
+    /** Grava o resumo interno do encerramento. Fica NO CRM; nunca vai ao paciente. */
+    async definirResumoInterno(conversaId, texto) {
+      const { rows } = await consultar(`
+        UPDATE conversas SET resumo_interno = $2, resumo_interno_em = now()
+        WHERE id = $1
+        RETURNING id, resumo_interno, resumo_interno_em
+      `, [conversaId, texto]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    // ------------------------------------------- formulário de pré-consulta
+
+    /**
+     * Um formulário por agendamento: o conflito devolve o existente. A regra
+     * "só depois do agendamento confirmado" é do serviço; aqui é integridade.
+     */
+    async criarFormularioPreConsulta({ agendamentoId, contatoId, token }) {
+      const { rows } = await consultar(`
+        INSERT INTO formularios_pre_consulta (agendamento_id, contato_id, token)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (agendamento_id) DO NOTHING
+        RETURNING *
+      `, [agendamentoId, contatoId, token]);
+
+      if (rows.length > 0) return { formulario: montarFormulario(rows[0]), duplicado: false };
+
+      const { rows: existentes } = await consultar(
+        'SELECT * FROM formularios_pre_consulta WHERE agendamento_id = $1', [agendamentoId],
+      );
+      return { formulario: montarFormulario(existentes[0]), duplicado: true };
+    },
+
+    async obterFormularioPorAgendamento(agendamentoId) {
+      const { rows } = await consultar(
+        'SELECT * FROM formularios_pre_consulta WHERE agendamento_id = $1', [agendamentoId],
+      );
+      return rows[0] ? montarFormulario(rows[0]) : null;
+    },
+
+    async marcarFormularioEnviado(id) {
+      const { rows } = await consultar(`
+        UPDATE formularios_pre_consulta SET enviado_em = COALESCE(enviado_em, now())
+        WHERE id = $1 RETURNING *
+      `, [id]);
+      return rows[0] ? montarFormulario(rows[0]) : null;
+    },
+
+    async registrarRespostaDeFormulario(token, respostas) {
+      const { rows } = await consultar(`
+        UPDATE formularios_pre_consulta
+        SET respondido_em = COALESCE(respondido_em, now()), respostas = $2::jsonb
+        WHERE token = $1 AND respondido_em IS NULL
+        RETURNING *
+      `, [token, JSON.stringify(respostas ?? {})]);
+      return rows[0] ? montarFormulario(rows[0]) : null;
     },
 
     // ---------------------------------------------------------------- idempotência e auditoria

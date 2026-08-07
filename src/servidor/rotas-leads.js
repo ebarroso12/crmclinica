@@ -7,6 +7,7 @@ const {
 } = require('../dominio/qualificacao');
 const { ETAPAS, DESCRICAO, TRANSICOES, resumir } = require('../dominio/jornada');
 const { TEMPERATURAS } = require('../dominio/conversas');
+const { agingDoLead } = require('../dominio/leads');
 
 // API de qualificação e jornada do lead.
 
@@ -100,9 +101,29 @@ function criarRotasDeLeads({ repositorio, leads }) {
         origem: 'equipe',
         usuarioId: usuario.id,
         motivo: corpo?.motivo ?? null,
+        proprietarioId: corpo?.proprietario_id ?? null,
+        proximoPasso: corpo?.proximo_passo ?? null,
       });
 
       return { ...resultado, proxima_acao: proximaAcao(resultado.lead) };
+    },
+
+    /** POST /api/leads/:id/gestao — define dono e próximo passo. */
+    async definirGestao(usuario, leadId, corpo) {
+      exigirPermissao(usuario, 'conversas:responder');
+      const id = exigirIdentificador(leadId, 'lead_id');
+
+      if (corpo?.proprietario_id === undefined && corpo?.proximo_passo === undefined) {
+        throw new ErroDeContrato('informe "proprietario_id" e/ou "proximo_passo"');
+      }
+
+      const lead = await leads.definirGestao(id, {
+        proprietarioId: corpo?.proprietario_id ?? null,
+        proximoPasso: corpo?.proximo_passo ?? null,
+        usuarioId: usuario.id,
+      });
+
+      return { lead };
     },
 
     /** POST /api/leads/:id/temperatura — fixa na mão; o cálculo para de mexer. */
@@ -128,7 +149,7 @@ function criarRotasDeLeads({ repositorio, leads }) {
       return { eventos, resumo: resumir(eventos) };
     },
 
-    /** Enriquece o kanban com score, próxima ação e o que falta perguntar. */
+    /** Enriquece o kanban com score, próxima ação, aging e gestão. */
     async listarParaKanban() {
       const lista = await repositorio.listarLeads();
 
@@ -138,6 +159,9 @@ function criarRotasDeLeads({ repositorio, leads }) {
           ...lead,
           score,
           proxima_acao: proximaAcao(lead),
+          // O aging vai calculado do servidor: o navegador não decide o que é
+          // "abandonado", só pinta.
+          ...agingDoLead(lead),
         };
       });
     },

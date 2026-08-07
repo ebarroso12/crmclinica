@@ -12,6 +12,7 @@ const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openc
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
+const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
 const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
 const { criarLimitador } = require('../seguranca/limite');
@@ -131,6 +132,11 @@ function criarAplicacao(dependencias = {}) {
       canal: canalDeConversas,
     });
 
+  // Fluxo comercial: sino de acompanhamento, encerramento com resumo interno e
+  // formulário de pré-consulta condicionado ao agendamento confirmado.
+  const servicoDeFluxo = dependencias.servicoDeFluxo
+    || criarServicoDeFluxo({ repositorio, canal: canalDeConversas });
+
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
   const limitador = dependencias.limitador === null
@@ -208,6 +214,8 @@ function criarAplicacao(dependencias = {}) {
     prioridade: 'conversas:priorizar',
     notas: 'conversas:responder',
     ficha: 'contatos:editar',
+    // Encerrar é resolver com resumo interno: mesma permissão de resolver.
+    encerrar: 'conversas:resolver',
   });
 
   async function receberEventoDoOrquestrador(req, res) {
@@ -596,6 +604,77 @@ function criarAplicacao(dependencias = {}) {
       return true;
     }
 
+    // GET /api/conversas/aguardando — a fila de SLA: quem o paciente espera.
+    // Antes do bloco genérico de /api/conversas/:id, que trataria "aguardando"
+    // como identificador.
+    if (rota === '/api/conversas/aguardando' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const fila = await repositorio.listarConversasAguardando({ limite: 100 });
+      const agora = Date.now();
+      responderJson(res, 200, {
+        total: fila.length,
+        conversas: fila.map((conversa) => ({
+          ...conversa,
+          minutos_aguardando: Math.floor(
+            (agora - new Date(conversa.aguardando_resposta_desde).getTime()) / 60_000,
+          ),
+        })),
+      }, { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // Tarefas — o sino da equipe.
+    if (rota === '/api/tarefas' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const abertas = url.searchParams.get('todas') !== 'sim';
+      const tarefas = await repositorio.listarTarefas({ abertas });
+      responderJson(res, 200, { total: tarefas.length, tarefas }, { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/tarefas/varrer' && metodo === 'POST') {
+      exigirPermissao(usuario, 'conversas:priorizar');
+      responderJson(res, 200, await servicoDeFluxo.gerarTarefasDeAcompanhamento());
+      return true;
+    }
+    {
+      const partesDeTarefa = rota.split('/').filter(Boolean);
+      if (partesDeTarefa[0] === 'api' && partesDeTarefa[1] === 'tarefas'
+          && partesDeTarefa.length === 4 && partesDeTarefa[3] === 'concluir'
+          && /^\d+$/.test(partesDeTarefa[2])) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        exigirPermissao(usuario, 'conversas:responder');
+        const tarefa = await repositorio.concluirTarefa(partesDeTarefa[2], { usuarioId: usuario.id });
+        if (!tarefa) {
+          responderJson(res, 404, { erro: 'tarefa não encontrada ou já concluída' });
+          return true;
+        }
+        responderJson(res, 200, { tarefa });
+        return true;
+      }
+    }
+
+    // POST /api/agenda/:id/formulario — pré-consulta, SÓ com agendamento
+    // confirmado. Antes do roteador da agenda, que não conhece esta sub-rota.
+    {
+      const partesDeAgenda = rota.split('/').filter(Boolean);
+      if (partesDeAgenda[0] === 'api' && partesDeAgenda[1] === 'agenda'
+          && partesDeAgenda.length === 4 && partesDeAgenda[3] === 'formulario'
+          && /^\d+$/.test(partesDeAgenda[2])) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        exigirPermissao(usuario, 'conversas:responder');
+        responderJson(res, 200, await servicoDeFluxo.enviarFormularioPreConsulta(
+          Number(partesDeAgenda[2]), { usuarioId: usuario.id },
+        ));
+        return true;
+      }
+    }
+
     if (await tratarRotasDeAgenda(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeLembretes(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDaSerena(req, res, rota, metodo, url, usuario)) return true;
@@ -667,6 +746,7 @@ function criarAplicacao(dependencias = {}) {
         qualificacao: (corpo) => rotasDeLeads.qualificar(usuario, leadId, corpo),
         estagio: (corpo) => rotasDeLeads.moverEstagio(usuario, leadId, corpo),
         temperatura: (corpo) => rotasDeLeads.definirTemperatura(usuario, leadId, corpo),
+        gestao: (corpo) => rotasDeLeads.definirGestao(usuario, leadId, corpo),
       };
 
       const acaoDeLead = partes.length === 4 ? acoesDeLead[partes[3]] : null;
@@ -767,6 +847,7 @@ function criarAplicacao(dependencias = {}) {
       estado: (corpo) => conversas.definirEstado(conversaId, corpo),
       temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
       notas: (corpo) => conversas.criarNota(conversaId, corpo),
+      encerrar: (corpo) => servicoDeFluxo.encerrarConversa(conversaId, { usuarioId: corpo.usuario_id ?? null }),
     };
 
     const acao = acoes[partes[3]];
@@ -1008,7 +1089,7 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 422, { erro: erro.message, codigo: erro.codigo });
         return;
       }
-      if ([400, 403, 404, 409, 503].includes(erro.status)) {
+      if ([400, 403, 404, 409, 422, 503].includes(erro.status)) {
         responderJson(res, erro.status, {
           erro: erro.message,
           ...(erro.codigo ? { codigo: erro.codigo } : {}),

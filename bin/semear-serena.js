@@ -252,9 +252,13 @@ async function main() {
   }
 }
 
-main().catch((erro) => {
-  console.error(`falha ao semear a Serena: ${erro.message}`);
-  process.exit(1);
-});
+// Só executa quando chamado como script. Importar este arquivo (os testes
+// importam REGRAS) não pode disparar conexão com banco nenhum.
+if (require.main === module) {
+  main().catch((erro) => {
+    console.error(`falha ao semear a Serena: ${erro.message}`);
+    process.exit(1);
+  });
+}
 
 module.exports = { PROMPT, REGRAS };

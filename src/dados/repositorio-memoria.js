@@ -44,6 +44,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const serenaRegras = [];
   const serenaVozSessoes = new Map();
   const serenaVozTurnos = [];
+  const tarefas = [];
+  const formularios = [];
   // Uma linha só, como a constraint do PostgreSQL garante lá.
   const serenaConfiguracao = {
     id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
@@ -85,7 +87,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
-    serenaPrompt: 1, serenaRegra: 1,
+    serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da fila de lembretes. */
@@ -258,7 +260,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       mensagens.push(mensagem);
 
       const conversa = conversas.get(Number(conversaId));
-      if (conversa && !mensagem.privada) conversa.ultima_msg_em = mensagem.criado_em;
+      if (conversa && !mensagem.privada) {
+        conversa.ultima_msg_em = mensagem.criado_em;
+        // Espelha o SLA do PostgreSQL: entrada abre a espera (preservando o
+        // início), saída visível encerra.
+        if (mensagem.direcao === 'entrada') {
+          conversa.aguardando_resposta_desde = conversa.aguardando_resposta_desde ?? mensagem.criado_em;
+        } else {
+          conversa.aguardando_resposta_desde = null;
+        }
+      }
 
       return { mensagem, duplicada: false };
     },
@@ -449,6 +460,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         assumida_por_humano: false,
         ia_pausada_ate: null,
         ultima_msg_em: null,
+        aguardando_resposta_desde: null,
+        resumo_interno: null,
+        resumo_interno_em: null,
         criado_em: agora().toISOString(),
       };
       conversas.set(conversa.id, conversa);
@@ -530,6 +544,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         ['scoreMotivos', 'score_motivos'], ['scoreCalculadoEm', 'score_calculado_em'],
         ['qualificadoEm', 'qualificado_em'], ['perdidoMotivo', 'perdido_motivo'],
         ['proximoPasso', 'proximo_passo'], ['conversaId', 'conversa_id'],
+        ['proprietarioId', 'proprietario_id'], ['proximoPassoEm', 'proximo_passo_em'],
+        ['estagioDesde', 'estagio_desde'],
       ]);
 
       for (const [campo, valor] of Object.entries(campos)) {
@@ -609,11 +625,133 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         score_calculado_em: null,
         qualificado_em: null,
         perdido_motivo: null,
+        proprietario_id: null,
+        proximo_passo_em: null,
+        estagio_desde: agora().toISOString(),
         criado_em: agora().toISOString(),
         atualizado_em: agora().toISOString(),
       };
       leads.set(lead.id, lead);
       return enriquecerLead(lead);
+    },
+
+    /** Leads sem atividade há N dias — espelha a consulta do sino. */
+    async listarLeadsInativos({ dias = 15, limite = 200 } = {}) {
+      const limite_instante = agora().getTime() - dias * 24 * 3_600_000;
+      return [...leads.values()]
+        .filter((lead) => !['convertido', 'perdido'].includes(lead.estagio))
+        .filter((lead) => !contatos.get(lead.contato_id)?.excluido_em)
+        .map(enriquecerLead)
+        .filter((lead) => new Date(lead.ultima_msg_em ?? lead.atualizado_em).getTime() < limite_instante)
+        .sort((a, b) => new Date(a.atualizado_em) - new Date(b.atualizado_em))
+        .slice(0, limite);
+    },
+
+    // ---------------------------------------------------------------- tarefas (sino)
+
+    async criarTarefa({ chave, tipo, titulo, detalhe = null, leadId = null, conversaId = null, contatoId = null, devidaEm = null }) {
+      const existente = tarefas.find((tarefa) => tarefa.chave === chave);
+      if (existente) return { tarefa: { ...existente }, duplicada: true };
+
+      const tarefa = {
+        id: proximoId.tarefa++,
+        chave,
+        tipo,
+        titulo,
+        detalhe,
+        lead_id: leadId ? Number(leadId) : null,
+        conversa_id: conversaId ? Number(conversaId) : null,
+        contato_id: contatoId ? Number(contatoId) : null,
+        devida_em: devidaEm ?? agora().toISOString(),
+        criado_em: agora().toISOString(),
+        concluida_em: null,
+        concluida_por: null,
+      };
+      tarefas.push(tarefa);
+      return { tarefa: { ...tarefa }, duplicada: false };
+    },
+
+    async listarTarefas({ abertas = true, limite = 100 } = {}) {
+      return tarefas
+        .filter((tarefa) => !abertas || !tarefa.concluida_em)
+        .sort((a, b) => new Date(a.devida_em) - new Date(b.devida_em) || a.id - b.id)
+        .slice(0, limite)
+        .map((tarefa) => ({
+          ...tarefa,
+          contato_nome: tarefa.contato_id ? contatos.get(tarefa.contato_id)?.nome ?? null : null,
+        }));
+    },
+
+    async concluirTarefa(id, { usuarioId = null } = {}) {
+      const tarefa = tarefas.find((item) => item.id === Number(id) && !item.concluida_em);
+      if (!tarefa) return null;
+      tarefa.concluida_em = agora().toISOString();
+      tarefa.concluida_por = usuarioId;
+      return { ...tarefa };
+    },
+
+    // ---------------------------------------------------------------- SLA
+
+    async listarConversasAguardando({ limite = 100 } = {}) {
+      return [...conversas.values()]
+        .filter((conversa) => conversa.aguardando_resposta_desde && conversa.status !== 'resolvida')
+        .sort((a, b) => new Date(a.aguardando_resposta_desde) - new Date(b.aguardando_resposta_desde))
+        .slice(0, limite)
+        .map((conversa) => ({
+          ...montarConversa(conversa),
+          contato_nome: contatos.get(conversa.contato_id)?.nome ?? null,
+          contato_telefone: contatos.get(conversa.contato_id)?.telefone ?? null,
+        }));
+    },
+
+    // ------------------------------------------------------ resumo interno
+
+    async definirResumoInterno(conversaId, texto) {
+      const conversa = conversas.get(Number(conversaId));
+      if (!conversa) return null;
+      conversa.resumo_interno = texto;
+      conversa.resumo_interno_em = agora().toISOString();
+      return { id: conversa.id, resumo_interno: texto, resumo_interno_em: conversa.resumo_interno_em };
+    },
+
+    // ------------------------------------------- formulário de pré-consulta
+
+    async criarFormularioPreConsulta({ agendamentoId, contatoId, token }) {
+      const existente = formularios.find((formulario) => formulario.agendamento_id === Number(agendamentoId));
+      if (existente) return { formulario: { ...existente }, duplicado: true };
+
+      const formulario = {
+        id: proximoId.formulario++,
+        agendamento_id: Number(agendamentoId),
+        contato_id: Number(contatoId),
+        token,
+        enviado_em: null,
+        respondido_em: null,
+        respostas: null,
+        criado_em: agora().toISOString(),
+      };
+      formularios.push(formulario);
+      return { formulario: { ...formulario }, duplicado: false };
+    },
+
+    async obterFormularioPorAgendamento(agendamentoId) {
+      const formulario = formularios.find((item) => item.agendamento_id === Number(agendamentoId));
+      return formulario ? { ...formulario } : null;
+    },
+
+    async marcarFormularioEnviado(id) {
+      const formulario = formularios.find((item) => item.id === Number(id));
+      if (!formulario) return null;
+      formulario.enviado_em = formulario.enviado_em ?? agora().toISOString();
+      return { ...formulario };
+    },
+
+    async registrarRespostaDeFormulario(token, respostas) {
+      const formulario = formularios.find((item) => item.token === token && !item.respondido_em);
+      if (!formulario) return null;
+      formulario.respondido_em = agora().toISOString();
+      formulario.respostas = respostas ?? {};
+      return { ...formulario };
     },
 
     // ---------------------------------------------------------------- idempotência e auditoria
