@@ -153,12 +153,17 @@ function criarAgendaDoGoogle(configuracao = {}, dependencias = {}) {
   return {
     configurada,
 
-    /** Sonda mínima: autentica e confirma acesso ao calendário sem ler eventos. */
+    /** Sonda mínima: autentica e confirma acesso usando o mesmo escopo do espelho. */
     async verificar() {
       if (!configurada) return { configurada: false, alcancavel: false, motivo: 'Google Agenda não configurado' };
       try {
-        const dados = await chamar(`/calendars/${encodeURIComponent(calendario)}`);
-        return { configurada: true, alcancavel: Boolean(dados?.id) };
+        // `calendar.events` não garante `calendars.get`. Consultar a coleção de
+        // eventos com resposta reduzida confirma o acesso com o escopo mínimo
+        // usado pelo espelho e não traz título, horário ou paciente algum.
+        const dados = await chamar(
+          `/calendars/${encodeURIComponent(calendario)}/events?maxResults=1&fields=kind`,
+        );
+        return { configurada: true, alcancavel: dados?.kind === 'calendar#events' };
       } catch (erro) {
         return { configurada: true, alcancavel: false, motivo: erro.message };
       }

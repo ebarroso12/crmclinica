@@ -24,10 +24,22 @@ CREATE INDEX IF NOT EXISTS auditoria_exportacoes_pendentes_idx
 
 ALTER TABLE public.auditoria_exportacoes ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.auditoria_exportacoes FROM PUBLIC, anon, authenticated;
-GRANT SELECT, INSERT, UPDATE ON TABLE public.auditoria_exportacoes TO crmclinica_app;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crmclinica_app') THEN
+    GRANT SELECT, INSERT, UPDATE ON TABLE public.auditoria_exportacoes TO crmclinica_app;
+  END IF;
+END
+$$;
 
 DROP POLICY IF EXISTS app_auditoria_exportacoes ON public.auditoria_exportacoes;
-CREATE POLICY app_auditoria_exportacoes ON public.auditoria_exportacoes
-  FOR ALL TO crmclinica_app USING (true) WITH CHECK (true);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crmclinica_app') THEN
+    CREATE POLICY app_auditoria_exportacoes ON public.auditoria_exportacoes
+      FOR ALL TO crmclinica_app USING (true) WITH CHECK (true);
+  END IF;
+END
+$$;
 
 COMMIT;

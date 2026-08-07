@@ -127,7 +127,13 @@ async function main() {
   let rodando = false;
 
   async function marcarHeartbeat() {
-    await repositorio.registrarHeartbeat('lembretes_worker', worker, require('../package.json').version);
+    try {
+      await repositorio.registrarHeartbeat('lembretes_worker', worker, require('../package.json').version);
+    } catch (erro) {
+      // A prova de vida não pode virar ponto único de falha do processamento.
+      // O health mostrará o worker como desatualizado, mas o próximo lote segue.
+      console.error(`[lembretes] heartbeat não registrado: ${erro.message}`);
+    }
   }
 
   // A Serena do OpenClaw responde ao paciente sem passar por aqui. Sem esta

@@ -14,10 +14,22 @@ CREATE TABLE IF NOT EXISTS public.operacao_heartbeats (
 
 ALTER TABLE public.operacao_heartbeats ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.operacao_heartbeats FROM PUBLIC, anon, authenticated;
-GRANT SELECT, INSERT, UPDATE ON TABLE public.operacao_heartbeats TO crmclinica_app;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crmclinica_app') THEN
+    GRANT SELECT, INSERT, UPDATE ON TABLE public.operacao_heartbeats TO crmclinica_app;
+  END IF;
+END
+$$;
 
 DROP POLICY IF EXISTS app_operacao_heartbeats ON public.operacao_heartbeats;
-CREATE POLICY app_operacao_heartbeats ON public.operacao_heartbeats
-  FOR ALL TO crmclinica_app USING (true) WITH CHECK (true);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crmclinica_app') THEN
+    CREATE POLICY app_operacao_heartbeats ON public.operacao_heartbeats
+      FOR ALL TO crmclinica_app USING (true) WITH CHECK (true);
+  END IF;
+END
+$$;
 
 COMMIT;
