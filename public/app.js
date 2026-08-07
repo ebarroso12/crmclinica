@@ -8,6 +8,7 @@ const TITULOS = {
   conversas: 'Conversas',
   leads: 'Leads',
   agenda: 'Agenda',
+  metricas: 'Métricas',
   serena: 'Serena',
   contatos: 'Contatos',
   auditoria: 'Auditoria',
@@ -35,6 +36,7 @@ function abrirTela(tela) {
   if (tela === 'conversas') carregarConversas();
   if (tela === 'leads') carregarLeads();
   if (tela === 'agenda') carregarAgenda();
+  if (tela === 'metricas') carregarMetricas();
   if (tela === 'serena') carregarSerena();
   if (tela === 'contatos') carregarContatos();
   if (tela === 'usuarios') carregarUsuarios();
@@ -850,6 +852,129 @@ async function carregarLeads() {
     avisar(kanban, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar os leads.', 'p');
   }
 }
+
+// --- Métricas (docs/METRICAS.md) ---
+
+/** Barra proporcional simples: rótulo, barra e "n de d" — denominador sempre à vista. */
+function tabelaDeBarras(linhas, { rotulo, valor, denominador = null }) {
+  const tabela = document.createElement('table');
+  tabela.className = 'tabela-metricas';
+
+  const maior = Math.max(1, ...linhas.map((linha) => Number(linha[valor]) || 0));
+  for (const linha of linhas) {
+    const tr = document.createElement('tr');
+
+    const nome = document.createElement('td');
+    nome.textContent = linha[rotulo];
+
+    const barra = document.createElement('td');
+    barra.className = 'barra-celula';
+    const preenchimento = document.createElement('span');
+    preenchimento.className = 'barra';
+    preenchimento.style.width = `${Math.round((Number(linha[valor]) / maior) * 100)}%`;
+    barra.append(preenchimento);
+
+    const numero = document.createElement('td');
+    numero.className = 'numero';
+    const dtotal = denominador ? linha[denominador] : null;
+    numero.textContent = dtotal ? `${linha[valor]} de ${dtotal}` : String(linha[valor]);
+
+    tr.append(nome, barra, numero);
+    tabela.append(tr);
+  }
+  return tabela;
+}
+
+function blocoDeMetricas(titulo, elemento) {
+  const bloco = document.createElement('div');
+  bloco.className = 'bloco-metrica';
+  const h4 = document.createElement('h4');
+  h4.textContent = titulo;
+  bloco.append(h4, elemento);
+  return bloco;
+}
+
+async function carregarMetricas() {
+  const contexto = seletor('#metricas-contexto');
+  if (!contexto) return;
+
+  const parametros = new URLSearchParams();
+  const de = seletor('#metricas-de')?.value;
+  const ate = seletor('#metricas-ate')?.value;
+  if (de) parametros.set('de', de);
+  if (ate) parametros.set('ate', ate);
+
+  try {
+    const resumo = await pedirJson(`/api/metricas/resumo${parametros.size ? `?${parametros}` : ''}`);
+
+    // O contexto obrigatório: período, fuso e filtros, sempre visíveis.
+    contexto.textContent = `Período ${resumo.periodo.de} a ${resumo.periodo.ate} (exclusivo) · `
+      + `fuso ${resumo.periodo.timezone} · dados sintéticos ${resumo.filtros.dados_sinteticos}`;
+
+    const topo = seletor('#metricas-topo');
+    topo.innerHTML = '';
+    const numeros = [
+      ['LEADS NOVOS', resumo.leads.novos, 'no período'],
+      ['CONVERSAS COM INBOUND', resumo.conversas.com_inbound, 'no período'],
+      ['1ª RESPOSTA (MEDIANA)', resumo.conversas.primeira_resposta_minutos.mediana ?? '—',
+        `min · base ${resumo.conversas.primeira_resposta_minutos.base}`],
+      ['AGUARDANDO AGORA', resumo.conversas.backlog_aguardando, 'fotografia'],
+    ];
+    for (const [titulo, numero, nota] of numeros) {
+      const item = document.createElement('li');
+      const small = document.createElement('small');
+      small.textContent = titulo;
+      const strong = document.createElement('strong');
+      strong.textContent = String(numero);
+      const span = document.createElement('span');
+      span.textContent = nota;
+      item.append(small, strong, span);
+      topo.append(item);
+    }
+
+    const esquerda = seletor('#painel-leads-conversas');
+    esquerda.innerHTML = '';
+    esquerda.append(
+      blocoDeMetricas('Leads por origem', tabelaDeBarras(resumo.leads.por_origem, {
+        rotulo: 'origem', valor: 'total', denominador: 'denominador',
+      })),
+      blocoDeMetricas('Funil (fotografia de agora)', tabelaDeBarras(resumo.leads.funil_fotografia, {
+        rotulo: 'estagio', valor: 'total',
+      })),
+      blocoDeMetricas('Motivos de perda', resumo.leads.motivos_perda.length
+        ? tabelaDeBarras(resumo.leads.motivos_perda, { rotulo: 'motivo', valor: 'total' })
+        : Object.assign(document.createElement('p'), { className: 'vazio', textContent: 'Nenhuma perda no período.' })),
+    );
+
+    const direita = seletor('#painel-agenda-serena');
+    direita.innerHTML = '';
+    const comparecimento = resumo.agenda.comparecimento;
+    const notaComparecimento = document.createElement('p');
+    notaComparecimento.className = 'nota-metrica';
+    notaComparecimento.textContent = comparecimento.taxa === null
+      ? 'Comparecimento: sem consultas concluídas no período.'
+      : `Comparecimento: ${comparecimento.taxa}% (${comparecimento.numerador} de ${comparecimento.denominador}).`;
+
+    direita.append(
+      blocoDeMetricas('Consultas por status', resumo.agenda.por_status.length
+        ? tabelaDeBarras(resumo.agenda.por_status, { rotulo: 'status', valor: 'total' })
+        : Object.assign(document.createElement('p'), { className: 'vazio', textContent: 'Nenhuma consulta no período.' })),
+      notaComparecimento,
+      blocoDeMetricas('Serena — ações na conversa', resumo.serena.por_acao.length
+        ? tabelaDeBarras(resumo.serena.por_acao.map((linha) => ({
+          ...linha,
+          rotulo: linha.motivo && linha.motivo !== '—' ? `${linha.acao} (${linha.motivo})` : linha.acao,
+        })), { rotulo: 'rotulo', valor: 'total' })
+        : Object.assign(document.createElement('p'), { className: 'vazio', textContent: 'Nenhuma ação da automação no período.' })),
+    );
+  } catch (erro) {
+    contexto.textContent = erro.status === 400
+      ? `Período inválido: ${erro.detalhe ?? 'confira as datas.'}`
+      : 'Não foi possível carregar as métricas.';
+  }
+}
+
+seletor('#metricas-aplicar')?.addEventListener('click', carregarMetricas);
 
 // --- Ligações da interface ---
 

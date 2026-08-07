@@ -1036,6 +1036,91 @@ function criarRepositorio(pool) {
       return rows[0] ? montarFormulario(rows[0]) : null;
     },
 
+    // ---------------------------------------------------------------- analítica
+
+    /** Evento de produto, deduplicado pela chave quando houver. Nunca clínico. */
+    async registrarEventoAnalitico({ nome, entidade = null, entidadeId = null, propriedades = null, chave = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO eventos_analiticos (nome, entidade, entidade_id, propriedades, chave)
+        VALUES ($1, $2, $3, $4::jsonb, $5)
+        ON CONFLICT (chave) DO NOTHING
+        RETURNING id
+      `, [nome, entidade, entidadeId, propriedades ? JSON.stringify(propriedades) : null, chave]);
+      return { registrado: rows.length > 0 };
+    },
+
+    // As consultas abaixo materializam o dicionário oficial (docs/METRICAS.md)
+    // sobre as views da migration 026. Período: [de, ate) em dias de São Paulo.
+
+    async metricasLeadsPorDia({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT dia, origem, total::int FROM vw_leads_por_dia
+        WHERE dia >= $1::date AND dia < $2::date
+        ORDER BY dia, origem
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasFunil() {
+      const { rows } = await consultar('SELECT estagio, total::int FROM vw_funil_estagios ORDER BY estagio');
+      return rows;
+    },
+
+    async metricasMotivosPerda({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT motivo, sum(total)::int AS total FROM vw_motivos_perda
+        WHERE dia >= $1::date AND dia < $2::date
+        GROUP BY motivo ORDER BY total DESC
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasPrimeiraResposta({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT conversa_id, dia, minutos::float FROM vw_primeira_resposta
+        WHERE dia >= $1::date AND dia < $2::date
+      `, [de, ate]);
+      return rows.map((linha) => ({ ...linha, conversa_id: Number(linha.conversa_id) }));
+    },
+
+    async metricasPicos({ de, ate }) {
+      // A view agrega o histórico inteiro; o recorte de período exige refazer o
+      // grupo sobre as mensagens do intervalo.
+      const { rows } = await consultar(`
+        SELECT
+          extract(dow  FROM (m.criado_em AT TIME ZONE 'America/Sao_Paulo'))::int AS dia_semana,
+          extract(hour FROM (m.criado_em AT TIME ZONE 'America/Sao_Paulo'))::int AS hora,
+          count(*)::int AS entradas
+        FROM mensagens m
+        JOIN conversas c ON c.id = m.conversa_id
+        JOIN contatos ct ON ct.id = c.contato_id
+        WHERE m.direcao = 'entrada' AND NOT m.privada
+          AND ct.telefone NOT LIKE '5516900000%'
+          AND (m.criado_em AT TIME ZONE 'America/Sao_Paulo')::date >= $1::date
+          AND (m.criado_em AT TIME ZONE 'America/Sao_Paulo')::date <  $2::date
+        GROUP BY 1, 2 ORDER BY 1, 2
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasAgenda({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT status, sum(total)::int AS total FROM vw_agenda_por_dia
+        WHERE dia >= $1::date AND dia < $2::date
+        GROUP BY status ORDER BY status
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasSerena({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT acao, motivo, sum(total)::int AS total FROM vw_serena_por_dia
+        WHERE dia >= $1::date AND dia < $2::date
+        GROUP BY acao, motivo ORDER BY acao, total DESC
+      `, [de, ate]);
+      return rows;
+    },
+
     // ---------------------------------------------------------------- idempotência e auditoria
 
     async consultarEvento(chave) {

@@ -13,6 +13,7 @@ const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
 const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
+const { criarServicoDeMetricas } = require('../dominio/metricas');
 const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
 const { criarLimitador } = require('../seguranca/limite');
@@ -136,6 +137,9 @@ function criarAplicacao(dependencias = {}) {
   // formulário de pré-consulta condicionado ao agendamento confirmado.
   const servicoDeFluxo = dependencias.servicoDeFluxo
     || criarServicoDeFluxo({ repositorio, canal: canalDeConversas });
+
+  const servicoDeMetricas = dependencias.servicoDeMetricas
+    || criarServicoDeMetricas({ repositorio });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
@@ -601,6 +605,17 @@ function criarAplicacao(dependencias = {}) {
 
     if (rota === '/api/leads/vocabulario' && metodo === 'GET') {
       responderJson(res, 200, await rotasDeLeads.vocabulario(usuario));
+      return true;
+    }
+
+    // GET /api/metricas/resumo — o resumo dos dashboards, com período, fuso,
+    // filtros e denominadores explícitos (docs/METRICAS.md).
+    if (rota === '/api/metricas/resumo' && metodo === 'GET') {
+      exigirPermissao(usuario, 'leads:ler');
+      responderJson(res, 200, await servicoDeMetricas.resumo({
+        de: url.searchParams.get('de'),
+        ate: url.searchParams.get('ate'),
+      }), { 'cache-control': 'no-store' });
       return true;
     }
 

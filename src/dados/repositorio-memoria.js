@@ -46,6 +46,35 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const serenaVozTurnos = [];
   const tarefas = [];
   const formularios = [];
+  const eventosAnaliticos = [];
+
+  // --- helpers da analítica: espelham as conversões de fuso das views ---
+
+  const FORMATO_DIA_SP = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const FORMATO_MOMENTO_SP = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo', hour12: false, weekday: 'short', hour: '2-digit',
+  });
+
+  /** 'YYYY-MM-DD' no fuso da clínica — como o ::date das views. */
+  function diaSp(instante) {
+    return FORMATO_DIA_SP.format(new Date(instante));
+  }
+
+  /** Dia da semana (0=domingo) e hora no fuso da clínica. */
+  function momentoSp(instante) {
+    const partes = FORMATO_MOMENTO_SP.formatToParts(new Date(instante));
+    const valor = (tipo) => partes.find((parte) => parte.type === tipo)?.value ?? '';
+    const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return { diaSemana: dias[valor('weekday')] ?? 0, hora: Number(valor('hour')) % 24 };
+  }
+
+  /** Dado sintético (faixa de ensaio) fica fora de toda métrica agregada. */
+  function telefoneSintetico(contatoId) {
+    const telefone = contatos.get(Number(contatoId))?.telefone ?? '';
+    return telefone.startsWith('5516900000');
+  }
   // Uma linha só, como a constraint do PostgreSQL garante lá.
   const serenaConfiguracao = {
     id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
@@ -752,6 +781,150 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       formulario.respondido_em = agora().toISOString();
       formulario.respostas = respostas ?? {};
       return { ...formulario };
+    },
+
+    // ---------------------------------------------------------------- analítica
+
+    async registrarEventoAnalitico({ nome, entidade = null, entidadeId = null, propriedades = null, chave = null }) {
+      if (chave && eventosAnaliticos.some((evento) => evento.chave === chave)) {
+        return { registrado: false };
+      }
+      eventosAnaliticos.push({
+        id: eventosAnaliticos.length + 1,
+        nome,
+        entidade,
+        entidade_id: entidadeId,
+        propriedades,
+        chave,
+        ocorrido_em: agora().toISOString(),
+      });
+      return { registrado: true };
+    },
+
+    async metricasLeadsPorDia({ de, ate }) {
+      const grupos = new Map();
+      for (const lead of leads.values()) {
+        if (telefoneSintetico(lead.contato_id)) continue;
+        const dia = diaSp(lead.criado_em);
+        if (dia < de || dia >= ate) continue;
+        const grupo = `${dia}|${lead.origem}`;
+        grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([grupo, total]) => {
+          const [dia, origem] = grupo.split('|');
+          return { dia, origem, total };
+        })
+        .sort((a, b) => a.dia.localeCompare(b.dia) || a.origem.localeCompare(b.origem));
+    },
+
+    async metricasFunil() {
+      const grupos = new Map();
+      for (const lead of leads.values()) {
+        if (telefoneSintetico(lead.contato_id)) continue;
+        grupos.set(lead.estagio, (grupos.get(lead.estagio) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([estagio, total]) => ({ estagio, total }))
+        .sort((a, b) => a.estagio.localeCompare(b.estagio));
+    },
+
+    async metricasMotivosPerda({ de, ate }) {
+      const grupos = new Map();
+      for (const evento of leadEventos) {
+        if (evento.tipo !== 'estagio' || evento.para !== 'perdido') continue;
+        const dia = diaSp(evento.criado_em);
+        if (dia < de || dia >= ate) continue;
+        const lead = leads.get(evento.lead_id);
+        if (!lead || telefoneSintetico(lead.contato_id)) continue;
+        const motivo = (lead.perdido_motivo ?? '').trim() || 'sem motivo registrado';
+        grupos.set(motivo, (grupos.get(motivo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([motivo, total]) => ({ motivo, total }))
+        .sort((a, b) => b.total - a.total);
+    },
+
+    async metricasPrimeiraResposta({ de, ate }) {
+      const resultado = [];
+      for (const conversa of conversas.values()) {
+        if (telefoneSintetico(conversa.contato_id)) continue;
+        const daConversa = mensagens.filter((m) => m.conversa_id === conversa.id && !m.privada);
+        const entradas = daConversa.filter((m) => m.direcao === 'entrada');
+        if (entradas.length === 0) continue;
+
+        const primeiroInbound = entradas
+          .map((m) => m.criado_em).sort()[0];
+        const dia = diaSp(primeiroInbound);
+        if (dia < de || dia >= ate) continue;
+
+        const resposta = daConversa
+          .filter((m) => m.direcao === 'saida' && m.tipo !== 'sistema' && m.criado_em > primeiroInbound)
+          .map((m) => m.criado_em).sort()[0] ?? null;
+
+        resultado.push({
+          conversa_id: conversa.id,
+          dia,
+          minutos: resposta
+            ? (new Date(resposta) - new Date(primeiroInbound)) / 60_000
+            : null,
+        });
+      }
+      return resultado;
+    },
+
+    async metricasPicos({ de, ate }) {
+      const grupos = new Map();
+      for (const mensagem of mensagens) {
+        if (mensagem.direcao !== 'entrada' || mensagem.privada) continue;
+        const conversa = conversas.get(mensagem.conversa_id);
+        if (!conversa || telefoneSintetico(conversa.contato_id)) continue;
+        const dia = diaSp(mensagem.criado_em);
+        if (dia < de || dia >= ate) continue;
+
+        const { diaSemana, hora } = momentoSp(mensagem.criado_em);
+        const grupo = `${diaSemana}|${hora}`;
+        grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([grupo, entradas]) => {
+          const [diaSemana, hora] = grupo.split('|').map(Number);
+          return { dia_semana: diaSemana, hora, entradas };
+        })
+        .sort((a, b) => a.dia_semana - b.dia_semana || a.hora - b.hora);
+    },
+
+    async metricasAgenda({ de, ate }) {
+      const grupos = new Map();
+      for (const agendamento of agendamentos) {
+        if (telefoneSintetico(agendamento.contato_id)) continue;
+        const dia = diaSp(agendamento.inicio);
+        if (dia < de || dia >= ate) continue;
+        grupos.set(agendamento.status, (grupos.get(agendamento.status) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([status, total]) => ({ status, total }))
+        .sort((a, b) => a.status.localeCompare(b.status));
+    },
+
+    async metricasSerena({ de, ate }) {
+      const ACOES = ['assumida_por_humano', 'escalonada', 'automacao_silenciada',
+        'respondida_pela_automacao', 'resposta_nao_entregue'];
+      const grupos = new Map();
+      for (const registro of auditoria) {
+        if (registro.entidade !== 'conversa' || !ACOES.includes(registro.acao)) continue;
+        const dia = diaSp(registro.criado_em);
+        if (dia < de || dia >= ate) continue;
+        const motivo = registro.detalhe?.motivo ?? '—';
+        const grupo = `${registro.acao}|${motivo}`;
+        grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([grupo, total]) => {
+          const [acao, motivo] = grupo.split('|');
+          return { acao, motivo, total };
+        })
+        .sort((a, b) => a.acao.localeCompare(b.acao) || b.total - a.total);
     },
 
     // ---------------------------------------------------------------- idempotência e auditoria

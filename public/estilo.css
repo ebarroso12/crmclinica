@@ -1535,3 +1535,16 @@ button.perigo:hover { background: #fecaca; }
 
 /* Espera acima do SLA: a fila de hoje grita só quando deve. */
 .sla-estourado { color: #dc2626; font-weight: 600; }
+
+/* Dashboard de métricas: tabelas com barra proporcional. Sem biblioteca de
+   gráfico — a CSP não deixa CDN entrar, e barra de CSS conta a mesma história. */
+.filtro-periodo { display: flex; gap: 8px; align-items: end; }
+.filtro-periodo label { display: flex; flex-direction: column; font-size: 0.8rem; color: #475569; }
+.tabela-metricas { width: 100%; border-collapse: collapse; margin: 4px 0 12px; }
+.tabela-metricas td { padding: 3px 6px; font-size: 0.85rem; }
+.tabela-metricas td:first-child { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barra-celula { width: 40%; }
+.barra { display: inline-block; height: 10px; background: #2f6feb; border-radius: 5px; min-width: 2px; }
+.tabela-metricas .numero { text-align: right; color: #475569; white-space: nowrap; }
+.bloco-metrica h4 { margin: 10px 0 2px; font-size: 0.9rem; }
+.nota-metrica { color: #475569; font-size: 0.85rem; margin: 8px 0; }
