@@ -363,7 +363,9 @@ function criarAplicacao(dependencias = {}) {
 
   // Rotas da Serena: estado, interruptor, prompt e regras.
   async function tratarRotasDaSerena(req, res, rota, metodo, url, usuario) {
-    if (!rota.startsWith('/api/serena')) return false;
+    // `/api/diagnostico` vive no mapa desta função; o prefixo sozinho o
+    // deixaria de fora e a rota responderia 404 com o botão da tela quebrado.
+    if (!rota.startsWith('/api/serena') && rota !== '/api/diagnostico') return false;
     const semCache = { 'cache-control': 'no-store' };
 
     if (rota === '/api/serena/voz/status' && metodo === 'GET') {
