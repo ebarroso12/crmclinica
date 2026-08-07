@@ -195,10 +195,26 @@ function montarMensagem(linha) {
 const CLAIMS_DE_SISTEMA = JSON.stringify({ app_role: 'backend' });
 
 function criarRepositorio(pool) {
+  // Um client transacional representa uma única conexão PostgreSQL. Algumas
+  // telas consultam partes independentes em paralelo; isso é correto no nível
+  // da aplicação, mas o driver não aceita duas `query()` simultâneas no mesmo
+  // client. O pool continua paralelo entre requisições; só as consultas que
+  // compartilham a mesma transação entram numa fila curta e determinística.
+  const filasPorCliente = new WeakMap();
+  function consultarNoCliente(cliente, texto, valores) {
+    if (cliente === pool) return pool.query(texto, valores);
+    const anterior = filasPorCliente.get(cliente) ?? Promise.resolve();
+    const atual = anterior.catch(() => undefined).then(() => cliente.query(texto, valores));
+    filasPorCliente.set(cliente, atual);
+    return atual.finally(() => {
+      if (filasPorCliente.get(cliente) === atual) filasPorCliente.delete(cliente);
+    });
+  }
+
   // Dentro de uma requisição existe uma transação aberta com o usuário já
   // declarado; fora dela (semeadura, tarefas de manutenção, health check) o pool
   // atende direto. Nenhuma consulta abaixo precisa saber em qual dos dois está.
-  const consultar = (texto, valores) => (contexto.atual()?.client ?? pool).query(texto, valores);
+  const consultar = (texto, valores) => consultarNoCliente(contexto.atual()?.client ?? pool, texto, valores);
 
   /**
    * Roda uma instrução como o **sistema**, não como o usuário da requisição.
@@ -224,14 +240,14 @@ function criarRepositorio(pool) {
     if (!atual?.client) return executar(pool);
 
     const { client, claims } = atual;
-    await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', CLAIMS_DE_SISTEMA]);
+    await consultarNoCliente(client, 'SELECT set_config($1, $2, true)', ['request.jwt.claims', CLAIMS_DE_SISTEMA]);
     try {
       return await executar(client);
     } finally {
       // Volta ao papel do usuário mesmo se a instrução falhar: uma transação que
       // segue com privilégio de sistema é pior que a falha original.
       if (claims) {
-        await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
+        await consultarNoCliente(client, 'SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
       }
     }
   }
@@ -279,8 +295,8 @@ function criarRepositorio(pool) {
 
       const client = await pool.connect();
       try {
-        await client.query('BEGIN');
-        await client.query(
+        await consultarNoCliente(client, 'BEGIN');
+        await consultarNoCliente(client,
           'SELECT set_config($1, $2, true)',
           ['app.usuario_id', usuarioId === null || usuarioId === undefined ? '' : String(usuarioId)],
         );
@@ -288,20 +304,20 @@ function criarRepositorio(pool) {
           ...(usuarioId === null || usuarioId === undefined ? {} : { usuario_id: String(usuarioId) }),
           app_role: papel,
         });
-        await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
+        await consultarNoCliente(client, 'SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
 
         const resultado = await contexto.executarCom(
           { client, usuarioId, claims },
           () => acao(this),
         );
 
-        await client.query('COMMIT');
+        await consultarNoCliente(client, 'COMMIT');
         return resultado;
       } catch (erro) {
         // Falha no meio de uma rota não pode deixar meia escrita para trás: uma
         // mensagem gravada sem a auditoria correspondente é pior que nenhuma.
         try {
-          await client.query('ROLLBACK');
+          await consultarNoCliente(client, 'ROLLBACK');
         } catch {
           // Conexão já perdida; o servidor a descarta ao liberar.
         }
@@ -804,7 +820,7 @@ function criarRepositorio(pool) {
      * dele abortaria a transação inteira.
      */
     async registrarEventoDeLead(evento) {
-      const { rows } = await comoSistema((cliente) => cliente.query(`
+      const { rows } = await comoSistema((cliente) => consultarNoCliente(cliente, `
         INSERT INTO lead_eventos (lead_id, conversa_id, tipo, de, para, detalhe, origem, usuario_id)
         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
         RETURNING id, lead_id, conversa_id, tipo, de, para, detalhe, origem, criado_em
@@ -888,7 +904,7 @@ function criarRepositorio(pool) {
       // nasce lá; isto protege o que nasce aqui.
       const detalheLimpo = detalhe ? redigirAuditoria(detalhe) : null;
 
-      await comoSistema((cliente) => cliente.query(
+      await comoSistema((cliente) => consultarNoCliente(cliente,
         'INSERT INTO audit_log (entidade, entidade_id, acao, detalhe, usuario_id) VALUES ($1, $2, $3, $4::jsonb, $5)',
         [entidade, entidadeId, acao, detalheLimpo ? JSON.stringify(detalheLimpo) : null, autor],
       ));
