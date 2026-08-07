@@ -634,6 +634,17 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       auditoria.push({ ...registro, detalhe, criado_em: agora().toISOString() });
     },
 
+    async listarAuditoria({ limite = 50, antesDeId = null, entidade = null, acao = null } = {}) {
+      const itens = auditoria
+        .map((item, indice) => ({ ...item, id: item.id ?? indice + 1 }))
+        .filter((item) => !antesDeId || item.id < antesDeId)
+        .filter((item) => !entidade || item.entidade === entidade)
+        .filter((item) => !acao || item.acao === acao)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite);
+      return { itens, proximoCursor: itens.length === limite ? itens.at(-1).id : null };
+    },
+
     // ---------------------------------------------------------------- usuários e sessões
 
     async obterUsuarioPorEmail(email) {
