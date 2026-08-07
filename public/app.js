@@ -145,7 +145,11 @@ async function pedirJson(caminho, opcoes = {}, jaRenovou = false) {
     const erro = new Error(`HTTP ${resposta.status}`);
     erro.status = resposta.status;
     try {
-      erro.detalhe = (await resposta.json()).erro;
+      const corpo = await resposta.json();
+      erro.detalhe = corpo.erro;
+      // O código de erro permite à interface reagir (pedir o próximo passo,
+      // pedir o motivo da perda) em vez de só reclamar.
+      erro.codigo = corpo.codigo ?? null;
     } catch {
       erro.detalhe = null;
     }
@@ -307,6 +311,95 @@ function desenharFilaDeHoje(conversas) {
     const linha = montarLinhaDaLista(conversa);
     linha.addEventListener('click', () => abrirTela('conversas'));
     fila.append(linha);
+  }
+
+  // Os cartões de SLA e de tarefas carregam junto do painel.
+  carregarFilaSla();
+  carregarTarefas();
+}
+
+/** Cartão de SLA: quem falou por último e há quanto tempo espera. */
+async function carregarFilaSla() {
+  const fila = seletor('#fila-sla');
+  if (!fila) return;
+
+  try {
+    const dados = await pedirJson('/api/conversas/aguardando');
+    if (dados.total === 0) {
+      avisar(fila, 'Ninguém aguardando resposta. 🎉');
+      return;
+    }
+
+    fila.innerHTML = '';
+    for (const conversa of dados.conversas.slice(0, 6)) {
+      const linha = document.createElement('li');
+      linha.tabIndex = 0;
+      linha.setAttribute('role', 'button');
+
+      const texto = document.createElement('span');
+      texto.className = 'linha-texto';
+      const nome = document.createElement('b');
+      nome.textContent = conversa.contato_nome || `Conversa ${conversa.id}`;
+      const espera = document.createElement('small');
+      const minutos = conversa.minutos_aguardando;
+      espera.textContent = minutos >= 60
+        ? `esperando há ${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, '0')}`
+        : `esperando há ${minutos} min`;
+      // Mais de 15 minutos de espera é estouro do SLA padrão.
+      if (minutos > 15) espera.className = 'sla-estourado';
+      texto.append(nome, espera);
+
+      linha.append(texto);
+      linha.addEventListener('click', () => { abrirTela('conversas'); abrirConversa(conversa.id); });
+      fila.append(linha);
+    }
+  } catch {
+    avisar(fila, 'Não foi possível carregar a fila de SLA.');
+  }
+}
+
+/** Cartão de tarefas: o sino da equipe, com conclusão em um clique. */
+async function carregarTarefas() {
+  const fila = seletor('#fila-tarefas');
+  if (!fila) return;
+
+  try {
+    const dados = await pedirJson('/api/tarefas');
+    if (dados.total === 0) {
+      avisar(fila, 'Nenhuma tarefa aberta.');
+      return;
+    }
+
+    fila.innerHTML = '';
+    for (const tarefa of dados.tarefas.slice(0, 6)) {
+      const linha = document.createElement('li');
+
+      const texto = document.createElement('span');
+      texto.className = 'linha-texto';
+      const titulo = document.createElement('b');
+      titulo.textContent = tarefa.titulo;
+      const detalhe = document.createElement('small');
+      detalhe.textContent = tarefa.detalhe || tarefa.tipo;
+      texto.append(titulo, detalhe);
+
+      const concluir = document.createElement('button');
+      concluir.type = 'button';
+      concluir.className = 'link';
+      concluir.textContent = 'Concluir';
+      concluir.addEventListener('click', async () => {
+        try {
+          await pedirJson(`/api/tarefas/${tarefa.id}/concluir`, { metodo: 'POST', corpo: {} });
+          carregarTarefas();
+        } catch (erro) {
+          informar(`Não foi possível concluir: ${erro.detalhe || erro.message}`);
+        }
+      });
+
+      linha.append(texto, concluir);
+      fila.append(linha);
+    }
+  } catch {
+    avisar(fila, 'Não foi possível carregar as tarefas.');
   }
 }
 
@@ -686,7 +779,26 @@ async function carregarLeads() {
 
         const detalhe = document.createElement('small');
         detalhe.textContent = `${lead.origem} · ${lead.temperatura}`;
+
+        // Aging: há quantos dias o card está nesta coluna. A cor vem da faixa
+        // calculada no servidor — o navegador só pinta.
+        if (Number.isInteger(lead.dias_no_estagio)) {
+          const idade = document.createElement('span');
+          idade.className = `aging aging-${lead.aging ?? 'recente'}`;
+          idade.textContent = ` ${lead.dias_no_estagio}d`;
+          idade.title = `${lead.dias_no_estagio} dia(s) neste estágio (${lead.aging})`;
+          detalhe.append(idade);
+        }
         botao.append(detalhe);
+
+        // O próximo passo combinado, visível sem abrir nada: é o que transforma
+        // o kanban de galeria de nomes em lista de trabalho.
+        if (lead.proximo_passo) {
+          const passo = document.createElement('small');
+          passo.className = 'proximo-passo';
+          passo.textContent = `→ ${lead.proximo_passo}`;
+          botao.append(passo);
+        }
 
         if (lead.conversa_id) {
           botao.addEventListener('click', () => {
@@ -3384,20 +3496,35 @@ seletor('#diagnostico-verificar')?.addEventListener('click', varrerSistema);
  * card antes da confirmação mostraria a etapa nova mesmo quando a gravação
  * falha, e aí o funil na tela deixa de ser o funil do banco.
  */
-async function moverLead(leadId, estagio) {
+async function moverLead(leadId, estagio, extras = {}) {
   if (!estagio) return;
 
   const card = document.querySelector(`[data-lead-id="${leadId}"]`);
-  if (card?.dataset.estagio === estagio) return; // soltou onde já estava
+  if (card?.dataset.estagio === estagio && Object.keys(extras).length === 0) return; // soltou onde já estava
 
   try {
     await pedirJson(`/api/leads/${leadId}/estagio`, {
       metodo: 'POST',
-      corpo: { estagio },
+      corpo: { estagio, ...extras },
     });
     await carregarLeads();
   } catch (erro) {
-    informar(`Não foi possível mover o lead: ${erro.message}`);
+    // A regra do kanban pede dono e próximo passo; a interface pede na hora em
+    // vez de devolver o card com um erro seco.
+    if (erro.codigo === 'gestao_obrigatoria' && !extras.proximo_passo) {
+      const passo = window.prompt('Qual é o próximo passo combinado para este lead?');
+      if (passo && passo.trim()) {
+        return moverLead(leadId, estagio, { ...extras, proximo_passo: passo.trim() });
+      }
+    }
+    if (erro.codigo === 'motivo_obrigatorio' && !extras.motivo) {
+      const motivo = window.prompt('Qual o motivo da perda? (alimenta a métrica de perda)');
+      if (motivo && motivo.trim()) {
+        return moverLead(leadId, estagio, { ...extras, motivo: motivo.trim() });
+      }
+    }
+
+    informar(`Não foi possível mover o lead: ${erro.detalhe || erro.message}`);
     // Recarrega mesmo em caso de falha: sem isto o card fica onde o navegador o
     // largou, sugerindo uma mudança que o banco recusou.
     await carregarLeads();

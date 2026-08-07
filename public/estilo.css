@@ -1521,3 +1521,17 @@ button.perigo:hover { background: #fecaca; }
 .card-lead.t-quente { border-left-color: #dc2626; }
 .card-lead.t-morno  { border-left-color: #d97706; }
 .card-lead.t-frio   { border-left-color: #94a3b8; }
+
+/* Aging do kanban: quantos dias o card está parado na coluna. A cor conta a
+   história — verde é fresco, vermelho é abandonado — sem exigir leitura. */
+.aging { font-weight: 600; padding: 0 4px; border-radius: 6px; }
+.aging-recente    { color: #059669; }
+.aging-atencao    { color: #d97706; }
+.aging-esfriando  { color: #ea580c; background: #fff7ed; }
+.aging-abandonado { color: #dc2626; background: #fef2f2; }
+
+/* O próximo passo combinado, direto no card. */
+.card-lead .proximo-passo { display: block; color: #475569; font-style: italic; }
+
+/* Espera acima do SLA: a fila de hoje grita só quando deve. */
+.sla-estourado { color: #dc2626; font-weight: 600; }
