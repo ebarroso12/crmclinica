@@ -34,6 +34,7 @@ const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
 const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
+const { criarRotasDeAuditoria } = require('./rotas-auditoria');
 const { criarRotasDoAgente } = require('./rotas-agente');
 const { criarPoliticaDoCanal } = require('../integracoes/openclaw-politica');
 const { criarCanalDeConversas } = require('../integracoes/canal-conversas');
@@ -195,6 +196,7 @@ function criarAplicacao(dependencias = {}) {
     conversa: conversaDeTeste,
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
+  const rotasDeAuditoria = criarRotasDeAuditoria({ repositorio });
 
   // Cada permissão do RBAC amarrada à rota que a exige. A ausência de entrada
   // aqui não libera nada: quem chega a `tratarRotasDeConversas` já passou por
@@ -890,6 +892,15 @@ function criarAplicacao(dependencias = {}) {
           }),
           { 'cache-control': 'no-store' },
         );
+        return;
+      }
+
+      if (rota === '/api/auditoria') {
+        if (metodo !== 'GET') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+          return;
+        }
+        responderJson(res, 200, await comIdentidade(usuario, () => rotasDeAuditoria.listar(usuario, url.searchParams)), { 'cache-control': 'no-store' });
         return;
       }
 
