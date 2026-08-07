@@ -37,6 +37,7 @@ function abrirTela(tela) {
   if (tela === 'agenda') carregarAgenda();
   if (tela === 'serena') carregarSerena();
   if (tela === 'contatos') carregarContatos();
+  if (tela === 'auditoria') carregarAuditoria();
   if (tela === 'usuarios') carregarUsuarios();
   if (tela === 'perfil') desenharPerfil();
 }
@@ -79,6 +80,27 @@ function definirTexto(alvo, valor) {
   if (elemento) elemento.textContent = valor;
 }
 
+async function carregarAuditoria(mais = false) {
+  if (!podeFazer('auditoria:ler')) return definirTexto('#auditoria-resumo', 'Seu perfil não tem acesso à auditoria.');
+  try {
+    const sufixo = mais && cursorAuditoria ? `?cursor=${encodeURIComponent(cursorAuditoria)}` : '';
+    const dados = await pedirJson(`/api/auditoria${sufixo}`);
+    const lista = seletor('#lista-auditoria');
+    if (!mais) lista.replaceChildren();
+    for (const item of dados.itens) {
+      const linha = document.createElement('li');
+      linha.className = 'contato-item';
+      linha.textContent = `${item.acao} · ${item.entidade} #${item.entidade_id ?? '—'} · ${item.usuario_nome ?? 'sistema'} · ${new Date(item.criado_em).toLocaleString('pt-BR')}`;
+      lista.append(linha);
+    }
+    cursorAuditoria = dados.proximo_cursor;
+    seletor('#auditoria-mais').hidden = !cursorAuditoria;
+    definirTexto('#auditoria-resumo', dados.itens.length ? 'Eventos redigidos; dados sensíveis não são exibidos.' : 'Nenhum evento encontrado.');
+  } catch (erro) { definirTexto('#auditoria-resumo', erro.detalhe || 'Não foi possível carregar a auditoria.'); }
+}
+
+seletor('#auditoria-mais')?.addEventListener('click', () => carregarAuditoria(true));
+
 // ---------------------------------------------------------------------------
 // Sessão da equipe.
 //
@@ -89,6 +111,7 @@ function definirTexto(alvo, valor) {
 
 let accessToken = null;
 let usuarioAtual = null;
+let cursorAuditoria = null;
 
 const CHAVE_REFRESH = 'crmclinica.refresh';
 
