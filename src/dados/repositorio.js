@@ -894,6 +894,35 @@ function criarRepositorio(pool) {
       ));
     },
 
+    async listarAuditoria({ limite = 50, antesDeId = null, entidade = null, acao = null } = {}) {
+      const parametros = [limite];
+      const filtros = [];
+      if (antesDeId) {
+        parametros.push(antesDeId);
+        filtros.push(`a.id < $${parametros.length}`);
+      }
+      if (entidade) {
+        parametros.push(entidade);
+        filtros.push(`a.entidade = $${parametros.length}`);
+      }
+      if (acao) {
+        parametros.push(acao);
+        filtros.push(`a.acao = $${parametros.length}`);
+      }
+      const onde = filtros.length ? `WHERE ${filtros.join(' AND ')}` : '';
+      const { rows } = await consultar(`
+        SELECT a.id, a.entidade, a.entidade_id, a.acao, a.detalhe, a.criado_em,
+               u.nome AS usuario_nome
+          FROM audit_log a
+          LEFT JOIN usuarios u ON u.id = a.usuario_id
+          ${onde}
+         ORDER BY a.id DESC
+         LIMIT $1
+      `, parametros);
+      const itens = rows.map((linha) => ({ ...linha, id: Number(linha.id), entidade_id: linha.entidade_id ? Number(linha.entidade_id) : null }));
+      return { itens, proximoCursor: itens.length === limite ? itens.at(-1).id : null };
+    },
+
     // ---------------------------------------------------------------- usuários e sessões
 
     async obterUsuarioPorEmail(email) {
