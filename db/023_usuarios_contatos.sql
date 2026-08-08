@@ -166,10 +166,10 @@ BEGIN
       EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
 
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crmclinica_app') THEN
-        EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', 'app_total_' || t, t);
+        EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', 'app_' || t, t);
         EXECUTE format(
           'CREATE POLICY %I ON public.%I FOR ALL TO crmclinica_app USING (true) WITH CHECK (true)',
-          'app_total_' || t, t);
+          'app_' || t, t);
         EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO crmclinica_app', t);
         EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE %I TO crmclinica_app', t || '_id_seq');
       END IF;
