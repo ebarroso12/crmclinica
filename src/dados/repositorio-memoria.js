@@ -674,7 +674,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         proprietario_id: null,
         proximo_passo_em: null,
         estagio_desde: agora().toISOString(),
-        criado_em: agora().toISOString(),
+        // ATENÇÃO: `leads` NÃO tem `criado_em` no esquema real. O espelho já
+        // expôs essa coluna fantasma uma vez, a suíte passou nela, e a view da
+        // migration 026 quebrou em produção. O nascimento do lead vem da
+        // jornada (lead_eventos) — como no banco de verdade.
         atualizado_em: agora().toISOString(),
       };
       leads.set(lead.id, lead);
@@ -981,10 +984,19 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     },
 
     async metricasLeadsPorDia({ de, ate }) {
+      // Espelha a vw_leads_por_dia corrigida: o dia vem do PRIMEIRO evento da
+      // jornada do lead; sem evento, o fallback declarado é atualizado_em.
+      const primeiroEvento = new Map();
+      for (const evento of leadEventos) {
+        const atual = primeiroEvento.get(evento.lead_id);
+        if (!atual || evento.criado_em < atual) primeiroEvento.set(evento.lead_id, evento.criado_em);
+      }
+
       const grupos = new Map();
       for (const lead of leads.values()) {
         if (telefoneSintetico(lead.contato_id)) continue;
-        const dia = diaSp(lead.criado_em);
+        const nascimento = primeiroEvento.get(lead.id) ?? lead.atualizado_em;
+        const dia = diaSp(nascimento);
         if (dia < de || dia >= ate) continue;
         const grupo = `${dia}|${lead.origem}`;
         grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
