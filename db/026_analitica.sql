@@ -54,17 +54,30 @@ CREATE INDEX IF NOT EXISTS eventos_analiticos_nome_idx
 -- ---------------------------------------------------------------- leads
 
 -- METRICAS.md: leads_novos / leads_por_origem (fluxo, por dia de São Paulo)
+--
+-- A tabela `leads` NÃO tem `criado_em` — foi exatamente essa referência que
+-- derrubou a primeira aplicação desta migration em produção. O nascimento do
+-- lead vem da JORNADA: o primeiro evento de `lead_eventos` é o registro mais
+-- antigo que existe sobre ele. Lead sem evento nenhum (criado por caminho que
+-- não registra jornada) usa `atualizado_em` como aproximação declarada — sumir
+-- do denominador seria pior que aproximar.
 CREATE OR REPLACE VIEW vw_leads_por_dia WITH (security_invoker = true) AS
+WITH primeiro_evento AS (
+  SELECT e.lead_id, min(e.criado_em) AS criado_em
+  FROM lead_eventos e
+  GROUP BY e.lead_id
+)
 SELECT
-  (l.criado_em AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
+  (coalesce(pe.criado_em, l.atualizado_em) AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
   l.origem,
   count(*) AS total
 FROM leads l
+LEFT JOIN primeiro_evento pe ON pe.lead_id = l.id
 JOIN contatos ct ON ct.id = l.contato_id
 WHERE ct.telefone NOT LIKE '5516900000%'
 GROUP BY 1, 2;
 
-COMMENT ON VIEW vw_leads_por_dia IS 'METRICAS.md: leads_novos e leads_por_origem. Fluxo por dia (America/Sao_Paulo).';
+COMMENT ON VIEW vw_leads_por_dia IS 'METRICAS.md: leads_novos e leads_por_origem. Dia do PRIMEIRO evento da jornada (fallback: atualizado_em), America/Sao_Paulo.';
 
 -- METRICAS.md: leads_por_estagio (fotografia — estoque, não fluxo)
 CREATE OR REPLACE VIEW vw_funil_estagios WITH (security_invoker = true) AS
