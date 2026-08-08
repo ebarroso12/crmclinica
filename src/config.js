@@ -199,6 +199,10 @@ function carregarConfiguracao(ambiente = process.env) {
       configurada: Boolean(texto(ambiente.CRMCLINICA_JWT_SECRET)),
       // Endereço público da aplicação, usado nos links de recuperação por e-mail.
       urlPublica: urlValida(ambiente.CRMCLINICA_URL_PUBLICA) || `http://127.0.0.1:${inteiro(ambiente.PORT, 4100)}`,
+      // 2FA obrigatório para master e admin (P1-04). Ligado por padrão; o
+      // 'nao' existe para desenvolvimento e para a suíte de testes, que
+      // ligaria isto teste a teste — produção não desliga.
+      segundoFatorObrigatorio: texto(ambiente.CRMCLINICA_2FA_OBRIGATORIO) !== 'nao',
     },
     // Proxies cujo `X-Forwarded-For` é aceito. Vazio por padrão: confiar no
     // cabeçalho de qualquer origem permitiria forjar o IP e burlar o rate limit.

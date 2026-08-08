@@ -79,9 +79,15 @@ function montarConversa(linha) {
 
 // Campos de usuário devolvidos por padrão. `senha_hash` e `totp_segredo_cifrado`
 // ficam de fora: só as consultas que precisam deles os pedem explicitamente.
+// Campos de usuário devolvidos por padrão. `senha_hash` e `totp_segredo_cifrado`
+// ficam de fora: só as consultas que precisam deles os pedem explicitamente.
+// Documentos (CPF/RG cifrados) também ficam de fora: saem só por
+// `obterDocumentosDoUsuario`, que é chamada com controle de acesso.
 const CAMPOS_USUARIO = `
   id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
-  telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em
+  telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em,
+  nome_completo, nascimento, whatsapp_ddi, whatsapp_ddd, whatsapp_numero,
+  whatsapp_particular_autorizado, excluido_em
 `;
 
 function montarLead(linha) {
@@ -555,7 +561,42 @@ function criarRepositorio(pool) {
         lembretes_optout_motivo: rows[0].lembretes_optout_motivo ?? null,
         excluido_em: rows[0].excluido_em ?? null,
         excluido_motivo: rows[0].excluido_motivo ?? null,
+        // P1-05/P1-08 — ficha estruturada. Documentos (cpf_cifrado, rg_cifrado,
+        // responsavel_cpf_cifrado) ficam fora de propósito: saem só por
+        // `obterDocumentosDoContato`, com controle de acesso na rota.
+        nome_completo: rows[0].nome_completo ?? null,
+        nascimento: rows[0].nascimento ?? null,
+        whatsapp_ddi: rows[0].whatsapp_ddi ?? null,
+        whatsapp_ddd: rows[0].whatsapp_ddd ?? null,
+        whatsapp_numero: rows[0].whatsapp_numero ?? null,
+        cpf_cadastrado: Boolean(rows[0].cpf_cifrado),
+        responsavel_nome: rows[0].responsavel_nome ?? null,
+        responsavel_parentesco: rows[0].responsavel_parentesco ?? null,
+        consentimento_responsavel_em: rows[0].consentimento_responsavel_em ?? null,
+        consentimento_canal: rows[0].consentimento_canal ?? null,
+        consentimento_termo_id: rows[0].consentimento_termo_id ?? null,
         criado_em: rows[0].criado_em,
+      };
+    },
+
+    /**
+     * P1-05 — documentos do contato (CPF/RG cifrados e hash de busca).
+     *
+     * Leitura dedicada e auditável: a ficha comum não carrega documento, então
+     * cada chamada aqui é uma decisão explícita da rota — que deve exigir a
+     * permissão certa e registrar acesso em auditoria.
+     */
+    async obterDocumentosDoContato(id) {
+      const { rows } = await consultar(
+        'SELECT cpf_cifrado, cpf_busca_hash, rg_cifrado, responsavel_cpf_cifrado FROM contatos WHERE id = $1',
+        [id]
+      );
+      if (!rows[0]) return null;
+      return {
+        cpfCifrado: rows[0].cpf_cifrado ?? null,
+        cpfBuscaHash: rows[0].cpf_busca_hash ?? null,
+        rgCifrado: rows[0].rg_cifrado ?? null,
+        responsavelCpfCifrado: rows[0].responsavel_cpf_cifrado ?? null,
       };
     },
 
@@ -665,14 +706,32 @@ function criarRepositorio(pool) {
     },
 
     async atualizarContato(id, campos) {
-      const permitidos = ['nome', 'telefone', 'email', 'identificador', 'observacoes', 'atributos'];
+      // Chave camelCase -> coluna. Documentos ficam cifrados/hash de busca; o
+      // texto aberto nunca atravessa a camada de dados (P1-05/P1-08).
+      const permitidos = new Map([
+        ['nome', 'nome'], ['telefone', 'telefone'], ['email', 'email'],
+        ['identificador', 'identificador'], ['observacoes', 'observacoes'],
+        ['atributos', 'atributos'],
+        ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
+        ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
+        ['rgCifrado', 'rg_cifrado'],
+        ['whatsappDdi', 'whatsapp_ddi'], ['whatsappDdd', 'whatsapp_ddd'],
+        ['whatsappNumero', 'whatsapp_numero'],
+        ['responsavelNome', 'responsavel_nome'],
+        ['responsavelCpfCifrado', 'responsavel_cpf_cifrado'],
+        ['responsavelParentesco', 'responsavel_parentesco'],
+        ['consentimentoResponsavelEm', 'consentimento_responsavel_em'],
+        ['consentimentoCanal', 'consentimento_canal'],
+        ['consentimentoTermoId', 'consentimento_termo_id'],
+      ]);
       const partes = [];
       const valores = [];
 
       for (const [campo, valor] of Object.entries(campos)) {
-        if (!permitidos.includes(campo)) continue;
-        valores.push(campo === 'atributos' ? JSON.stringify(valor) : valor);
-        partes.push(`${campo} = $${valores.length}${campo === 'atributos' ? '::jsonb' : ''}`);
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(coluna === 'atributos' ? JSON.stringify(valor) : valor);
+        partes.push(`${coluna} = $${valores.length}${coluna === 'atributos' ? '::jsonb' : ''}`);
       }
       if (partes.length === 0) return this.obterContato(id);
 
@@ -1402,6 +1461,25 @@ function criarRepositorio(pool) {
       return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
     },
 
+    /**
+     * P1-05 — documentos do usuário (CPF/RG cifrados e hash de busca).
+     *
+     * `CAMPOS_USUARIO` não traz documento nenhum: cada chamada aqui é uma
+     * decisão explícita da rota, com permissão exigida e acesso auditado.
+     */
+    async obterDocumentosDoUsuario(id) {
+      const { rows } = await consultar(
+        'SELECT cpf_cifrado, cpf_busca_hash, rg_cifrado FROM usuarios WHERE id = $1',
+        [id]
+      );
+      if (!rows[0]) return null;
+      return {
+        cpfCifrado: rows[0].cpf_cifrado ?? null,
+        cpfBuscaHash: rows[0].cpf_busca_hash ?? null,
+        rgCifrado: rows[0].rg_cifrado ?? null,
+      };
+    },
+
     async obterUsuarioPorGoogleSub(sub) {
       if (!sub) return null;
       const { rows } = await consultar(`SELECT ${CAMPOS_USUARIO} FROM usuarios WHERE google_sub = $1`, [sub]);
@@ -1434,6 +1512,20 @@ function criarRepositorio(pool) {
         ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
         ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
         ['avatarUrl', 'avatar_url'],
+        // P1-01/P1-05 — cadastro completo. CPF/RG chegam já cifrados da camada
+        // de domínio: o repositório não sabe decifrar, e não deve.
+        ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
+        ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
+        ['rgCifrado', 'rg_cifrado'],
+        // P1-06 — WhatsApp estruturado e autorização explícita de uso particular.
+        ['whatsappDdi', 'whatsapp_ddi'], ['whatsappDdd', 'whatsapp_ddd'],
+        ['whatsappNumero', 'whatsapp_numero'],
+        ['whatsappParticularAutorizado', 'whatsapp_particular_autorizado'],
+        ['whatsappParticularAutorizadoEm', 'whatsapp_particular_autorizado_em'],
+        ['whatsappParticularAutorizadoPor', 'whatsapp_particular_autorizado_por'],
+        // P1-02 — exclusão lógica: a linha fica, a autoria histórica fica.
+        ['excluidoEm', 'excluido_em'], ['excluidoPor', 'excluido_por'],
+        ['excluidoMotivo', 'excluido_motivo'],
       ]);
 
       const partes = [];
@@ -1814,6 +1906,13 @@ function criarRepositorio(pool) {
         // a consulta ia para o Google e o CRM não guardava o vínculo, então
         // remarcar criaria um evento novo e cancelar não teria o que apagar.
         ['google_evento_id', 'google_evento_id'],
+        // Estado de sincronia com o Google (P0-09 a P0-12): o worker do outbox
+        // e o sync incremental gravam aqui o vínculo e o resultado de cada
+        // tentativa — nunca a interface diretamente.
+        ['googleCalendarId', 'google_calendar_id'], ['googleEtag', 'google_etag'],
+        ['syncStatus', 'sync_status'], ['syncVersion', 'sync_version'],
+        ['lastSyncedAt', 'last_synced_at'], ['lastSyncError', 'last_sync_error'],
+        ['origemAlteracao', 'origem_alteracao'],
       ]);
 
       const partes = [];

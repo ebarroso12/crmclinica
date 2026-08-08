@@ -33,6 +33,13 @@ function criarAutenticacao({
         papel: usuario.papel,
         // `master` no token evita uma ida ao banco a cada checagem de privilégio.
         master: Boolean(usuario.master),
+        // P1-04: master e admin sem TOTP ativo recebem o token marcado, e o
+        // servidor só os deixa ir até as rotas de autenticação — onde está o
+        // endpoint que ativa o segundo fator. Privilégio sem 2FA não opera.
+        ...(configuracao.autenticacao.segundoFatorObrigatorio !== false
+          && (usuario.master || usuario.papel === 'admin') && !usuario.totp_ativo
+          ? { p2f: true }
+          : {}),
       },
       segredo,
       DURACAO_ACCESS_SEGUNDOS,
@@ -230,6 +237,8 @@ function criarAutenticacao({
       nome: conteudo.nome,
       papel: conteudo.papel,
       master: Boolean(conteudo.master),
+      // A marca de "segundo fator pendente" atravessa para o guarda do http.
+      p2f: conteudo.p2f === true,
       permissoes: permissoesDoPapel(conteudo.papel),
     };
   }
