@@ -141,6 +141,44 @@ const ESPERADO = {
       ['serena_configuracao', 'ativacao_percentual'],
     ],
   },
+  '021_google_outbox': {
+    tabelas: ['google_outbox'],
+    colunas: [
+      ['agendamentos', 'google_calendar_id'], ['agendamentos', 'google_etag'],
+      ['agendamentos', 'sync_status'], ['agendamentos', 'sync_version'],
+      ['agendamentos', 'last_synced_at'], ['agendamentos', 'last_sync_error'],
+      ['agendamentos', 'origem_alteracao'],
+      ['google_outbox', 'operacao'], ['google_outbox', 'versao'],
+      ['google_outbox', 'chave_idempotencia'], ['google_outbox', 'estado'],
+      ['google_outbox', 'proximo_retry_em'],
+    ],
+  },
+  '022_google_sincronia_inbound': {
+    tabelas: ['google_sincronia_estado', 'google_eventos_externos', 'google_sincronia_conflitos'],
+    colunas: [
+      ['google_sincronia_estado', 'calendario'], ['google_sincronia_estado', 'next_sync_token'],
+      ['google_sincronia_estado', 'precisa_full_sync'],
+      ['google_eventos_externos', 'google_evento_id'], ['google_eventos_externos', 'etag'],
+      ['google_sincronia_conflitos', 'tipo'], ['google_sincronia_conflitos', 'resolucao'],
+    ],
+  },
+  '023_usuarios_contatos': {
+    tabelas: ['termos', 'termo_assinaturas'],
+    colunas: [
+      ['usuarios', 'nome_completo'], ['usuarios', 'nascimento'],
+      ['usuarios', 'cpf_cifrado'], ['usuarios', 'cpf_busca_hash'], ['usuarios', 'rg_cifrado'],
+      ['usuarios', 'whatsapp_particular_autorizado'], ['usuarios', 'excluido_em'],
+      ['contatos', 'nome_completo'], ['contatos', 'nascimento'],
+      ['contatos', 'cpf_cifrado'], ['contatos', 'cpf_busca_hash'], ['contatos', 'rg_cifrado'],
+      ['contatos', 'responsavel_nome'], ['contatos', 'responsavel_cpf_cifrado'],
+      ['contatos', 'consentimento_responsavel_em'],
+      ['termos', 'versao'], ['termos', 'publicado_em'],
+      ['termo_assinaturas', 'termo_id'], ['termo_assinaturas', 'assinatura_externa_id'],
+    ],
+  },
+  '024_indices_extensoes_qualidade': {
+    colunas: [],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
@@ -178,6 +216,8 @@ const TABELAS_COM_RLS = [
   'serena_configuracao', 'serena_prompts', 'serena_regras',
   'tarefas', 'formularios_pre_consulta', 'eventos_analiticos',
   'ia_modelos', 'ia_chamadas', 'ia_avaliacoes', 'notificacoes', 'serena_ativacao_contatos',
+  'google_outbox', 'google_sincronia_estado', 'google_eventos_externos',
+  'google_sincronia_conflitos', 'termos', 'termo_assinaturas',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
