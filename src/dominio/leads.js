@@ -73,12 +73,39 @@ function agruparPorColuna(leads = []) {
   });
 }
 
+// Faixas de aging do kanban. Largas de propósito: o que importa é "fresco,
+// esfriando ou abandonado", não a contagem exata.
+const FAIXAS_DE_AGING = Object.freeze([
+  { ate: 3, nivel: 'recente' },
+  { ate: 7, nivel: 'atencao' },
+  { ate: 14, nivel: 'esfriando' },
+  { ate: Infinity, nivel: 'abandonado' },
+]);
+
+/**
+ * Dias corridos no estágio atual e a faixa de alerta correspondente.
+ * Sem `estagio_desde` (lead anterior à migration), devolve nulo em vez de
+ * inventar zero — zero diria "chegou agora", que é mentira.
+ */
+function agingDoLead(lead = {}, agora = Date.now()) {
+  if (!lead.estagio_desde) return { dias_no_estagio: null, aging: null };
+
+  const desde = new Date(lead.estagio_desde);
+  if (Number.isNaN(desde.getTime())) return { dias_no_estagio: null, aging: null };
+
+  const dias = Math.max(0, Math.floor((agora - desde.getTime()) / 86_400_000));
+  const faixa = FAIXAS_DE_AGING.find(({ ate }) => dias <= ate);
+  return { dias_no_estagio: dias, aging: faixa.nivel };
+}
+
 module.exports = {
   ORIGENS,
   ESTAGIOS,
   COLUNAS,
   TEMPERATURAS,
+  FAIXAS_DE_AGING,
   origemDoCanal,
   sugerirTemperatura,
   agruparPorColuna,
+  agingDoLead,
 };

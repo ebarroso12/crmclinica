@@ -158,6 +158,7 @@
           <li><button type="button" data-tela="conversas"><span class="icone-menu" aria-hidden="true">◌</span> Conversas <b class="contador" id="contador-conversas" aria-hidden="true">—</b></button></li>
           <li><button type="button" data-tela="leads"><span class="icone-menu" aria-hidden="true">⌁</span> Leads</button></li>
           <li><button type="button" data-tela="agenda"><span class="icone-menu" aria-hidden="true">▤</span> Agenda</button></li>
+          <li><button type="button" data-tela="metricas"><span class="icone-menu" aria-hidden="true">∿</span> Métricas</button></li>
           <li><button type="button" data-tela="contatos"><span class="icone-menu" aria-hidden="true">☏</span> Contatos</button></li>
         </ul>
         <p class="divisor" id="grupo-controle">CONTROLE</p>
@@ -184,6 +185,12 @@
           <h1 id="titulo">Hoje</h1>
         </div>
         <div class="acoes">
+          <span class="sino" id="sino">
+            <button type="button" class="acao" id="sino-botao" aria-label="Notificações">
+              🔔<b class="contador" id="sino-contador" hidden>0</b>
+            </button>
+            <div class="sino-lista" id="sino-lista" hidden aria-live="polite"></div>
+          </span>
           <span class="avatar" id="avatar-usuario" aria-hidden="true">—</span>
           <span class="nome-equipe" id="nome-usuario">—</span>
           <button type="button" class="acao" id="sair">Sair</button>
@@ -235,6 +242,30 @@
               <button type="button" class="link" data-tela="agenda">Agenda</button>
             </div>
             <p class="vazio">A agenda ainda não foi implementada.</p>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Aguardando resposta</h3>
+                <p>Quem falou por último e ainda espera (SLA)</p>
+              </div>
+            </div>
+            <ul class="fila" id="fila-sla" aria-live="polite">
+              <li class="vazio">Carregando…</li>
+            </ul>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Tarefas</h3>
+                <p>O sino: leads parados e pendências da equipe</p>
+              </div>
+            </div>
+            <ul class="fila" id="fila-tarefas" aria-live="polite">
+              <li class="vazio">Carregando…</li>
+            </ul>
           </article>
         </div>
       </section>
@@ -492,6 +523,83 @@
           <div class="acoes-compromisso" id="acoes-compromisso"></div>
         </div>
       </div>
+
+      <!-- Métricas -->
+      <section id="metricas" class="tela" hidden aria-labelledby="titulo-metricas">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-metricas">Métricas</h2>
+            <p>Números com período, fuso e denominadores — conforme o dicionário oficial.</p>
+          </div>
+          <div class="filtro-periodo">
+            <label>De <input type="date" id="metricas-de"></label>
+            <label>Até <input type="date" id="metricas-ate"></label>
+            <button type="button" class="primario" id="metricas-aplicar">Aplicar</button>
+          </div>
+        </div>
+
+        <p class="vazio" id="metricas-contexto">Carregando…</p>
+
+        <ul class="metricas" id="metricas-topo"></ul>
+
+        <div class="grade">
+          <article class="card">
+            <div class="card-titulo"><div><h3>Leads e conversas</h3>
+              <p>Origem, funil, perda e tempo de resposta</p></div></div>
+            <div id="painel-leads-conversas"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo"><div><h3>Agenda e Serena</h3>
+              <p>Status das consultas, handoff e silêncio da automação</p></div></div>
+            <div id="painel-agenda-serena"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Relatório por IA</h3>
+                <p>Sobre o período filtrado acima; catálogo mantido pelo servidor</p>
+              </div>
+            </div>
+            <div class="linha-ia">
+              <label>Provedor
+                <select id="ia-provedor"><option value="">automático</option></select>
+              </label>
+              <label>Modelo
+                <select id="ia-modelo"><option value="">automático</option></select>
+              </label>
+              <button type="button" class="primario" id="ia-gerar-relatorio">Gerar relatório</button>
+            </div>
+            <pre class="relatorio-ia" id="ia-relatorio" hidden></pre>
+            <p class="nota-metrica" id="ia-relatorio-origem" hidden></p>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Assistente de IA</h3>
+                <p>Responde sobre os números da aba escolhida — nunca sobre pacientes</p>
+              </div>
+            </div>
+            <div class="linha-ia">
+              <label>Aba
+                <select id="assistente-aba">
+                  <option value="metricas">Métricas</option>
+                  <option value="leads">Leads</option>
+                  <option value="conversas">Conversas</option>
+                  <option value="agenda">Agenda</option>
+                  <option value="serena">Serena</option>
+                </select>
+              </label>
+              <input type="text" id="assistente-pergunta" maxlength="500"
+                placeholder="Ex.: qual origem trouxe mais leads no período?">
+              <button type="button" class="primario" id="assistente-perguntar">Perguntar</button>
+            </div>
+            <pre class="relatorio-ia" id="assistente-resposta" hidden></pre>
+          </article>
+        </div>
+      </section>
 
       <!-- Serena -->
       <section id="serena" class="tela" hidden aria-labelledby="titulo-serena">

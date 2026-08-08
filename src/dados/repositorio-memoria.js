@@ -45,11 +45,58 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const serenaRegras = [];
   const serenaVozSessoes = new Map();
   const serenaVozTurnos = [];
+  const tarefas = [];
+  const formularios = [];
+  const eventosAnaliticos = [];
+  const iaChamadas = [];
+  const iaAvaliacoes = [];
+  const notificacoes = [];
+  const serenaAtivacaoContatos = new Set();
+  // O catálogo em memória espelha o seed da migration 027.
+  const iaModelos = [
+    { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
+    { id: 2, provedor: 'openai', modelo: 'gpt-4o', rotulo: 'GPT-4o', ativo: true, padrao: false, custo_entrada_usd_mi: 2.5, custo_saida_usd_mi: 10 },
+    { id: 3, provedor: 'anthropic', modelo: 'claude-haiku-4-5-20251001', rotulo: 'Claude Haiku 4.5', ativo: true, padrao: true, custo_entrada_usd_mi: 1, custo_saida_usd_mi: 5 },
+    { id: 4, provedor: 'anthropic', modelo: 'claude-sonnet-5', rotulo: 'Claude Sonnet 5', ativo: true, padrao: false, custo_entrada_usd_mi: 3, custo_saida_usd_mi: 15 },
+    { id: 5, provedor: 'google', modelo: 'gemini-2.5-flash', rotulo: 'Gemini 2.5 Flash', ativo: true, padrao: false, custo_entrada_usd_mi: 0.3, custo_saida_usd_mi: 2.5 },
+    { id: 6, provedor: 'deepseek', modelo: 'deepseek-chat', rotulo: 'DeepSeek Chat', ativo: true, padrao: false, custo_entrada_usd_mi: 0.27, custo_saida_usd_mi: 1.1 },
+    { id: 7, provedor: 'kimi', modelo: 'kimi-latest', rotulo: 'Kimi (Moonshot)', ativo: true, padrao: false, custo_entrada_usd_mi: 0.6, custo_saida_usd_mi: 2.5 },
+  ];
+
+  // --- helpers da analítica: espelham as conversões de fuso das views ---
+
+  const FORMATO_DIA_SP = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const FORMATO_MOMENTO_SP = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo', hour12: false, weekday: 'short', hour: '2-digit',
+  });
+
+  /** 'YYYY-MM-DD' no fuso da clínica — como o ::date das views. */
+  function diaSp(instante) {
+    return FORMATO_DIA_SP.format(new Date(instante));
+  }
+
+  /** Dia da semana (0=domingo) e hora no fuso da clínica. */
+  function momentoSp(instante) {
+    const partes = FORMATO_MOMENTO_SP.formatToParts(new Date(instante));
+    const valor = (tipo) => partes.find((parte) => parte.type === tipo)?.value ?? '';
+    const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return { diaSemana: dias[valor('weekday')] ?? 0, hora: Number(valor('hour')) % 24 };
+  }
+
+  /** Dado sintético (faixa de ensaio) fica fora de toda métrica agregada. */
+  function telefoneSintetico(contatoId) {
+    const telefone = contatos.get(Number(contatoId))?.telefone ?? '';
+    return telefone.startsWith('5516900000');
+  }
   // Uma linha só, como a constraint do PostgreSQL garante lá.
   const serenaConfiguracao = {
     id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
     // Nasce sem limite de horário: quem não configurou grade não pediu silêncio.
     agenda: null, pausada_ate: null, ligada_ate: null,
+    // Ativação gradual (migration 028): nasce atendendo todos.
+    modo_ativacao: 'todos', ativacao_percentual: 100,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
@@ -86,7 +133,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
-    serenaPrompt: 1, serenaRegra: 1,
+    serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da fila de lembretes. */
@@ -259,7 +306,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       mensagens.push(mensagem);
 
       const conversa = conversas.get(Number(conversaId));
-      if (conversa && !mensagem.privada) conversa.ultima_msg_em = mensagem.criado_em;
+      if (conversa && !mensagem.privada) {
+        conversa.ultima_msg_em = mensagem.criado_em;
+        // Espelha o SLA do PostgreSQL: entrada abre a espera (preservando o
+        // início), saída visível encerra.
+        if (mensagem.direcao === 'entrada') {
+          conversa.aguardando_resposta_desde = conversa.aguardando_resposta_desde ?? mensagem.criado_em;
+        } else {
+          conversa.aguardando_resposta_desde = null;
+        }
+      }
 
       return { mensagem, duplicada: false };
     },
@@ -450,6 +506,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         assumida_por_humano: false,
         ia_pausada_ate: null,
         ultima_msg_em: null,
+        aguardando_resposta_desde: null,
+        resumo_interno: null,
+        resumo_interno_em: null,
         criado_em: agora().toISOString(),
       };
       conversas.set(conversa.id, conversa);
@@ -531,6 +590,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         ['scoreMotivos', 'score_motivos'], ['scoreCalculadoEm', 'score_calculado_em'],
         ['qualificadoEm', 'qualificado_em'], ['perdidoMotivo', 'perdido_motivo'],
         ['proximoPasso', 'proximo_passo'], ['conversaId', 'conversa_id'],
+        ['proprietarioId', 'proprietario_id'], ['proximoPassoEm', 'proximo_passo_em'],
+        ['estagioDesde', 'estagio_desde'],
       ]);
 
       for (const [campo, valor] of Object.entries(campos)) {
@@ -610,11 +671,439 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         score_calculado_em: null,
         qualificado_em: null,
         perdido_motivo: null,
+        proprietario_id: null,
+        proximo_passo_em: null,
+        estagio_desde: agora().toISOString(),
         criado_em: agora().toISOString(),
         atualizado_em: agora().toISOString(),
       };
       leads.set(lead.id, lead);
       return enriquecerLead(lead);
+    },
+
+    /** Leads sem atividade há N dias — espelha a consulta do sino. */
+    async listarLeadsInativos({ dias = 15, limite = 200 } = {}) {
+      const limite_instante = agora().getTime() - dias * 24 * 3_600_000;
+      return [...leads.values()]
+        .filter((lead) => !['convertido', 'perdido'].includes(lead.estagio))
+        .filter((lead) => !contatos.get(lead.contato_id)?.excluido_em)
+        .map(enriquecerLead)
+        .filter((lead) => new Date(lead.ultima_msg_em ?? lead.atualizado_em).getTime() < limite_instante)
+        .sort((a, b) => new Date(a.atualizado_em) - new Date(b.atualizado_em))
+        .slice(0, limite);
+    },
+
+    // ---------------------------------------------------------------- tarefas (sino)
+
+    async criarTarefa({ chave, tipo, titulo, detalhe = null, leadId = null, conversaId = null, contatoId = null, devidaEm = null }) {
+      const existente = tarefas.find((tarefa) => tarefa.chave === chave);
+      if (existente) return { tarefa: { ...existente }, duplicada: true };
+
+      const tarefa = {
+        id: proximoId.tarefa++,
+        chave,
+        tipo,
+        titulo,
+        detalhe,
+        lead_id: leadId ? Number(leadId) : null,
+        conversa_id: conversaId ? Number(conversaId) : null,
+        contato_id: contatoId ? Number(contatoId) : null,
+        devida_em: devidaEm ?? agora().toISOString(),
+        criado_em: agora().toISOString(),
+        concluida_em: null,
+        concluida_por: null,
+      };
+      tarefas.push(tarefa);
+      return { tarefa: { ...tarefa }, duplicada: false };
+    },
+
+    async listarTarefas({ abertas = true, limite = 100 } = {}) {
+      return tarefas
+        .filter((tarefa) => !abertas || !tarefa.concluida_em)
+        .sort((a, b) => new Date(a.devida_em) - new Date(b.devida_em) || a.id - b.id)
+        .slice(0, limite)
+        .map((tarefa) => ({
+          ...tarefa,
+          contato_nome: tarefa.contato_id ? contatos.get(tarefa.contato_id)?.nome ?? null : null,
+        }));
+    },
+
+    async concluirTarefa(id, { usuarioId = null } = {}) {
+      const tarefa = tarefas.find((item) => item.id === Number(id) && !item.concluida_em);
+      if (!tarefa) return null;
+      tarefa.concluida_em = agora().toISOString();
+      tarefa.concluida_por = usuarioId;
+      return { ...tarefa };
+    },
+
+    // ---------------------------------------------------------------- SLA
+
+    async listarConversasAguardando({ limite = 100 } = {}) {
+      return [...conversas.values()]
+        .filter((conversa) => conversa.aguardando_resposta_desde && conversa.status !== 'resolvida')
+        .sort((a, b) => new Date(a.aguardando_resposta_desde) - new Date(b.aguardando_resposta_desde))
+        .slice(0, limite)
+        .map((conversa) => ({
+          ...montarConversa(conversa),
+          contato_nome: contatos.get(conversa.contato_id)?.nome ?? null,
+          contato_telefone: contatos.get(conversa.contato_id)?.telefone ?? null,
+        }));
+    },
+
+    // ------------------------------------------------------ resumo interno
+
+    async definirResumoInterno(conversaId, texto) {
+      const conversa = conversas.get(Number(conversaId));
+      if (!conversa) return null;
+      conversa.resumo_interno = texto;
+      conversa.resumo_interno_em = agora().toISOString();
+      return { id: conversa.id, resumo_interno: texto, resumo_interno_em: conversa.resumo_interno_em };
+    },
+
+    // ------------------------------------------- formulário de pré-consulta
+
+    async criarFormularioPreConsulta({ agendamentoId, contatoId, token }) {
+      const existente = formularios.find((formulario) => formulario.agendamento_id === Number(agendamentoId));
+      if (existente) return { formulario: { ...existente }, duplicado: true };
+
+      const formulario = {
+        id: proximoId.formulario++,
+        agendamento_id: Number(agendamentoId),
+        contato_id: Number(contatoId),
+        token,
+        enviado_em: null,
+        respondido_em: null,
+        respostas: null,
+        criado_em: agora().toISOString(),
+      };
+      formularios.push(formulario);
+      return { formulario: { ...formulario }, duplicado: false };
+    },
+
+    async obterFormularioPorAgendamento(agendamentoId) {
+      const formulario = formularios.find((item) => item.agendamento_id === Number(agendamentoId));
+      return formulario ? { ...formulario } : null;
+    },
+
+    async marcarFormularioEnviado(id) {
+      const formulario = formularios.find((item) => item.id === Number(id));
+      if (!formulario) return null;
+      formulario.enviado_em = formulario.enviado_em ?? agora().toISOString();
+      return { ...formulario };
+    },
+
+    async registrarRespostaDeFormulario(token, respostas) {
+      const formulario = formularios.find((item) => item.token === token && !item.respondido_em);
+      if (!formulario) return null;
+      formulario.respondido_em = agora().toISOString();
+      formulario.respostas = respostas ?? {};
+      return { ...formulario };
+    },
+
+    // ---------------------------------------------------------------- IA: catálogo e telemetria
+
+    async listarModelosDeIA({ apenasAtivos = false } = {}) {
+      return iaModelos
+        .filter((modelo) => !apenasAtivos || modelo.ativo)
+        .map((modelo) => ({ ...modelo }))
+        .sort((a, b) => a.provedor.localeCompare(b.provedor) || a.modelo.localeCompare(b.modelo));
+    },
+
+    async obterChamadaDeIA(chaveIdempotencia) {
+      const chamada = iaChamadas.find((item) => item.chave_idempotencia === chaveIdempotencia);
+      return chamada ? { ...chamada } : null;
+    },
+
+    async registrarChamadaDeIA({
+      chaveIdempotencia, finalidade, provedor, modelo, promptVersion = null,
+      latenciaMs = null, tokensEntrada = null, tokensSaida = null,
+      custoEstimadoUsd = null, resposta = null, erro = null, fallbackDe = null,
+    }) {
+      if (iaChamadas.some((item) => item.chave_idempotencia === chaveIdempotencia)) {
+        return { registrado: false };
+      }
+      iaChamadas.push({
+        id: iaChamadas.length + 1,
+        chave_idempotencia: chaveIdempotencia,
+        finalidade,
+        provedor,
+        modelo,
+        prompt_version: promptVersion,
+        latencia_ms: latenciaMs,
+        tokens_entrada: tokensEntrada,
+        tokens_saida: tokensSaida,
+        custo_estimado_usd: custoEstimadoUsd,
+        resposta,
+        erro,
+        fallback_de: fallbackDe,
+        criado_em: agora().toISOString(),
+      });
+      return { registrado: true };
+    },
+
+    async listarChamadasDeIA({ limite = 100 } = {}) {
+      return [...iaChamadas]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map(({ resposta: _resposta, ...resto }) => ({ ...resto }));
+    },
+
+    async limparRespostasDeIA({ retencaoDias = 30 } = {}) {
+      const limite = agora().getTime() - retencaoDias * 24 * 3_600_000;
+      let anuladas = 0;
+      for (const chamada of iaChamadas) {
+        if (chamada.resposta !== null && new Date(chamada.criado_em).getTime() < limite) {
+          chamada.resposta = null;
+          anuladas += 1;
+        }
+      }
+      return { anuladas };
+    },
+
+    // ---------------------------------------------------------------- IA: avaliações
+
+    async registrarAvaliacaoDeIA({
+      conversaId = null, mensagemId, avaliador, empatia, seguranca, aderencia, veredito, motivos = [],
+    }) {
+      const existente = iaAvaliacoes.find(
+        (item) => item.mensagem_id === Number(mensagemId) && item.avaliador === avaliador,
+      );
+      if (existente) return { avaliacao: { ...existente }, duplicada: true };
+
+      const avaliacao = {
+        id: iaAvaliacoes.length + 1,
+        conversa_id: conversaId ? Number(conversaId) : null,
+        mensagem_id: Number(mensagemId),
+        avaliador,
+        empatia,
+        seguranca,
+        aderencia,
+        veredito,
+        motivos,
+        criado_em: agora().toISOString(),
+      };
+      iaAvaliacoes.push(avaliacao);
+      return { avaliacao: { ...avaliacao }, duplicada: false };
+    },
+
+    async listarAvaliacoesDeIA({ veredito = null, limite = 100 } = {}) {
+      return iaAvaliacoes
+        .filter((item) => !veredito || item.veredito === veredito)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map((item) => ({ ...item }));
+    },
+
+    async listarRespostasSemAvaliacao({ avaliador = 'heuristica', limite = 50 } = {}) {
+      const avaliadas = new Set(iaAvaliacoes
+        .filter((item) => item.avaliador === avaliador)
+        .map((item) => item.mensagem_id));
+      return mensagens
+        .filter((mensagem) => mensagem.autor_tipo === 'automacao' && mensagem.direcao === 'saida')
+        .filter((mensagem) => !avaliadas.has(mensagem.id))
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map((mensagem) => ({ ...mensagem }));
+    },
+
+    // ---------------------------------------------------------------- notificações
+
+    async criarNotificacao({ chave, tipo, titulo, corpo = null, usuarioId = null }) {
+      const existente = notificacoes.find((item) => item.chave === chave);
+      if (existente) return { notificacao: { ...existente }, duplicada: true };
+
+      const notificacao = {
+        id: notificacoes.length + 1,
+        chave,
+        tipo,
+        titulo,
+        corpo,
+        usuario_id: usuarioId,
+        lida_em: null,
+        criado_em: agora().toISOString(),
+      };
+      notificacoes.push(notificacao);
+      return { notificacao: { ...notificacao }, duplicada: false };
+    },
+
+    async listarNotificacoes({ usuarioId = null, apenasNaoLidas = true, limite = 50 } = {}) {
+      return notificacoes
+        .filter((item) => item.usuario_id === null || item.usuario_id === usuarioId)
+        .filter((item) => !apenasNaoLidas || !item.lida_em)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map((item) => ({ ...item }));
+    },
+
+    async marcarNotificacaoLida(id) {
+      const notificacao = notificacoes.find((item) => item.id === Number(id) && !item.lida_em);
+      if (!notificacao) return null;
+      notificacao.lida_em = agora().toISOString();
+      return { ...notificacao };
+    },
+
+    // ------------------------------------------------- Serena: ativação gradual
+
+    async definirAtivacaoGradual({ modo, percentual = null, usuarioId = null }) {
+      serenaConfiguracao.modo_ativacao = modo;
+      if (percentual !== null) serenaConfiguracao.ativacao_percentual = percentual;
+      serenaConfiguracao.alterado_por = usuarioId;
+      serenaConfiguracao.alterado_em = agora().toISOString();
+      return { ...serenaConfiguracao };
+    },
+
+    async listarContatosDeAtivacao() {
+      return [...serenaAtivacaoContatos];
+    },
+
+    async definirContatoDeAtivacao(contatoId, incluido) {
+      if (incluido) serenaAtivacaoContatos.add(Number(contatoId));
+      else serenaAtivacaoContatos.delete(Number(contatoId));
+      return { contato_id: Number(contatoId), incluido };
+    },
+
+    // ---------------------------------------------------------------- analítica
+
+    async registrarEventoAnalitico({ nome, entidade = null, entidadeId = null, propriedades = null, chave = null }) {
+      if (chave && eventosAnaliticos.some((evento) => evento.chave === chave)) {
+        return { registrado: false };
+      }
+      eventosAnaliticos.push({
+        id: eventosAnaliticos.length + 1,
+        nome,
+        entidade,
+        entidade_id: entidadeId,
+        propriedades,
+        chave,
+        ocorrido_em: agora().toISOString(),
+      });
+      return { registrado: true };
+    },
+
+    async metricasLeadsPorDia({ de, ate }) {
+      const grupos = new Map();
+      for (const lead of leads.values()) {
+        if (telefoneSintetico(lead.contato_id)) continue;
+        const dia = diaSp(lead.criado_em);
+        if (dia < de || dia >= ate) continue;
+        const grupo = `${dia}|${lead.origem}`;
+        grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([grupo, total]) => {
+          const [dia, origem] = grupo.split('|');
+          return { dia, origem, total };
+        })
+        .sort((a, b) => a.dia.localeCompare(b.dia) || a.origem.localeCompare(b.origem));
+    },
+
+    async metricasFunil() {
+      const grupos = new Map();
+      for (const lead of leads.values()) {
+        if (telefoneSintetico(lead.contato_id)) continue;
+        grupos.set(lead.estagio, (grupos.get(lead.estagio) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([estagio, total]) => ({ estagio, total }))
+        .sort((a, b) => a.estagio.localeCompare(b.estagio));
+    },
+
+    async metricasMotivosPerda({ de, ate }) {
+      const grupos = new Map();
+      for (const evento of leadEventos) {
+        if (evento.tipo !== 'estagio' || evento.para !== 'perdido') continue;
+        const dia = diaSp(evento.criado_em);
+        if (dia < de || dia >= ate) continue;
+        const lead = leads.get(evento.lead_id);
+        if (!lead || telefoneSintetico(lead.contato_id)) continue;
+        const motivo = (lead.perdido_motivo ?? '').trim() || 'sem motivo registrado';
+        grupos.set(motivo, (grupos.get(motivo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([motivo, total]) => ({ motivo, total }))
+        .sort((a, b) => b.total - a.total);
+    },
+
+    async metricasPrimeiraResposta({ de, ate }) {
+      const resultado = [];
+      for (const conversa of conversas.values()) {
+        if (telefoneSintetico(conversa.contato_id)) continue;
+        const daConversa = mensagens.filter((m) => m.conversa_id === conversa.id && !m.privada);
+        const entradas = daConversa.filter((m) => m.direcao === 'entrada');
+        if (entradas.length === 0) continue;
+
+        const primeiroInbound = entradas
+          .map((m) => m.criado_em).sort()[0];
+        const dia = diaSp(primeiroInbound);
+        if (dia < de || dia >= ate) continue;
+
+        const resposta = daConversa
+          .filter((m) => m.direcao === 'saida' && m.tipo !== 'sistema' && m.criado_em > primeiroInbound)
+          .map((m) => m.criado_em).sort()[0] ?? null;
+
+        resultado.push({
+          conversa_id: conversa.id,
+          dia,
+          minutos: resposta
+            ? (new Date(resposta) - new Date(primeiroInbound)) / 60_000
+            : null,
+        });
+      }
+      return resultado;
+    },
+
+    async metricasPicos({ de, ate }) {
+      const grupos = new Map();
+      for (const mensagem of mensagens) {
+        if (mensagem.direcao !== 'entrada' || mensagem.privada) continue;
+        const conversa = conversas.get(mensagem.conversa_id);
+        if (!conversa || telefoneSintetico(conversa.contato_id)) continue;
+        const dia = diaSp(mensagem.criado_em);
+        if (dia < de || dia >= ate) continue;
+
+        const { diaSemana, hora } = momentoSp(mensagem.criado_em);
+        const grupo = `${diaSemana}|${hora}`;
+        grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([grupo, entradas]) => {
+          const [diaSemana, hora] = grupo.split('|').map(Number);
+          return { dia_semana: diaSemana, hora, entradas };
+        })
+        .sort((a, b) => a.dia_semana - b.dia_semana || a.hora - b.hora);
+    },
+
+    async metricasAgenda({ de, ate }) {
+      const grupos = new Map();
+      for (const agendamento of agendamentos) {
+        if (telefoneSintetico(agendamento.contato_id)) continue;
+        const dia = diaSp(agendamento.inicio);
+        if (dia < de || dia >= ate) continue;
+        grupos.set(agendamento.status, (grupos.get(agendamento.status) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([status, total]) => ({ status, total }))
+        .sort((a, b) => a.status.localeCompare(b.status));
+    },
+
+    async metricasSerena({ de, ate }) {
+      const ACOES = ['assumida_por_humano', 'escalonada', 'automacao_silenciada',
+        'respondida_pela_automacao', 'resposta_nao_entregue'];
+      const grupos = new Map();
+      for (const registro of auditoria) {
+        if (registro.entidade !== 'conversa' || !ACOES.includes(registro.acao)) continue;
+        const dia = diaSp(registro.criado_em);
+        if (dia < de || dia >= ate) continue;
+        const motivo = registro.detalhe?.motivo ?? '—';
+        const grupo = `${registro.acao}|${motivo}`;
+        grupos.set(grupo, (grupos.get(grupo) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([grupo, total]) => {
+          const [acao, motivo] = grupo.split('|');
+          return { acao, motivo, total };
+        })
+        .sort((a, b) => a.acao.localeCompare(b.acao) || b.total - a.total);
     },
 
     // ---------------------------------------------------------------- idempotência e auditoria

@@ -8,6 +8,7 @@ const TITULOS = {
   conversas: 'Conversas',
   leads: 'Leads',
   agenda: 'Agenda',
+  metricas: 'Métricas',
   serena: 'Serena',
   contatos: 'Contatos',
   auditoria: 'Auditoria',
@@ -35,6 +36,7 @@ function abrirTela(tela) {
   if (tela === 'conversas') carregarConversas();
   if (tela === 'leads') carregarLeads();
   if (tela === 'agenda') carregarAgenda();
+  if (tela === 'metricas') carregarMetricas();
   if (tela === 'serena') carregarSerena();
   if (tela === 'contatos') carregarContatos();
   if (tela === 'auditoria') carregarAuditoria();
@@ -168,7 +170,11 @@ async function pedirJson(caminho, opcoes = {}, jaRenovou = false) {
     const erro = new Error(`HTTP ${resposta.status}`);
     erro.status = resposta.status;
     try {
-      erro.detalhe = (await resposta.json()).erro;
+      const corpo = await resposta.json();
+      erro.detalhe = corpo.erro;
+      // O código de erro permite à interface reagir (pedir o próximo passo,
+      // pedir o motivo da perda) em vez de só reclamar.
+      erro.codigo = corpo.codigo ?? null;
     } catch {
       erro.detalhe = null;
     }
@@ -330,6 +336,96 @@ function desenharFilaDeHoje(conversas) {
     const linha = montarLinhaDaLista(conversa);
     linha.addEventListener('click', () => abrirTela('conversas'));
     fila.append(linha);
+  }
+
+  // Os cartões de SLA e de tarefas carregam junto do painel; o sino também.
+  carregarFilaSla();
+  carregarTarefas();
+  atualizarSino();
+}
+
+/** Cartão de SLA: quem falou por último e há quanto tempo espera. */
+async function carregarFilaSla() {
+  const fila = seletor('#fila-sla');
+  if (!fila) return;
+
+  try {
+    const dados = await pedirJson('/api/conversas/aguardando');
+    if (dados.total === 0) {
+      avisar(fila, 'Ninguém aguardando resposta. 🎉');
+      return;
+    }
+
+    fila.innerHTML = '';
+    for (const conversa of dados.conversas.slice(0, 6)) {
+      const linha = document.createElement('li');
+      linha.tabIndex = 0;
+      linha.setAttribute('role', 'button');
+
+      const texto = document.createElement('span');
+      texto.className = 'linha-texto';
+      const nome = document.createElement('b');
+      nome.textContent = conversa.contato_nome || `Conversa ${conversa.id}`;
+      const espera = document.createElement('small');
+      const minutos = conversa.minutos_aguardando;
+      espera.textContent = minutos >= 60
+        ? `esperando há ${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, '0')}`
+        : `esperando há ${minutos} min`;
+      // Mais de 15 minutos de espera é estouro do SLA padrão.
+      if (minutos > 15) espera.className = 'sla-estourado';
+      texto.append(nome, espera);
+
+      linha.append(texto);
+      linha.addEventListener('click', () => { abrirTela('conversas'); abrirConversa(conversa.id); });
+      fila.append(linha);
+    }
+  } catch {
+    avisar(fila, 'Não foi possível carregar a fila de SLA.');
+  }
+}
+
+/** Cartão de tarefas: o sino da equipe, com conclusão em um clique. */
+async function carregarTarefas() {
+  const fila = seletor('#fila-tarefas');
+  if (!fila) return;
+
+  try {
+    const dados = await pedirJson('/api/tarefas');
+    if (dados.total === 0) {
+      avisar(fila, 'Nenhuma tarefa aberta.');
+      return;
+    }
+
+    fila.innerHTML = '';
+    for (const tarefa of dados.tarefas.slice(0, 6)) {
+      const linha = document.createElement('li');
+
+      const texto = document.createElement('span');
+      texto.className = 'linha-texto';
+      const titulo = document.createElement('b');
+      titulo.textContent = tarefa.titulo;
+      const detalhe = document.createElement('small');
+      detalhe.textContent = tarefa.detalhe || tarefa.tipo;
+      texto.append(titulo, detalhe);
+
+      const concluir = document.createElement('button');
+      concluir.type = 'button';
+      concluir.className = 'link';
+      concluir.textContent = 'Concluir';
+      concluir.addEventListener('click', async () => {
+        try {
+          await pedirJson(`/api/tarefas/${tarefa.id}/concluir`, { metodo: 'POST', corpo: {} });
+          carregarTarefas();
+        } catch (erro) {
+          informar(`Não foi possível concluir: ${erro.detalhe || erro.message}`);
+        }
+      });
+
+      linha.append(texto, concluir);
+      fila.append(linha);
+    }
+  } catch {
+    avisar(fila, 'Não foi possível carregar as tarefas.');
   }
 }
 
@@ -709,7 +805,26 @@ async function carregarLeads() {
 
         const detalhe = document.createElement('small');
         detalhe.textContent = `${lead.origem} · ${lead.temperatura}`;
+
+        // Aging: há quantos dias o card está nesta coluna. A cor vem da faixa
+        // calculada no servidor — o navegador só pinta.
+        if (Number.isInteger(lead.dias_no_estagio)) {
+          const idade = document.createElement('span');
+          idade.className = `aging aging-${lead.aging ?? 'recente'}`;
+          idade.textContent = ` ${lead.dias_no_estagio}d`;
+          idade.title = `${lead.dias_no_estagio} dia(s) neste estágio (${lead.aging})`;
+          detalhe.append(idade);
+        }
         botao.append(detalhe);
+
+        // O próximo passo combinado, visível sem abrir nada: é o que transforma
+        // o kanban de galeria de nomes em lista de trabalho.
+        if (lead.proximo_passo) {
+          const passo = document.createElement('small');
+          passo.className = 'proximo-passo';
+          passo.textContent = `→ ${lead.proximo_passo}`;
+          botao.append(passo);
+        }
 
         if (lead.conversa_id) {
           botao.addEventListener('click', () => {
@@ -761,6 +876,276 @@ async function carregarLeads() {
     avisar(kanban, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar os leads.', 'p');
   }
 }
+
+// --- Métricas (docs/METRICAS.md) ---
+
+/** Barra proporcional simples: rótulo, barra e "n de d" — denominador sempre à vista. */
+function tabelaDeBarras(linhas, { rotulo, valor, denominador = null }) {
+  const tabela = document.createElement('table');
+  tabela.className = 'tabela-metricas';
+
+  const maior = Math.max(1, ...linhas.map((linha) => Number(linha[valor]) || 0));
+  for (const linha of linhas) {
+    const tr = document.createElement('tr');
+
+    const nome = document.createElement('td');
+    nome.textContent = linha[rotulo];
+
+    const barra = document.createElement('td');
+    barra.className = 'barra-celula';
+    const preenchimento = document.createElement('span');
+    preenchimento.className = 'barra';
+    preenchimento.style.width = `${Math.round((Number(linha[valor]) / maior) * 100)}%`;
+    barra.append(preenchimento);
+
+    const numero = document.createElement('td');
+    numero.className = 'numero';
+    const dtotal = denominador ? linha[denominador] : null;
+    numero.textContent = dtotal ? `${linha[valor]} de ${dtotal}` : String(linha[valor]);
+
+    tr.append(nome, barra, numero);
+    tabela.append(tr);
+  }
+  return tabela;
+}
+
+function blocoDeMetricas(titulo, elemento) {
+  const bloco = document.createElement('div');
+  bloco.className = 'bloco-metrica';
+  const h4 = document.createElement('h4');
+  h4.textContent = titulo;
+  bloco.append(h4, elemento);
+  return bloco;
+}
+
+async function carregarMetricas() {
+  const contexto = seletor('#metricas-contexto');
+  if (!contexto) return;
+
+  const parametros = new URLSearchParams();
+  const de = seletor('#metricas-de')?.value;
+  const ate = seletor('#metricas-ate')?.value;
+  if (de) parametros.set('de', de);
+  if (ate) parametros.set('ate', ate);
+
+  carregarMenusDeIA();
+
+  try {
+    const resumo = await pedirJson(`/api/metricas/resumo${parametros.size ? `?${parametros}` : ''}`);
+
+    // O contexto obrigatório: período, fuso e filtros, sempre visíveis.
+    contexto.textContent = `Período ${resumo.periodo.de} a ${resumo.periodo.ate} (exclusivo) · `
+      + `fuso ${resumo.periodo.timezone} · dados sintéticos ${resumo.filtros.dados_sinteticos}`;
+
+    const topo = seletor('#metricas-topo');
+    topo.innerHTML = '';
+    const numeros = [
+      ['LEADS NOVOS', resumo.leads.novos, 'no período'],
+      ['CONVERSAS COM INBOUND', resumo.conversas.com_inbound, 'no período'],
+      ['1ª RESPOSTA (MEDIANA)', resumo.conversas.primeira_resposta_minutos.mediana ?? '—',
+        `min · base ${resumo.conversas.primeira_resposta_minutos.base}`],
+      ['AGUARDANDO AGORA', resumo.conversas.backlog_aguardando, 'fotografia'],
+    ];
+    for (const [titulo, numero, nota] of numeros) {
+      const item = document.createElement('li');
+      const small = document.createElement('small');
+      small.textContent = titulo;
+      const strong = document.createElement('strong');
+      strong.textContent = String(numero);
+      const span = document.createElement('span');
+      span.textContent = nota;
+      item.append(small, strong, span);
+      topo.append(item);
+    }
+
+    const esquerda = seletor('#painel-leads-conversas');
+    esquerda.innerHTML = '';
+    esquerda.append(
+      blocoDeMetricas('Leads por origem', tabelaDeBarras(resumo.leads.por_origem, {
+        rotulo: 'origem', valor: 'total', denominador: 'denominador',
+      })),
+      blocoDeMetricas('Funil (fotografia de agora)', tabelaDeBarras(resumo.leads.funil_fotografia, {
+        rotulo: 'estagio', valor: 'total',
+      })),
+      blocoDeMetricas('Motivos de perda', resumo.leads.motivos_perda.length
+        ? tabelaDeBarras(resumo.leads.motivos_perda, { rotulo: 'motivo', valor: 'total' })
+        : Object.assign(document.createElement('p'), { className: 'vazio', textContent: 'Nenhuma perda no período.' })),
+    );
+
+    const direita = seletor('#painel-agenda-serena');
+    direita.innerHTML = '';
+    const comparecimento = resumo.agenda.comparecimento;
+    const notaComparecimento = document.createElement('p');
+    notaComparecimento.className = 'nota-metrica';
+    notaComparecimento.textContent = comparecimento.taxa === null
+      ? 'Comparecimento: sem consultas concluídas no período.'
+      : `Comparecimento: ${comparecimento.taxa}% (${comparecimento.numerador} de ${comparecimento.denominador}).`;
+
+    direita.append(
+      blocoDeMetricas('Consultas por status', resumo.agenda.por_status.length
+        ? tabelaDeBarras(resumo.agenda.por_status, { rotulo: 'status', valor: 'total' })
+        : Object.assign(document.createElement('p'), { className: 'vazio', textContent: 'Nenhuma consulta no período.' })),
+      notaComparecimento,
+      blocoDeMetricas('Serena — ações na conversa', resumo.serena.por_acao.length
+        ? tabelaDeBarras(resumo.serena.por_acao.map((linha) => ({
+          ...linha,
+          rotulo: linha.motivo && linha.motivo !== '—' ? `${linha.acao} (${linha.motivo})` : linha.acao,
+        })), { rotulo: 'rotulo', valor: 'total' })
+        : Object.assign(document.createElement('p'), { className: 'vazio', textContent: 'Nenhuma ação da automação no período.' })),
+    );
+  } catch (erro) {
+    contexto.textContent = erro.status === 400
+      ? `Período inválido: ${erro.detalhe ?? 'confira as datas.'}`
+      : 'Não foi possível carregar as métricas.';
+  }
+}
+
+seletor('#metricas-aplicar')?.addEventListener('click', carregarMetricas);
+
+// --- IA: menus, relatório e assistente ---
+
+let catalogoDeIA = null;
+
+/** Menus dependentes: escolher o provedor filtra os modelos DELE. */
+async function carregarMenusDeIA() {
+  if (catalogoDeIA) return;
+  try {
+    const { provedores } = await pedirJson('/api/ia/modelos');
+    catalogoDeIA = provedores;
+
+    const seletorProvedor = seletor('#ia-provedor');
+    if (!seletorProvedor) return;
+    for (const linha of provedores) {
+      const opcao = document.createElement('option');
+      opcao.value = linha.provedor;
+      opcao.textContent = linha.disponivel ? linha.provedor : `${linha.provedor} (sem chave)`;
+      opcao.disabled = !linha.disponivel;
+      seletorProvedor.append(opcao);
+    }
+    seletorProvedor.addEventListener('change', () => {
+      const escolhido = catalogoDeIA.find((linha) => linha.provedor === seletorProvedor.value);
+      const seletorModelo = seletor('#ia-modelo');
+      seletorModelo.innerHTML = '<option value="">automático</option>';
+      for (const modelo of escolhido?.modelos ?? []) {
+        const opcao = document.createElement('option');
+        opcao.value = modelo.modelo;
+        opcao.textContent = modelo.padrao ? `${modelo.rotulo} (padrão)` : modelo.rotulo;
+        seletorModelo.append(opcao);
+      }
+    });
+  } catch {
+    // Sem catálogo o cartão continua funcional no modo automático.
+  }
+}
+
+seletor('#ia-gerar-relatorio')?.addEventListener('click', async () => {
+  const saida = seletor('#ia-relatorio');
+  const origem = seletor('#ia-relatorio-origem');
+  saida.hidden = false;
+  saida.textContent = 'Gerando…';
+  origem.hidden = true;
+
+  try {
+    const corpo = {};
+    const de = seletor('#metricas-de')?.value;
+    const ate = seletor('#metricas-ate')?.value;
+    if (de) corpo.de = de;
+    if (ate) corpo.ate = ate;
+    if (seletor('#ia-provedor')?.value) corpo.provedor = seletor('#ia-provedor').value;
+    if (seletor('#ia-modelo')?.value) corpo.modelo = seletor('#ia-modelo').value;
+
+    const resultado = await pedirJson('/api/ia/relatorio', { metodo: 'POST', corpo });
+    saida.textContent = resultado.relatorio;
+    origem.hidden = false;
+    origem.textContent = resultado.gerado_por === 'deterministico'
+      ? `Gerado sem IA (${resultado.motivo_fallback}): é o resumo determinístico dos mesmos números.`
+      : `Gerado por ${resultado.gerado_por}${resultado.de_cache ? ' · reaproveitado do cache do dia' : ''}`
+        + `${resultado.fallback_de ? ` · fallback de ${resultado.fallback_de}` : ''}`;
+  } catch (erro) {
+    saida.textContent = `Não foi possível gerar o relatório: ${erro.detalhe || erro.message}`;
+  }
+});
+
+seletor('#assistente-perguntar')?.addEventListener('click', async () => {
+  const saida = seletor('#assistente-resposta');
+  const pergunta = seletor('#assistente-pergunta')?.value.trim();
+  if (!pergunta) return;
+
+  saida.hidden = false;
+  saida.textContent = 'Pensando…';
+  try {
+    const resultado = await pedirJson('/api/ia/assistente', {
+      metodo: 'POST',
+      corpo: { aba: seletor('#assistente-aba')?.value || 'metricas', pergunta },
+    });
+    saida.textContent = resultado.resposta;
+  } catch (erro) {
+    saida.textContent = erro.status === 503
+      ? 'Nenhum provedor de IA configurado no servidor.'
+      : `Não foi possível responder: ${erro.detalhe || erro.message}`;
+  }
+});
+
+// --- Central de notificações (o sino) ---
+
+async function atualizarSino() {
+  const contador = seletor('#sino-contador');
+  if (!contador) return;
+  try {
+    const { total } = await pedirJson('/api/notificacoes');
+    contador.textContent = String(total);
+    contador.hidden = total === 0;
+  } catch { /* sino silencioso é melhor que sino quebrado */ }
+}
+
+seletor('#sino-botao')?.addEventListener('click', async () => {
+  const lista = seletor('#sino-lista');
+  if (!lista.hidden) {
+    lista.hidden = true;
+    return;
+  }
+
+  lista.innerHTML = '';
+  lista.hidden = false;
+  try {
+    const { notificacoes } = await pedirJson('/api/notificacoes');
+    if (notificacoes.length === 0) {
+      lista.textContent = 'Nenhuma notificação nova.';
+      return;
+    }
+    for (const notificacao of notificacoes) {
+      const item = document.createElement('div');
+      item.className = 'sino-item';
+
+      const texto = document.createElement('span');
+      const titulo = document.createElement('b');
+      titulo.textContent = notificacao.titulo;
+      texto.append(titulo);
+      if (notificacao.corpo) {
+        const corpo = document.createElement('small');
+        corpo.textContent = notificacao.corpo;
+        texto.append(corpo);
+      }
+
+      const marcar = document.createElement('button');
+      marcar.type = 'button';
+      marcar.className = 'link';
+      marcar.textContent = 'Lida';
+      marcar.addEventListener('click', async () => {
+        try {
+          await pedirJson(`/api/notificacoes/${notificacao.id}/lida`, { metodo: 'POST', corpo: {} });
+          item.remove();
+          atualizarSino();
+        } catch { /* a próxima abertura recarrega */ }
+      });
+
+      item.append(texto, marcar);
+      lista.append(item);
+    }
+  } catch {
+    lista.textContent = 'Não foi possível carregar as notificações.';
+  }
+});
 
 // --- Ligações da interface ---
 
@@ -3407,20 +3792,35 @@ seletor('#diagnostico-verificar')?.addEventListener('click', varrerSistema);
  * card antes da confirmação mostraria a etapa nova mesmo quando a gravação
  * falha, e aí o funil na tela deixa de ser o funil do banco.
  */
-async function moverLead(leadId, estagio) {
+async function moverLead(leadId, estagio, extras = {}) {
   if (!estagio) return;
 
   const card = document.querySelector(`[data-lead-id="${leadId}"]`);
-  if (card?.dataset.estagio === estagio) return; // soltou onde já estava
+  if (card?.dataset.estagio === estagio && Object.keys(extras).length === 0) return; // soltou onde já estava
 
   try {
     await pedirJson(`/api/leads/${leadId}/estagio`, {
       metodo: 'POST',
-      corpo: { estagio },
+      corpo: { estagio, ...extras },
     });
     await carregarLeads();
   } catch (erro) {
-    informar(`Não foi possível mover o lead: ${erro.message}`);
+    // A regra do kanban pede dono e próximo passo; a interface pede na hora em
+    // vez de devolver o card com um erro seco.
+    if (erro.codigo === 'gestao_obrigatoria' && !extras.proximo_passo) {
+      const passo = window.prompt('Qual é o próximo passo combinado para este lead?');
+      if (passo && passo.trim()) {
+        return moverLead(leadId, estagio, { ...extras, proximo_passo: passo.trim() });
+      }
+    }
+    if (erro.codigo === 'motivo_obrigatorio' && !extras.motivo) {
+      const motivo = window.prompt('Qual o motivo da perda? (alimenta a métrica de perda)');
+      if (motivo && motivo.trim()) {
+        return moverLead(leadId, estagio, { ...extras, motivo: motivo.trim() });
+      }
+    }
+
+    informar(`Não foi possível mover o lead: ${erro.detalhe || erro.message}`);
     // Recarrega mesmo em caso de falha: sem isto o card fica onde o navegador o
     // largou, sugerindo uma mudança que o banco recusou.
     await carregarLeads();

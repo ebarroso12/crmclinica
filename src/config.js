@@ -234,6 +234,17 @@ function carregarConfiguracao(ambiente = process.env) {
       baseUrl: urlValida(ambiente.KIMI_BASE_URL) || 'https://api.moonshot.cn/v1',
       modelo: texto(ambiente.KIMI_MODEL) || 'kimi-latest',
     },
+    // Gateway multi-IA. As chaves vivem SÓ aqui, no servidor: o navegador vê
+    // provedor e modelo, nunca credencial. Sem chave, o provedor simplesmente
+    // não aparece como disponível — nada quebra.
+    ia: {
+      openaiKey: texto(ambiente.OPENAI_API_KEY),
+      anthropicKey: texto(ambiente.ANTHROPIC_API_KEY),
+      googleKey: texto(ambiente.GEMINI_API_KEY),
+      deepseekKey: texto(ambiente.DEEPSEEK_API_KEY),
+      timeoutMs: inteiro(ambiente.IA_TIMEOUT_MS, 30000),
+      provedorPadrao: texto(ambiente.IA_PROVEDOR_PADRAO) || null,
+    },
   };
 }
 

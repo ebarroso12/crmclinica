@@ -94,11 +94,15 @@ function criarServicoDeLeads({ repositorio, agora = () => new Date() }) {
       usuarioId,
     });
 
-    // Qualificar avança o estágio sozinho, mas só para frente.
+    // Qualificar avança o estágio sozinho, mas só para frente. O avanço é
+    // consequência automática — não exige dono nem próximo passo, que são
+    // regra do movimento EXPLÍCITO no kanban.
     const pendentes = camposPendentes(atualizado);
     const sugerido = estagioSugerido(atualizado, pendentes);
     if (sugerido !== atualizado.estagio && transicaoPermitida(atualizado.estagio, sugerido)) {
-      atualizado = (await moverEstagio(leadId, sugerido, { conversaId, origem, usuarioId })).lead;
+      atualizado = (await moverEstagio(leadId, sugerido, {
+        conversaId, origem, usuarioId, automatico: true,
+      })).lead;
     }
 
     if (pendentes.length === 0 && !atualizado.qualificado_em) {
@@ -115,8 +119,22 @@ function criarServicoDeLeads({ repositorio, agora = () => new Date() }) {
     };
   }
 
-  /** Move o lead de etapa, recusando salto que quase sempre é erro de clique. */
-  async function moverEstagio(leadId, para, { conversaId = null, origem = 'equipe', usuarioId = null, motivo = null } = {}) {
+  /**
+   * Move o lead de etapa, recusando salto que quase sempre é erro de clique.
+   *
+   * Movimento feito pela EQUIPE exige dono e próximo passo — card sem
+   * responsável e sem ação combinada é card que morre na coluna. A automação
+   * fica isenta: o avanço automático (novo → qualificando) acontece antes de
+   * existir alguém para ser dono. Perder exige motivo: "perdido" sem porquê
+   * inutiliza a métrica de motivo de perda.
+   *
+   * Os dois campos podem vir na própria chamada (`proprietarioId`,
+   * `proximoPasso`) — mover e assumir num gesto só.
+   */
+  async function moverEstagio(leadId, para, {
+    conversaId = null, origem = 'equipe', usuarioId = null, motivo = null,
+    proprietarioId = null, proximoPasso = null, automatico = false,
+  } = {}) {
     const lead = await repositorio.obterLead(leadId);
     if (!lead) {
       const erro = new Error('lead não encontrado');
@@ -125,8 +143,35 @@ function criarServicoDeLeads({ repositorio, agora = () => new Date() }) {
     }
     if (!transicaoPermitida(lead.estagio, para)) throw new ErroDeJornada(lead.estagio, para);
 
+    if (origem === 'equipe' && para !== 'perdido' && !automatico) {
+      const dono = proprietarioId ?? usuarioId ?? lead.proprietario_id;
+      const passo = proximoPasso ?? lead.proximo_passo;
+      if (!dono || !String(passo ?? '').trim()) {
+        const erro = new Error(
+          'para mover o lead, defina o proprietário e o próximo passo — sem dono e sem ação combinada, o card morre na coluna',
+        );
+        erro.status = 422;
+        erro.codigo = 'gestao_obrigatoria';
+        throw erro;
+      }
+    }
+    if (para === 'perdido' && !String(motivo ?? '').trim() && !lead.perdido_motivo) {
+      const erro = new Error('mover para perdido exige o motivo — é ele que alimenta a métrica de perda');
+      erro.status = 422;
+      erro.codigo = 'motivo_obrigatorio';
+      throw erro;
+    }
+
     const atualizado = await repositorio.atualizarLead(leadId, {
       estagio: para,
+      // O relógio do aging zera a cada mudança de coluna.
+      estagioDesde: agora().toISOString(),
+      ...(proprietarioId ?? usuarioId
+        ? { proprietarioId: proprietarioId ?? usuarioId }
+        : {}),
+      ...(proximoPasso
+        ? { proximoPasso: String(proximoPasso).trim().slice(0, 300), proximoPassoEm: agora().toISOString() }
+        : {}),
       ...(para === 'perdido' && motivo ? { perdidoMotivo: String(motivo).slice(0, 200) } : {}),
     });
 
@@ -149,6 +194,48 @@ function criarServicoDeLeads({ repositorio, agora = () => new Date() }) {
     });
 
     return { lead: atualizado, de: lead.estagio, para };
+  }
+
+  /**
+   * Define o dono e o próximo passo do lead — os dois campos que a regra do
+   * kanban exige antes de qualquer avanço de coluna feito pela equipe.
+   */
+  async function definirGestao(leadId, { proprietarioId = null, proximoPasso = null, usuarioId = null } = {}) {
+    const lead = await repositorio.obterLead(leadId);
+    if (!lead) {
+      const erro = new Error('lead não encontrado');
+      erro.status = 404;
+      throw erro;
+    }
+
+    const campos = {};
+    if (proprietarioId !== null) campos.proprietarioId = Number(proprietarioId);
+    if (proximoPasso !== null) {
+      const passo = String(proximoPasso).trim();
+      if (!passo) {
+        const erro = new Error('o próximo passo não pode ser vazio');
+        erro.status = 422;
+        erro.codigo = 'proximo_passo_vazio';
+        throw erro;
+      }
+      campos.proximoPasso = passo.slice(0, 300);
+      campos.proximoPassoEm = agora().toISOString();
+    }
+    if (Object.keys(campos).length === 0) return lead;
+
+    const atualizado = await repositorio.atualizarLead(leadId, campos);
+    await repositorio.registrarAuditoria({
+      entidade: 'lead',
+      entidadeId: leadId,
+      acao: 'lead_gestao_definida',
+      detalhe: {
+        proprietario_id: campos.proprietarioId ?? null,
+        proximo_passo: campos.proximoPasso ?? null,
+      },
+      usuarioId,
+    });
+
+    return atualizado;
   }
 
   /**
@@ -233,6 +320,7 @@ function criarServicoDeLeads({ repositorio, agora = () => new Date() }) {
   return {
     qualificar,
     moverEstagio,
+    definirGestao,
     definirTemperaturaManual,
     registrarPrimeiroContato,
     recalcular,

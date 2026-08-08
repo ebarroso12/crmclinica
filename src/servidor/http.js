@@ -12,6 +12,11 @@ const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openc
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
+const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
+const { criarServicoDeMetricas } = require('../dominio/metricas');
+const { criarGatewayDeIA } = require('../ia/gateway');
+const { criarServicoDeAvaliacao } = require('../dominio/avaliacao-ia');
+const { criarRotasDeIA } = require('./rotas-ia');
 const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
 const { criarLimitador } = require('../seguranca/limite');
@@ -132,6 +137,24 @@ function criarAplicacao(dependencias = {}) {
       canal: canalDeConversas,
     });
 
+  // Fluxo comercial: sino de acompanhamento, encerramento com resumo interno e
+  // formulário de pré-consulta condicionado ao agendamento confirmado.
+  const servicoDeFluxo = dependencias.servicoDeFluxo
+    || criarServicoDeFluxo({ repositorio, canal: canalDeConversas });
+
+  const servicoDeMetricas = dependencias.servicoDeMetricas
+    || criarServicoDeMetricas({ repositorio });
+
+  // Gateway multi-IA: chaves só no servidor, catálogo no banco, fallback
+  // técnico e telemetria com chave de idempotência.
+  const gatewayDeIA = dependencias.gatewayDeIA
+    || criarGatewayDeIA({ configuracao, repositorio });
+  const servicoDeAvaliacao = dependencias.servicoDeAvaliacao
+    || criarServicoDeAvaliacao({ repositorio });
+  const rotasDeIA = criarRotasDeIA({
+    repositorio, gateway: gatewayDeIA, metricas: servicoDeMetricas, avaliacao: servicoDeAvaliacao,
+  });
+
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
   const limitador = dependencias.limitador === null
@@ -212,6 +235,8 @@ function criarAplicacao(dependencias = {}) {
     prioridade: 'conversas:priorizar',
     notas: 'conversas:responder',
     ficha: 'contatos:editar',
+    // Encerrar é resolver com resumo interno: mesma permissão de resolver.
+    encerrar: 'conversas:resolver',
   });
 
   async function receberEventoDoOrquestrador(req, res) {
@@ -367,7 +392,9 @@ function criarAplicacao(dependencias = {}) {
 
   // Rotas da Serena: estado, interruptor, prompt e regras.
   async function tratarRotasDaSerena(req, res, rota, metodo, url, usuario) {
-    if (!rota.startsWith('/api/serena')) return false;
+    // `/api/diagnostico` vive no mapa desta função; o prefixo sozinho o
+    // deixaria de fora e a rota responderia 404 com o botão da tela quebrado.
+    if (!rota.startsWith('/api/serena') && rota !== '/api/diagnostico') return false;
     const semCache = { 'cache-control': 'no-store' };
 
     if (rota === '/api/serena/voz/status' && metodo === 'GET') {
@@ -407,6 +434,9 @@ function criarAplicacao(dependencias = {}) {
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
       // Horário programado, pausa de intervenção e plantão esporádico.
       'PUT /api/serena/horario': async () => rotasDaSerena.definirHorario(usuario, await lerJson(req)),
+      // Ativação gradual: religar por fração determinística ou por lista.
+      'PUT /api/serena/ativacao': async () => rotasDaSerena.definirAtivacao(usuario, await lerJson(req)),
+      'POST /api/serena/ativacao/contatos': async () => rotasDaSerena.definirContatoDeAtivacao(usuario, await lerJson(req)),
       'POST /api/serena/pausa': async () => rotasDaSerena.pausar(usuario, await lerJson(req)),
       'DELETE /api/serena/pausa': () => rotasDaSerena.despausar(usuario),
       'POST /api/serena/plantao': async () => rotasDaSerena.ligarPorTempo(usuario, await lerJson(req)),
@@ -598,6 +628,144 @@ function criarAplicacao(dependencias = {}) {
       return true;
     }
 
+    // --- IA: menus, relatório, assistente, telemetria e avaliações ---
+    if (rota === '/api/ia/modelos' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeIA.catalogo(usuario), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/ia/relatorio' && metodo === 'POST') {
+      responderJson(res, 200, await rotasDeIA.relatorio(usuario, await lerJson(req).catch(() => ({}))));
+      return true;
+    }
+    if (rota === '/api/ia/assistente' && metodo === 'POST') {
+      responderJson(res, 200, await rotasDeIA.assistente(usuario, await lerJson(req)));
+      return true;
+    }
+    if (rota === '/api/ia/chamadas' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeIA.telemetria(usuario), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/ia/avaliacoes' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeIA.listarAvaliacoes(usuario, url.searchParams), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/ia/avaliacoes/varrer' && metodo === 'POST') {
+      responderJson(res, 200, await rotasDeIA.varrerAvaliacoes(usuario));
+      return true;
+    }
+
+    // --- Central de notificações (o sino do topo) ---
+    if (rota === '/api/notificacoes' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const notificacoes = await repositorio.listarNotificacoes({
+        usuarioId: usuario.id,
+        apenasNaoLidas: url.searchParams.get('todas') !== 'sim',
+      });
+      responderJson(res, 200, { total: notificacoes.length, notificacoes }, { 'cache-control': 'no-store' });
+      return true;
+    }
+    {
+      const partesDeNotificacao = rota.split('/').filter(Boolean);
+      if (partesDeNotificacao[0] === 'api' && partesDeNotificacao[1] === 'notificacoes'
+          && partesDeNotificacao.length === 4 && partesDeNotificacao[3] === 'lida'
+          && /^\d+$/.test(partesDeNotificacao[2])) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        exigirPermissao(usuario, 'conversas:ler');
+        const notificacao = await repositorio.marcarNotificacaoLida(partesDeNotificacao[2]);
+        if (!notificacao) {
+          responderJson(res, 404, { erro: 'notificação não encontrada ou já lida' });
+          return true;
+        }
+        responderJson(res, 200, { notificacao });
+        return true;
+      }
+    }
+
+    // GET /api/metricas/resumo — o resumo dos dashboards, com período, fuso,
+    // filtros e denominadores explícitos (docs/METRICAS.md).
+    if (rota === '/api/metricas/resumo' && metodo === 'GET') {
+      exigirPermissao(usuario, 'leads:ler');
+      responderJson(res, 200, await servicoDeMetricas.resumo({
+        de: url.searchParams.get('de'),
+        ate: url.searchParams.get('ate'),
+      }), { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // GET /api/conversas/aguardando — a fila de SLA: quem o paciente espera.
+    // Antes do bloco genérico de /api/conversas/:id, que trataria "aguardando"
+    // como identificador.
+    if (rota === '/api/conversas/aguardando' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const fila = await repositorio.listarConversasAguardando({ limite: 100 });
+      const agora = Date.now();
+      responderJson(res, 200, {
+        total: fila.length,
+        conversas: fila.map((conversa) => ({
+          ...conversa,
+          minutos_aguardando: Math.floor(
+            (agora - new Date(conversa.aguardando_resposta_desde).getTime()) / 60_000,
+          ),
+        })),
+      }, { 'cache-control': 'no-store' });
+      return true;
+    }
+
+    // Tarefas — o sino da equipe.
+    if (rota === '/api/tarefas' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const abertas = url.searchParams.get('todas') !== 'sim';
+      const tarefas = await repositorio.listarTarefas({ abertas });
+      responderJson(res, 200, { total: tarefas.length, tarefas }, { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/tarefas/varrer' && metodo === 'POST') {
+      exigirPermissao(usuario, 'conversas:priorizar');
+      responderJson(res, 200, await servicoDeFluxo.gerarTarefasDeAcompanhamento());
+      return true;
+    }
+    {
+      const partesDeTarefa = rota.split('/').filter(Boolean);
+      if (partesDeTarefa[0] === 'api' && partesDeTarefa[1] === 'tarefas'
+          && partesDeTarefa.length === 4 && partesDeTarefa[3] === 'concluir'
+          && /^\d+$/.test(partesDeTarefa[2])) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        exigirPermissao(usuario, 'conversas:responder');
+        const tarefa = await repositorio.concluirTarefa(partesDeTarefa[2], { usuarioId: usuario.id });
+        if (!tarefa) {
+          responderJson(res, 404, { erro: 'tarefa não encontrada ou já concluída' });
+          return true;
+        }
+        responderJson(res, 200, { tarefa });
+        return true;
+      }
+    }
+
+    // POST /api/agenda/:id/formulario — pré-consulta, SÓ com agendamento
+    // confirmado. Antes do roteador da agenda, que não conhece esta sub-rota.
+    {
+      const partesDeAgenda = rota.split('/').filter(Boolean);
+      if (partesDeAgenda[0] === 'api' && partesDeAgenda[1] === 'agenda'
+          && partesDeAgenda.length === 4 && partesDeAgenda[3] === 'formulario'
+          && /^\d+$/.test(partesDeAgenda[2])) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        exigirPermissao(usuario, 'conversas:responder');
+        responderJson(res, 200, await servicoDeFluxo.enviarFormularioPreConsulta(
+          Number(partesDeAgenda[2]), { usuarioId: usuario.id },
+        ));
+        return true;
+      }
+    }
+
     if (await tratarRotasDeAgenda(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeLembretes(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDaSerena(req, res, rota, metodo, url, usuario)) return true;
@@ -669,6 +837,7 @@ function criarAplicacao(dependencias = {}) {
         qualificacao: (corpo) => rotasDeLeads.qualificar(usuario, leadId, corpo),
         estagio: (corpo) => rotasDeLeads.moverEstagio(usuario, leadId, corpo),
         temperatura: (corpo) => rotasDeLeads.definirTemperatura(usuario, leadId, corpo),
+        gestao: (corpo) => rotasDeLeads.definirGestao(usuario, leadId, corpo),
       };
 
       const acaoDeLead = partes.length === 4 ? acoesDeLead[partes[3]] : null;
@@ -769,6 +938,7 @@ function criarAplicacao(dependencias = {}) {
       estado: (corpo) => conversas.definirEstado(conversaId, corpo),
       temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
       notas: (corpo) => conversas.criarNota(conversaId, corpo),
+      encerrar: (corpo) => servicoDeFluxo.encerrarConversa(conversaId, { usuarioId: corpo.usuario_id ?? null }),
     };
 
     const acao = acoes[partes[3]];
@@ -1029,7 +1199,7 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 422, { erro: erro.message, codigo: erro.codigo });
         return;
       }
-      if ([400, 403, 404, 409, 503].includes(erro.status)) {
+      if ([400, 403, 404, 409, 422, 503].includes(erro.status)) {
         responderJson(res, erro.status, {
           erro: erro.message,
           ...(erro.codigo ? { codigo: erro.codigo } : {}),

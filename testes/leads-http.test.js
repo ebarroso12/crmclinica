@@ -125,7 +125,10 @@ test('POST estágio move e devolve de-para', async (t) => {
   const { app, lead } = await subirComLead();
   t.after(() => app.encerrar());
 
-  await postar(app, `/api/leads/${lead.id}/estagio`, { estagio: 'qualificando' });
+  // A equipe move com próximo passo; o dono é o usuário autenticado (P1-11).
+  await postar(app, `/api/leads/${lead.id}/estagio`, {
+    estagio: 'qualificando', proximo_passo: 'Perguntar convênio',
+  });
   const resposta = await postar(app, `/api/leads/${lead.id}/estagio`, { estagio: 'agendado' });
 
   assert.equal(resposta.status, 200);
@@ -147,7 +150,9 @@ test('GET jornada devolve o histórico e o resumo', async (t) => {
   const { app, lead } = await subirComLead();
   t.after(() => app.encerrar());
 
-  await postar(app, `/api/leads/${lead.id}/estagio`, { estagio: 'qualificando' });
+  await postar(app, `/api/leads/${lead.id}/estagio`, {
+    estagio: 'qualificando', proximo_passo: 'Perguntar convênio',
+  });
   await postar(app, `/api/leads/${lead.id}/estagio`, { estagio: 'agendado' });
 
   const dados = await (await app.pedir(`/api/leads/${lead.id}/jornada`)).json();
