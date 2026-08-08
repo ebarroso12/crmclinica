@@ -69,6 +69,20 @@ Cabeçalho aceito: `x-openclaw-assinatura` (ou `x-openclaw-signature`), no forma
 Sem segredo configurado, o desenvolvimento local aceita eventos sem assinatura. Em produção,
 a ausência do segredo torna a rota indisponível (`503`) em vez de aceitar tráfego não verificado.
 
+### Ingresso exclusivo do WhatsApp
+
+`POST /api/canais/whatsapp/eventos` usa o mesmo contrato e a mesma ordem de
+validação, mas uma credencial e um adaptador próprios:
+
+- segredo `WHATSAPP_WEBHOOK_SECRET`;
+- cabeçalho `x-whatsapp-assinatura` (ou `x-whatsapp-signature`);
+- aceita somente `canal=whatsapp`;
+- carimba `estrategia_ia=crm_despacha` no servidor;
+- recusa qualquer payload que reivindique `openclaw_gerencia`.
+
+Essa separação é uma barreira de autoridade: possuir a credencial do webhook
+genérico não concede o direito de fazer o CRM acionar uma resposta no WhatsApp.
+
 ## Respostas
 
 | Código | Situação |

@@ -70,6 +70,7 @@ function decodificarChave(valor) {
 function carregarConfiguracao(ambiente = process.env) {
   const nodeEnv = NIVEIS_VALIDOS.has(texto(ambiente.NODE_ENV)) ? texto(ambiente.NODE_ENV) : 'development';
   const producao = nodeEnv === 'production';
+  const transporteWhatsapp = texto(ambiente.SERENA_TRANSPORTE_WHATSAPP) || 'openclaw_gerencia';
 
   return {
     nodeEnv,
@@ -91,6 +92,10 @@ function carregarConfiguracao(ambiente = process.env) {
       token: texto(ambiente.OPENCLAW_TOKEN),
       sessao: texto(ambiente.OPENCLAW_SESSION_ID),
       segredoWebhook: texto(ambiente.OPENCLAW_WEBHOOK_SECRET),
+      // Segredo exclusivo da ponte de ingresso do WhatsApp. Separá-lo do
+      // webhook genérico impede que uma integração autorizada para importar
+      // eventos antigos ganhe, por acidente, o direito de acionar respostas.
+      segredoIngressoWhatsapp: texto(ambiente.WHATSAPP_WEBHOOK_SECRET),
       tempoLimiteMs: inteiro(ambiente.OPENCLAW_TIMEOUT_MS, 10000),
       // Gateway WebSocket: é por aqui que a mensagem sai de verdade. O token
       // compartilhado sozinho não concede escopo — quem envia precisa ser um
@@ -179,6 +184,10 @@ function carregarConfiguracao(ambiente = process.env) {
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),
       token: texto(ambiente.SERENA_TOKEN),
+      // Quem responde à mensagem de WhatsApp. O padrão preserva o desenho
+      // anterior; `crm_despacha` só entra por configuração explícita e mantém
+      // o agente direto do canal calado para o CRM aplicar handoff e horário.
+      transporteWhatsapp,
     },
     // Voz roda em processo separado do CRM. A flag nasce desligada e a
     // configuração é tudo-ou-nada: nunca cai para um serviço pago em silêncio.
@@ -252,9 +261,36 @@ function carregarConfiguracao(ambiente = process.env) {
   };
 }
 
+function validarTransporteWhatsapp(configuracao) {
+  const problemas = [];
+
+  if (!['openclaw_gerencia', 'crm_despacha'].includes(configuracao.serena.transporteWhatsapp)) {
+    problemas.push('SERENA_TRANSPORTE_WHATSAPP deve ser openclaw_gerencia ou crm_despacha');
+  }
+
+  if (configuracao.serena.transporteWhatsapp === 'crm_despacha') {
+    const comando = configuracao.openclaw.gateway;
+    const canal = configuracao.openclaw.canalClinica;
+    if (!comando.url || (!comando.token && !comando.deviceToken)) {
+      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige o gateway de comando do OpenClaw');
+    }
+    if (!configuracao.openclaw.sessao) {
+      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige OPENCLAW_SESSION_ID');
+    }
+    if (!canal.url || (!canal.token && !canal.deviceToken)) {
+      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige o gateway do WhatsApp da clínica');
+    }
+    if (configuracao.openclaw.segredoIngressoWhatsapp.length < 32) {
+      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige WHATSAPP_WEBHOOK_SECRET com ao menos 32 caracteres');
+    }
+  }
+
+  return problemas;
+}
+
 // Lista de problemas que impedem o sistema de operar com segurança em produção.
 function validarConfiguracao(configuracao) {
-  const problemas = [];
+  const problemas = validarTransporteWhatsapp(configuracao);
 
   if (configuracao.openclaw.baseUrl && configuracao.producao && !configuracao.openclaw.baseUrl.startsWith('https://')) {
     problemas.push('OPENCLAW_BASE_URL deve usar HTTPS em produção');
@@ -365,6 +401,7 @@ function descreverConfiguracao(configuracao) {
     atendimento: {
       nome: 'Serena',
       integracao: configuracao.serena.baseUrl ? 'configurada' : 'ausente',
+      transporteWhatsapp: configuracao.serena.transporteWhatsapp,
     },
     entrada: {
       // O que a tela de login deve oferecer. Nenhum segredo sai daqui — só se a
@@ -396,5 +433,9 @@ function descreverConfiguracao(configuracao) {
 }
 
 module.exports = {
-  carregarConfiguracao, validarConfiguracao, avisosDeConfiguracao, descreverConfiguracao,
+  carregarConfiguracao,
+  validarConfiguracao,
+  validarTransporteWhatsapp,
+  avisosDeConfiguracao,
+  descreverConfiguracao,
 };

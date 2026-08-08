@@ -72,7 +72,7 @@ test('timestamp que o Date não entende vira nulo, não exceção', () => {
 
 // ---------------------------------------------------------- a sincronização
 
-function montarAmbiente(mensagens, { jaTemSaida = false } = {}) {
+function montarAmbiente(mensagens, { jaTemSaida = false, estrategiaIa = 'openclaw_gerencia' } = {}) {
   const recebidas = [];
   const saidas = [];
 
@@ -96,6 +96,7 @@ function montarAmbiente(mensagens, { jaTemSaida = false } = {}) {
         async registrarMensagem(_, dados) { saidas.push(dados); return { duplicada: false }; },
         async existeSaidaComTexto() { return jaTemSaida; },
       },
+      estrategiaIa,
     }),
   };
 }
@@ -112,6 +113,13 @@ test('a fala do paciente entra como entrada, a da Serena como automação', asyn
   assert.equal(ambiente.recebidas[0].texto, 'oi, quero marcar');
   assert.equal(ambiente.saidas.length, 1);
   assert.equal(ambiente.saidas[0].autor_tipo, 'automacao');
+});
+
+test('Arquitetura B carimba a entrada como crm_despacha', async () => {
+  const ambiente = montarAmbiente([msg('user', 'oi', 'b1')], { estrategiaIa: 'crm_despacha' });
+  await ambiente.sincronizador.sincronizar();
+  assert.equal(ambiente.recebidas.length, 1);
+  assert.equal(ambiente.recebidas[0].estrategia_ia, 'crm_despacha');
 });
 
 test('toolResult e system não viram fala do paciente', async () => {

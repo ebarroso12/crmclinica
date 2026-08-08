@@ -258,6 +258,19 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
             acao: 'resposta_nao_entregue',
             detalhe: { mensagem_id: gravada.id, motivo: entrega.motivo, autor: 'automacao' },
           }).catch(() => {});
+
+          // Arquitetura B: com o agente do canal calado, entrega que falhou
+          // significa paciente SEM resposta nenhuma. A conversa não fica parada
+          // com a automação — vai para a equipe, com o motivo. A resposta segue
+          // gravada com id_externo: liberada a conversa, o retry reaproveita o
+          // texto e tenta só a entrega, sem nova chamada de IA.
+          await escalonar(conversaId, 'falha_na_entrega_da_automacao');
+          return {
+            acao: 'escalonada_por_falha_entrega',
+            conversa_id: conversaId,
+            motivo: entrega.motivo,
+            entregue: false,
+          };
         }
 
         await repositorio.registrarAuditoria({

@@ -97,7 +97,9 @@ test('falha na entrega fica auditada como resposta_nao_entregue', async () => {
 
   const resultado = await atendimento.receberMensagem(EVENTO);
 
-  assert.equal(resultado.acao, 'respondida_pela_automacao');
+  // Arquitetura B: entrega que falhou escala para a equipe — o paciente ficou
+  // sem resposta e a conversa não pode ficar parada com a automação.
+  assert.equal(resultado.acao, 'escalonada_por_falha_entrega');
   assert.equal(resultado.entregue, false);
   assert.ok(repositorio._auditoria.some((registro) => registro.acao === 'resposta_nao_entregue'
     && registro.detalhe?.autor === 'automacao'));

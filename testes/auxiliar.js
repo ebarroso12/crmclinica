@@ -13,6 +13,7 @@ const AMBIENTE_BASE = Object.freeze({
   OPENCLAW_BASE_URL: '',
   OPENCLAW_TOKEN: '',
   OPENCLAW_WEBHOOK_SECRET: '',
+  WHATSAPP_WEBHOOK_SECRET: '',
   SERENA_BASE_URL: '',
   KIMI_API_KEY: '',
   // A suíte inteira autentica com usuários admin/master sem TOTP cadastrado;
