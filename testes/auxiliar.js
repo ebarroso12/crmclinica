@@ -15,6 +15,10 @@ const AMBIENTE_BASE = Object.freeze({
   OPENCLAW_WEBHOOK_SECRET: '',
   SERENA_BASE_URL: '',
   KIMI_API_KEY: '',
+  // A suíte inteira autentica com usuários admin/master sem TOTP cadastrado;
+  // com o 2FA obrigatório ligado (P1-04), todos os testes existentes tomariam
+  // 403. Os testes do próprio P1-04 ligam isto com 'sim' explicitamente.
+  CRMCLINICA_2FA_OBRIGATORIO: 'nao',
 });
 
 // Senha sintética usada só nos testes.
