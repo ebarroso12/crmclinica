@@ -185,6 +185,12 @@
           <h1 id="titulo">Hoje</h1>
         </div>
         <div class="acoes">
+          <span class="sino" id="sino">
+            <button type="button" class="acao" id="sino-botao" aria-label="Notificações">
+              🔔<b class="contador" id="sino-contador" hidden>0</b>
+            </button>
+            <div class="sino-lista" id="sino-lista" hidden aria-live="polite"></div>
+          </span>
           <span class="avatar" id="avatar-usuario" aria-hidden="true">—</span>
           <span class="nome-equipe" id="nome-usuario">—</span>
           <button type="button" class="acao" id="sair">Sair</button>
@@ -547,6 +553,50 @@
             <div class="card-titulo"><div><h3>Agenda e Serena</h3>
               <p>Status das consultas, handoff e silêncio da automação</p></div></div>
             <div id="painel-agenda-serena"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Relatório por IA</h3>
+                <p>Sobre o período filtrado acima; catálogo mantido pelo servidor</p>
+              </div>
+            </div>
+            <div class="linha-ia">
+              <label>Provedor
+                <select id="ia-provedor"><option value="">automático</option></select>
+              </label>
+              <label>Modelo
+                <select id="ia-modelo"><option value="">automático</option></select>
+              </label>
+              <button type="button" class="primario" id="ia-gerar-relatorio">Gerar relatório</button>
+            </div>
+            <pre class="relatorio-ia" id="ia-relatorio" hidden></pre>
+            <p class="nota-metrica" id="ia-relatorio-origem" hidden></p>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Assistente de IA</h3>
+                <p>Responde sobre os números da aba escolhida — nunca sobre pacientes</p>
+              </div>
+            </div>
+            <div class="linha-ia">
+              <label>Aba
+                <select id="assistente-aba">
+                  <option value="metricas">Métricas</option>
+                  <option value="leads">Leads</option>
+                  <option value="conversas">Conversas</option>
+                  <option value="agenda">Agenda</option>
+                  <option value="serena">Serena</option>
+                </select>
+              </label>
+              <input type="text" id="assistente-pergunta" maxlength="500"
+                placeholder="Ex.: qual origem trouxe mais leads no período?">
+              <button type="button" class="primario" id="assistente-perguntar">Perguntar</button>
+            </div>
+            <pre class="relatorio-ia" id="assistente-resposta" hidden></pre>
           </article>
         </div>
       </section>

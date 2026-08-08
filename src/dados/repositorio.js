@@ -1036,6 +1036,157 @@ function criarRepositorio(pool) {
       return rows[0] ? montarFormulario(rows[0]) : null;
     },
 
+    // ---------------------------------------------------------------- IA: catálogo e telemetria
+
+    async listarModelosDeIA({ apenasAtivos = false } = {}) {
+      const { rows } = await consultar(`
+        SELECT * FROM ia_modelos ${apenasAtivos ? 'WHERE ativo' : ''}
+        ORDER BY provedor, modelo
+      `);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async obterChamadaDeIA(chaveIdempotencia) {
+      const { rows } = await consultar(
+        'SELECT * FROM ia_chamadas WHERE chave_idempotencia = $1', [chaveIdempotencia],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    async registrarChamadaDeIA({
+      chaveIdempotencia, finalidade, provedor, modelo, promptVersion = null,
+      latenciaMs = null, tokensEntrada = null, tokensSaida = null,
+      custoEstimadoUsd = null, resposta = null, erro = null, fallbackDe = null,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO ia_chamadas (chave_idempotencia, finalidade, provedor, modelo, prompt_version,
+          latencia_ms, tokens_entrada, tokens_saida, custo_estimado_usd, resposta, erro, fallback_de)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (chave_idempotencia) DO NOTHING
+        RETURNING id
+      `, [chaveIdempotencia, finalidade, provedor, modelo, promptVersion,
+        latenciaMs, tokensEntrada, tokensSaida, custoEstimadoUsd, resposta, erro, fallbackDe]);
+      return { registrado: rows.length > 0 };
+    },
+
+    async listarChamadasDeIA({ limite = 100 } = {}) {
+      const { rows } = await consultar(`
+        SELECT id, chave_idempotencia, finalidade, provedor, modelo, prompt_version,
+               latencia_ms, tokens_entrada, tokens_saida, custo_estimado_usd, erro, fallback_de, criado_em
+        FROM ia_chamadas ORDER BY criado_em DESC, id DESC LIMIT $1
+      `, [limite]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    // ---------------------------------------------------------------- IA: avaliações
+
+    async registrarAvaliacaoDeIA({
+      conversaId = null, mensagemId, avaliador, empatia, seguranca, aderencia, veredito, motivos = [],
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO ia_avaliacoes (conversa_id, mensagem_id, avaliador, empatia, seguranca, aderencia, veredito, motivos)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ON CONFLICT (mensagem_id, avaliador) DO NOTHING
+        RETURNING *
+      `, [conversaId, mensagemId, avaliador, empatia, seguranca, aderencia, veredito, JSON.stringify(motivos)]);
+      if (rows.length > 0) return { avaliacao: { ...rows[0], id: Number(rows[0].id) }, duplicada: false };
+
+      const { rows: existentes } = await consultar(
+        'SELECT * FROM ia_avaliacoes WHERE mensagem_id = $1 AND avaliador = $2', [mensagemId, avaliador],
+      );
+      return { avaliacao: { ...existentes[0], id: Number(existentes[0].id) }, duplicada: true };
+    },
+
+    async listarAvaliacoesDeIA({ veredito = null, limite = 100 } = {}) {
+      const valores = [];
+      let filtro = '';
+      if (veredito) {
+        valores.push(veredito);
+        filtro = `WHERE veredito = $${valores.length}`;
+      }
+      valores.push(limite);
+      const { rows } = await consultar(`
+        SELECT * FROM ia_avaliacoes ${filtro} ORDER BY criado_em DESC, id DESC LIMIT $${valores.length}
+      `, valores);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    /** Respostas da automação ainda sem avaliação do avaliador dado. */
+    async listarRespostasSemAvaliacao({ avaliador = 'heuristica', limite = 50 } = {}) {
+      const { rows } = await consultar(`
+        SELECT m.* FROM mensagens m
+        WHERE m.autor_tipo = 'automacao' AND m.direcao = 'saida'
+          AND NOT EXISTS (
+            SELECT 1 FROM ia_avaliacoes a WHERE a.mensagem_id = m.id AND a.avaliador = $1
+          )
+        ORDER BY m.criado_em DESC LIMIT $2
+      `, [avaliador, limite]);
+      return rows.map(montarMensagem);
+    },
+
+    // ---------------------------------------------------------------- notificações
+
+    async criarNotificacao({ chave, tipo, titulo, corpo = null, usuarioId = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO notificacoes (chave, tipo, titulo, corpo, usuario_id)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (chave) DO NOTHING
+        RETURNING *
+      `, [chave, tipo, titulo, corpo, usuarioId]);
+      if (rows.length > 0) return { notificacao: { ...rows[0], id: Number(rows[0].id) }, duplicada: false };
+      const { rows: existentes } = await consultar('SELECT * FROM notificacoes WHERE chave = $1', [chave]);
+      return { notificacao: { ...existentes[0], id: Number(existentes[0].id) }, duplicada: true };
+    },
+
+    /** As do usuário e as de toda a equipe (usuario_id nulo). */
+    async listarNotificacoes({ usuarioId = null, apenasNaoLidas = true, limite = 50 } = {}) {
+      const { rows } = await consultar(`
+        SELECT * FROM notificacoes
+        WHERE (usuario_id IS NULL OR usuario_id = $1)
+          ${apenasNaoLidas ? 'AND lida_em IS NULL' : ''}
+        ORDER BY criado_em DESC, id DESC LIMIT $2
+      `, [usuarioId, limite]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async marcarNotificacaoLida(id) {
+      const { rows } = await consultar(`
+        UPDATE notificacoes SET lida_em = now() WHERE id = $1 AND lida_em IS NULL RETURNING *
+      `, [id]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    // ------------------------------------------------- Serena: ativação gradual
+
+    async definirAtivacaoGradual({ modo, percentual = null, usuarioId = null }) {
+      const { rows } = await consultar(`
+        UPDATE serena_configuracao
+        SET modo_ativacao = $1,
+            ativacao_percentual = COALESCE($2, ativacao_percentual),
+            alterado_por = $3, alterado_em = now()
+        WHERE id = 1
+        RETURNING *
+      `, [modo, percentual, usuarioId]);
+      return rows[0] ?? null;
+    },
+
+    async listarContatosDeAtivacao() {
+      const { rows } = await consultar('SELECT contato_id FROM serena_ativacao_contatos');
+      return rows.map((linha) => Number(linha.contato_id));
+    },
+
+    async definirContatoDeAtivacao(contatoId, incluido, { usuarioId = null } = {}) {
+      if (incluido) {
+        await consultar(`
+          INSERT INTO serena_ativacao_contatos (contato_id, criado_por)
+          VALUES ($1, $2) ON CONFLICT (contato_id) DO NOTHING
+        `, [contatoId, usuarioId]);
+      } else {
+        await consultar('DELETE FROM serena_ativacao_contatos WHERE contato_id = $1', [contatoId]);
+      }
+      return { contato_id: Number(contatoId), incluido };
+    },
+
     // ---------------------------------------------------------------- analítica
 
     /** Evento de produto, deduplicado pela chave quando houver. Nunca clínico. */

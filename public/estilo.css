@@ -1548,3 +1548,27 @@ button.perigo:hover { background: #fecaca; }
 .tabela-metricas .numero { text-align: right; color: #475569; white-space: nowrap; }
 .bloco-metrica h4 { margin: 10px 0 2px; font-size: 0.9rem; }
 .nota-metrica { color: #475569; font-size: 0.85rem; margin: 8px 0; }
+
+/* IA: relatório e assistente. Pre com quebra, porque relatório tem parágrafo. */
+.linha-ia { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.linha-ia label { display: flex; flex-direction: column; font-size: 0.8rem; color: #475569; }
+.linha-ia input[type="text"] { flex: 1; min-width: 200px; }
+.relatorio-ia {
+  white-space: pre-wrap; background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 8px; padding: 10px; font-size: 0.85rem; margin-top: 10px;
+  font-family: inherit;
+}
+
+/* O sino do topo e a lista suspensa de notificações. */
+.sino { position: relative; }
+.sino .contador { position: absolute; top: -4px; right: -4px; }
+.sino-lista {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  min-width: 280px; max-width: 360px; max-height: 320px; overflow-y: auto;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 8px; font-size: 0.85rem;
+}
+.sino-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 4px; border-bottom: 1px solid #f1f5f9; }
+.sino-item:last-child { border-bottom: none; }
+.sino-item b { display: block; }
+.sino-item small { color: #64748b; }

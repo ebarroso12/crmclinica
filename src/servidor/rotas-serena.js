@@ -294,6 +294,43 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
       return conversa.historico(sessao);
     },
 
+    /**
+     * PUT /api/serena/ativacao — o rollout gradual.
+     * `{ "modo": "todos"|"percentual"|"lista", "percentual": 25 }`
+     * O desligado global continua soberano; isto regula o LIGADO.
+     */
+    async definirAtivacao(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+
+      const configuracaoNova = await serena.definirAtivacao({
+        modo: corpo?.modo,
+        percentual: corpo?.percentual ?? null,
+        usuarioId: usuario.id,
+      });
+
+      return {
+        ativacao: {
+          modo: configuracaoNova.modo_ativacao,
+          percentual: configuracaoNova.ativacao_percentual,
+        },
+      };
+    },
+
+    /** POST /api/serena/ativacao/contatos — inclui/remove contato da lista. */
+    async definirContatoDeAtivacao(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+
+      const contatoId = Number(corpo?.contato_id);
+      if (!Number.isInteger(contatoId) || contatoId <= 0) {
+        throw new ErroDeContrato('campo "contato_id" deve ser um identificador válido', 'contato_id');
+      }
+      if (typeof corpo?.incluido !== 'boolean') {
+        throw new ErroDeContrato('campo "incluido" deve ser true ou false', 'incluido');
+      }
+
+      return serena.definirContatoDeAtivacao(contatoId, corpo.incluido, { usuarioId: usuario.id });
+    },
+
     /** POST /api/serena/estado — o interruptor. `{ "ativa": false, "motivo": "…" }` */
     async definirEstado(usuario, corpo) {
       exigirPermissao(usuario, 'serena:gerenciar');

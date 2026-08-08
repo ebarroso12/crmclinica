@@ -315,9 +315,10 @@ function desenharFilaDeHoje(conversas) {
     fila.append(linha);
   }
 
-  // Os cartões de SLA e de tarefas carregam junto do painel.
+  // Os cartões de SLA e de tarefas carregam junto do painel; o sino também.
   carregarFilaSla();
   carregarTarefas();
+  atualizarSino();
 }
 
 /** Cartão de SLA: quem falou por último e há quanto tempo espera. */
@@ -904,6 +905,8 @@ async function carregarMetricas() {
   if (de) parametros.set('de', de);
   if (ate) parametros.set('ate', ate);
 
+  carregarMenusDeIA();
+
   try {
     const resumo = await pedirJson(`/api/metricas/resumo${parametros.size ? `?${parametros}` : ''}`);
 
@@ -975,6 +978,151 @@ async function carregarMetricas() {
 }
 
 seletor('#metricas-aplicar')?.addEventListener('click', carregarMetricas);
+
+// --- IA: menus, relatório e assistente ---
+
+let catalogoDeIA = null;
+
+/** Menus dependentes: escolher o provedor filtra os modelos DELE. */
+async function carregarMenusDeIA() {
+  if (catalogoDeIA) return;
+  try {
+    const { provedores } = await pedirJson('/api/ia/modelos');
+    catalogoDeIA = provedores;
+
+    const seletorProvedor = seletor('#ia-provedor');
+    if (!seletorProvedor) return;
+    for (const linha of provedores) {
+      const opcao = document.createElement('option');
+      opcao.value = linha.provedor;
+      opcao.textContent = linha.disponivel ? linha.provedor : `${linha.provedor} (sem chave)`;
+      opcao.disabled = !linha.disponivel;
+      seletorProvedor.append(opcao);
+    }
+    seletorProvedor.addEventListener('change', () => {
+      const escolhido = catalogoDeIA.find((linha) => linha.provedor === seletorProvedor.value);
+      const seletorModelo = seletor('#ia-modelo');
+      seletorModelo.innerHTML = '<option value="">automático</option>';
+      for (const modelo of escolhido?.modelos ?? []) {
+        const opcao = document.createElement('option');
+        opcao.value = modelo.modelo;
+        opcao.textContent = modelo.padrao ? `${modelo.rotulo} (padrão)` : modelo.rotulo;
+        seletorModelo.append(opcao);
+      }
+    });
+  } catch {
+    // Sem catálogo o cartão continua funcional no modo automático.
+  }
+}
+
+seletor('#ia-gerar-relatorio')?.addEventListener('click', async () => {
+  const saida = seletor('#ia-relatorio');
+  const origem = seletor('#ia-relatorio-origem');
+  saida.hidden = false;
+  saida.textContent = 'Gerando…';
+  origem.hidden = true;
+
+  try {
+    const corpo = {};
+    const de = seletor('#metricas-de')?.value;
+    const ate = seletor('#metricas-ate')?.value;
+    if (de) corpo.de = de;
+    if (ate) corpo.ate = ate;
+    if (seletor('#ia-provedor')?.value) corpo.provedor = seletor('#ia-provedor').value;
+    if (seletor('#ia-modelo')?.value) corpo.modelo = seletor('#ia-modelo').value;
+
+    const resultado = await pedirJson('/api/ia/relatorio', { metodo: 'POST', corpo });
+    saida.textContent = resultado.relatorio;
+    origem.hidden = false;
+    origem.textContent = resultado.gerado_por === 'deterministico'
+      ? `Gerado sem IA (${resultado.motivo_fallback}): é o resumo determinístico dos mesmos números.`
+      : `Gerado por ${resultado.gerado_por}${resultado.de_cache ? ' · reaproveitado do cache do dia' : ''}`
+        + `${resultado.fallback_de ? ` · fallback de ${resultado.fallback_de}` : ''}`;
+  } catch (erro) {
+    saida.textContent = `Não foi possível gerar o relatório: ${erro.detalhe || erro.message}`;
+  }
+});
+
+seletor('#assistente-perguntar')?.addEventListener('click', async () => {
+  const saida = seletor('#assistente-resposta');
+  const pergunta = seletor('#assistente-pergunta')?.value.trim();
+  if (!pergunta) return;
+
+  saida.hidden = false;
+  saida.textContent = 'Pensando…';
+  try {
+    const resultado = await pedirJson('/api/ia/assistente', {
+      metodo: 'POST',
+      corpo: { aba: seletor('#assistente-aba')?.value || 'metricas', pergunta },
+    });
+    saida.textContent = resultado.resposta;
+  } catch (erro) {
+    saida.textContent = erro.status === 503
+      ? 'Nenhum provedor de IA configurado no servidor.'
+      : `Não foi possível responder: ${erro.detalhe || erro.message}`;
+  }
+});
+
+// --- Central de notificações (o sino) ---
+
+async function atualizarSino() {
+  const contador = seletor('#sino-contador');
+  if (!contador) return;
+  try {
+    const { total } = await pedirJson('/api/notificacoes');
+    contador.textContent = String(total);
+    contador.hidden = total === 0;
+  } catch { /* sino silencioso é melhor que sino quebrado */ }
+}
+
+seletor('#sino-botao')?.addEventListener('click', async () => {
+  const lista = seletor('#sino-lista');
+  if (!lista.hidden) {
+    lista.hidden = true;
+    return;
+  }
+
+  lista.innerHTML = '';
+  lista.hidden = false;
+  try {
+    const { notificacoes } = await pedirJson('/api/notificacoes');
+    if (notificacoes.length === 0) {
+      lista.textContent = 'Nenhuma notificação nova.';
+      return;
+    }
+    for (const notificacao of notificacoes) {
+      const item = document.createElement('div');
+      item.className = 'sino-item';
+
+      const texto = document.createElement('span');
+      const titulo = document.createElement('b');
+      titulo.textContent = notificacao.titulo;
+      texto.append(titulo);
+      if (notificacao.corpo) {
+        const corpo = document.createElement('small');
+        corpo.textContent = notificacao.corpo;
+        texto.append(corpo);
+      }
+
+      const marcar = document.createElement('button');
+      marcar.type = 'button';
+      marcar.className = 'link';
+      marcar.textContent = 'Lida';
+      marcar.addEventListener('click', async () => {
+        try {
+          await pedirJson(`/api/notificacoes/${notificacao.id}/lida`, { metodo: 'POST', corpo: {} });
+          item.remove();
+          atualizarSino();
+        } catch { /* a próxima abertura recarrega */ }
+      });
+
+      item.append(texto, marcar);
+      lista.append(item);
+    }
+  } catch {
+    lista.textContent = 'Não foi possível carregar as notificações.';
+  }
+});
 
 // --- Ligações da interface ---
 

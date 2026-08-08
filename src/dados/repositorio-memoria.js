@@ -47,6 +47,20 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const tarefas = [];
   const formularios = [];
   const eventosAnaliticos = [];
+  const iaChamadas = [];
+  const iaAvaliacoes = [];
+  const notificacoes = [];
+  const serenaAtivacaoContatos = new Set();
+  // O catálogo em memória espelha o seed da migration 027.
+  const iaModelos = [
+    { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
+    { id: 2, provedor: 'openai', modelo: 'gpt-4o', rotulo: 'GPT-4o', ativo: true, padrao: false, custo_entrada_usd_mi: 2.5, custo_saida_usd_mi: 10 },
+    { id: 3, provedor: 'anthropic', modelo: 'claude-haiku-4-5-20251001', rotulo: 'Claude Haiku 4.5', ativo: true, padrao: true, custo_entrada_usd_mi: 1, custo_saida_usd_mi: 5 },
+    { id: 4, provedor: 'anthropic', modelo: 'claude-sonnet-5', rotulo: 'Claude Sonnet 5', ativo: true, padrao: false, custo_entrada_usd_mi: 3, custo_saida_usd_mi: 15 },
+    { id: 5, provedor: 'google', modelo: 'gemini-2.5-flash', rotulo: 'Gemini 2.5 Flash', ativo: true, padrao: false, custo_entrada_usd_mi: 0.3, custo_saida_usd_mi: 2.5 },
+    { id: 6, provedor: 'deepseek', modelo: 'deepseek-chat', rotulo: 'DeepSeek Chat', ativo: true, padrao: false, custo_entrada_usd_mi: 0.27, custo_saida_usd_mi: 1.1 },
+    { id: 7, provedor: 'kimi', modelo: 'kimi-latest', rotulo: 'Kimi (Moonshot)', ativo: true, padrao: false, custo_entrada_usd_mi: 0.6, custo_saida_usd_mi: 2.5 },
+  ];
 
   // --- helpers da analítica: espelham as conversões de fuso das views ---
 
@@ -80,6 +94,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
     // Nasce sem limite de horário: quem não configurou grade não pediu silêncio.
     agenda: null, pausada_ate: null, ligada_ate: null,
+    // Ativação gradual (migration 028): nasce atendendo todos.
+    modo_ativacao: 'todos', ativacao_percentual: 100,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
@@ -781,6 +797,156 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       formulario.respondido_em = agora().toISOString();
       formulario.respostas = respostas ?? {};
       return { ...formulario };
+    },
+
+    // ---------------------------------------------------------------- IA: catálogo e telemetria
+
+    async listarModelosDeIA({ apenasAtivos = false } = {}) {
+      return iaModelos
+        .filter((modelo) => !apenasAtivos || modelo.ativo)
+        .map((modelo) => ({ ...modelo }))
+        .sort((a, b) => a.provedor.localeCompare(b.provedor) || a.modelo.localeCompare(b.modelo));
+    },
+
+    async obterChamadaDeIA(chaveIdempotencia) {
+      const chamada = iaChamadas.find((item) => item.chave_idempotencia === chaveIdempotencia);
+      return chamada ? { ...chamada } : null;
+    },
+
+    async registrarChamadaDeIA({
+      chaveIdempotencia, finalidade, provedor, modelo, promptVersion = null,
+      latenciaMs = null, tokensEntrada = null, tokensSaida = null,
+      custoEstimadoUsd = null, resposta = null, erro = null, fallbackDe = null,
+    }) {
+      if (iaChamadas.some((item) => item.chave_idempotencia === chaveIdempotencia)) {
+        return { registrado: false };
+      }
+      iaChamadas.push({
+        id: iaChamadas.length + 1,
+        chave_idempotencia: chaveIdempotencia,
+        finalidade,
+        provedor,
+        modelo,
+        prompt_version: promptVersion,
+        latencia_ms: latenciaMs,
+        tokens_entrada: tokensEntrada,
+        tokens_saida: tokensSaida,
+        custo_estimado_usd: custoEstimadoUsd,
+        resposta,
+        erro,
+        fallback_de: fallbackDe,
+        criado_em: agora().toISOString(),
+      });
+      return { registrado: true };
+    },
+
+    async listarChamadasDeIA({ limite = 100 } = {}) {
+      return [...iaChamadas]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map(({ resposta: _resposta, ...resto }) => ({ ...resto }));
+    },
+
+    // ---------------------------------------------------------------- IA: avaliações
+
+    async registrarAvaliacaoDeIA({
+      conversaId = null, mensagemId, avaliador, empatia, seguranca, aderencia, veredito, motivos = [],
+    }) {
+      const existente = iaAvaliacoes.find(
+        (item) => item.mensagem_id === Number(mensagemId) && item.avaliador === avaliador,
+      );
+      if (existente) return { avaliacao: { ...existente }, duplicada: true };
+
+      const avaliacao = {
+        id: iaAvaliacoes.length + 1,
+        conversa_id: conversaId ? Number(conversaId) : null,
+        mensagem_id: Number(mensagemId),
+        avaliador,
+        empatia,
+        seguranca,
+        aderencia,
+        veredito,
+        motivos,
+        criado_em: agora().toISOString(),
+      };
+      iaAvaliacoes.push(avaliacao);
+      return { avaliacao: { ...avaliacao }, duplicada: false };
+    },
+
+    async listarAvaliacoesDeIA({ veredito = null, limite = 100 } = {}) {
+      return iaAvaliacoes
+        .filter((item) => !veredito || item.veredito === veredito)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map((item) => ({ ...item }));
+    },
+
+    async listarRespostasSemAvaliacao({ avaliador = 'heuristica', limite = 50 } = {}) {
+      const avaliadas = new Set(iaAvaliacoes
+        .filter((item) => item.avaliador === avaliador)
+        .map((item) => item.mensagem_id));
+      return mensagens
+        .filter((mensagem) => mensagem.autor_tipo === 'automacao' && mensagem.direcao === 'saida')
+        .filter((mensagem) => !avaliadas.has(mensagem.id))
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map((mensagem) => ({ ...mensagem }));
+    },
+
+    // ---------------------------------------------------------------- notificações
+
+    async criarNotificacao({ chave, tipo, titulo, corpo = null, usuarioId = null }) {
+      const existente = notificacoes.find((item) => item.chave === chave);
+      if (existente) return { notificacao: { ...existente }, duplicada: true };
+
+      const notificacao = {
+        id: notificacoes.length + 1,
+        chave,
+        tipo,
+        titulo,
+        corpo,
+        usuario_id: usuarioId,
+        lida_em: null,
+        criado_em: agora().toISOString(),
+      };
+      notificacoes.push(notificacao);
+      return { notificacao: { ...notificacao }, duplicada: false };
+    },
+
+    async listarNotificacoes({ usuarioId = null, apenasNaoLidas = true, limite = 50 } = {}) {
+      return notificacoes
+        .filter((item) => item.usuario_id === null || item.usuario_id === usuarioId)
+        .filter((item) => !apenasNaoLidas || !item.lida_em)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limite)
+        .map((item) => ({ ...item }));
+    },
+
+    async marcarNotificacaoLida(id) {
+      const notificacao = notificacoes.find((item) => item.id === Number(id) && !item.lida_em);
+      if (!notificacao) return null;
+      notificacao.lida_em = agora().toISOString();
+      return { ...notificacao };
+    },
+
+    // ------------------------------------------------- Serena: ativação gradual
+
+    async definirAtivacaoGradual({ modo, percentual = null, usuarioId = null }) {
+      serenaConfiguracao.modo_ativacao = modo;
+      if (percentual !== null) serenaConfiguracao.ativacao_percentual = percentual;
+      serenaConfiguracao.alterado_por = usuarioId;
+      serenaConfiguracao.alterado_em = agora().toISOString();
+      return { ...serenaConfiguracao };
+    },
+
+    async listarContatosDeAtivacao() {
+      return [...serenaAtivacaoContatos];
+    },
+
+    async definirContatoDeAtivacao(contatoId, incluido) {
+      if (incluido) serenaAtivacaoContatos.add(Number(contatoId));
+      else serenaAtivacaoContatos.delete(Number(contatoId));
+      return { contato_id: Number(contatoId), incluido };
     },
 
     // ---------------------------------------------------------------- analítica

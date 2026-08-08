@@ -14,6 +14,9 @@ const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
 const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
 const { criarServicoDeMetricas } = require('../dominio/metricas');
+const { criarGatewayDeIA } = require('../ia/gateway');
+const { criarServicoDeAvaliacao } = require('../dominio/avaliacao-ia');
+const { criarRotasDeIA } = require('./rotas-ia');
 const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
 const { criarLimitador } = require('../seguranca/limite');
@@ -140,6 +143,16 @@ function criarAplicacao(dependencias = {}) {
 
   const servicoDeMetricas = dependencias.servicoDeMetricas
     || criarServicoDeMetricas({ repositorio });
+
+  // Gateway multi-IA: chaves só no servidor, catálogo no banco, fallback
+  // técnico e telemetria com chave de idempotência.
+  const gatewayDeIA = dependencias.gatewayDeIA
+    || criarGatewayDeIA({ configuracao, repositorio });
+  const servicoDeAvaliacao = dependencias.servicoDeAvaliacao
+    || criarServicoDeAvaliacao({ repositorio });
+  const rotasDeIA = criarRotasDeIA({
+    repositorio, gateway: gatewayDeIA, metricas: servicoDeMetricas, avaliacao: servicoDeAvaliacao,
+  });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
   const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
@@ -417,6 +430,9 @@ function criarAplicacao(dependencias = {}) {
       'POST /api/serena/canal/qr': () => rotasDaSerena.obterQrDoCanal(usuario),
       // Horário programado, pausa de intervenção e plantão esporádico.
       'PUT /api/serena/horario': async () => rotasDaSerena.definirHorario(usuario, await lerJson(req)),
+      // Ativação gradual: religar por fração determinística ou por lista.
+      'PUT /api/serena/ativacao': async () => rotasDaSerena.definirAtivacao(usuario, await lerJson(req)),
+      'POST /api/serena/ativacao/contatos': async () => rotasDaSerena.definirContatoDeAtivacao(usuario, await lerJson(req)),
       'POST /api/serena/pausa': async () => rotasDaSerena.pausar(usuario, await lerJson(req)),
       'DELETE /api/serena/pausa': () => rotasDaSerena.despausar(usuario),
       'POST /api/serena/plantao': async () => rotasDaSerena.ligarPorTempo(usuario, await lerJson(req)),
@@ -606,6 +622,62 @@ function criarAplicacao(dependencias = {}) {
     if (rota === '/api/leads/vocabulario' && metodo === 'GET') {
       responderJson(res, 200, await rotasDeLeads.vocabulario(usuario));
       return true;
+    }
+
+    // --- IA: menus, relatório, assistente, telemetria e avaliações ---
+    if (rota === '/api/ia/modelos' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeIA.catalogo(usuario), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/ia/relatorio' && metodo === 'POST') {
+      responderJson(res, 200, await rotasDeIA.relatorio(usuario, await lerJson(req).catch(() => ({}))));
+      return true;
+    }
+    if (rota === '/api/ia/assistente' && metodo === 'POST') {
+      responderJson(res, 200, await rotasDeIA.assistente(usuario, await lerJson(req)));
+      return true;
+    }
+    if (rota === '/api/ia/chamadas' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeIA.telemetria(usuario), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/ia/avaliacoes' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeIA.listarAvaliacoes(usuario, url.searchParams), { 'cache-control': 'no-store' });
+      return true;
+    }
+    if (rota === '/api/ia/avaliacoes/varrer' && metodo === 'POST') {
+      responderJson(res, 200, await rotasDeIA.varrerAvaliacoes(usuario));
+      return true;
+    }
+
+    // --- Central de notificações (o sino do topo) ---
+    if (rota === '/api/notificacoes' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const notificacoes = await repositorio.listarNotificacoes({
+        usuarioId: usuario.id,
+        apenasNaoLidas: url.searchParams.get('todas') !== 'sim',
+      });
+      responderJson(res, 200, { total: notificacoes.length, notificacoes }, { 'cache-control': 'no-store' });
+      return true;
+    }
+    {
+      const partesDeNotificacao = rota.split('/').filter(Boolean);
+      if (partesDeNotificacao[0] === 'api' && partesDeNotificacao[1] === 'notificacoes'
+          && partesDeNotificacao.length === 4 && partesDeNotificacao[3] === 'lida'
+          && /^\d+$/.test(partesDeNotificacao[2])) {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return true;
+        }
+        exigirPermissao(usuario, 'conversas:ler');
+        const notificacao = await repositorio.marcarNotificacaoLida(partesDeNotificacao[2]);
+        if (!notificacao) {
+          responderJson(res, 404, { erro: 'notificação não encontrada ou já lida' });
+          return true;
+        }
+        responderJson(res, 200, { notificacao });
+        return true;
+      }
     }
 
     // GET /api/metricas/resumo — o resumo dos dashboards, com período, fuso,

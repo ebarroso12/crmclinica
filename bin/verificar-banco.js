@@ -116,6 +116,31 @@ const ESPERADO = {
       ['tarefas', 'chave'], ['formularios_pre_consulta', 'token'],
     ],
   },
+  '026_analitica': {
+    tabelas: ['eventos_analiticos'],
+    colunas: [
+      ['eventos_analiticos', 'nome'], ['eventos_analiticos', 'chave'],
+      ['eventos_analiticos', 'ocorrido_em'],
+    ],
+  },
+  '027_ia_gateway': {
+    tabelas: ['ia_modelos', 'ia_chamadas'],
+    colunas: [
+      ['ia_modelos', 'provedor'], ['ia_modelos', 'ativo'], ['ia_modelos', 'padrao'],
+      ['ia_chamadas', 'chave_idempotencia'], ['ia_chamadas', 'latencia_ms'],
+      ['ia_chamadas', 'custo_estimado_usd'], ['ia_chamadas', 'fallback_de'],
+    ],
+  },
+  '028_avaliacoes_notificacoes': {
+    tabelas: ['ia_avaliacoes', 'notificacoes', 'serena_ativacao_contatos'],
+    colunas: [
+      ['ia_avaliacoes', 'empatia'], ['ia_avaliacoes', 'seguranca'],
+      ['ia_avaliacoes', 'aderencia'], ['ia_avaliacoes', 'veredito'],
+      ['notificacoes', 'chave'], ['notificacoes', 'lida_em'],
+      ['serena_configuracao', 'modo_ativacao'],
+      ['serena_configuracao', 'ativacao_percentual'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
@@ -127,6 +152,9 @@ const CONSTRAINTS = [
   ['serena_prompts', 'serena_prompt_versao_uk', 'versão de prompt não se repete'],
   ['tarefas', 'tarefas_chave_unica', 'o sino não duplica: uma inatividade, uma tarefa'],
   ['formularios_pre_consulta', 'formularios_um_por_agendamento', 'um formulário por agendamento'],
+  ['ia_chamadas', 'ia_chamadas_chave_unica', 'retry de IA devolve o mesmo resultado, sem custo dobrado'],
+  ['ia_avaliacoes', 'ia_avaliacoes_unicas', 'reavaliar não duplica avaliação'],
+  ['notificacoes', 'notificacoes_chave_unica', 'reprocessar não duplica aviso no sino'],
 ];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
@@ -148,7 +176,8 @@ const TABELAS_COM_RLS = [
   'recuperacoes_senha', 'tentativas_autenticacao', 'lead_eventos',
   'profissionais', 'disponibilidades', 'agenda_bloqueios', 'agendamentos', 'lembretes',
   'serena_configuracao', 'serena_prompts', 'serena_regras',
-  'tarefas', 'formularios_pre_consulta',
+  'tarefas', 'formularios_pre_consulta', 'eventos_analiticos',
+  'ia_modelos', 'ia_chamadas', 'ia_avaliacoes', 'notificacoes', 'serena_ativacao_contatos',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;

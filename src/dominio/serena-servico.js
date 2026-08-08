@@ -154,7 +154,45 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
    */
   async function podeResponder(conversa) {
     const configuracao = await obterConfiguracao();
+
+    // No modo lista, a allowlist viaja junto da configuração — a decisão em si
+    // continua pura e testável em `decidirResposta`.
+    if (configuracao?.modo_ativacao === 'lista' && repositorio.listarContatosDeAtivacao) {
+      configuracao.ativacao_contatos = await repositorio.listarContatosDeAtivacao();
+    }
     return decidirResposta(conversa, configuracao, agora());
+  }
+
+  /**
+   * Ativação gradual: todos, um percentual determinístico ou uma lista.
+   * O desligado global continua soberano — isto só regula o LIGADO.
+   */
+  async function definirAtivacao({ modo, percentual = null, usuarioId = null } = {}) {
+    if (!['todos', 'percentual', 'lista'].includes(modo)) {
+      throw new ErroDaSerena('modo de ativação deve ser: todos, percentual ou lista', 'ativacao_invalida');
+    }
+    if (modo === 'percentual') {
+      const numero = Number(percentual);
+      if (!Number.isInteger(numero) || numero < 0 || numero > 100) {
+        throw new ErroDaSerena('o percentual de ativação deve ser um inteiro de 0 a 100', 'percentual_invalido');
+      }
+    }
+
+    const configuracao = await repositorio.definirAtivacaoGradual({
+      modo, percentual: modo === 'percentual' ? Number(percentual) : null, usuarioId,
+    });
+    await auditar('serena_ativacao_definida', 1, {
+      modo, percentual: modo === 'percentual' ? Number(percentual) : null,
+    }, usuarioId);
+
+    return configuracao;
+  }
+
+  async function definirContatoDeAtivacao(contatoId, incluido, { usuarioId = null } = {}) {
+    const resultado = await repositorio.definirContatoDeAtivacao(contatoId, incluido === true, { usuarioId });
+    await auditar(incluido ? 'serena_ativacao_contato_incluido' : 'serena_ativacao_contato_removido',
+      Number(contatoId), null, usuarioId);
+    return resultado;
   }
 
   // ---------------------------------------------------------------- prompt
@@ -303,6 +341,8 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
     despausar,
     ligarPorTempo,
     podeResponder,
+    definirAtivacao,
+    definirContatoDeAtivacao,
     listarPrompts,
     obterPromptAtivo,
     criarPrompt,
