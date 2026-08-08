@@ -30,6 +30,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const leads = new Map();
   const eventos = new Map();
   const auditoria = [];
+  const heartbeats = new Map();
   const usuarios = new Map();
   const sessoes = new Map();
   const recuperacoes = new Map();
@@ -643,6 +644,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         .sort((a, b) => b.id - a.id)
         .slice(0, limite);
       return { itens, proximoCursor: itens.length === limite ? itens.at(-1).id : null };
+    },
+
+    async registrarHeartbeat(componente, instancia, versao = null) {
+      heartbeats.set(componente, { componente, instancia, versao, visto_em: agora().toISOString() });
+    },
+
+    async obterHeartbeat(componente) {
+      return heartbeats.get(componente) ?? null;
     },
 
     // ---------------------------------------------------------------- usuários e sessões

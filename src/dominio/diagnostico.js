@@ -144,6 +144,16 @@ async function executarDiagnostico(sondas = {}) {
     }
   }
 
+  const google = await verificar('google', sondas.google);
+  if (google?.configurada && !google.alcancavel) {
+    registrar(achado({ area: 'google', nivel: 'falha', titulo: 'o espelho da agenda Google não responde', detalhe: google.motivo ?? null, reparo: 'Confira a credencial da conta de serviço e o compartilhamento do calendário.' }));
+  }
+
+  const worker = await verificar('worker', sondas.worker);
+  if (worker && !worker.ativo) {
+    registrar(achado({ area: 'worker', nivel: 'critico', titulo: 'o worker de lembretes não confirmou atividade', detalhe: worker.detalhe ?? null, reparo: 'Reinicie o serviço do worker e confira os logs do OpenClaw.', comando: 'reiniciar:crmclinica-lembretes' }));
+  }
+
   // ------------------------------------------------------------------- fila
   const fila = await verificar('lembretes', sondas.fila);
   if (fila) {

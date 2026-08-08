@@ -939,6 +939,22 @@ function criarRepositorio(pool) {
       return { itens, proximoCursor: itens.length === limite ? itens.at(-1).id : null };
     },
 
+    async registrarHeartbeat(componente, instancia, versao = null) {
+      await consultar(
+        `INSERT INTO operacao_heartbeats (componente, instancia, versao, visto_em)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (componente) DO UPDATE SET instancia = EXCLUDED.instancia, versao = EXCLUDED.versao, visto_em = now()`,
+        [componente, instancia, versao],
+      );
+    },
+
+    async obterHeartbeat(componente) {
+      const { rows } = await consultar(
+        'SELECT componente, instancia, versao, visto_em FROM operacao_heartbeats WHERE componente = $1', [componente],
+      );
+      return rows[0] ?? null;
+    },
+
     // ---------------------------------------------------------------- usuários e sessões
 
     async obterUsuarioPorEmail(email) {

@@ -126,6 +126,16 @@ async function main() {
   let encerrando = false;
   let rodando = false;
 
+  async function marcarHeartbeat() {
+    try {
+      await repositorio.registrarHeartbeat('lembretes_worker', worker, require('../package.json').version);
+    } catch (erro) {
+      // A prova de vida não pode virar ponto único de falha do processamento.
+      // O health mostrará o worker como desatualizado, mas o próximo lote segue.
+      console.error(`[lembretes] heartbeat não registrado: ${erro.message}`);
+    }
+  }
+
   // A Serena do OpenClaw responde ao paciente sem passar por aqui. Sem esta
   // sincronia, o interruptor, a pausa e a grade de horário do painel seriam
   // controles que não desligam nada — a tela diria "desligada" e o paciente
@@ -292,6 +302,7 @@ async function main() {
   }
 
   if (temFlag('uma-vez')) {
+    await marcarHeartbeat();
     const resultado = await umLote();
     console.log(JSON.stringify(resultado ?? { erro: 'lote falhou' }, null, 2));
     await encerrarPool();
@@ -303,6 +314,7 @@ async function main() {
     if (cicloEmAndamento) return;
     cicloEmAndamento = true;
     try {
+      await marcarHeartbeat();
       await sincronizarSerena();
       await sincronizarConversas();
       await umLote();
