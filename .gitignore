@@ -37,10 +37,10 @@ Thumbs.db
 # Todos ancorados na raiz com `/`. Sem a barra, o padrão casaria em qualquer
 # profundidade — e um `item` ou `d.platform` legítimo dentro de `src/` sumiria
 # do git sem ninguém notar, que é um estrago maior que o lixo que isto evita.
-/console.log(*
-/{
-/{const
-/{try{const
+/console.log[*]
+/[{]
+/[{]const
+/[{]try[{]const
 /Date.now()
 /d.platform
 /item

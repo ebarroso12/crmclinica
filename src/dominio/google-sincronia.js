@@ -20,7 +20,7 @@
 // gravar nada só refaz trabalho. E 410 — cursor vencido — não é erro: é o
 // Google pedindo um full sync, que este módulo refaz de forma controlada.
 
-const { ErroDoGoogle, agendamentoDoEventoId } = require('../integracoes/google-calendario');
+const { ErroDoGoogle, agendamentoDoEventoId, idDoEvento } = require('../integracoes/google-calendario');
 
 function criarSincroniaGoogle({
   repositorio,
@@ -285,6 +285,23 @@ function criarSincroniaGoogle({
       const operacao = agendamento.status === 'cancelado'
         ? 'cancelar'
         : (conflito.tipo === 'cancelado_no_google' || conflito.tipo === 'evento_sem_dono' ? 'criar' : 'atualizar');
+      if (operacao === 'atualizar' || operacao === 'cancelar') {
+        // O etag guardado é anterior à edição que abriu o conflito: mandar o
+        // PATCH/DELETE com ele daria 412 e o conflito voltaria na hora. Relê
+        // o evento e carimba o etag atual — se o Google mudar outra vez até
+        // o worker rodar, o 412 reabre o conflito, como deve ser.
+        try {
+          const lido = await calendario.obterEvento(
+            agendamento.google_evento_id ?? idDoEvento(agendamento.id),
+          );
+          if (lido?.etag) {
+            await repositorio.atualizarAgendamento(agendamento.id, { googleEtag: lido.etag });
+          }
+        } catch {
+          // Se a leitura falhar, o worker tenta com o etag que tem: o 412
+          // vira conflito de novo e nada é sobrescrito às cegas.
+        }
+      }
       await outbox.registrarMudanca(agendamento.id, operacao, { usuarioId });
     }
 
