@@ -16,6 +16,11 @@
 --      (5516900000xx) não entram em nenhuma view agregada.
 --   4. **`eventos_analiticos` é append-only** para eventos de produto que não
 --      têm tabela própria. A chave única deduplica reprocessamento.
+--   5. **Toda view é `security_invoker`.** View comum executa com o dono e
+--      furaria o RLS das tabelas-base; com security_invoker, quem consulta a
+--      view precisa do próprio direito de ler as tabelas. PUBLIC, anon e
+--      authenticated são revogados explicitamente; SELECT fica só com
+--      crmclinica_app (quando o papel existe).
 
 BEGIN;
 
@@ -49,7 +54,7 @@ CREATE INDEX IF NOT EXISTS eventos_analiticos_nome_idx
 -- ---------------------------------------------------------------- leads
 
 -- METRICAS.md: leads_novos / leads_por_origem (fluxo, por dia de São Paulo)
-CREATE OR REPLACE VIEW vw_leads_por_dia AS
+CREATE OR REPLACE VIEW vw_leads_por_dia WITH (security_invoker = true) AS
 SELECT
   (l.criado_em AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
   l.origem,
@@ -62,7 +67,7 @@ GROUP BY 1, 2;
 COMMENT ON VIEW vw_leads_por_dia IS 'METRICAS.md: leads_novos e leads_por_origem. Fluxo por dia (America/Sao_Paulo).';
 
 -- METRICAS.md: leads_por_estagio (fotografia — estoque, não fluxo)
-CREATE OR REPLACE VIEW vw_funil_estagios AS
+CREATE OR REPLACE VIEW vw_funil_estagios WITH (security_invoker = true) AS
 SELECT l.estagio, count(*) AS total
 FROM leads l
 JOIN contatos ct ON ct.id = l.contato_id
@@ -72,7 +77,7 @@ GROUP BY 1;
 COMMENT ON VIEW vw_funil_estagios IS 'METRICAS.md: leads_por_estagio. FOTOGRAFIA do momento — não somar com métricas de período.';
 
 -- METRICAS.md: motivo_perda
-CREATE OR REPLACE VIEW vw_motivos_perda AS
+CREATE OR REPLACE VIEW vw_motivos_perda WITH (security_invoker = true) AS
 SELECT
   (e.criado_em AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
   coalesce(nullif(trim(l.perdido_motivo), ''), 'sem motivo registrado') AS motivo,
@@ -89,7 +94,7 @@ COMMENT ON VIEW vw_motivos_perda IS 'METRICAS.md: motivo_perda. Perdas por dia e
 -- ---------------------------------------------------------------- conversas
 
 -- METRICAS.md: tempo_primeira_resposta (base por conversa; mediana e p90 na aplicação)
-CREATE OR REPLACE VIEW vw_primeira_resposta AS
+CREATE OR REPLACE VIEW vw_primeira_resposta WITH (security_invoker = true) AS
 SELECT
   c.id AS conversa_id,
   (min(entrada.criado_em) AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
@@ -109,7 +114,7 @@ GROUP BY c.id;
 COMMENT ON VIEW vw_primeira_resposta IS 'METRICAS.md: tempo_primeira_resposta. Base por conversa; minutos nulo = ainda sem resposta (entra em backlog, não na mediana).';
 
 -- METRICAS.md: picos_horario (hora e dia da semana no fuso da clínica)
-CREATE OR REPLACE VIEW vw_picos_horario AS
+CREATE OR REPLACE VIEW vw_picos_horario WITH (security_invoker = true) AS
 SELECT
   extract(dow  FROM (m.criado_em AT TIME ZONE 'America/Sao_Paulo'))::int AS dia_semana,
   extract(hour FROM (m.criado_em AT TIME ZONE 'America/Sao_Paulo'))::int AS hora,
@@ -126,7 +131,7 @@ COMMENT ON VIEW vw_picos_horario IS 'METRICAS.md: picos_horario. Entradas por di
 -- ---------------------------------------------------------------- agenda
 
 -- METRICAS.md: agendamentos_novos / cancelamentos / faltas / comparecimento
-CREATE OR REPLACE VIEW vw_agenda_por_dia AS
+CREATE OR REPLACE VIEW vw_agenda_por_dia WITH (security_invoker = true) AS
 SELECT
   (a.inicio AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
   a.status,
@@ -141,7 +146,7 @@ COMMENT ON VIEW vw_agenda_por_dia IS 'METRICAS.md: agendamentos por status e dia
 -- ---------------------------------------------------------------- Serena
 
 -- METRICAS.md: handoff_serena e silencio_serena, a partir da trilha de auditoria
-CREATE OR REPLACE VIEW vw_serena_por_dia AS
+CREATE OR REPLACE VIEW vw_serena_por_dia WITH (security_invoker = true) AS
 SELECT
   (a.criado_em AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
   a.acao,
@@ -177,6 +182,13 @@ BEGIN
       TO crmclinica_app;
   END IF;
 END $$;
+
+-- PUBLIC recebe privilégio implícito em objetos novos em algumas instalações;
+-- a revogação é EXPLÍCITA e incondicional. anon/authenticated só se existirem.
+REVOKE ALL ON public.eventos_analiticos FROM PUBLIC;
+REVOKE ALL ON vw_leads_por_dia, vw_funil_estagios, vw_motivos_perda,
+  vw_primeira_resposta, vw_picos_horario, vw_agenda_por_dia, vw_serena_por_dia
+  FROM PUBLIC;
 
 DO $$
 DECLARE r text;

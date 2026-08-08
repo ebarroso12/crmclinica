@@ -82,8 +82,43 @@ CREATE TABLE IF NOT EXISTS ia_chamadas (
 COMMENT ON TABLE ia_chamadas IS
   'Telemetria do gateway multi-IA: modelo, prompt_version, latência, tokens, custo, erro e fallback. Chave única = retry idempotente.';
 
+COMMENT ON COLUMN ia_chamadas.resposta IS
+  'Texto final entregue. Existe SÓ para o retry idempotente devolver o mesmo resultado; retenção mínima: limpar_respostas_de_ia() anula após o prazo (padrão 30 dias). Nunca aparece em métricas, auditoria, exportação ou na API de telemetria.';
+
 CREATE INDEX IF NOT EXISTS ia_chamadas_periodo_idx ON ia_chamadas (criado_em);
 CREATE INDEX IF NOT EXISTS ia_chamadas_finalidade_idx ON ia_chamadas (finalidade, criado_em);
+
+-- A varredura de retenção só olha o que ainda tem resposta guardada.
+CREATE INDEX IF NOT EXISTS ia_chamadas_com_resposta_idx
+  ON ia_chamadas (criado_em) WHERE resposta IS NOT NULL;
+
+-- ------------------------------------------------------ retenção da resposta
+--
+-- O texto gerado existe para UMA finalidade: o retry com a mesma chave
+-- devolver o mesmo resultado sem nova cobrança. Passada a janela, ele é
+-- anulado — a linha de telemetria (modelo, latência, tokens, custo, erro,
+-- fallback) fica intacta para sempre; só o conteúdo morre.
+--
+-- SECURITY DEFINER de propósito: a aplicação NÃO tem UPDATE em ia_chamadas
+-- (telemetria não se reescreve). Esta função é a única porta de escrita, e ela
+-- só sabe fazer uma coisa: anular respostas vencidas.
+CREATE OR REPLACE FUNCTION public.limpar_respostas_de_ia(retencao interval DEFAULT interval '30 days')
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE afetadas integer;
+BEGIN
+  UPDATE public.ia_chamadas
+  SET resposta = NULL
+  WHERE resposta IS NOT NULL
+    AND criado_em < now() - retencao;
+  GET DIAGNOSTICS afetadas = ROW_COUNT;
+  RETURN afetadas;
+END $$;
+
+REVOKE ALL ON FUNCTION public.limpar_respostas_de_ia(interval) FROM PUBLIC;
 
 -- ---------------------------------------------------------------- RLS
 
@@ -101,8 +136,12 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE, DELETE ON public.ia_modelos TO crmclinica_app;
     GRANT SELECT, INSERT ON public.ia_chamadas TO crmclinica_app;
     REVOKE UPDATE, DELETE ON public.ia_chamadas FROM crmclinica_app;
+    -- A retenção é a única escrita permitida sobre a telemetria, e só via função.
+    GRANT EXECUTE ON FUNCTION public.limpar_respostas_de_ia(interval) TO crmclinica_app;
   END IF;
 END $$;
+
+REVOKE ALL ON public.ia_modelos, public.ia_chamadas FROM PUBLIC;
 
 DO $$
 DECLARE r text; t text;

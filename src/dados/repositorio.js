@@ -1078,6 +1078,19 @@ function criarRepositorio(pool) {
       return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
     },
 
+    /**
+     * Retenção mínima do texto gerado: anula `resposta` das chamadas mais
+     * velhas que a janela. A única escrita permitida sobre a telemetria, e só
+     * pela função do banco — a aplicação não tem UPDATE na tabela.
+     */
+    async limparRespostasDeIA({ retencaoDias = 30 } = {}) {
+      const { rows } = await consultar(
+        'SELECT public.limpar_respostas_de_ia(make_interval(days => $1)) AS anuladas',
+        [retencaoDias],
+      );
+      return { anuladas: Number(rows[0]?.anuladas ?? 0) };
+    },
+
     // ---------------------------------------------------------------- IA: avaliações
 
     async registrarAvaliacaoDeIA({

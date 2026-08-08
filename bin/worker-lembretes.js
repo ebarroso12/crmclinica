@@ -277,6 +277,19 @@ async function main() {
       console.error(`[sino] falhou: ${erro.message}`);
     }
   }
+
+  // Retenção do texto gerado por IA: anula respostas vencidas (padrão 30 dias).
+  // A telemetria (latência, tokens, custo) fica; só o conteúdo morre. O log
+  // registra QUANTAS — nunca o texto.
+  async function manterRetencaoDeIA() {
+    if (!repositorio.limparRespostasDeIA) return;
+    try {
+      const { anuladas } = await repositorio.limparRespostasDeIA({ retencaoDias: 30 });
+      if (anuladas > 0) console.log(`[ia] retenção: ${anuladas} resposta(s) anulada(s)`);
+    } catch (erro) {
+      console.error(`[ia] retenção falhou: ${erro.message}`);
+    }
+  }
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
     // ciclos se sobreporem dentro do mesmo processo.
@@ -323,6 +336,7 @@ async function main() {
       await umLote();
       await enviarResumos();
       await gerarSino();
+      await manterRetencaoDeIA();
     } finally {
       cicloEmAndamento = false;
     }

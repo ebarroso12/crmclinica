@@ -847,6 +847,18 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         .map(({ resposta: _resposta, ...resto }) => ({ ...resto }));
     },
 
+    async limparRespostasDeIA({ retencaoDias = 30 } = {}) {
+      const limite = agora().getTime() - retencaoDias * 24 * 3_600_000;
+      let anuladas = 0;
+      for (const chamada of iaChamadas) {
+        if (chamada.resposta !== null && new Date(chamada.criado_em).getTime() < limite) {
+          chamada.resposta = null;
+          anuladas += 1;
+        }
+      }
+      return { anuladas };
+    },
+
     // ---------------------------------------------------------------- IA: avaliações
 
     async registrarAvaliacaoDeIA({

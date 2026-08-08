@@ -102,6 +102,8 @@ BEGIN
   END IF;
 END $$;
 
+REVOKE ALL ON public.ia_avaliacoes, public.notificacoes, public.serena_ativacao_contatos FROM PUBLIC;
+
 DO $$
 DECLARE r text; t text;
 BEGIN

@@ -152,6 +152,8 @@ BEGIN
   END IF;
 END $$;
 
+REVOKE ALL ON public.tarefas, public.formularios_pre_consulta FROM PUBLIC;
+
 DO $$
 DECLARE r text; t text;
 BEGIN

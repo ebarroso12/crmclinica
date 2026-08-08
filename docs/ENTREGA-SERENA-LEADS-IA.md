@@ -87,7 +87,18 @@ Regras absolutas cobertas por prova executável: persistir antes de responder (1
 4. **Worker dedicado** (separar o sino/avaliações/resumos do worker de lembretes quando o volume crescer).
 5. **Consolidar o painel de auditoria** (a aba existe como stub; a trilha já tem tudo).
 
-## 5. Como validar localmente
+## 5. Correções da revisão do PR #12 (2ª rodada)
+
+| Pedido | Entrega | Evidência |
+|---|---|---|
+| Views com `security_invoker` | As 7 views da 026 recriadas com `WITH (security_invoker = true)`; quem consulta precisa do próprio direito nas tabelas-base — a view não fura RLS | `db/026_analitica.sql` |
+| Revogação explícita de PUBLIC | `REVOKE ALL ... FROM PUBLIC` incondicional nas views e em TODAS as tabelas novas (025, 026, 027, 028), além de anon/authenticated condicionais; SELECT só para `crmclinica_app` quando o papel existe | migrations 025–028 |
+| Retenção de `ia_chamadas.resposta` | Função `limpar_respostas_de_ia(interval)` (SECURITY DEFINER — a única escrita permitida na telemetria, que continua sem UPDATE/DELETE para a app); padrão 30 dias; worker roda a cada ciclo; índice parcial para a varredura; após a retenção o retry REGENERA em vez de servir cache vazio | `db/027`, `bin/worker-lembretes.js`, `testes/ia-retencao.test.js` |
+| Resposta nunca vaza | 6 testes NEGATIVOS com marcador sentinela: `/api/ia/chamadas`, `/api/metricas/resumo`, `/api/ia/avaliacoes`, `/api/notificacoes`, `/api/tarefas`, trilha de auditoria pós-gateway, exportação da telemetria e métricas da Serena — nenhum carrega o texto | `testes/ia-retencao.test.js` |
+| Inventário do incidente | IDs 23–27, nomes, situação e evidência de `ativa: false` desde 2026-08-05 (consulta somente leitura), com orientação de revisão pelo painel; nada deletado | `docs/INCIDENTE-REGRAS-SEMEADAS.md` |
+| Lacuna 008/009 | Ferramenta versionada de extração somente leitura + snapshot REAL (6 funções via `pg_get_functiondef`, 53 policies `crm008_*` em 18 tabelas, storage sem grants para anon/authenticated = evidência da 009) + plano passo a passo sem SQL adivinhado, incluindo 2 discrepâncias reais achadas (`u.ativo` inexistente em `current_usuario_id`; `search_path` fora do padrão da 007) | `ferramentas/extrair-definicoes-008.js`, `docs/PLANO-RECONSTRUCAO-008-009.md` |
+
+## 6. Como validar localmente
 
 ```bash
 npm ci
