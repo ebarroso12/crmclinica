@@ -136,6 +136,16 @@ function validarEvento(entrada) {
  *     A conversa JÁ está com o agente por definição: tudo vira
  *     `openclaw_gerencia`, e qualquer outra reivindicação é recusada.
  *
+ *   `sincronia_whatsapp_crm` — importador da Arquitetura B. O agente direto do
+ *     canal está globalmente calado e o CRM é o único dono da resposta; tudo
+ *     vira `crm_despacha`. Este adaptador só é escolhido por configuração do
+ *     processo, nunca pelo payload do canal.
+ *
+ *   `openclaw_ingresso_crm` — ponte instalada dentro do processo confiável do
+ *     OpenClaw. Ela observa o inbound nativo, o persiste antes da entrega e o
+ *     envia à rota HMAC exclusiva. Só aceita WhatsApp e sempre carimba
+ *     `crm_despacha`; o JSON não escolhe essa propriedade.
+ *
  *   `openclaw_webhook` — a rota autenticada por HMAC (`POST /api/eventos`).
  *     • WhatsApp sem estratégia: recusado (`estrategia_ia_ambigua`). A mensagem
  *       pode já ter sido respondida pelo agente no canal; adivinhar aqui é
@@ -164,6 +174,38 @@ function exigirEstrategiaDoAdaptador(evento, adaptador) {
       );
     }
     return Object.freeze({ ...evento, estrategia_ia: 'openclaw_gerencia' });
+  }
+
+  if (adaptador === 'sincronia_whatsapp_crm') {
+    if (evento.canal !== 'whatsapp') {
+      throw new ErroDeEstrategia(
+        'o sincronizador do WhatsApp só importa eventos do canal whatsapp',
+        'estrategia_ia_incompativel',
+      );
+    }
+    if (declarada && declarada !== 'crm_despacha') {
+      throw new ErroDeEstrategia(
+        'na Arquitetura B a resposta pertence exclusivamente ao CRM',
+        'estrategia_ia_incompativel',
+      );
+    }
+    return Object.freeze({ ...evento, estrategia_ia: 'crm_despacha' });
+  }
+
+  if (adaptador === 'openclaw_ingresso_crm') {
+    if (evento.canal !== 'whatsapp') {
+      throw new ErroDeEstrategia(
+        'a ponte de ingresso do WhatsApp só aceita o canal whatsapp',
+        'estrategia_ia_incompativel',
+      );
+    }
+    if (declarada && declarada !== 'crm_despacha') {
+      throw new ErroDeEstrategia(
+        'na ponte de ingresso a resposta pertence exclusivamente ao CRM',
+        'estrategia_ia_incompativel',
+      );
+    }
+    return Object.freeze({ ...evento, estrategia_ia: 'crm_despacha' });
   }
 
   if (adaptador === 'openclaw_webhook') {

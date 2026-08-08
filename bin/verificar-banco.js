@@ -203,8 +203,11 @@ const FUNCOES_COM_SEARCH_PATH = [
 ];
 
 // Tabelas cujo histórico não se reescreve. A aplicação não deve ter privilégio
-// de apagá-las — nem depender de a policy segurar.
-const SEM_DELETE = ['audit_log', 'lead_eventos', 'usuarios'];
+// de apagá-las — nem depender de a policy segurar. `operacao_heartbeats` e
+// `auditoria_exportacoes` entram pela migration 029: a validação em produção
+// pegou DELETE herdado de default privileges, e esta lista é o teste negativo
+// executável que impede a regressão.
+const SEM_DELETE = ['audit_log', 'lead_eventos', 'usuarios', 'operacao_heartbeats', 'auditoria_exportacoes'];
 
 // Toda tabela do produto precisa de RLS. A lista é explícita para que uma tabela
 // nova sem RLS apareça como falta, não passe despercebida.

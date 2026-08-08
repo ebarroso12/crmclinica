@@ -30,7 +30,7 @@ if (fs.existsSync(CAMINHO_ENV) && typeof process.loadEnvFile === 'function') {
 }
 
 const os = require('node:os');
-const { carregarConfiguracao } = require('../src/config');
+const { carregarConfiguracao, validarTransporteWhatsapp } = require('../src/config');
 const { criarServicoDeLembretes } = require('../src/dominio/lembretes-servico');
 const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
 const { criarSincronizadorDaSerena } = require('../src/dominio/sincronia-serena');
@@ -49,6 +49,7 @@ const { criarServicoDeFluxo } = require('../src/dominio/crm-fluxo');
 const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('../src/integracoes/openclaw-gateway');
 const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
+const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
 
 function lerArgumento(nome, padrao = null) {
   const prefixo = `--${nome}=`;
@@ -65,6 +66,14 @@ function identificarWorker() {
 
 async function main() {
   const configuracao = carregarConfiguracao();
+
+  const problemasDoTransporte = validarTransporteWhatsapp(configuracao);
+  if (problemasDoTransporte.length > 0) {
+    for (const problema of problemasDoTransporte) {
+      console.error(`[serena] configuração recusada: ${problema}`);
+    }
+    process.exit(1);
+  }
 
   if (!configuracao.banco.configurado) {
     console.error('[lembretes] CRMCLINICA_DATABASE_URL não está definida.');
@@ -102,6 +111,7 @@ async function main() {
   });
 
   const servicoDaSerena = criarServicoDaSerena({ repositorio });
+  const crmDespachaWhatsapp = configuracao.serena.transporteWhatsapp === 'crm_despacha';
 
   // Sem gateway do canal configurado não há o que sincronizar — e é melhor o
   // worker rodar a fila sem a sincronia do que não rodar de jeito nenhum.
@@ -137,21 +147,33 @@ async function main() {
     }
   }
 
-  // A Serena do OpenClaw responde ao paciente sem passar por aqui. Sem esta
-  // sincronia, o interruptor, a pausa e a grade de horário do painel seriam
-  // controles que não desligam nada — a tela diria "desligada" e o paciente
-  // continuaria recebendo resposta automática.
+  // No modo anterior, a Serena do OpenClaw responde ao paciente sem passar por
+  // aqui. Sem esta sincronia, o interruptor, a pausa e a grade de horário do
+  // painel seriam controles que não desligam nada — a tela diria "desligada" e
+  // o paciente continuaria recebendo resposta automática. Na Arquitetura B, a
+  // mesma política é mantida sempre calada e a decisão passa a ser do CRM.
   //
   // Fica no worker porque a decisão muda sozinha com a hora: às 18h a grade
   // abre, e ninguém vai estar no painel naquele minuto para aplicar.
-  const sincronizador = sincronia
+  const sincronizador = sincronia && !crmDespachaWhatsapp
     ? criarSincronizadorDaSerena({ serena: servicoDaSerena, politica: sincronia })
     : null;
 
   async function sincronizarSerena() {
-    if (!sincronizador) return;
+    // Arquitetura B: o silêncio não é mais `allowFrom=[]` — essa política
+    // descarta a mensagem antes de ela chegar ao plugin. O hook
+    // `before_agent_reply` bloqueia a chamada ao modelo, enquanto o hook
+    // `message_received` entrega o inbound ao CRM. O worker não pode reescrever
+    // a política do canal nesse modo.
+    if (crmDespachaWhatsapp) {
+      return true;
+    }
+
+    if (!sincronia) return false;
+    if (!sincronizador) return true;
     const resultado = await sincronizador.sincronizar();
     if (resultado?.erro) console.error(`[serena] sincronia falhou: ${resultado.erro}`);
+    return true;
   }
 
 
@@ -218,13 +240,14 @@ async function main() {
       }),
       atendimento: criarAtendimento({
         repositorio,
-        orquestrador: null,
+        orquestrador: crmDespachaWhatsapp ? criarClienteOpenClaw(configuracao.openclaw) : null,
         leads: criarServicoDeLeads({ repositorio }),
         lembretes,
         serena: servicoDaSerena,
         canal: criarCanalDeConversas(configuracao.openclaw.canalClinica),
       }),
       repositorio,
+      estrategiaIa: configuracao.serena.transporteWhatsapp,
       // Os administradores comandam a Serena e recebem os resumos: o que eles
       // escrevem não é atendimento, não vira contato e não entra no funil.
       numerosInternos: configuracao.numerosInternos,
@@ -239,7 +262,13 @@ async function main() {
     return conversasDoCanal;
   }
 
-  async function sincronizarConversas() {
+  async function sincronizarConversas({ canalSeguro = true } = {}) {
+    // Na Arquitetura B o ingresso é push e durável: o plugin do OpenClaw envia
+    // cada mensagem à rota HMAC do CRM. Consultar `chat.history` aqui seria uma
+    // segunda fonte de entrada e, pior, poderia importar texto interno do agente
+    // como se fosse uma resposta visível. O leitor permanece apenas no modo A.
+    if (crmDespachaWhatsapp) return;
+    if (!canalSeguro) return;
     const leitor = montarLeitorDeConversas();
     if (!leitor) return;
     try {
@@ -343,8 +372,8 @@ async function main() {
     cicloEmAndamento = true;
     try {
       await marcarHeartbeat();
-      await sincronizarSerena();
-      await sincronizarConversas();
+      const canalSeguro = await sincronizarSerena();
+      await sincronizarConversas({ canalSeguro });
       await umLote();
       await enviarResumos();
       await gerarSino();

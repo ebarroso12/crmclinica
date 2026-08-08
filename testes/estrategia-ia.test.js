@@ -156,3 +156,19 @@ test('j. a recusa não expõe detalhe interno — e fica auditada', async (t) =>
   assert.ok(recusa, 'a recusa precisa estar no audit_log');
   assert.equal(recusa.detalhe.codigo, 'estrategia_ia_ambigua');
 });
+
+test('k. só o adaptador da Arquitetura B torna WhatsApp crm_despacha', () => {
+  const carimbado = exigirEstrategiaDoAdaptador(
+    eventoDe({ canal: 'whatsapp' }),
+    'sincronia_whatsapp_crm',
+  );
+  assert.equal(carimbado.estrategia_ia, 'crm_despacha');
+
+  assert.throws(
+    () => exigirEstrategiaDoAdaptador(
+      eventoDe({ canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia' }),
+      'sincronia_whatsapp_crm',
+    ),
+    (erro) => erro.codigo === 'estrategia_ia_incompativel',
+  );
+});
