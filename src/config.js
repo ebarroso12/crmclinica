@@ -208,6 +208,10 @@ function carregarConfiguracao(ambiente = process.env) {
       configurada: Boolean(texto(ambiente.CRMCLINICA_JWT_SECRET)),
       // Endereço público da aplicação, usado nos links de recuperação por e-mail.
       urlPublica: urlValida(ambiente.CRMCLINICA_URL_PUBLICA) || `http://127.0.0.1:${inteiro(ambiente.PORT, 4100)}`,
+      // 2FA obrigatório para master e admin (P1-04). Ligado por padrão; o
+      // 'nao' existe para desenvolvimento e para a suíte de testes, que
+      // ligaria isto teste a teste — produção não desliga.
+      segundoFatorObrigatorio: texto(ambiente.CRMCLINICA_2FA_OBRIGATORIO) !== 'nao',
     },
     // Proxies cujo `X-Forwarded-For` é aceito. Vazio por padrão: confiar no
     // cabeçalho de qualquer origem permitiria forjar o IP e burlar o rate limit.
@@ -242,6 +246,17 @@ function carregarConfiguracao(ambiente = process.env) {
       chave: texto(ambiente.KIMI_API_KEY),
       baseUrl: urlValida(ambiente.KIMI_BASE_URL) || 'https://api.moonshot.cn/v1',
       modelo: texto(ambiente.KIMI_MODEL) || 'kimi-latest',
+    },
+    // Gateway multi-IA. As chaves vivem SÓ aqui, no servidor: o navegador vê
+    // provedor e modelo, nunca credencial. Sem chave, o provedor simplesmente
+    // não aparece como disponível — nada quebra.
+    ia: {
+      openaiKey: texto(ambiente.OPENAI_API_KEY),
+      anthropicKey: texto(ambiente.ANTHROPIC_API_KEY),
+      googleKey: texto(ambiente.GEMINI_API_KEY),
+      deepseekKey: texto(ambiente.DEEPSEEK_API_KEY),
+      timeoutMs: inteiro(ambiente.IA_TIMEOUT_MS, 30000),
+      provedorPadrao: texto(ambiente.IA_PROVEDOR_PADRAO) || null,
     },
   };
 }

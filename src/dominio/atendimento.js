@@ -117,7 +117,7 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       };
     }
 
-    return responderSePossivel(conversa.id);
+    return responderSePossivel(conversa.id, { mensagemEntradaId: mensagem.id });
   }
 
   function temDadosDeOrigem(evento) {
@@ -125,8 +125,16 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       .some((campo) => Boolean(evento[campo]));
   }
 
-  /** Aplica a regra da pausa e, quando permitido, aciona o orquestrador. */
-  async function responderSePossivel(conversaId) {
+  /**
+   * Aplica a regra da pausa e, quando permitido, aciona o orquestrador.
+   *
+   * `mensagemEntradaId` é a mensagem do paciente que motivou esta chamada. A
+   * chave de idempotência do despacho e o `id_externo` da resposta derivam
+   * dela — nunca da "última mensagem no momento da leitura", que muda se outro
+   * inbound chegar entre a falha e a retentativa e faria o retry parecer um
+   * evento novo.
+   */
+  async function responderSePossivel(conversaId, { mensagemEntradaId = null } = {}) {
     const conversa = await repositorio.obterConversa(conversaId);
 
     // Com o serviço da Serena montado, a decisão passa por ele: o interruptor
@@ -159,6 +167,29 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
     const mensagens = await repositorio.listarMensagens(conversaId, { incluirPrivadas: false });
     const contexto = montarContextoMinimo(conversa, mensagens);
 
+    // O inbound que motivou esta resposta. Com ele, "um inbound → no máximo uma
+    // resposta automática" vira uma chave única no banco, não uma esperança.
+    const entradaId = mensagemEntradaId
+      ?? mensagens.filter((mensagem) => mensagem.direcao === 'entrada').at(-1)?.id
+      ?? 0;
+    const chaveDaResposta = `serena:resposta:${conversaId}:${entradaId}`;
+
+    // Retentativa depois de queda entre gravar e entregar: a resposta já existe.
+    // Não se despacha a IA de novo — reaproveita o texto gravado e tenta só a
+    // entrega, com a mesma chave, que o gateway deduplica.
+    const respostaAnterior = mensagens.find((mensagem) => mensagem.id_externo === chaveDaResposta);
+    if (respostaAnterior) {
+      const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
+        origem: 'serena',
+      });
+      return {
+        acao: 'respondida_pela_automacao',
+        conversa_id: conversaId,
+        duplicada: true,
+        entregue: entrega.enviada,
+      };
+    }
+
     // A qualificação vai junto para o orquestrador saber o que já foi perguntado
     // e o que falta — sem isso ele repetiria perguntas já respondidas.
     //
@@ -185,7 +216,7 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
 
     try {
       const resposta = await orquestrador.despacharEvento({
-        chave_idempotencia: `conversa:${conversaId}:${mensagens.at(-1)?.id ?? 0}`,
+        chave_idempotencia: `conversa:${conversaId}:${entradaId}`,
         tipo: 'conversa.mensagem_recebida',
         contexto,
       });
@@ -202,30 +233,43 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       const texto = resposta?.resposta || resposta?.texto;
       if (texto) {
         // A resposta da IA entra no mesmo histórico que a equipe lê. Não há
-        // registro paralelo: quem abre a conversa vê tudo em ordem.
-        const { mensagem } = await repositorio.registrarMensagem(conversaId, {
+        // registro paralelo: quem abre a conversa vê tudo em ordem. O
+        // `id_externo` determinístico faz o índice único do banco garantir que
+        // duas execuções concorrentes do mesmo inbound gravem UMA resposta.
+        const { mensagem: gravada, duplicada } = await repositorio.registrarMensagem(conversaId, {
           direcao: 'saida',
           conteudo: texto,
           autor_tipo: 'automacao',
           autor_nome: 'Serena',
+          id_externo: chaveDaResposta,
         });
 
-        // Na Arquitetura B o agente direto do canal está calado: gravar a saída
-        // sem enviá-la faria o CRM afirmar que respondeu quando o paciente não
-        // recebeu nada. A mesma chave determinística protege retentativas.
-        const entrega = await entregarAoPaciente(conversa, texto, mensagem.id, 'serena');
-        if (entrega.motivo !== 'canal_nao_configurado' && !entrega.enviada) {
+        // A resposta precisa CHEGAR ao paciente — gravar no CRM não entrega
+        // nada. A chave determinística faz reentrega concorrente ou retentada
+        // ser deduplicada pelo gateway.
+        const entrega = await entregarAoPaciente(conversa, gravada.conteudo, gravada.id, {
+          origem: 'serena',
+        });
+
+        if (!entrega.enviada && entrega.motivo !== 'canal_nao_configurado') {
           await repositorio.registrarAuditoria({
             entidade: 'conversa',
             entidadeId: conversaId,
-            acao: 'resposta_automacao_nao_entregue',
-            detalhe: { mensagem_id: mensagem.id, motivo: entrega.motivo },
+            acao: 'resposta_nao_entregue',
+            detalhe: { mensagem_id: gravada.id, motivo: entrega.motivo, autor: 'automacao' },
           }).catch(() => {});
+
+          // Arquitetura B: com o agente do canal calado, entrega que falhou
+          // significa paciente SEM resposta nenhuma. A conversa não fica parada
+          // com a automação — vai para a equipe, com o motivo. A resposta segue
+          // gravada com id_externo: liberada a conversa, o retry reaproveita o
+          // texto e tenta só a entrega, sem nova chamada de IA.
           await escalonar(conversaId, 'falha_na_entrega_da_automacao');
           return {
             acao: 'escalonada_por_falha_entrega',
             conversa_id: conversaId,
             motivo: entrega.motivo,
+            entregue: false,
           };
         }
 
@@ -233,15 +277,12 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
           entidade: 'conversa',
           entidadeId: conversaId,
           acao: 'respondida_pela_automacao',
-          detalhe: {
-            mensagem_id: mensagem.id,
-            entregue: entrega.enviada,
-            id_externo: entrega.identificador ?? null,
-          },
+          detalhe: { mensagem_id: gravada.id, entregue: entrega.enviada, duplicada },
         });
         return {
           acao: 'respondida_pela_automacao',
           conversa_id: conversaId,
+          duplicada,
           entregue: entrega.enviada,
         };
       }
@@ -372,7 +413,7 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
    * aconteceu, e apagá-la esconderia da própria equipe o que ela já escreveu.
    * O que muda é a marca — enviada ou não —, para a tela poder dizer a verdade.
    */
-  async function entregarAoPaciente(conversa, texto, mensagemId, origem = 'equipe') {
+  async function entregarAoPaciente(conversa, texto, mensagemId, { origem = 'equipe' } = {}) {
     if (!canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
 
     try {

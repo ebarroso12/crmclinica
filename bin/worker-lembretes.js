@@ -45,6 +45,7 @@ const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
 const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
 const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+const { criarServicoDeFluxo } = require('../src/dominio/crm-fluxo');
 const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('../src/integracoes/openclaw-gateway');
 const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
@@ -135,6 +136,16 @@ async function main() {
 
   let encerrando = false;
   let rodando = false;
+
+  async function marcarHeartbeat() {
+    try {
+      await repositorio.registrarHeartbeat('lembretes_worker', worker, require('../package.json').version);
+    } catch (erro) {
+      // A prova de vida não pode virar ponto único de falha do processamento.
+      // O health mostrará o worker como desatualizado, mas o próximo lote segue.
+      console.error(`[lembretes] heartbeat não registrado: ${erro.message}`);
+    }
+  }
 
   // No modo anterior, a Serena do OpenClaw responde ao paciente sem passar por
   // aqui. Sem esta sincronia, o interruptor, a pausa e a grade de horário do
@@ -291,6 +302,33 @@ async function main() {
       console.error(`[resumo] falhou: ${erro.message}`);
     }
   }
+
+  // O sino de acompanhamento: leads parados há 15 dias viram tarefa para a
+  // equipe. Idempotente por chave — rodar a cada ciclo não duplica nada.
+  const fluxo = criarServicoDeFluxo({ repositorio });
+  async function gerarSino() {
+    try {
+      const resultado = await fluxo.gerarTarefasDeAcompanhamento();
+      if (resultado.criadas > 0) {
+        console.log(`[sino] ${resultado.criadas} tarefa(s) de acompanhamento criada(s)`);
+      }
+    } catch (erro) {
+      console.error(`[sino] falhou: ${erro.message}`);
+    }
+  }
+
+  // Retenção do texto gerado por IA: anula respostas vencidas (padrão 30 dias).
+  // A telemetria (latência, tokens, custo) fica; só o conteúdo morre. O log
+  // registra QUANTAS — nunca o texto.
+  async function manterRetencaoDeIA() {
+    if (!repositorio.limparRespostasDeIA) return;
+    try {
+      const { anuladas } = await repositorio.limparRespostasDeIA({ retencaoDias: 30 });
+      if (anuladas > 0) console.log(`[ia] retenção: ${anuladas} resposta(s) anulada(s)`);
+    } catch (erro) {
+      console.error(`[ia] retenção falhou: ${erro.message}`);
+    }
+  }
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
     // ciclos se sobreporem dentro do mesmo processo.
@@ -321,6 +359,7 @@ async function main() {
   }
 
   if (temFlag('uma-vez')) {
+    await marcarHeartbeat();
     const resultado = await umLote();
     console.log(JSON.stringify(resultado ?? { erro: 'lote falhou' }, null, 2));
     await encerrarPool();
@@ -332,10 +371,13 @@ async function main() {
     if (cicloEmAndamento) return;
     cicloEmAndamento = true;
     try {
+      await marcarHeartbeat();
       const canalSeguro = await sincronizarSerena();
       await sincronizarConversas({ canalSeguro });
       await umLote();
       await enviarResumos();
+      await gerarSino();
+      await manterRetencaoDeIA();
     } finally {
       cicloEmAndamento = false;
     }

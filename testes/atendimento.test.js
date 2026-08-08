@@ -104,7 +104,9 @@ test('falha de entrega automática escala sem afirmar resposta entregue', async 
   assert.equal(resultado.acao, 'escalonada_por_falha_entrega');
   const [conversa] = await repositorio.listarConversas({});
   assert.equal((await repositorio.obterConversa(conversa.id)).assumida_por_humano, true);
-  assert.ok(repositorio._auditoria.some((r) => r.acao === 'resposta_automacao_nao_entregue'));
+  // Nome canônico da trilha — o mesmo que a view de métricas da Serena lê.
+  assert.ok(repositorio._auditoria.some((r) => r.acao === 'resposta_nao_entregue'
+    && r.detalhe?.autor === 'automacao'));
 });
 
 test('o orquestrador recebe só o contexto mínimo', async () => {

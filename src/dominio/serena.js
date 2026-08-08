@@ -145,6 +145,33 @@ function dentroDoHorario(agenda, agora = new Date()) {
 }
 
 /**
+ * Ativação gradual: este contato está no grupo que a Serena atende?
+ *
+ * `percentual` usa um hash determinístico do id — o MESMO contato cai sempre
+ * do mesmo lado, entre reinícios e entre servidores. Sorteio por request
+ * faria o paciente ser atendido numa mensagem e ignorado na seguinte.
+ */
+function contatoNaAtivacao(contatoId, configuracao = {}) {
+  const modo = configuracao?.modo_ativacao ?? 'todos';
+  if (modo === 'todos') return true;
+
+  const id = Number(contatoId);
+  if (!Number.isInteger(id)) return false;
+
+  if (modo === 'lista') {
+    const lista = configuracao?.ativacao_contatos ?? [];
+    return lista.includes(id);
+  }
+  if (modo === 'percentual') {
+    const percentual = Number(configuracao?.ativacao_percentual ?? 100);
+    // Multiplicação de Knuth: espalha ids sequenciais pelas faixas.
+    const hash = Math.abs(Math.imul(id, 2654435761)) % 100;
+    return hash < percentual;
+  }
+  return true;
+}
+
+/**
  * A Serena pode responder?
  *
  * Três camadas, e a ordem entre elas é a regra mais importante deste arquivo.
@@ -184,6 +211,12 @@ function decidirResposta(conversa = {}, configuracao = { ativa: true }, agora = 
   const emPlantao = noFuturo(configuracao?.ligada_ate, agora);
   if (!emPlantao && !dentroDoHorario(configuracao?.agenda, agora)) {
     return { responder: false, motivo: 'fora_do_horario', escopo: 'global' };
+  }
+
+  // Ativação gradual: ligada, mas atendendo só uma fração ou uma lista. Quem
+  // fica de fora é registrado, não respondido — o rollout observa antes de abrir.
+  if (!contatoNaAtivacao(conversa.contato_id, configuracao)) {
+    return { responder: false, motivo: 'fora_da_ativacao_gradual', escopo: 'contato' };
   }
 
   if (conversa.assumida_por_humano) {
@@ -357,6 +390,7 @@ module.exports = {
   LIMITE_CONTEUDO_REGRA,
   ErroDaSerena,
   decidirResposta,
+  contatoNaAtivacao,
   montarPromptEfetivo,
   validarPrompt,
   validarRegra,

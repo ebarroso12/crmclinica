@@ -79,9 +79,15 @@ function montarConversa(linha) {
 
 // Campos de usuário devolvidos por padrão. `senha_hash` e `totp_segredo_cifrado`
 // ficam de fora: só as consultas que precisam deles os pedem explicitamente.
+// Campos de usuário devolvidos por padrão. `senha_hash` e `totp_segredo_cifrado`
+// ficam de fora: só as consultas que precisam deles os pedem explicitamente.
+// Documentos (CPF/RG cifrados) também ficam de fora: saem só por
+// `obterDocumentosDoUsuario`, que é chamada com controle de acesso.
 const CAMPOS_USUARIO = `
   id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
-  telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em
+  telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em,
+  nome_completo, nascimento, whatsapp_ddi, whatsapp_ddd, whatsapp_numero,
+  whatsapp_particular_autorizado, excluido_em
 `;
 
 function montarLead(linha) {
@@ -187,7 +193,31 @@ function montarMensagem(linha) {
     autor_tipo: linha.autor_tipo,
     autor_nome: linha.autor_nome,
     privada: linha.privada,
+    // O id externo viaja junto: é ele que permite ao ciclo de atendimento
+    // reconhecer, num retry, que a resposta deste inbound já foi gravada.
+    id_externo: linha.id_externo ?? null,
     criado_em: linha.criado_em,
+  };
+}
+
+function montarTarefa(linha) {
+  if (!linha) return null;
+  return {
+    ...linha,
+    id: Number(linha.id),
+    lead_id: linha.lead_id ? Number(linha.lead_id) : null,
+    conversa_id: linha.conversa_id ? Number(linha.conversa_id) : null,
+    contato_id: linha.contato_id ? Number(linha.contato_id) : null,
+  };
+}
+
+function montarFormulario(linha) {
+  if (!linha) return null;
+  return {
+    ...linha,
+    id: Number(linha.id),
+    agendamento_id: Number(linha.agendamento_id),
+    contato_id: Number(linha.contato_id),
   };
 }
 
@@ -195,10 +225,26 @@ function montarMensagem(linha) {
 const CLAIMS_DE_SISTEMA = JSON.stringify({ app_role: 'backend' });
 
 function criarRepositorio(pool) {
+  // Um client transacional representa uma única conexão PostgreSQL. Algumas
+  // telas consultam partes independentes em paralelo; isso é correto no nível
+  // da aplicação, mas o driver não aceita duas `query()` simultâneas no mesmo
+  // client. O pool continua paralelo entre requisições; só as consultas que
+  // compartilham a mesma transação entram numa fila curta e determinística.
+  const filasPorCliente = new WeakMap();
+  function consultarNoCliente(cliente, texto, valores) {
+    if (cliente === pool) return pool.query(texto, valores);
+    const anterior = filasPorCliente.get(cliente) ?? Promise.resolve();
+    const atual = anterior.catch(() => undefined).then(() => cliente.query(texto, valores));
+    filasPorCliente.set(cliente, atual);
+    return atual.finally(() => {
+      if (filasPorCliente.get(cliente) === atual) filasPorCliente.delete(cliente);
+    });
+  }
+
   // Dentro de uma requisição existe uma transação aberta com o usuário já
   // declarado; fora dela (semeadura, tarefas de manutenção, health check) o pool
   // atende direto. Nenhuma consulta abaixo precisa saber em qual dos dois está.
-  const consultar = (texto, valores) => (contexto.atual()?.client ?? pool).query(texto, valores);
+  const consultar = (texto, valores) => consultarNoCliente(contexto.atual()?.client ?? pool, texto, valores);
 
   /**
    * Roda uma instrução como o **sistema**, não como o usuário da requisição.
@@ -224,14 +270,14 @@ function criarRepositorio(pool) {
     if (!atual?.client) return executar(pool);
 
     const { client, claims } = atual;
-    await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', CLAIMS_DE_SISTEMA]);
+    await consultarNoCliente(client, 'SELECT set_config($1, $2, true)', ['request.jwt.claims', CLAIMS_DE_SISTEMA]);
     try {
       return await executar(client);
     } finally {
       // Volta ao papel do usuário mesmo se a instrução falhar: uma transação que
       // segue com privilégio de sistema é pior que a falha original.
       if (claims) {
-        await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
+        await consultarNoCliente(client, 'SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
       }
     }
   }
@@ -279,8 +325,8 @@ function criarRepositorio(pool) {
 
       const client = await pool.connect();
       try {
-        await client.query('BEGIN');
-        await client.query(
+        await consultarNoCliente(client, 'BEGIN');
+        await consultarNoCliente(client,
           'SELECT set_config($1, $2, true)',
           ['app.usuario_id', usuarioId === null || usuarioId === undefined ? '' : String(usuarioId)],
         );
@@ -288,20 +334,20 @@ function criarRepositorio(pool) {
           ...(usuarioId === null || usuarioId === undefined ? {} : { usuario_id: String(usuarioId) }),
           app_role: papel,
         });
-        await client.query('SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
+        await consultarNoCliente(client, 'SELECT set_config($1, $2, true)', ['request.jwt.claims', claims]);
 
         const resultado = await contexto.executarCom(
           { client, usuarioId, claims },
           () => acao(this),
         );
 
-        await client.query('COMMIT');
+        await consultarNoCliente(client, 'COMMIT');
         return resultado;
       } catch (erro) {
         // Falha no meio de uma rota não pode deixar meia escrita para trás: uma
         // mensagem gravada sem a auditoria correspondente é pior que nenhuma.
         try {
-          await client.query('ROLLBACK');
+          await consultarNoCliente(client, 'ROLLBACK');
         } catch {
           // Conexão já perdida; o servidor a descarta ao liberar.
         }
@@ -433,9 +479,24 @@ function criarRepositorio(pool) {
           return { mensagem: montarMensagem(existente.rows[0]), duplicada: true };
         }
 
-        // Nota interna não conta como atividade do atendimento.
+        // Nota interna não conta como atividade do atendimento. A marca de SLA
+        // anda junto: entrada abre a espera (preservando o início se o paciente
+        // mandou duas seguidas); saída visível encerra a espera.
         if (!mensagem.privada) {
-          await cliente.query('UPDATE conversas SET ultima_msg_em = now() WHERE id = $1', [conversaId]);
+          if (mensagem.direcao === 'entrada') {
+            await cliente.query(`
+              UPDATE conversas
+              SET ultima_msg_em = now(),
+                  aguardando_resposta_desde = COALESCE(aguardando_resposta_desde, now())
+              WHERE id = $1
+            `, [conversaId]);
+          } else {
+            await cliente.query(`
+              UPDATE conversas
+              SET ultima_msg_em = now(), aguardando_resposta_desde = NULL
+              WHERE id = $1
+            `, [conversaId]);
+          }
         }
 
         await cliente.query('COMMIT');
@@ -500,7 +561,42 @@ function criarRepositorio(pool) {
         lembretes_optout_motivo: rows[0].lembretes_optout_motivo ?? null,
         excluido_em: rows[0].excluido_em ?? null,
         excluido_motivo: rows[0].excluido_motivo ?? null,
+        // P1-05/P1-08 — ficha estruturada. Documentos (cpf_cifrado, rg_cifrado,
+        // responsavel_cpf_cifrado) ficam fora de propósito: saem só por
+        // `obterDocumentosDoContato`, com controle de acesso na rota.
+        nome_completo: rows[0].nome_completo ?? null,
+        nascimento: rows[0].nascimento ?? null,
+        whatsapp_ddi: rows[0].whatsapp_ddi ?? null,
+        whatsapp_ddd: rows[0].whatsapp_ddd ?? null,
+        whatsapp_numero: rows[0].whatsapp_numero ?? null,
+        cpf_cadastrado: Boolean(rows[0].cpf_cifrado),
+        responsavel_nome: rows[0].responsavel_nome ?? null,
+        responsavel_parentesco: rows[0].responsavel_parentesco ?? null,
+        consentimento_responsavel_em: rows[0].consentimento_responsavel_em ?? null,
+        consentimento_canal: rows[0].consentimento_canal ?? null,
+        consentimento_termo_id: rows[0].consentimento_termo_id ?? null,
         criado_em: rows[0].criado_em,
+      };
+    },
+
+    /**
+     * P1-05 — documentos do contato (CPF/RG cifrados e hash de busca).
+     *
+     * Leitura dedicada e auditável: a ficha comum não carrega documento, então
+     * cada chamada aqui é uma decisão explícita da rota — que deve exigir a
+     * permissão certa e registrar acesso em auditoria.
+     */
+    async obterDocumentosDoContato(id) {
+      const { rows } = await consultar(
+        'SELECT cpf_cifrado, cpf_busca_hash, rg_cifrado, responsavel_cpf_cifrado FROM contatos WHERE id = $1',
+        [id]
+      );
+      if (!rows[0]) return null;
+      return {
+        cpfCifrado: rows[0].cpf_cifrado ?? null,
+        cpfBuscaHash: rows[0].cpf_busca_hash ?? null,
+        rgCifrado: rows[0].rg_cifrado ?? null,
+        responsavelCpfCifrado: rows[0].responsavel_cpf_cifrado ?? null,
       };
     },
 
@@ -610,14 +706,32 @@ function criarRepositorio(pool) {
     },
 
     async atualizarContato(id, campos) {
-      const permitidos = ['nome', 'telefone', 'email', 'identificador', 'observacoes', 'atributos'];
+      // Chave camelCase -> coluna. Documentos ficam cifrados/hash de busca; o
+      // texto aberto nunca atravessa a camada de dados (P1-05/P1-08).
+      const permitidos = new Map([
+        ['nome', 'nome'], ['telefone', 'telefone'], ['email', 'email'],
+        ['identificador', 'identificador'], ['observacoes', 'observacoes'],
+        ['atributos', 'atributos'],
+        ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
+        ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
+        ['rgCifrado', 'rg_cifrado'],
+        ['whatsappDdi', 'whatsapp_ddi'], ['whatsappDdd', 'whatsapp_ddd'],
+        ['whatsappNumero', 'whatsapp_numero'],
+        ['responsavelNome', 'responsavel_nome'],
+        ['responsavelCpfCifrado', 'responsavel_cpf_cifrado'],
+        ['responsavelParentesco', 'responsavel_parentesco'],
+        ['consentimentoResponsavelEm', 'consentimento_responsavel_em'],
+        ['consentimentoCanal', 'consentimento_canal'],
+        ['consentimentoTermoId', 'consentimento_termo_id'],
+      ]);
       const partes = [];
       const valores = [];
 
       for (const [campo, valor] of Object.entries(campos)) {
-        if (!permitidos.includes(campo)) continue;
-        valores.push(campo === 'atributos' ? JSON.stringify(valor) : valor);
-        partes.push(`${campo} = $${valores.length}${campo === 'atributos' ? '::jsonb' : ''}`);
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(coluna === 'atributos' ? JSON.stringify(valor) : valor);
+        partes.push(`${coluna} = $${valores.length}${coluna === 'atributos' ? '::jsonb' : ''}`);
       }
       if (partes.length === 0) return this.obterContato(id);
 
@@ -777,6 +891,8 @@ function criarRepositorio(pool) {
         ['scoreMotivos', 'score_motivos'], ['scoreCalculadoEm', 'score_calculado_em'],
         ['qualificadoEm', 'qualificado_em'], ['perdidoMotivo', 'perdido_motivo'],
         ['proximoPasso', 'proximo_passo'], ['conversaId', 'conversa_id'],
+        ['proprietarioId', 'proprietario_id'], ['proximoPassoEm', 'proximo_passo_em'],
+        ['estagioDesde', 'estagio_desde'],
       ]);
 
       const partes = [];
@@ -804,7 +920,7 @@ function criarRepositorio(pool) {
      * dele abortaria a transação inteira.
      */
     async registrarEventoDeLead(evento) {
-      const { rows } = await comoSistema((cliente) => cliente.query(`
+      const { rows } = await comoSistema((cliente) => consultarNoCliente(cliente, `
         INSERT INTO lead_eventos (lead_id, conversa_id, tipo, de, para, detalhe, origem, usuario_id)
         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
         RETURNING id, lead_id, conversa_id, tipo, de, para, detalhe, origem, criado_em
@@ -854,6 +970,396 @@ function criarRepositorio(pool) {
       return { ...rows[0], id: Number(rows[0].id), contato_id: Number(rows[0].contato_id) };
     },
 
+    /**
+     * Leads sem atividade há N dias — a matéria-prima do sino de acompanhamento.
+     * Convertido e perdido ficam de fora: acompanhamento é para quem ainda está
+     * no funil.
+     */
+    async listarLeadsInativos({ dias = 15, limite = 200 } = {}) {
+      const { rows } = await consultar(`
+        SELECT l.*, ct.nome, ct.telefone,
+               (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id) AS ultima_msg_em
+        FROM leads l JOIN contatos ct ON ct.id = l.contato_id
+        WHERE l.estagio NOT IN ('convertido', 'perdido')
+          AND ct.excluido_em IS NULL
+          AND COALESCE(
+            (SELECT max(m.criado_em) FROM mensagens m WHERE m.conversa_id = l.conversa_id),
+            l.atualizado_em
+          ) < now() - make_interval(days => $1)
+        ORDER BY l.atualizado_em
+        LIMIT $2
+      `, [dias, limite]);
+      return rows.map(montarLead);
+    },
+
+    // ---------------------------------------------------------------- tarefas (sino)
+
+    /**
+     * Cria uma tarefa idempotente. A chave determinística faz a segunda chamada
+     * devolver a tarefa existente em vez de criar outra — o worker pode rodar
+     * de minuto em minuto sem encher o sino.
+     */
+    async criarTarefa({ chave, tipo, titulo, detalhe = null, leadId = null, conversaId = null, contatoId = null, devidaEm = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO tarefas (chave, tipo, titulo, detalhe, lead_id, conversa_id, contato_id, devida_em)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()))
+        ON CONFLICT (chave) DO NOTHING
+        RETURNING *
+      `, [chave, tipo, titulo, detalhe, leadId, conversaId, contatoId, devidaEm]);
+
+      if (rows.length > 0) return { tarefa: montarTarefa(rows[0]), duplicada: false };
+
+      const { rows: existentes } = await consultar('SELECT * FROM tarefas WHERE chave = $1', [chave]);
+      return { tarefa: montarTarefa(existentes[0]), duplicada: true };
+    },
+
+    async listarTarefas({ abertas = true, limite = 100 } = {}) {
+      const { rows } = await consultar(`
+        SELECT t.*, ct.nome AS contato_nome
+        FROM tarefas t LEFT JOIN contatos ct ON ct.id = t.contato_id
+        ${abertas ? 'WHERE t.concluida_em IS NULL' : ''}
+        ORDER BY t.devida_em, t.id
+        LIMIT $1
+      `, [limite]);
+      return rows.map(montarTarefa);
+    },
+
+    async concluirTarefa(id, { usuarioId = null } = {}) {
+      const { rows } = await consultar(`
+        UPDATE tarefas SET concluida_em = now(), concluida_por = $2
+        WHERE id = $1 AND concluida_em IS NULL
+        RETURNING *
+      `, [id, usuarioId]);
+      return rows[0] ? montarTarefa(rows[0]) : null;
+    },
+
+    // ---------------------------------------------------------------- SLA
+
+    /** Conversas em que o paciente fala por último, da espera mais antiga para a mais nova. */
+    async listarConversasAguardando({ limite = 100 } = {}) {
+      const { rows } = await consultar(`
+        SELECT c.*, ct.nome AS contato_nome, ct.telefone AS contato_telefone
+        FROM conversas c JOIN contatos ct ON ct.id = c.contato_id
+        WHERE c.aguardando_resposta_desde IS NOT NULL
+          AND c.status <> 'resolvida'
+        ORDER BY c.aguardando_resposta_desde
+        LIMIT $1
+      `, [limite]);
+      return rows.map((linha) => ({
+        ...linha,
+        id: Number(linha.id),
+        contato_id: Number(linha.contato_id),
+      }));
+    },
+
+    // ------------------------------------------------------ resumo interno
+
+    /** Grava o resumo interno do encerramento. Fica NO CRM; nunca vai ao paciente. */
+    async definirResumoInterno(conversaId, texto) {
+      const { rows } = await consultar(`
+        UPDATE conversas SET resumo_interno = $2, resumo_interno_em = now()
+        WHERE id = $1
+        RETURNING id, resumo_interno, resumo_interno_em
+      `, [conversaId, texto]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    // ------------------------------------------- formulário de pré-consulta
+
+    /**
+     * Um formulário por agendamento: o conflito devolve o existente. A regra
+     * "só depois do agendamento confirmado" é do serviço; aqui é integridade.
+     */
+    async criarFormularioPreConsulta({ agendamentoId, contatoId, token }) {
+      const { rows } = await consultar(`
+        INSERT INTO formularios_pre_consulta (agendamento_id, contato_id, token)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (agendamento_id) DO NOTHING
+        RETURNING *
+      `, [agendamentoId, contatoId, token]);
+
+      if (rows.length > 0) return { formulario: montarFormulario(rows[0]), duplicado: false };
+
+      const { rows: existentes } = await consultar(
+        'SELECT * FROM formularios_pre_consulta WHERE agendamento_id = $1', [agendamentoId],
+      );
+      return { formulario: montarFormulario(existentes[0]), duplicado: true };
+    },
+
+    async obterFormularioPorAgendamento(agendamentoId) {
+      const { rows } = await consultar(
+        'SELECT * FROM formularios_pre_consulta WHERE agendamento_id = $1', [agendamentoId],
+      );
+      return rows[0] ? montarFormulario(rows[0]) : null;
+    },
+
+    async marcarFormularioEnviado(id) {
+      const { rows } = await consultar(`
+        UPDATE formularios_pre_consulta SET enviado_em = COALESCE(enviado_em, now())
+        WHERE id = $1 RETURNING *
+      `, [id]);
+      return rows[0] ? montarFormulario(rows[0]) : null;
+    },
+
+    async registrarRespostaDeFormulario(token, respostas) {
+      const { rows } = await consultar(`
+        UPDATE formularios_pre_consulta
+        SET respondido_em = COALESCE(respondido_em, now()), respostas = $2::jsonb
+        WHERE token = $1 AND respondido_em IS NULL
+        RETURNING *
+      `, [token, JSON.stringify(respostas ?? {})]);
+      return rows[0] ? montarFormulario(rows[0]) : null;
+    },
+
+    // ---------------------------------------------------------------- IA: catálogo e telemetria
+
+    async listarModelosDeIA({ apenasAtivos = false } = {}) {
+      const { rows } = await consultar(`
+        SELECT * FROM ia_modelos ${apenasAtivos ? 'WHERE ativo' : ''}
+        ORDER BY provedor, modelo
+      `);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async obterChamadaDeIA(chaveIdempotencia) {
+      const { rows } = await consultar(
+        'SELECT * FROM ia_chamadas WHERE chave_idempotencia = $1', [chaveIdempotencia],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    async registrarChamadaDeIA({
+      chaveIdempotencia, finalidade, provedor, modelo, promptVersion = null,
+      latenciaMs = null, tokensEntrada = null, tokensSaida = null,
+      custoEstimadoUsd = null, resposta = null, erro = null, fallbackDe = null,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO ia_chamadas (chave_idempotencia, finalidade, provedor, modelo, prompt_version,
+          latencia_ms, tokens_entrada, tokens_saida, custo_estimado_usd, resposta, erro, fallback_de)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (chave_idempotencia) DO NOTHING
+        RETURNING id
+      `, [chaveIdempotencia, finalidade, provedor, modelo, promptVersion,
+        latenciaMs, tokensEntrada, tokensSaida, custoEstimadoUsd, resposta, erro, fallbackDe]);
+      return { registrado: rows.length > 0 };
+    },
+
+    async listarChamadasDeIA({ limite = 100 } = {}) {
+      const { rows } = await consultar(`
+        SELECT id, chave_idempotencia, finalidade, provedor, modelo, prompt_version,
+               latencia_ms, tokens_entrada, tokens_saida, custo_estimado_usd, erro, fallback_de, criado_em
+        FROM ia_chamadas ORDER BY criado_em DESC, id DESC LIMIT $1
+      `, [limite]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    /**
+     * Retenção mínima do texto gerado: anula `resposta` das chamadas mais
+     * velhas que a janela. A única escrita permitida sobre a telemetria, e só
+     * pela função do banco — a aplicação não tem UPDATE na tabela.
+     */
+    async limparRespostasDeIA({ retencaoDias = 30 } = {}) {
+      const { rows } = await consultar(
+        'SELECT public.limpar_respostas_de_ia(make_interval(days => $1)) AS anuladas',
+        [retencaoDias],
+      );
+      return { anuladas: Number(rows[0]?.anuladas ?? 0) };
+    },
+
+    // ---------------------------------------------------------------- IA: avaliações
+
+    async registrarAvaliacaoDeIA({
+      conversaId = null, mensagemId, avaliador, empatia, seguranca, aderencia, veredito, motivos = [],
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO ia_avaliacoes (conversa_id, mensagem_id, avaliador, empatia, seguranca, aderencia, veredito, motivos)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ON CONFLICT (mensagem_id, avaliador) DO NOTHING
+        RETURNING *
+      `, [conversaId, mensagemId, avaliador, empatia, seguranca, aderencia, veredito, JSON.stringify(motivos)]);
+      if (rows.length > 0) return { avaliacao: { ...rows[0], id: Number(rows[0].id) }, duplicada: false };
+
+      const { rows: existentes } = await consultar(
+        'SELECT * FROM ia_avaliacoes WHERE mensagem_id = $1 AND avaliador = $2', [mensagemId, avaliador],
+      );
+      return { avaliacao: { ...existentes[0], id: Number(existentes[0].id) }, duplicada: true };
+    },
+
+    async listarAvaliacoesDeIA({ veredito = null, limite = 100 } = {}) {
+      const valores = [];
+      let filtro = '';
+      if (veredito) {
+        valores.push(veredito);
+        filtro = `WHERE veredito = $${valores.length}`;
+      }
+      valores.push(limite);
+      const { rows } = await consultar(`
+        SELECT * FROM ia_avaliacoes ${filtro} ORDER BY criado_em DESC, id DESC LIMIT $${valores.length}
+      `, valores);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    /** Respostas da automação ainda sem avaliação do avaliador dado. */
+    async listarRespostasSemAvaliacao({ avaliador = 'heuristica', limite = 50 } = {}) {
+      const { rows } = await consultar(`
+        SELECT m.* FROM mensagens m
+        WHERE m.autor_tipo = 'automacao' AND m.direcao = 'saida'
+          AND NOT EXISTS (
+            SELECT 1 FROM ia_avaliacoes a WHERE a.mensagem_id = m.id AND a.avaliador = $1
+          )
+        ORDER BY m.criado_em DESC LIMIT $2
+      `, [avaliador, limite]);
+      return rows.map(montarMensagem);
+    },
+
+    // ---------------------------------------------------------------- notificações
+
+    async criarNotificacao({ chave, tipo, titulo, corpo = null, usuarioId = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO notificacoes (chave, tipo, titulo, corpo, usuario_id)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (chave) DO NOTHING
+        RETURNING *
+      `, [chave, tipo, titulo, corpo, usuarioId]);
+      if (rows.length > 0) return { notificacao: { ...rows[0], id: Number(rows[0].id) }, duplicada: false };
+      const { rows: existentes } = await consultar('SELECT * FROM notificacoes WHERE chave = $1', [chave]);
+      return { notificacao: { ...existentes[0], id: Number(existentes[0].id) }, duplicada: true };
+    },
+
+    /** As do usuário e as de toda a equipe (usuario_id nulo). */
+    async listarNotificacoes({ usuarioId = null, apenasNaoLidas = true, limite = 50 } = {}) {
+      const { rows } = await consultar(`
+        SELECT * FROM notificacoes
+        WHERE (usuario_id IS NULL OR usuario_id = $1)
+          ${apenasNaoLidas ? 'AND lida_em IS NULL' : ''}
+        ORDER BY criado_em DESC, id DESC LIMIT $2
+      `, [usuarioId, limite]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    async marcarNotificacaoLida(id) {
+      const { rows } = await consultar(`
+        UPDATE notificacoes SET lida_em = now() WHERE id = $1 AND lida_em IS NULL RETURNING *
+      `, [id]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    // ------------------------------------------------- Serena: ativação gradual
+
+    async definirAtivacaoGradual({ modo, percentual = null, usuarioId = null }) {
+      const { rows } = await consultar(`
+        UPDATE serena_configuracao
+        SET modo_ativacao = $1,
+            ativacao_percentual = COALESCE($2, ativacao_percentual),
+            alterado_por = $3, alterado_em = now()
+        WHERE id = 1
+        RETURNING *
+      `, [modo, percentual, usuarioId]);
+      return rows[0] ?? null;
+    },
+
+    async listarContatosDeAtivacao() {
+      const { rows } = await consultar('SELECT contato_id FROM serena_ativacao_contatos');
+      return rows.map((linha) => Number(linha.contato_id));
+    },
+
+    async definirContatoDeAtivacao(contatoId, incluido, { usuarioId = null } = {}) {
+      if (incluido) {
+        await consultar(`
+          INSERT INTO serena_ativacao_contatos (contato_id, criado_por)
+          VALUES ($1, $2) ON CONFLICT (contato_id) DO NOTHING
+        `, [contatoId, usuarioId]);
+      } else {
+        await consultar('DELETE FROM serena_ativacao_contatos WHERE contato_id = $1', [contatoId]);
+      }
+      return { contato_id: Number(contatoId), incluido };
+    },
+
+    // ---------------------------------------------------------------- analítica
+
+    /** Evento de produto, deduplicado pela chave quando houver. Nunca clínico. */
+    async registrarEventoAnalitico({ nome, entidade = null, entidadeId = null, propriedades = null, chave = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO eventos_analiticos (nome, entidade, entidade_id, propriedades, chave)
+        VALUES ($1, $2, $3, $4::jsonb, $5)
+        ON CONFLICT (chave) DO NOTHING
+        RETURNING id
+      `, [nome, entidade, entidadeId, propriedades ? JSON.stringify(propriedades) : null, chave]);
+      return { registrado: rows.length > 0 };
+    },
+
+    // As consultas abaixo materializam o dicionário oficial (docs/METRICAS.md)
+    // sobre as views da migration 026. Período: [de, ate) em dias de São Paulo.
+
+    async metricasLeadsPorDia({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT dia, origem, total::int FROM vw_leads_por_dia
+        WHERE dia >= $1::date AND dia < $2::date
+        ORDER BY dia, origem
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasFunil() {
+      const { rows } = await consultar('SELECT estagio, total::int FROM vw_funil_estagios ORDER BY estagio');
+      return rows;
+    },
+
+    async metricasMotivosPerda({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT motivo, sum(total)::int AS total FROM vw_motivos_perda
+        WHERE dia >= $1::date AND dia < $2::date
+        GROUP BY motivo ORDER BY total DESC
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasPrimeiraResposta({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT conversa_id, dia, minutos::float FROM vw_primeira_resposta
+        WHERE dia >= $1::date AND dia < $2::date
+      `, [de, ate]);
+      return rows.map((linha) => ({ ...linha, conversa_id: Number(linha.conversa_id) }));
+    },
+
+    async metricasPicos({ de, ate }) {
+      // A view agrega o histórico inteiro; o recorte de período exige refazer o
+      // grupo sobre as mensagens do intervalo.
+      const { rows } = await consultar(`
+        SELECT
+          extract(dow  FROM (m.criado_em AT TIME ZONE 'America/Sao_Paulo'))::int AS dia_semana,
+          extract(hour FROM (m.criado_em AT TIME ZONE 'America/Sao_Paulo'))::int AS hora,
+          count(*)::int AS entradas
+        FROM mensagens m
+        JOIN conversas c ON c.id = m.conversa_id
+        JOIN contatos ct ON ct.id = c.contato_id
+        WHERE m.direcao = 'entrada' AND NOT m.privada
+          AND ct.telefone NOT LIKE '5516900000%'
+          AND (m.criado_em AT TIME ZONE 'America/Sao_Paulo')::date >= $1::date
+          AND (m.criado_em AT TIME ZONE 'America/Sao_Paulo')::date <  $2::date
+        GROUP BY 1, 2 ORDER BY 1, 2
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasAgenda({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT status, sum(total)::int AS total FROM vw_agenda_por_dia
+        WHERE dia >= $1::date AND dia < $2::date
+        GROUP BY status ORDER BY status
+      `, [de, ate]);
+      return rows;
+    },
+
+    async metricasSerena({ de, ate }) {
+      const { rows } = await consultar(`
+        SELECT acao, motivo, sum(total)::int AS total FROM vw_serena_por_dia
+        WHERE dia >= $1::date AND dia < $2::date
+        GROUP BY acao, motivo ORDER BY acao, total DESC
+      `, [de, ate]);
+      return rows;
+    },
+
     // ---------------------------------------------------------------- idempotência e auditoria
 
     async consultarEvento(chave) {
@@ -888,10 +1394,55 @@ function criarRepositorio(pool) {
       // nasce lá; isto protege o que nasce aqui.
       const detalheLimpo = detalhe ? redigirAuditoria(detalhe) : null;
 
-      await comoSistema((cliente) => cliente.query(
+      await comoSistema((cliente) => consultarNoCliente(cliente,
         'INSERT INTO audit_log (entidade, entidade_id, acao, detalhe, usuario_id) VALUES ($1, $2, $3, $4::jsonb, $5)',
         [entidade, entidadeId, acao, detalheLimpo ? JSON.stringify(detalheLimpo) : null, autor],
       ));
+    },
+
+    async listarAuditoria({ limite = 50, antesDeId = null, entidade = null, acao = null } = {}) {
+      const parametros = [limite];
+      const filtros = [];
+      if (antesDeId) {
+        parametros.push(antesDeId);
+        filtros.push(`a.id < $${parametros.length}`);
+      }
+      if (entidade) {
+        parametros.push(entidade);
+        filtros.push(`a.entidade = $${parametros.length}`);
+      }
+      if (acao) {
+        parametros.push(acao);
+        filtros.push(`a.acao = $${parametros.length}`);
+      }
+      const onde = filtros.length ? `WHERE ${filtros.join(' AND ')}` : '';
+      const { rows } = await consultar(`
+        SELECT a.id, a.entidade, a.entidade_id, a.acao, a.detalhe, a.criado_em,
+               u.nome AS usuario_nome
+          FROM audit_log a
+          LEFT JOIN usuarios u ON u.id = a.usuario_id
+          ${onde}
+         ORDER BY a.id DESC
+         LIMIT $1
+      `, parametros);
+      const itens = rows.map((linha) => ({ ...linha, id: Number(linha.id), entidade_id: linha.entidade_id ? Number(linha.entidade_id) : null }));
+      return { itens, proximoCursor: itens.length === limite ? itens.at(-1).id : null };
+    },
+
+    async registrarHeartbeat(componente, instancia, versao = null) {
+      await consultar(
+        `INSERT INTO operacao_heartbeats (componente, instancia, versao, visto_em)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (componente) DO UPDATE SET instancia = EXCLUDED.instancia, versao = EXCLUDED.versao, visto_em = now()`,
+        [componente, instancia, versao],
+      );
+    },
+
+    async obterHeartbeat(componente) {
+      const { rows } = await consultar(
+        'SELECT componente, instancia, versao, visto_em FROM operacao_heartbeats WHERE componente = $1', [componente],
+      );
+      return rows[0] ?? null;
     },
 
     // ---------------------------------------------------------------- usuários e sessões
@@ -908,6 +1459,25 @@ function criarRepositorio(pool) {
     async obterUsuarioPorId(id) {
       const { rows } = await consultar(`SELECT ${CAMPOS_USUARIO} FROM usuarios WHERE id = $1`, [id]);
       return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
+    },
+
+    /**
+     * P1-05 — documentos do usuário (CPF/RG cifrados e hash de busca).
+     *
+     * `CAMPOS_USUARIO` não traz documento nenhum: cada chamada aqui é uma
+     * decisão explícita da rota, com permissão exigida e acesso auditado.
+     */
+    async obterDocumentosDoUsuario(id) {
+      const { rows } = await consultar(
+        'SELECT cpf_cifrado, cpf_busca_hash, rg_cifrado FROM usuarios WHERE id = $1',
+        [id]
+      );
+      if (!rows[0]) return null;
+      return {
+        cpfCifrado: rows[0].cpf_cifrado ?? null,
+        cpfBuscaHash: rows[0].cpf_busca_hash ?? null,
+        rgCifrado: rows[0].rg_cifrado ?? null,
+      };
     },
 
     async obterUsuarioPorGoogleSub(sub) {
@@ -942,6 +1512,20 @@ function criarRepositorio(pool) {
         ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
         ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
         ['avatarUrl', 'avatar_url'],
+        // P1-01/P1-05 — cadastro completo. CPF/RG chegam já cifrados da camada
+        // de domínio: o repositório não sabe decifrar, e não deve.
+        ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
+        ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
+        ['rgCifrado', 'rg_cifrado'],
+        // P1-06 — WhatsApp estruturado e autorização explícita de uso particular.
+        ['whatsappDdi', 'whatsapp_ddi'], ['whatsappDdd', 'whatsapp_ddd'],
+        ['whatsappNumero', 'whatsapp_numero'],
+        ['whatsappParticularAutorizado', 'whatsapp_particular_autorizado'],
+        ['whatsappParticularAutorizadoEm', 'whatsapp_particular_autorizado_em'],
+        ['whatsappParticularAutorizadoPor', 'whatsapp_particular_autorizado_por'],
+        // P1-02 — exclusão lógica: a linha fica, a autoria histórica fica.
+        ['excluidoEm', 'excluido_em'], ['excluidoPor', 'excluido_por'],
+        ['excluidoMotivo', 'excluido_motivo'],
       ]);
 
       const partes = [];
@@ -1322,6 +1906,13 @@ function criarRepositorio(pool) {
         // a consulta ia para o Google e o CRM não guardava o vínculo, então
         // remarcar criaria um evento novo e cancelar não teria o que apagar.
         ['google_evento_id', 'google_evento_id'],
+        // Estado de sincronia com o Google (P0-09 a P0-12): o worker do outbox
+        // e o sync incremental gravam aqui o vínculo e o resultado de cada
+        // tentativa — nunca a interface diretamente.
+        ['googleCalendarId', 'google_calendar_id'], ['googleEtag', 'google_etag'],
+        ['syncStatus', 'sync_status'], ['syncVersion', 'sync_version'],
+        ['lastSyncedAt', 'last_synced_at'], ['lastSyncError', 'last_sync_error'],
+        ['origemAlteracao', 'origem_alteracao'],
       ]);
 
       const partes = [];
