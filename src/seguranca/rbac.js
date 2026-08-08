@@ -37,6 +37,12 @@ const PERMISSOES = Object.freeze({
   // Operação
   'usuarios:gerenciar': ['admin'],
   'auditoria:ler': ['admin', 'gestor'],
+
+  // Sincronia com o Google (P2-04): acompanhar a saúde é do gestor também —
+  // é ele quem percebe a agenda parada. Operar (reenfileirar, resolver
+  // conflito, forçar sync) mexe no vínculo com o calendário: só o admin.
+  'sincronia:ler': ['admin', 'gestor'],
+  'sincronia:operar': ['admin'],
 });
 
 const PERMISSOES_CONHECIDAS = Object.freeze(Object.keys(PERMISSOES));

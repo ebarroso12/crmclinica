@@ -26,7 +26,7 @@ const VALIDADE_PROPOSTA_MS = 15 * 60 * 1000;
  *   enfileirado. E porque uma falha na fila nunca pode impedir a clínica de
  *   marcar uma consulta — por isso toda chamada aqui é embrulhada.
  */
-function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null, google = null, clinica = null, carenciaEmDias = 3 }) {
+function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes = null, google = null, clinica = null, carenciaEmDias = 3, outbox = null }) {
   /** A fila é acessório do agendamento: se ela falhar, o agendamento continua de pé. */
   async function comFila(descricao, acao) {
     if (!lembretes) return null;
@@ -276,7 +276,15 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
       // consulta já está marcada e a trava de conflito já valeu. Se o Google
       // estiver fora do ar, a clínica atende do mesmo jeito — o que se perde é
       // a consulta aparecer no celular do médico, não a consulta.
-      await espelharNoGoogle(agendamento);
+      //
+      // Com o outbox (P0-09), a intenção é gravada NA MESMA TRANSAÇÃO e o
+      // worker entrega depois, com retry; sem ele, cai no espelho direto de
+      // melhor esforço, que é o comportamento anterior.
+      if (outbox) {
+        await outbox.registrarMudanca(agendamento.id, 'criar', { usuarioId });
+      } else {
+        await espelharNoGoogle(agendamento);
+      }
 
       return agendamento;
     } catch (erro) {
@@ -375,6 +383,10 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
       // remarcar para as 16h é pior que não mandar nada.
       await comFila('sincronizar', () => lembretes.sincronizarAgendamento(agendamentoId, { usuarioId }));
 
+      // O Google recebe o horário novo pelo outbox (P0-10): remarcar sem
+      // avisar o calendário deixaria o médico esperando na hora antiga.
+      if (outbox) await outbox.registrarMudanca(agendamentoId, 'atualizar', { usuarioId });
+
       return atualizado;
     } catch (erro) {
       if (ehConflitoDoBanco(erro)) throw new ErroDeConflito();
@@ -410,6 +422,10 @@ function criarServicoDeAgenda({ repositorio, agora = () => new Date(), lembretes
     await comFila('cancelar', () => lembretes.cancelarDoAgendamento(agendamentoId, {
       motivo: 'agendamento_cancelado', usuarioId,
     }));
+
+    // O evento some do Google pelo outbox (P0-10): consulta cancelada que
+    // continua no calendário é paciente esperado na hora errada.
+    if (outbox) await outbox.registrarMudanca(agendamentoId, 'cancelar', { usuarioId });
 
     return cancelado;
   }

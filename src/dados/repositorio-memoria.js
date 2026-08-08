@@ -167,7 +167,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   // Espelha o que o PostgreSQL devolve: o hash da senha e o segredo do segundo
   // fator só saem pelas consultas que os pedem explicitamente.
   function semSegredos(usuario) {
-    const { senha_hash: _senha, totp_segredo_cifrado: _totp, ...resto } = usuario;
+    const {
+      senha_hash: _senha,
+      totp_segredo_cifrado: _totp,
+      // Documentos cifrados e o hash de busca tampouco saem nas leituras comuns:
+      // decifrar é decisão explícita, auditada e restrita a admin (P1-05).
+      cpf_cifrado: _cpf, cpf_busca_hash: _cpfHash, rg_cifrado: _rg,
+      ...resto
+    } = usuario;
     return resto;
   }
 
@@ -358,11 +365,44 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       const contato = contatos.get(Number(id));
       if (!contato) return null;
 
-      const permitidos = ['nome', 'telefone', 'email', 'identificador', 'observacoes', 'atributos'];
+      // Mesmo mapa do PostgreSQL: documentos chegam cifrados/hash, nunca abertos.
+      const permitidos = new Map([
+        ['nome', 'nome'], ['telefone', 'telefone'], ['email', 'email'],
+        ['identificador', 'identificador'], ['observacoes', 'observacoes'],
+        ['atributos', 'atributos'],
+        ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
+        ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
+        ['rgCifrado', 'rg_cifrado'],
+        ['whatsappDdi', 'whatsapp_ddi'], ['whatsappDdd', 'whatsapp_ddd'],
+        ['whatsappNumero', 'whatsapp_numero'],
+        ['responsavelNome', 'responsavel_nome'],
+        ['responsavelCpfCifrado', 'responsavel_cpf_cifrado'],
+        ['responsavelParentesco', 'responsavel_parentesco'],
+        ['consentimentoResponsavelEm', 'consentimento_responsavel_em'],
+        ['consentimentoCanal', 'consentimento_canal'],
+        ['consentimentoTermoId', 'consentimento_termo_id'],
+      ]);
       for (const [campo, valor] of Object.entries(campos)) {
-        if (permitidos.includes(campo)) contato[campo] = valor;
+        const coluna = permitidos.get(campo);
+        if (coluna) contato[coluna] = valor;
       }
       return contato;
+    },
+
+    /**
+     * Documentos cifrados do contato, separados da ficha pública de propósito.
+     * Quem chama (deduplicação, consentimento do responsável) precisa comparar
+     * hashes ou decifrar — e isso nunca acontece pela rota comum de leitura.
+     */
+    async obterDocumentosDoContato(id) {
+      const contato = contatos.get(Number(id));
+      if (!contato) return null;
+      return {
+        cpfCifrado: contato.cpf_cifrado ?? null,
+        cpfBuscaHash: contato.cpf_busca_hash ?? null,
+        rgCifrado: contato.rg_cifrado ?? null,
+        responsavelCpfCifrado: contato.responsavel_cpf_cifrado ?? null,
+      };
     },
 
     /**
@@ -1157,6 +1197,20 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
       return usuario ? semSegredos(usuario) : null;
     },
 
+    /**
+     * Documentos cifrados do usuário, fora da leitura comum de propósito:
+     * decifrar exige rota própria, restrita e auditada (P1-05).
+     */
+    async obterDocumentosDoUsuario(id) {
+      const usuario = usuarios.get(Number(id));
+      if (!usuario) return null;
+      return {
+        cpfCifrado: usuario.cpf_cifrado ?? null,
+        cpfBuscaHash: usuario.cpf_busca_hash ?? null,
+        rgCifrado: usuario.rg_cifrado ?? null,
+      };
+    },
+
     async obterUsuarioPorGoogleSub(sub) {
       if (!sub) return null;
       const usuario = [...usuarios.values()].find((item) => item.google_sub === sub);
@@ -1193,6 +1247,23 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         aprovado_por: null,
         aprovado_em: null,
         ultimo_login_em: null,
+        // Cadastro estruturado e dados sensíveis (P1-05): nascem vazios e só
+        // são preenchidos pela edição completa, que cifra antes de gravar.
+        nome_completo: null,
+        nascimento: null,
+        cpf_cifrado: null,
+        cpf_busca_hash: null,
+        rg_cifrado: null,
+        whatsapp_ddi: null,
+        whatsapp_ddd: null,
+        whatsapp_numero: null,
+        whatsapp_particular_autorizado: false,
+        whatsapp_particular_autorizado_em: null,
+        whatsapp_particular_autorizado_por: null,
+        // Exclusão lógica (P1-02): autoria histórica nunca é apagada.
+        excluido_em: null,
+        excluido_por: null,
+        excluido_motivo: null,
         criado_em: agora().toISOString(),
       };
       usuarios.set(usuario.id, usuario);
@@ -1214,6 +1285,18 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
         ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
         ['avatarUrl', 'avatar_url'],
+        // Cadastro estruturado e documentos — sempre cifrados/hash (P1-05).
+        ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
+        ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
+        ['rgCifrado', 'rg_cifrado'],
+        ['whatsappDdi', 'whatsapp_ddi'], ['whatsappDdd', 'whatsapp_ddd'],
+        ['whatsappNumero', 'whatsapp_numero'],
+        ['whatsappParticularAutorizado', 'whatsapp_particular_autorizado'],
+        ['whatsappParticularAutorizadoEm', 'whatsapp_particular_autorizado_em'],
+        ['whatsappParticularAutorizadoPor', 'whatsapp_particular_autorizado_por'],
+        // Exclusão lógica (P1-02).
+        ['excluidoEm', 'excluido_em'], ['excluidoPor', 'excluido_por'],
+        ['excluidoMotivo', 'excluido_motivo'],
       ]);
 
       for (const [campo, valor] of Object.entries(campos)) {
@@ -1401,6 +1484,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         cancelado_em: null,
         cancelado_motivo: null,
         criado_por: criadoPor,
+        // Vínculo e estado de sincronia com o Google (P0-09 a P0-12). Nasce
+        // pendente: espelhar no Google é trabalho do outbox, não do request.
+        google_evento_id: null,
+        google_calendar_id: null,
+        google_etag: null,
+        sync_status: 'pendente',
+        sync_version: 0,
+        last_synced_at: null,
+        last_sync_error: null,
+        origem_alteracao: 'crm',
         criado_em: agora().toISOString(),
         atualizado_em: agora().toISOString(),
       };
@@ -1441,6 +1534,12 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
         ['observacoes', 'observacoes'], ['local', 'local'],
         ['confirmadoEm', 'confirmado_em'], ['canceladoEm', 'cancelado_em'],
         ['canceladoMotivo', 'cancelado_motivo'], ['profissionalId', 'profissional_id'],
+        // O PostgreSQL aceita também o snake direto; aqui os dois coexistem.
+        ['google_evento_id', 'google_evento_id'],
+        ['googleCalendarId', 'google_calendar_id'], ['googleEtag', 'google_etag'],
+        ['syncStatus', 'sync_status'], ['syncVersion', 'sync_version'],
+        ['lastSyncedAt', 'last_synced_at'], ['lastSyncError', 'last_sync_error'],
+        ['origemAlteracao', 'origem_alteracao'],
       ]);
 
       // Mudar o horário passa pela mesma regra de conflito do insert.
@@ -1940,6 +2039,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
     // ---------------------------------------------------------------- apoio aos testes
 
     _auditoria: auditoria,
+    // Acesso direto aos armazéns, para os repositórios satélite em memória
+    // (google, clínica) e para os testes montarem cenários sem rodeios.
+    _interno: { usuarios, sessoes, contatos, conversas, leads, agendamentos },
   };
 
   return repositorio;
