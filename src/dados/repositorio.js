@@ -377,6 +377,37 @@ function criarRepositorio(pool) {
       }
     },
 
+    /**
+     * Saúde dos componentes vivos, lida da tabela `system_heartbeats` que o
+     * servidor mantém (quem enxerga OpenClaw/Serena/inbox grava lá). Devolve um
+     * mapa componente→estado por frescor do batimento: até 90s "operacional",
+     * até 5min "degradado", acima disso "indisponivel".
+     *
+     * Nunca lança: sem a tabela (migração ainda não aplicada) ou sem linha, o
+     * componente fica de fora do mapa e o chamador assume "indisponível". É o
+     * que permite implantar o painel antes da migração, sem quebrar nada.
+     */
+    async lerBatimentos() {
+      try {
+        const { rows } = await consultar(
+          'SELECT componente, status, EXTRACT(EPOCH FROM (now() - updated_at)) AS idade_s FROM system_heartbeats',
+        );
+        const mapa = {};
+        for (const linha of rows) {
+          const idade = Number(linha.idade_s);
+          let estado;
+          if (linha.status && linha.status !== 'ok') estado = 'degradado';
+          else if (idade < 90) estado = 'operacional';
+          else if (idade < 300) estado = 'degradado';
+          else estado = 'indisponivel';
+          mapa[linha.componente] = estado;
+        }
+        return mapa;
+      } catch {
+        return {};
+      }
+    },
+
     // ---------------------------------------------------------------- conversas
 
     /**
