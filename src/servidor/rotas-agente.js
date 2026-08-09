@@ -177,6 +177,22 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
         // entre a oferta e este ponto, a gravação falha e o erro sobe.
         const agendamento = await agenda.confirmar(proposta.token, { observacoes: corpo?.observacoes ?? null });
 
+        // Avisa a equipe (Edson + atendente) da nova marcação. Fora do fluxo do
+        // paciente e à prova de falha: se o disparo cair — ou não houver a CLI,
+        // como na Vercel — a marcação já está feita e o erro só vai para o log.
+        try {
+          require('../integracoes/aviso-equipe').avisarMarcacao({
+            nome: corpo && corpo.nome,
+            telefone: corpo && corpo.telefone,
+            quando: new Date(agendamento.inicio).toLocaleString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              weekday: 'long', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+            }),
+          });
+        } catch (erro) {
+          console.error(`[aviso-equipe] ${erro.message}`);
+        }
+
         // O lead avança sozinho: quem marcou não está mais pesquisando, e deixar
         // o funil parado obrigaria alguém a arrastar o card para refletir algo
         // que já aconteceu.
