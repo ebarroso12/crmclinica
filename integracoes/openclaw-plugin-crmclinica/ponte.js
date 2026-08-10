@@ -81,10 +81,21 @@ export function normalizarEvento(evento = {}, contexto = {}) {
   const corpo = [conteudo, midia && !conteudo.includes(midia) ? midia : ''].filter(Boolean).join('\n');
   if (!corpo) return null;
 
-  const ocorridoEm = instanteIso(evento.timestamp ?? contexto.timestamp);
+  const timestampDeOrigem = evento.timestamp ?? contexto.timestamp;
+  const ocorridoEm = instanteIso(timestampDeOrigem);
   const idNativo = primeiroTexto(evento.messageId, contexto.messageId, evento.id);
+  // A chave de fallback não pode depender do relógio local: `ocorridoEm` cai
+  // para "agora" quando o evento não trouxe timestamp, e "agora" muda a cada
+  // chamada. Sem mensageId nativo, incluir esse valor no hash fazia toda
+  // reentrega do MESMO evento (reconexão do gateway, retry) gerar um
+  // `id_externo` novo — o índice único de `mensagens` nunca via a colisão,
+  // e cada reprocessamento virava uma linha nova com uma resposta nova da IA.
+  // Só entra no hash o timestamp que realmente veio do canal.
+  const baseDoFallback = (timestampDeOrigem !== undefined && timestampDeOrigem !== null && timestampDeOrigem !== '')
+    ? `${remetente}|${ocorridoEm}|${corpo}`
+    : `${remetente}|${corpo}`;
   const idFallback = crypto.createHash('sha256')
-    .update(`${remetente}|${ocorridoEm}|${corpo}`, 'utf8')
+    .update(baseDoFallback, 'utf8')
     .digest('hex');
 
   return {
