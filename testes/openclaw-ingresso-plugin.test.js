@@ -38,6 +38,32 @@ test('normaliza somente inbound do WhatsApp e preserva identidade nativa', async
   assert.equal(normalizarEvento({ content: 'interno' }, { channelId: 'webchat' }), null);
 });
 
+test('sem messageId nem timestamp, reentrega do mesmo conteúdo gera o mesmo id_externo', async () => {
+  // Reproduz o cenário real: o gateway não manda identidade nativa nem
+  // timestamp para este evento, e o mesmo inbound chega duas vezes (retry,
+  // reconexão). Sem isso, cada chamada caía num id_externo diferente — e o
+  // paciente via a Serena responder duas vezes à mesma mensagem.
+  const { normalizarEvento } = await modulo();
+  const evento = { content: 'Oii boa tarde', senderId: '5511999990000' };
+  const contexto = { channelId: 'whatsapp' };
+
+  const primeiro = normalizarEvento(evento, contexto);
+  const segundo = normalizarEvento(evento, contexto);
+
+  assert.equal(primeiro.id_externo, segundo.id_externo);
+});
+
+test('com timestamp real, o id_externo de fallback acompanha o instante informado', async () => {
+  const { normalizarEvento } = await modulo();
+  const evento = { content: 'Oii boa tarde', senderId: '5511999990000', timestamp: 1786028400000 };
+  const contexto = { channelId: 'whatsapp' };
+
+  const primeiro = normalizarEvento(evento, contexto);
+  const segundo = normalizarEvento(evento, contexto);
+
+  assert.equal(primeiro.id_externo, segundo.id_externo);
+});
+
 test('mensagem de mídia sem legenda também vira registro visível no inbox', async () => {
   const { normalizarEvento } = await modulo();
   const evento = normalizarEvento({
