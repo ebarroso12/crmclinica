@@ -15,6 +15,7 @@ const { criarAtendimento } = require('../dominio/atendimento');
 const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
 const { criarServicoDeMetricas } = require('../dominio/metricas');
 const { criarGatewayDeIA } = require('../ia/gateway');
+const { criarExtratorDeQualificacao } = require('../dominio/qualificacao-ia');
 const { criarServicoDeAvaliacao } = require('../dominio/avaliacao-ia');
 const { criarRotasDeIA } = require('./rotas-ia');
 const { criarAutenticacao } = require('../seguranca/sessoes');
@@ -145,6 +146,20 @@ function criarAplicacao(dependencias = {}) {
   // é anunciada a quem está com a tela aberta via SSE (rota mais abaixo).
   const emissorDeConversas = dependencias.emissorDeConversas || criarEmissorDeConversas();
 
+  // Gateway multi-IA: chaves só no servidor, catálogo no banco, fallback
+  // técnico e telemetria com chave de idempotência. Vem antes do atendimento
+  // porque a extração de qualificação (logo abaixo) depende dele.
+  const gatewayDeIA = dependencias.gatewayDeIA
+    || criarGatewayDeIA({ configuracao, repositorio });
+
+  // Extração de qualificação por IA: nasce desligada (ver `config.js`) — só
+  // existe quando `LEADS_QUALIFICACAO_IA_ATIVA=sim` decide ligar uma chamada
+  // de IA nova por mensagem qualificável.
+  const qualificacaoIa = dependencias.qualificacaoIa
+    ?? (configuracao.leadsQualificacaoIa?.ativa
+      ? criarExtratorDeQualificacao({ gateway: gatewayDeIA })
+      : null);
+
   const atendimento = dependencias.atendimento
     || criarAtendimento({
       repositorio,
@@ -154,6 +169,7 @@ function criarAplicacao(dependencias = {}) {
       serena: servicoDaSerena,
       canal: canalDeConversas,
       emissor: emissorDeConversas,
+      qualificacaoIa,
     });
 
   // Fluxo comercial: sino de acompanhamento, encerramento com resumo interno e
@@ -164,10 +180,6 @@ function criarAplicacao(dependencias = {}) {
   const servicoDeMetricas = dependencias.servicoDeMetricas
     || criarServicoDeMetricas({ repositorio });
 
-  // Gateway multi-IA: chaves só no servidor, catálogo no banco, fallback
-  // técnico e telemetria com chave de idempotência.
-  const gatewayDeIA = dependencias.gatewayDeIA
-    || criarGatewayDeIA({ configuracao, repositorio });
   const servicoDeAvaliacao = dependencias.servicoDeAvaliacao
     || criarServicoDeAvaliacao({ repositorio });
   const rotasDeIA = criarRotasDeIA({

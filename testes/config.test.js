@@ -197,6 +197,19 @@ test('Arquitetura B só liga com sessão interna e os dois gateways', () => {
   assert.deepEqual(validarConfiguracao(completa), []);
 });
 
+test('extração de qualificação por IA nasce desligada e só liga com "sim" explícito', () => {
+  assert.equal(carregarConfiguracao({}).leadsQualificacaoIa.ativa, false);
+  assert.equal(
+    carregarConfiguracao({ LEADS_QUALIFICACAO_IA_ATIVA: 'true' }).leadsQualificacaoIa.ativa,
+    false,
+    'só a palavra "sim" liga — qualquer outro valor é tratado como desligado',
+  );
+  assert.equal(
+    carregarConfiguracao({ LEADS_QUALIFICACAO_IA_ATIVA: 'sim' }).leadsQualificacaoIa.ativa,
+    true,
+  );
+});
+
 test('estratégia de WhatsApp inventada é recusada', () => {
   const problemas = validarConfiguracao(carregarConfiguracao({
     SERENA_TRANSPORTE_WHATSAPP: 'automatico',
