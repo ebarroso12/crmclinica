@@ -1351,20 +1351,33 @@ function criarAplicacao(dependencias = {}) {
           return;
         }
         exigirPermissao(usuario, 'conversas:ler');
-        // A saúde do orquestrador é rede, e fica fora da transação: seria uma
-        // conexão do pool parada esperando um serviço externo responder.
-        const saudeOrquestrador = await orquestrador.verificarSaude();
+        // A saúde vem do BANCO (heartbeat), não de pingar serviços internos.
+        //
+        // O painel roda numa hospedagem externa; o OpenClaw roda em rede interna
+        // (ws://172.17.0.1) que ela nunca alcança. O ping antigo gastava o tempo
+        // limite inteiro e o `/api/resumo` estourava — e o front, num único
+        // `catch`, pintava TODOS os cartões de "indisponível" por causa de um só
+        // componente fora de alcance. Agora quem enxerga o OpenClaw é o servidor,
+        // que grava o batimento no banco; o painel apenas lê esse batimento.
+        //
+        // Cada leitura é defensiva: uma parte que falha vira um estado pontual,
+        // NUNCA um resumo que falha por completo (a regra que causava a cascata).
+        const batimentos = await (
+          repositorio.lerBatimentos ? repositorio.lerBatimentos() : Promise.resolve({})
+        ).catch(() => ({}));
         const [saudeInbox, conversasDoResumo, leadsDoResumo] = await comIdentidade(usuario, () => (
           Promise.all([
             repositorio.verificarSaude(),
             repositorio.listarConversas({ limite: 200 }),
             repositorio.listarLeads(),
           ])
-        ));
+        )).catch(() => [{ estado: 'indisponivel' }, [], []]);
+        const saudeOrquestrador = { estado: batimentos.openclaw ?? 'indisponivel' };
+        const saudeInboxFinal = { estado: batimentos.inbox ?? (saudeInbox?.estado ?? 'indisponivel') };
         responderJson(
           res,
           200,
-          montarResumo(configuracao, saudeOrquestrador, saudeInbox, {
+          montarResumo(configuracao, saudeOrquestrador, saudeInboxFinal, {
             conversas: conversasDoResumo,
             leads: leadsDoResumo,
           }),
