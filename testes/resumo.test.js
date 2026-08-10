@@ -70,6 +70,9 @@ test('o resumo nunca devolve token, chave ou URL de banco', async (t) => {
   });
 
   // Orquestrador simulado: o teste não faz rede nem usa credencial real.
+  // `verificarSaude` não é mais o que decide a saúde mostrada no resumo (ver
+  // teste abaixo) — fica aqui só porque `despacharEvento` e `disponivel` são
+  // exigidos pela mesma interface.
   const orquestrador = {
     disponivel: true,
     despacharEvento: async () => ({}),
@@ -92,8 +95,23 @@ test('o resumo nunca devolve token, chave ou URL de banco', async (t) => {
 
   const resumo = JSON.parse(bruto);
   assert.equal(resumo.origem, 'banco');
-  assert.equal(resumo.plataforma.orquestrador.saude, 'operacional');
+  // A saúde do orquestrador vem do batimento gravado em `system_heartbeats`
+  // (ver `repositorio.lerBatimentos`), não de perguntar direto pro OpenClaw —
+  // é o que evita o painel travar esperando um serviço de rede interna. Sem
+  // batimento nenhum registrado, o estado honesto é "indisponível".
+  assert.equal(resumo.plataforma.orquestrador.saude, 'indisponivel');
   assert.equal(resumo.plataforma.provedorModelo.estado, 'disponível');
+});
+
+test('com batimento recente no banco, o resumo mostra o orquestrador operacional', async (t) => {
+  const repositorio = criarRepositorioEmMemoria({
+    batimentos: { openclaw: { status: 'ok', atualizadoEm: new Date().toISOString() } },
+  });
+  const app = await subirServidor({ repositorio });
+  t.after(() => app.encerrar());
+
+  const resumo = await (await app.pedir('/api/resumo')).json();
+  assert.equal(resumo.plataforma.orquestrador.saude, 'operacional');
 });
 
 test('POST em /api/resumo é recusado', async (t) => {

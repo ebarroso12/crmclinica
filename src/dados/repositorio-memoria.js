@@ -20,7 +20,7 @@ const ETIQUETAS_INICIAIS = [
   { nome: 'pacientes_antigos', descricao: 'Paciente antigo', cor: '#0891b2', do_sistema: false },
 ];
 
-function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
+function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batimentosIniciais = null } = {}) {
   const contatos = new Map();
   const conversas = new Map();
   const mensagens = [];
@@ -30,6 +30,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
   const leads = new Map();
   const eventos = new Map();
   const auditoria = [];
+  // Espelha `system_heartbeats` do Postgres: componente → { status, atualizadoEm }.
+  // Sem escritor próprio (quem grava, no banco real, é um worker externo ao
+  // repositório), então testes que precisam do caminho "operacional" semeiam
+  // aqui pelo construtor.
+  const batimentosDoSistema = new Map(
+    Object.entries(batimentosIniciais || {}).map(([componente, valor]) => [componente, {
+      status: valor.status || 'ok',
+      atualizadoEm: valor.atualizadoEm || agora().toISOString(),
+    }]),
+  );
   const heartbeats = new Map();
   const usuarios = new Map();
   const sessoes = new Map();
@@ -238,6 +248,27 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
 
     async verificarSaude() {
       return { estado: 'operacional' };
+    },
+
+    /**
+     * Espelha `repositorio.js`: mesma regra de frescor (até 90s operacional,
+     * até 5min degradado, acima disso indisponível), lida do mapa em memória
+     * em vez da tabela `system_heartbeats`. Componente nunca semeado fica de
+     * fora do mapa — o chamador assume "indisponível", igual ao banco real
+     * sem linha nenhuma.
+     */
+    async lerBatimentos() {
+      const mapa = {};
+      for (const [componente, { status, atualizadoEm }] of batimentosDoSistema) {
+        const idade = (agora().getTime() - new Date(atualizadoEm).getTime()) / 1000;
+        let estado;
+        if (status && status !== 'ok') estado = 'degradado';
+        else if (idade < 90) estado = 'operacional';
+        else if (idade < 300) estado = 'degradado';
+        else estado = 'indisponivel';
+        mapa[componente] = estado;
+      }
+      return mapa;
     },
 
     // ---------------------------------------------------------------- conversas
