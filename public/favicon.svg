@@ -1,10 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="crmclinica">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="crmclinica — Clínica Dr. Edson Barroso">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0e8fa1"/>
-      <stop offset="1" stop-color="#5b4bd6"/>
+      <stop offset="0" stop-color="#0ea5b7"/>
+      <stop offset="1" stop-color="#6366f1"/>
     </linearGradient>
   </defs>
-  <rect width="32" height="32" rx="8" fill="url(#g)"/>
-  <path d="M16 8v16M8 16h16" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+  <rect width="32" height="32" rx="9" fill="url(#g)"/>
+  <path d="M4.5 16.8h4.7l2.1-5.4a1 1 0 0 1 1.9.08l3 8.7 2.2-6.4a1 1 0 0 1 1.8-.16l1.7 3.14h4.3"
+        fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

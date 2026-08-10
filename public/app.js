@@ -48,12 +48,30 @@ for (const gatilho of document.querySelectorAll('nav [data-tela]')) {
   gatilho.addEventListener('click', () => abrirTela(gatilho.dataset.tela));
 }
 
+// Cidade exibida no relógio. Franca/SP fica no fuso America/Sao_Paulo, então o
+// fuso NÃO muda — muda só o rótulo. (No futuro dá para vir de admin_config,
+// chave 'clinica_cidade'; por ora o padrão abaixo.)
+const CIDADE_DA_CLINICA = 'Franca - SP';
+
 function atualizarRelogio() {
+  const agora = new Date();
   seletor('#hora').textContent = new Intl.DateTimeFormat('pt-BR', {
     hour: '2-digit',
     minute: '2-digit',
     timeZone: 'America/Sao_Paulo',
-  }).format(new Date());
+  }).format(agora);
+  // Antes era "São Paulo · hoje" fixo. Agora mostra a cidade certa e a DATA
+  // completa do dia, no fuso da clínica.
+  const local = seletor('#hora-local');
+  if (local) {
+    const data = new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      timeZone: 'America/Sao_Paulo',
+    }).format(agora);
+    local.textContent = `${CIDADE_DA_CLINICA} · ${data}`;
+  }
 }
 
 // --- Estado de leitura da API ---
