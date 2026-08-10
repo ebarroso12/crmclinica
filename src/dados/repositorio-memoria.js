@@ -242,7 +242,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
 
     // ---------------------------------------------------------------- conversas
 
-    async listarConversas({ status = null, busca = null, contatoId = null, limite = 50 } = {}) {
+    async listarConversas({
+      status = null, busca = null, contatoId = null, limite = 50,
+      dataInicio = null, dataFim = null, ordenacao = 'desc',
+    } = {}) {
       let lista = [...conversas.values()];
 
       if (status) lista = lista.filter((conversa) => conversa.status === status);
@@ -255,12 +258,33 @@ function criarRepositorioEmMemoria({ agora = () => new Date() } = {}) {
             || (contato.telefone || '').includes(busca);
         });
       }
+      if (dataInicio) {
+        const limite = new Date(dataInicio).getTime();
+        lista = lista.filter((conversa) => (
+          conversa.ultima_msg_em && new Date(conversa.ultima_msg_em).getTime() >= limite
+        ));
+      }
+      if (dataFim) {
+        const limite = new Date(dataFim).getTime();
+        lista = lista.filter((conversa) => (
+          conversa.ultima_msg_em && new Date(conversa.ultima_msg_em).getTime() <= limite
+        ));
+      }
 
+      // O mesmo sinal governa o desempate por data e por id, para casar com
+      // `ORDER BY ultima_msg_em ${direcao}, id ${direcao}` do repositório real.
+      // Datas ausentes vão sempre por último, nas duas direções — é o que
+      // `NULLS LAST` faz lá no SQL.
+      const sinal = ordenacao === 'asc' ? 1 : -1;
       return lista
         .sort((a, b) => {
-          const tempoA = a.ultima_msg_em ? new Date(a.ultima_msg_em).getTime() : 0;
-          const tempoB = b.ultima_msg_em ? new Date(b.ultima_msg_em).getTime() : 0;
-          return tempoB - tempoA || b.id - a.id;
+          const tempoA = a.ultima_msg_em ? new Date(a.ultima_msg_em).getTime() : null;
+          const tempoB = b.ultima_msg_em ? new Date(b.ultima_msg_em).getTime() : null;
+          if (tempoA === null || tempoB === null) {
+            if (tempoA === null && tempoB === null) return (a.id - b.id) * sinal;
+            return tempoA === null ? 1 : -1;
+          }
+          return (tempoA - tempoB) * sinal || (a.id - b.id) * sinal;
         })
         .slice(0, limite)
         .map(montarConversa);

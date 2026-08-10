@@ -263,6 +263,57 @@ for (const { nome, montar } of implementacoes) {
       assert.ok(!(await repositorio.listarConversas({ status: 'aberta' })).some((item) => item.id === conversa.id));
     });
 
+    await t.test('a ordenação por data e o filtro de intervalo funcionam', async () => {
+      const contatoAntigo = await repositorio.encontrarOuCriarContato({ telefone: '5516900000014', nome: 'Teste N' });
+      const conversaAntiga = await repositorio.encontrarOuCriarConversaAberta(contatoAntigo.id, 'whatsapp');
+      await repositorio.registrarMensagem(conversaAntiga.id, { direcao: 'entrada', conteudo: 'oi', autor_tipo: 'contato' });
+
+      // `ultima_msg_em` nasce de `now()` no Postgres — não há como carimbar uma
+      // data passada direto. O intervalo real entre as duas gravações é o que
+      // a ordenação e o filtro por data têm para diferenciar.
+      await new Promise((resolver) => setTimeout(resolver, 20));
+
+      const contatoRecente = await repositorio.encontrarOuCriarContato({ telefone: '5516900000015', nome: 'Teste O' });
+      const conversaRecente = await repositorio.encontrarOuCriarConversaAberta(contatoRecente.id, 'whatsapp');
+      await repositorio.registrarMensagem(conversaRecente.id, { direcao: 'entrada', conteudo: 'oi', autor_tipo: 'contato' });
+
+      const decrescente = await repositorio.listarConversas({ ordenacao: 'desc', limite: 200 });
+      const posicao = (lista, id) => lista.findIndex((item) => item.id === id);
+      assert.ok(
+        posicao(decrescente, conversaRecente.id) < posicao(decrescente, conversaAntiga.id),
+        'decrescente: a conversa mais recente vem primeiro',
+      );
+
+      const crescente = await repositorio.listarConversas({ ordenacao: 'asc', limite: 200 });
+      assert.ok(
+        posicao(crescente, conversaAntiga.id) < posicao(crescente, conversaRecente.id),
+        'crescente: a conversa mais antiga vem primeiro',
+      );
+
+      const umaHoraAtras = new Date(Date.now() - 3_600_000).toISOString();
+      const umaHoraNoFuturo = new Date(Date.now() + 3_600_000).toISOString();
+
+      const dentroDoIntervalo = await repositorio.listarConversas({
+        dataInicio: umaHoraAtras, dataFim: umaHoraNoFuturo, limite: 200,
+      });
+      assert.ok(
+        dentroDoIntervalo.some((item) => item.id === conversaRecente.id),
+        'um intervalo largo o bastante inclui a conversa de agora',
+      );
+
+      const inicioNoFuturo = await repositorio.listarConversas({ dataInicio: umaHoraNoFuturo, limite: 200 });
+      assert.ok(
+        !inicioNoFuturo.some((item) => item.id === conversaRecente.id),
+        'um início no futuro exclui a conversa de agora',
+      );
+
+      const fimNoPassado = await repositorio.listarConversas({ dataFim: umaHoraAtras, limite: 200 });
+      assert.ok(
+        !fimNoPassado.some((item) => item.id === conversaRecente.id),
+        'um fim no passado também exclui a conversa de agora',
+      );
+    });
+
     await t.test('o registro de evento é idempotente', async () => {
       assert.equal(await repositorio.consultarEvento('contrato-chave-a'), null);
 

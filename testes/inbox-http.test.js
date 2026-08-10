@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
 const { criarAtendimento } = require('../src/dominio/atendimento');
+const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
 
 // A API local do inbox, exercida de ponta a ponta sobre o repositório em memória.
 
@@ -92,6 +93,48 @@ test('busca e filtro de status funcionam; valor inválido responde 400', async (
 
   assert.equal((await app.pedir('/api/conversas?fila=inventada')).status, 400);
   assert.equal((await app.pedir('/api/conversas?status=inventado')).status, 400);
+});
+
+test('ordenação por data e filtro por dia funcionam; valores inválidos respondem 400', async (t) => {
+  const { app, atendimento } = await subirInbox();
+  t.after(() => app.encerrar());
+
+  // Intervalo real entre as duas conversas: `ultima_msg_em` nasce de "agora",
+  // não é carimbável — o teste precisa de tempo de parede de verdade para ter
+  // o que diferenciar.
+  await new Promise((resolver) => setTimeout(resolver, 20));
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'crm_despacha',
+    id_externo: 'wa:2',
+    remetente: '5516988888888',
+    nome: 'Carlos Pires',
+    texto: 'Quero saber sobre valores',
+  });
+
+  const decrescente = await (await app.pedir('/api/conversas?ordenacao=desc')).json();
+  assert.equal(decrescente.conversas[0].contato.nome, 'Carlos Pires', 'padrão: mais recente primeiro');
+
+  const crescente = await (await app.pedir('/api/conversas?ordenacao=asc')).json();
+  assert.equal(crescente.conversas[0].contato.nome, 'Marina Souza', 'invertido: mais antiga primeiro');
+
+  assert.equal((await app.pedir('/api/conversas?ordenacao=lateral')).status, 400);
+  assert.equal((await app.pedir('/api/conversas?data=10-08-2026')).status, 400, 'só aceita AAAA-MM-DD');
+
+  // Data de hoje no fuso da clínica (fixo em -03:00; sem esse ajuste, rodar o
+  // teste perto da meia-noite UTC pegaria o dia errado).
+  const hojeNaClinica = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const doDia = await (await app.pedir(`/api/conversas?data=${hojeNaClinica}`)).json();
+  assert.ok(
+    doDia.conversas.some((conversa) => conversa.contato.nome === 'Carlos Pires'),
+    'o filtro do dia de hoje inclui a conversa recém-criada',
+  );
+
+  const foraDoDia = await (await app.pedir('/api/conversas?data=2000-01-01')).json();
+  assert.ok(
+    !foraDoDia.conversas.some((conversa) => conversa.contato.nome === 'Carlos Pires'),
+    'um dia sem nenhuma mensagem não traz nada',
+  );
 });
 
 // ---------------------------------------------------------------- conversa e thread
@@ -433,4 +476,68 @@ test('POST em /api/contatos cadastra, e exige telefone', async (t) => {
 
   const completo = await enviar(app, '/api/contatos', { nome: 'Marina', telefone: '16993129999' });
   assert.equal(completo.status, 201);
+});
+
+// ---------------------------------------------------------------- conversas ao vivo
+
+/** Acumula pedaços do stream até o texto esperado aparecer, com prazo. */
+async function lerAteConter(leitor, decodificador, buffer, textoEsperado) {
+  const prazo = Date.now() + 2000;
+  while (!buffer.valor.includes(textoEsperado)) {
+    if (Date.now() > prazo) {
+      throw new Error(`tempo esgotado esperando por "${textoEsperado}" no SSE (recebido: ${buffer.valor})`);
+    }
+    const { value, done } = await leitor.read();
+    if (done) throw new Error('conexão SSE encerrada antes do esperado');
+    buffer.valor += decodificador.decode(value, { stream: true });
+  }
+  return buffer.valor;
+}
+
+test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensagem chega', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  // A instância do emissor precisa ser a MESMA que a rota HTTP usa: por isso
+  // ambos, `atendimento` e `emissorDeConversas`, são injetados em `subirServidor`
+  // em vez de deixar `criarAplicacao` montar os seus por baixo dos panos.
+  const emissorDeConversas = criarEmissorDeConversas();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  const semToken = await app.pedirSemAuth('/api/conversas/eventos');
+  assert.equal(semToken.status, 401, 'sem cabeçalho e sem ?token=, a conexão é recusada');
+
+  const controle = new AbortController();
+  const resposta = await app.pedirSemAuth(
+    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    { signal: controle.signal },
+  );
+  assert.equal(resposta.status, 200);
+  assert.equal(resposta.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+
+  const leitor = resposta.body.getReader();
+  const decodificador = new TextDecoder();
+  const buffer = { valor: '' };
+
+  await lerAteConter(leitor, decodificador, buffer, 'conectado');
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    // Sem despacho ao orquestrador: mantém o teste com um evento só a esperar.
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:sse-1',
+    remetente: '5516977777777',
+    nome: 'Paula Nunes',
+    texto: 'Olá, tudo bem?',
+  });
+
+  await lerAteConter(leitor, decodificador, buffer, '"tipo":"mensagem"');
+  assert.match(buffer.valor, /"direcao":"entrada"/);
+
+  controle.abort();
+  await leitor.cancel().catch(() => {});
 });

@@ -441,6 +441,37 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   border-radius: 8px;
   font: inherit;
 }
+.filtros-conversas {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.filtros-conversas input[type="date"] {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--linha);
+  padding: 6px 8px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.filtros-conversas button {
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  border: 1px solid var(--linha);
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  color: var(--apoio);
+}
+.filtros-conversas #limpar-data-conversas {
+  border: 0;
+  padding: 6px 2px;
+  text-decoration: underline;
+}
 .abas { display: flex; gap: 4px; margin: 12px 0 4px; }
 .aba {
   border: 0;

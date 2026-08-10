@@ -414,7 +414,10 @@ function criarRepositorio(pool) {
      * Lista conversas do inbox.
      * `previa` sai da última mensagem não privada — é o que a equipe lê na lista.
      */
-    async listarConversas({ status = null, busca = null, contatoId = null, limite = 50 } = {}) {
+    async listarConversas({
+      status = null, busca = null, contatoId = null, limite = 50,
+      dataInicio = null, dataFim = null, ordenacao = 'desc',
+    } = {}) {
       const condicoes = [];
       const valores = [];
 
@@ -424,13 +427,20 @@ function criarRepositorio(pool) {
         valores.push(`%${busca}%`);
         condicoes.push(`(ct.nome ILIKE $${valores.length} OR ct.telefone ILIKE $${valores.length})`);
       }
+      // O filtro de data casa com o que a lista mostra ("há 10 min"): a data da
+      // última movimentação, não a da criação — uma conversa aberta ontem e
+      // respondida hoje é uma conversa de hoje para quem está triando o inbox.
+      if (dataInicio) { valores.push(dataInicio); condicoes.push(`c.ultima_msg_em >= $${valores.length}`); }
+      if (dataFim) { valores.push(dataFim); condicoes.push(`c.ultima_msg_em <= $${valores.length}`); }
       valores.push(limite);
+
+      const direcao = ordenacao === 'asc' ? 'ASC' : 'DESC';
 
       const { rows } = await consultar(`
         SELECT ${SELECAO_CONVERSA}, ${AGREGADOS_CONVERSA}
         ${JUNCOES_CONVERSA}
         ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
-        ORDER BY c.ultima_msg_em DESC NULLS LAST, c.id DESC
+        ORDER BY c.ultima_msg_em ${direcao} NULLS LAST, c.id ${direcao}
         LIMIT $${valores.length}
       `, valores);
 

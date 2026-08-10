@@ -22,8 +22,14 @@ const { ErroDeEstrategia } = require('../contratos/erros');
  *   conversa: desligada, ela não responde nada, em conversa nenhuma. Sem o
  *   serviço, vale só a regra por conversa — que é como o sistema funcionava
  *   antes de o interruptor existir.
+ * @param {object} dependencias.emissor  Barramento de eventos do inbox, opcional.
+ *   Cada mensagem gravada aqui é anunciada nele — é o que faz a tela de
+ *   Conversas atualizar sozinha, sem esperar o próximo ciclo de novo pedido.
+ *   Sem ele, o atendimento funciona igual; só ninguém é avisado ao vivo.
  */
-function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null }) {
+function criarAtendimento({
+  repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null, emissor = null,
+}) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -64,6 +70,11 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
     if (duplicada) {
       return { acao: 'mensagem_duplicada', conversa_id: conversa.id, mensagem_id: mensagem.id };
     }
+
+    // Anuncia assim que a mensagem existe no banco, antes de qualquer decisão
+    // de automação — quem está com a tela aberta precisa ver o paciente
+    // escrevendo, não só a eventual resposta da Serena minutos depois.
+    emissor?.publicarMensagem(conversa.id, mensagem);
 
     // "PARAR" precisa valer na hora. Esperar alguém da equipe ver a mensagem e
     // clicar em algo faria a pessoa que acabou de pedir para não receber nada
@@ -243,6 +254,10 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
           autor_nome: 'Serena',
           id_externo: chaveDaResposta,
         });
+        // Publica assim que a mensagem existe, antes de tentar entregar ao
+        // paciente: quem está com a tela aberta vê a resposta da Serena na
+        // hora, mesmo que a entrega pelo canal falhe ou demore.
+        emissor?.publicarMensagem(conversaId, gravada);
 
         // A resposta precisa CHEGAR ao paciente — gravar no CRM não entrega
         // nada. A chave determinística faz reentrega concorrente ou retentada
@@ -326,13 +341,14 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       status: 'aberta',
     });
 
-    await repositorio.registrarMensagem(conversaId, {
+    const { mensagem: avisoDeAssumir } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
       tipo: 'sistema',
       conteudo: 'Conversa assumida pela equipe. A resposta automática está pausada.',
       autor_tipo: 'sistema',
       privada: true,
     });
+    emissor?.publicarMensagem(conversaId, avisoDeAssumir);
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
@@ -369,6 +385,10 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
       autor_nome: autorNome,
       privada,
     });
+    // Publica assim que a mensagem existe, mesmo antes de tentar entregar ao
+    // paciente: outra tela da equipe olhando a mesma conversa precisa ver a
+    // resposta na hora, e não deve esperar pelo canal externo para isso.
+    emissor?.publicarMensagem(conversaId, mensagem);
 
     // Nota interna não é atendimento: não assume a conversa nem cala a IA.
     if (!privada) {
@@ -436,13 +456,14 @@ function criarAtendimento({ repositorio, orquestrador, leads = null, lembretes =
 
   async function escalonar(conversaId, motivo) {
     await repositorio.atualizarConversa(conversaId, { assumida_por_humano: true, status: 'aberta' });
-    await repositorio.registrarMensagem(conversaId, {
+    const { mensagem: avisoDeEscalonamento } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
       tipo: 'sistema',
       conteudo: `Conversa encaminhada para a equipe (${motivo}).`,
       autor_tipo: 'sistema',
       privada: true,
     });
+    emissor?.publicarMensagem(conversaId, avisoDeEscalonamento);
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
