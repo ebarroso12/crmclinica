@@ -59,6 +59,7 @@ const { criarRotasDeUsuarios } = require('./rotas-usuarios');
 const { criarRotasDeSincronia } = require('./rotas-sincronia');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
+const { criarEmissorDeConversas } = require('./eventos-conversas');
 
 const PASTA_PUBLICA = path.join(__dirname, '..', '..', 'public');
 
@@ -140,6 +141,10 @@ function criarAplicacao(dependencias = {}) {
     || (configuracao.openclaw.canalClinica.url
       ? criarCanalDeConversas(configuracao.openclaw.canalClinica) : null);
 
+  // Barramento das Conversas ao vivo: cada mensagem gravada passa por aqui e
+  // é anunciada a quem está com a tela aberta via SSE (rota mais abaixo).
+  const emissorDeConversas = dependencias.emissorDeConversas || criarEmissorDeConversas();
+
   const atendimento = dependencias.atendimento
     || criarAtendimento({
       repositorio,
@@ -148,6 +153,7 @@ function criarAplicacao(dependencias = {}) {
       lembretes: lembretesLigados,
       serena: servicoDaSerena,
       canal: canalDeConversas,
+      emissor: emissorDeConversas,
     });
 
   // Fluxo comercial: sino de acompanhamento, encerramento com resumo interno e
@@ -1392,6 +1398,59 @@ function criarAplicacao(dependencias = {}) {
           return;
         }
         responderJson(res, 200, await comIdentidade(usuario, () => rotasDeAuditoria.listar(usuario, url.searchParams)), { 'cache-control': 'no-store' });
+        return;
+      }
+
+      // Conversas ao vivo: a conexão fica aberta por horas, enquanto a
+      // recepção está com a tela aberta. Dentro de `comIdentidade` isso
+      // seguraria uma conexão do pool pelo mesmo tempo — o inbox inteiro
+      // travaria assim que umas poucas abas se acumulassem. Fica de fora,
+      // como `/api/resumo` acima, e só lê o necessário do banco antes de
+      // começar a transmitir.
+      if (rota === '/api/conversas/eventos') {
+        if (metodo !== 'GET') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
+          return;
+        }
+
+        // `EventSource` do navegador não manda cabeçalho `Authorization` — não
+        // há como. O token chega pela querystring só para abrir esta conexão
+        // de leitura; nenhuma escrita passa por aqui.
+        const tokenDaQuery = url.searchParams.get('token');
+        const usuarioDoEvento = usuario
+          || (tokenDaQuery ? autenticacao.identificar(`Bearer ${tokenDaQuery}`) : null);
+        exigirPermissao(usuarioDoEvento, 'conversas:ler');
+
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive',
+          // Proxies que bufferizam (nginx, por exemplo) quebram SSE em silêncio.
+          'x-accel-buffering': 'no',
+        });
+        res.write(': conectado\n\n');
+        // Um cliente que cai no meio (aba fechada, wifi caindo) dispara 'error'
+        // no socket antes do 'close'. Sem um ouvinte aqui, é exceção não
+        // tratada — e essa deixaria de ser sobre uma conexão só.
+        res.on('error', () => {});
+        req.on('error', () => {});
+
+        const cancelarInscricao = emissorDeConversas.inscrever(res);
+        // Sem batimento, uma conexão ociosa é indistinguível de uma caída para
+        // qualquer proxy no meio do caminho — ele derruba silenciosamente.
+        const batimento = setInterval(() => {
+          try {
+            res.write(': ping\n\n');
+          } catch {
+            // A conexão já caiu; `req.on('close', …)` abaixo cuida da limpeza.
+          }
+        }, 25000);
+        batimento.unref();
+
+        req.on('close', () => {
+          clearInterval(batimento);
+          cancelarInscricao();
+        });
         return;
       }
 

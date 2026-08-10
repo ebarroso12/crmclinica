@@ -284,6 +284,15 @@
           <div class="lista">
             <label class="oculto-visual" for="busca-conversas">Buscar conversa</label>
             <input id="busca-conversas" type="search" placeholder="Buscar nome, telefone ou mensagem">
+            <div class="filtros-conversas">
+              <label class="oculto-visual" for="filtro-data-conversas">Filtrar por data</label>
+              <input id="filtro-data-conversas" type="date" title="Filtrar por data">
+              <button type="button" id="limpar-data-conversas" class="link" hidden>Limpar data</button>
+              <button type="button" id="ordenar-conversas" data-ordenacao="desc"
+                      aria-label="Ordenar por data, mais recentes primeiro" title="Ordenar por data">
+                Mais recentes ↓
+              </button>
+            </div>
             <div class="abas" role="tablist" aria-label="Filas do inbox">
               <button type="button" class="aba" role="tab" data-fila="minhas" aria-selected="false">Minhas</button>
               <button type="button" class="aba selecionada" role="tab" data-fila="nao_atribuidas" aria-selected="true">Não atribuídas</button>

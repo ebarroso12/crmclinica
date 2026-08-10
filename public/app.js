@@ -156,6 +156,9 @@ function lerRefresh() {
 function limparSessao() {
   accessToken = null;
   usuarioAtual = null;
+  // A conexão ao vivo carrega o token na URL: sem isso, ela ficaria aberta
+  // com a sessão anterior mesmo depois do logout.
+  encerrarEventosDeConversas();
   try {
     sessionStorage.removeItem(CHAVE_REFRESH);
   } catch {
@@ -264,6 +267,7 @@ async function carregarResumo() {
 let filaAtual = 'todos';
 let conversaAberta = null;
 let contatoAberto = null;
+let ordenacaoConversas = 'desc';
 let etiquetasDisponiveis = [];
 
 function iniciais(nome) {
@@ -311,9 +315,11 @@ async function carregarConversas() {
   const lista = seletor('#lista-conversas');
   if (!lista) return;
 
-  const parametros = new URLSearchParams({ fila: filaAtual });
+  const parametros = new URLSearchParams({ fila: filaAtual, ordenacao: ordenacaoConversas });
   const busca = seletor('#busca-conversas')?.value.trim();
   if (busca) parametros.set('busca', busca);
+  const data = seletor('#filtro-data-conversas')?.value;
+  if (data) parametros.set('data', data);
 
   try {
     const dados = await pedirJson(`/api/conversas?${parametros}`);
@@ -1185,6 +1191,33 @@ seletor('#busca-conversas')?.addEventListener('input', () => {
   buscaAgendada = setTimeout(carregarConversas, 300);
 });
 
+// Um botão só, que alterna: mais recentes primeiro (padrão) ou mais antigas
+// primeiro. Duas opções, não um seletor cheio de escolhas.
+const botaoOrdenar = seletor('#ordenar-conversas');
+botaoOrdenar?.addEventListener('click', () => {
+  ordenacaoConversas = ordenacaoConversas === 'desc' ? 'asc' : 'desc';
+  botaoOrdenar.dataset.ordenacao = ordenacaoConversas;
+  botaoOrdenar.textContent = ordenacaoConversas === 'desc' ? 'Mais recentes ↓' : 'Mais antigas ↑';
+  botaoOrdenar.setAttribute(
+    'aria-label',
+    ordenacaoConversas === 'desc' ? 'Ordenar por data, mais recentes primeiro' : 'Ordenar por data, mais antigas primeiro',
+  );
+  carregarConversas();
+});
+
+const campoData = seletor('#filtro-data-conversas');
+const botaoLimparData = seletor('#limpar-data-conversas');
+campoData?.addEventListener('change', () => {
+  if (botaoLimparData) botaoLimparData.hidden = !campoData.value;
+  carregarConversas();
+});
+botaoLimparData?.addEventListener('click', () => {
+  if (!campoData) return;
+  campoData.value = '';
+  botaoLimparData.hidden = true;
+  carregarConversas();
+});
+
 seletor('#form-resposta')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   const campo = seletor('#resposta');
@@ -1374,6 +1407,56 @@ function mostrarAplicacao() {
   if (usuarioAtual?.master) carregarUsuarios();
 }
 
+// --- Conversas ao vivo (Server-Sent Events) ---
+//
+// `EventSource` não manda cabeçalho `Authorization` — não há como. O token vai
+// na querystring só para abrir esta conexão de leitura; nenhuma escrita passa
+// por aqui. A reconexão é manual, não a automática do navegador: a nativa
+// insiste na mesma URL, com o mesmo token — e ele vence a cada 15 minutos.
+// Reabrir com `accessToken` na hora da falha garante um token válido.
+
+let fonteDeEventos = null;
+let reconexaoDeEventosAgendada = null;
+
+function encerrarEventosDeConversas() {
+  clearTimeout(reconexaoDeEventosAgendada);
+  reconexaoDeEventosAgendada = null;
+  fonteDeEventos?.close();
+  fonteDeEventos = null;
+}
+
+function conectarEventosDeConversas() {
+  if (!accessToken || typeof EventSource === 'undefined') return;
+  encerrarEventosDeConversas();
+
+  fonteDeEventos = new EventSource(`/api/conversas/eventos?token=${encodeURIComponent(accessToken)}`);
+
+  fonteDeEventos.onmessage = (evento) => {
+    let dados;
+    try {
+      dados = JSON.parse(evento.data);
+    } catch {
+      return;
+    }
+    if (dados?.tipo !== 'mensagem') return;
+
+    // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
+    if (!seletor('#conversas')?.hidden) carregarConversas();
+
+    // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
+    if (dados.conversa_id === conversaAberta) {
+      pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
+    }
+  };
+
+  fonteDeEventos.onerror = () => {
+    encerrarEventosDeConversas();
+    // Um intervalo fixo evita martelar o servidor se ele estiver fora do ar;
+    // 5s ainda é rápido o bastante para não se notar numa queda passageira.
+    reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
+  };
+}
+
 let inboxIniciado = false;
 function iniciarInbox() {
   if (inboxIniciado) return;
@@ -1386,6 +1469,9 @@ function iniciarInbox() {
     carregarConversas();
     carregarLeads();
   });
+  conectarEventosDeConversas();
+  // Rede de segurança: se o SSE cair sem disparar `onerror` (proxy silencioso,
+  // aba em segundo plano), a lista ainda se atualiza sozinha, só que devagar.
   setInterval(carregarConversas, 30000);
 }
 

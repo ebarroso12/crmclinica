@@ -9,6 +9,18 @@ const { proximaAcao } = require('../dominio/qualificacao');
 // serviço externo de conversas por trás destas rotas.
 
 const LIMITE_TEXTO = 4000;
+const ORDENACOES = ['asc', 'desc'];
+const REGEX_DATA = /^\d{4}-\d{2}-\d{2}$/;
+
+// O dia da recepção é o dia em Franca/SP, não o UTC do servidor. Sem fuso
+// fixo, filtrar "hoje" às 21h viraria "amanhã" para o banco. O Brasil não
+// observa mais horário de verão desde 2019, então -03:00 vale o ano inteiro.
+function limitesDoDia(data) {
+  return {
+    inicio: `${data}T00:00:00-03:00`,
+    fim: `${data}T23:59:59.999-03:00`,
+  };
+}
 
 function exigirTexto(valor, campo, limite = LIMITE_TEXTO) {
   const bruto = typeof valor === 'string' ? valor.trim() : '';
@@ -67,11 +79,27 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
         throw new ErroDeContrato(`status desconhecido: ${status}`, 'status');
       }
 
+      const ordenacao = parametros.get('ordenacao') || 'desc';
+      if (!ORDENACOES.includes(ordenacao)) {
+        throw new ErroDeContrato(`ordenacao desconhecida: ${ordenacao}`, 'ordenacao');
+      }
+
+      // Filtro por data: um dia só, o mesmo que a interface mostra num seletor.
+      // Início e fim viram o intervalo do dia inteiro, no fuso da clínica.
+      const dataParam = parametros.get('data');
+      if (dataParam && !REGEX_DATA.test(dataParam)) {
+        throw new ErroDeContrato('campo "data" deve estar no formato AAAA-MM-DD', 'data');
+      }
+      const { inicio: dataInicio, fim: dataFim } = dataParam ? limitesDoDia(dataParam) : {};
+
       const contatoParam = parametros.get('contato');
       const conversas = await repositorio.listarConversas({
         status: status || null,
         busca: parametros.get('busca') || null,
         contatoId: contatoParam ? exigirIdentificador(contatoParam, 'contato') : null,
+        dataInicio: dataInicio || null,
+        dataFim: dataFim || null,
+        ordenacao,
         limite: 50,
       });
 
