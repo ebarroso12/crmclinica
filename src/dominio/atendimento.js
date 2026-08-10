@@ -26,9 +26,14 @@ const { ErroDeEstrategia } = require('../contratos/erros');
  *   Cada mensagem gravada aqui é anunciada nele — é o que faz a tela de
  *   Conversas atualizar sozinha, sem esperar o próximo ciclo de novo pedido.
  *   Sem ele, o atendimento funciona igual; só ninguém é avisado ao vivo.
+ * @param {object} dependencias.qualificacaoIa  `criarExtratorDeQualificacao`, opcional.
+ *   Sem ele, a qualificação segue 100% passiva (só o que a equipe, a API ou o
+ *   formulário mandarem) — comportamento idêntico ao de antes desta dependência
+ *   existir.
  */
 function criarAtendimento({
   repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null, emissor = null,
+  qualificacaoIa = null,
 }) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
@@ -206,7 +211,32 @@ function criarAtendimento({
     //
     // Só o que é **comercial**: o que a pessoa procura, se é primeira consulta,
     // forma de pagamento, urgência e horário. Nada clínico atravessa esta linha.
-    const lead = await repositorio.obterLeadPorContato(conversa.contato_id);
+    let lead = await repositorio.obterLeadPorContato(conversa.contato_id);
+
+    // Antes de montar o contexto, tenta preencher com o que a própria
+    // conversa já revelou — sem isso um lead que já falou preço e horário
+    // continua preso na primeira pergunta pra sempre, só porque ninguém
+    // preencheu a ficha na mão. Melhor esforço: falha aqui nunca cala a
+    // automação nem atrasa a resposta ao paciente.
+    if (qualificacaoIa && leads && lead && camposPendentes(lead).length > 0) {
+      try {
+        const extraido = await qualificacaoIa.extrair({
+          mensagens,
+          qualificacaoAtual: lead,
+          chaveIdempotencia: `qualificacao:${conversaId}:${entradaId}`,
+        });
+        if (extraido && Object.keys(extraido).length > 0) {
+          const resultado = await leads.qualificar(lead.id, extraido, {
+            conversaId,
+            origem: 'automacao_ia',
+          });
+          lead = resultado.lead;
+        }
+      } catch (erro) {
+        console.error(`[atendimento] falha na extração de qualificação: ${erro.message}`);
+      }
+    }
+
     if (lead) {
       const pendentes = camposPendentes(lead);
       contexto.qualificacao = {

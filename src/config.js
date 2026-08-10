@@ -149,6 +149,15 @@ function carregarConfiguracao(ambiente = process.env) {
       lote: inteiro(ambiente.LEMBRETES_LOTE, 20),
       maxTentativas: inteiro(ambiente.LEMBRETES_MAX_TENTATIVAS, 5),
     },
+    // Extração de qualificação (interesse, primeira consulta, pagamento,
+    // urgência, disponibilidade) a partir da própria conversa, via IA — em vez
+    // de deixar todo lead preso na primeira pergunta pra sempre porque
+    // ninguém preencheu a ficha na mão. Nasce DESLIGADA: liga uma chamada de
+    // IA por mensagem qualificável, com custo e comportamento de produção
+    // novos, e isso exige decisão explícita, não vir de brinde num deploy.
+    leadsQualificacaoIa: {
+      ativa: texto(ambiente.LEADS_QUALIFICACAO_IA_ATIVA).toLowerCase() === 'sim',
+    },
     // Espelho da agenda no Google Calendar do médico. A agenda do crmclinica
     // continua sendo a fonte de verdade — é ela que impede dois pacientes no
     // mesmo horário. O Google é para o dia aparecer no celular, sem abrir o
