@@ -210,6 +210,20 @@ test('extração de qualificação por IA nasce desligada e só liga com "sim" e
   );
 });
 
+test('limite de sessão do SSE só existe rodando na Vercel', () => {
+  assert.equal(carregarConfiguracao({}).sse.limiteMs, null, 'servidor tradicional: sem limite');
+  assert.equal(
+    carregarConfiguracao({ VERCEL: '1' }).sse.limiteMs,
+    270_000,
+    'na Vercel, o padrão é 270s — margem segura sob o teto observado de 300s',
+  );
+  assert.equal(
+    carregarConfiguracao({ VERCEL: '1', SSE_LIMITE_MS: '50' }).sse.limiteMs,
+    50,
+    'ajustável, para o teste E2E não esperar 270s de verdade',
+  );
+});
+
 test('estratégia de WhatsApp inventada é recusada', () => {
   const problemas = validarConfiguracao(carregarConfiguracao({
     SERENA_TRANSPORTE_WHATSAPP: 'automatico',

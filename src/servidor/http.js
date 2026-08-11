@@ -1454,15 +1454,36 @@ function criarAplicacao(dependencias = {}) {
           try {
             res.write(': ping\n\n');
           } catch {
-            // A conexão já caiu; `req.on('close', …)` abaixo cuida da limpeza.
+            // A conexão já caiu; a limpeza roda pelo `close` abaixo.
           }
         }, 25000);
         batimento.unref();
 
-        req.on('close', () => {
+        let encerrada = false;
+        let limiteDeSessao = null;
+
+        function encerrarConexaoDeEventos() {
+          if (encerrada) return;
+          encerrada = true;
           clearInterval(batimento);
+          clearTimeout(limiteDeSessao);
           cancelarInscricao();
-        });
+          try {
+            res.end();
+          } catch {
+            // Conexão já pode estar fechada do lado do cliente.
+          }
+        }
+
+        // Ver `configuracao.sse` em `config.js`: fora da Vercel isto é `null`
+        // e a conexão dura o que a aba durar, como sempre. Na Vercel, fecha
+        // sozinho antes da plataforma matar a função à força.
+        if (configuracao.sse.limiteMs) {
+          limiteDeSessao = setTimeout(encerrarConexaoDeEventos, configuracao.sse.limiteMs);
+          limiteDeSessao.unref();
+        }
+
+        req.on('close', encerrarConexaoDeEventos);
         return;
       }
 
