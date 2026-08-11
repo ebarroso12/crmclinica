@@ -158,6 +158,20 @@ function carregarConfiguracao(ambiente = process.env) {
     leadsQualificacaoIa: {
       ativa: texto(ambiente.LEADS_QUALIFICACAO_IA_ATIVA).toLowerCase() === 'sim',
     },
+    // Conversas ao vivo (SSE) ficam com a conexão aberta o tempo que a aba da
+    // recepção estiver aberta — "por horas" no servidor tradicional, sempre
+    // ligado. Rodando como função serverless (a Vercel injeta `VERCEL=1` em
+    // toda invocação), a plataforma MATA a função à força depois de um tempo
+    // máximo por invocação, bem mais curto — e isso vinha aparecendo como
+    // "Runtime Timeout Error" nos logs de produção, uma vez por aba aberta.
+    // Com o limite aqui, o servidor fecha a conexão sozinho, ANTES da
+    // plataforma matar: o cliente já reconecta sozinho (`onerror` em
+    // `app.js`), e a diferença vira uma lacuna de poucos segundos a cada
+    // ciclo, não um erro. Fora da Vercel (sem a variável), `limiteMs` é
+    // `null` e a conexão volta a durar o que a aba durar.
+    sse: {
+      limiteMs: texto(ambiente.VERCEL) ? inteiro(ambiente.SSE_LIMITE_MS, 270_000) : null,
+    },
     // Espelho da agenda no Google Calendar do médico. A agenda do crmclinica
     // continua sendo a fonte de verdade — é ela que impede dois pacientes no
     // mesmo horário. O Google é para o dia aparecer no celular, sem abrir o

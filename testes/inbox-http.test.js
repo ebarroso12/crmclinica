@@ -541,3 +541,74 @@ test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensag
   controle.abort();
   await leitor.cancel().catch(() => {});
 });
+
+test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma', async (t) => {
+  // Reproduz o "Runtime Timeout Error" visto em produção: sem isto, a Vercel
+  // mata a função à força depois do teto dela, uma vez por aba aberta.
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio,
+    atendimento,
+    orquestrador,
+    emissorDeConversas,
+    configuracao: configuracaoDeTeste({ VERCEL: '1', SSE_LIMITE_MS: '50' }),
+  });
+  t.after(() => app.encerrar());
+
+  const resposta = await app.pedirSemAuth(
+    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+  );
+  assert.equal(resposta.status, 200);
+
+  const leitor = resposta.body.getReader();
+  const decodificador = new TextDecoder();
+  const buffer = { valor: '' };
+  await lerAteConter(leitor, decodificador, buffer, 'conectado');
+
+  // Sem nenhuma mensagem chegando e ninguém abortando do lado do cliente, o
+  // servidor mesmo assim fecha sozinho — dentro do `SSE_LIMITE_MS` configurado.
+  const resultado = await Promise.race([
+    leitor.read(),
+    new Promise((_, rejeitar) => {
+      setTimeout(() => rejeitar(new Error('tempo esgotado esperando o fechamento automático')), 2000);
+    }),
+  ]);
+  assert.equal(resultado.done, true, 'a conexão deveria se fechar sozinha dentro do limite configurado');
+});
+
+test('fora da Vercel, a conexão SSE não tem limite — continua aberta além do que a Vercel toleraria', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  const controle = new AbortController();
+  const resposta = await app.pedirSemAuth(
+    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    { signal: controle.signal },
+  );
+  const leitor = resposta.body.getReader();
+  const decodificador = new TextDecoder();
+  const buffer = { valor: '' };
+  await lerAteConter(leitor, decodificador, buffer, 'conectado');
+
+  // Nada fecha a conexão sozinha aqui: uma corrida contra 300ms sem "done"
+  // é o suficiente para provar que o limite de sessão não se aplica.
+  const seguiaAberta = await Promise.race([
+    leitor.read().then(() => false),
+    new Promise((resolver) => setTimeout(() => resolver(true), 300)),
+  ]);
+  assert.equal(seguiaAberta, true, 'sem VERCEL=1, a conexão não deve se fechar sozinha');
+
+  controle.abort();
+  await leitor.cancel().catch(() => {});
+});
