@@ -1,6 +1,7 @@
 'use strict';
 
 const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
+const { ehFalhaDoAgente } = require('../integracoes/openclaw');
 const { normalizarTelefone } = require('./serena');
 const { criarNumerosInternos } = require('./numeros-internos');
 
@@ -173,6 +174,14 @@ function criarSincronizadorDeConversas({
       const idExterno = idDaMensagem(mensagem);
       if (!idExterno) {
         registrar?.('mensagem sem identificador do gateway', { sessao: sessao.key });
+        continue;
+      }
+
+      // O aviso de pane do gateway vem no histórico como fala do assistente.
+      // Importá-lo gravaria "The agent run failed..." assinado pela Serena na
+      // conversa do paciente — foi assim que o erro chegou à tela da equipe.
+      if (papel === 'assistant' && ehFalhaDoAgente(texto)) {
+        registrar?.('pane do agente ignorada no histórico', { sessao: sessao.key });
         continue;
       }
 

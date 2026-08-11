@@ -82,6 +82,25 @@ function textoDaResposta(mensagem) {
   return '';
 }
 
+/**
+ * O aviso de pane do próprio OpenClaw, que ele grava NO HISTÓRICO como se fosse
+ * fala do assistente.
+ *
+ * Quando a execução do agente morre (modelo fora, chave inválida, sessão
+ * quebrada), o gateway não devolve erro: escreve "The agent run failed before
+ * producing a reply." como mensagem `assistant` — e quem lê o histórico
+ * ingenuamente entrega essa frase ao paciente assinada pela Serena. Foi
+ * exatamente o que aconteceu: um paciente recebeu o erro em inglês como
+ * "resposta" da clínica.
+ *
+ * O teste é estreito de propósito: só as aberturas conhecidas do sentinela, na
+ * frase inteira desde o início. Uma resposta legítima que citasse o texto no
+ * meio não seria descartada.
+ */
+function ehFalhaDoAgente(texto) {
+  return /^the agent (run|execution) (failed|was aborted|timed out)/i.test(String(texto ?? '').trim());
+}
+
 /** Identificador de uma mensagem do histórico, quando o gateway fornece um. */
 function idDaMensagem(mensagem) {
   return mensagem?.__openclaw?.id ?? mensagem?.id ?? null;
@@ -110,7 +129,12 @@ async function lerLinhaDeBase(gateway, sessionKey) {
  *
  * Só aceita mensagem do assistente que não existia na linha de base — e, quando
  * o envio recebeu `runId` e a mensagem declara o dela, os dois têm de bater.
- * Polling com backoff até encontrar ou esgotar o tempo; timeout devolve `null`.
+ * Polling com backoff até encontrar ou esgotar o tempo.
+ *
+ * Devolve `{ texto }` quando o agente respondeu, `{ falhou: true }` quando a
+ * mensagem nova é o sentinela de pane do gateway, e `{ texto: null }` no
+ * timeout. A distinção importa: pane pede escalonamento imediato para a
+ * equipe; timeout já tem tratamento próprio em quem chama.
  */
 async function aguardarRespostaNova(gateway, sessionKey, {
   linhaDeBase, runId = null, timeoutMs = 25000, intervaloMs = 600,
@@ -138,10 +162,17 @@ async function aguardarRespostaNova(gateway, sessionKey, {
       const runDaMensagem = runIdDaMensagem(mensagem);
       if (runId && runDaMensagem && runDaMensagem !== runId) continue;
 
-      return textoDaResposta(mensagem);
+      const texto = textoDaResposta(mensagem);
+
+      // A execução morreu e o gateway registrou a pane como fala do assistente.
+      // Isso NÃO é resposta: entregue ao paciente, vira um erro em inglês
+      // assinado pela Serena. Falha fechada — quem chama escalona para a equipe.
+      if (ehFalhaDoAgente(texto)) return { falhou: true, texto: null };
+
+      return { texto };
     }
   }
-  return null;
+  return { texto: null };
 }
 
 /**
@@ -236,7 +267,7 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
         throw e;
       }
 
-      const resposta = await aguardarRespostaNova(cliente, sessaoInterna, {
+      const aguardo = await aguardarRespostaNova(cliente, sessaoInterna, {
         linhaDeBase,
         runId: envio?.runId ?? envio?.run_id ?? null,
         // Piso baixo de propósito: quem configura um timeout curto no gateway
@@ -244,7 +275,13 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
         timeoutMs: Math.max((gateway.timeoutMs ?? 20000) - 2000, 1000),
       });
 
-      return { resposta };
+      // Pane do motor não é silêncio: o paciente escreveu e não vai receber
+      // nada da automação. A conversa tem de ir para a equipe, com o motivo.
+      if (aguardo.falhou) {
+        return { resposta: null, escalonar: true, motivo: 'motor_ia_falhou' };
+      }
+
+      return { resposta: aguardo.texto };
     },
 
     /**
@@ -268,4 +305,6 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
   };
 }
 
-module.exports = { criarClienteOpenClaw, assinaturaValida, assinar };
+module.exports = {
+  criarClienteOpenClaw, assinaturaValida, assinar, ehFalhaDoAgente,
+};

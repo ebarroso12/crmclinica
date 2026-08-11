@@ -139,6 +139,21 @@ test('toolResult e system não viram fala do paciente', async () => {
   assert.equal(ambiente.saidas.length, 0);
 });
 
+test('a pane do agente no histórico não vira fala da Serena', async () => {
+  // O OpenClaw grava "The agent run failed..." como mensagem do assistente.
+  // Importar isso põe um erro em inglês, assinado pela Serena, na conversa do
+  // paciente — aconteceu em produção, na conversa que expôs a duplicação.
+  const ambiente = montarAmbiente([
+    msg('assistant', 'The agent run failed before producing a reply.', 'p1'),
+    msg('assistant', 'resposta de verdade', 'p2'),
+  ]);
+
+  await ambiente.sincronizador.sincronizar();
+
+  assert.equal(ambiente.saidas.length, 1, 'só a resposta de verdade entra');
+  assert.equal(ambiente.saidas[0].conteudo, 'resposta de verdade');
+});
+
 test('o que o CRM já enviou não volta como mensagem nova', async () => {
   // A resposta da equipe sai pelo gateway e reaparece no histórico como saída
   // do agente. Regravá-la mostraria a mesma frase duas vezes, a segunda

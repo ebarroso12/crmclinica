@@ -203,6 +203,38 @@ test('falha ao ler a linha de base vira erro identificável, sem envio', async (
     'sem linha de base não há envio: enviar às cegas é aceitar resposta velha');
 });
 
+test('pane do agente no histórico não vira resposta: escalona para a equipe', async () => {
+  // O OpenClaw grava a própria pane como fala do assistente. Em produção essa
+  // frase foi ENVIADA a um paciente como se fosse a Serena respondendo.
+  const pane = {
+    role: 'assistant',
+    content: 'The agent run failed before producing a reply.',
+    __openclaw: { id: 'msg-pane', runId: 'run-1' },
+  };
+  let enviou = false;
+  const cliente = clienteFalso({
+    'chat.history': () => ({ messages: enviou ? [pane] : [] }),
+    'chat.send': () => { enviou = true; return { status: 'started', runId: 'run-1' }; },
+  });
+  const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
+
+  const resultado = await orquestrador.despacharEvento(EVENTO_DE_DESPACHO);
+
+  assert.deepEqual(resultado, { resposta: null, escalonar: true, motivo: 'motor_ia_falhou' },
+    'a frase de erro nunca pode ser devolvida como texto de resposta');
+});
+
+test('ehFalhaDoAgente reconhece só o sentinela, não uma resposta que o menciona', () => {
+  const { ehFalhaDoAgente } = require('../src/integracoes/openclaw');
+  assert.equal(ehFalhaDoAgente('The agent run failed before producing a reply.'), true);
+  assert.equal(ehFalhaDoAgente('  the agent run failed before producing a reply.  '), true);
+  assert.equal(ehFalhaDoAgente('The agent execution was aborted.'), true);
+  assert.equal(ehFalhaDoAgente('Boa tarde! Como posso ajudar?'), false);
+  assert.equal(ehFalhaDoAgente('Vi aqui que apareceu "the agent run failed" no seu teste.'), false);
+  assert.equal(ehFalhaDoAgente(''), false);
+  assert.equal(ehFalhaDoAgente(null), false);
+});
+
 // ---------------------------------------------------------------- verificarSaude
 
 test('verificarSaude traduz os estados sem derrubar o CRM', async () => {
