@@ -54,6 +54,12 @@ function criarSincroniaGoogle({
 
     if (!agendamento) {
       if (agendamentoId) {
+        // Orfao CANCELADO no Google nao e conflito: nao ha vaga ocupada nem
+        // agendamento para reconciliar. Ignora em silencio, senao a
+        // reconciliacao reempilha o mesmo evento morto a cada ciclo.
+        if (item.status === 'cancelled') {
+          return { resultado: 'ignorado', tipo: 'orfao_cancelado' };
+        }
         // Carrega a marca da clínica mas o agendamento não existe mais (ou
         // nunca existiu neste banco): alguém precisa olhar para isso.
         await repositorioGoogle.registrarConflito({

@@ -90,6 +90,20 @@ const FERRAMENTAS = [
       required: ['telefone'],
     },
   },
+  {
+    name: 'enviar_resumo_equipe',
+    description: 'Envia o RESUMO COMPLETO DO LEAD para a equipe interna da clinica '
+      + '(os tres numeros internos). Uso interno: NUNCA vai para o paciente. '
+      + 'Chame ao finalizar, pausar ou encaminhar um atendimento, com o resumo ja '
+      + 'montado no formato oficial. E proibido enviar so nome, telefone e data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resumo: { type: 'string', description: 'O RESUMO DE LEAD completo, no formato oficial, pronto para a equipe ler.' },
+      },
+      required: ['resumo'],
+    },
+  },
 ];
 
 /** Chama o CRM. É lá que as regras moram; aqui só se transporta. */

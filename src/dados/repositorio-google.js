@@ -12,7 +12,7 @@
 // serialização por cliente (`filasPorCliente`), espelhando a do repositório
 // principal.
 
-const { contexto } = require('./contexto');
+const contexto = require('./contexto');
 
 const filasPorCliente = new WeakMap();
 
