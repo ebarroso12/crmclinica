@@ -386,7 +386,16 @@ function criarAplicacao(dependencias = {}) {
     }
 
     // A mensagem entra no inbox: vira contato, conversa e linha no histórico.
-    const resultado = await conversas.receberMensagemDeCanal(evento);
+    //
+    // Na porta da ponte, o despacho da IA roda em segundo plano: o plugin do
+    // OpenClaw espera no máximo 10s pelo aceite, e o despacho leva mais que
+    // isso — segurar a resposta fazia toda entrega estourar o timeout do hook
+    // e ser reagendada pelo spool. O aceite atesta a GRAVAÇÃO (síncrona); a
+    // resposta ao paciente segue por conta do atendimento, que escala para a
+    // equipe se o despacho morrer.
+    const resultado = await conversas.receberMensagemDeCanal(evento, {
+      despachoEmSegundoPlano: adaptador === 'openclaw_ingresso_crm',
+    });
 
     const recibo = {
       aceito: true,

@@ -91,6 +91,78 @@ test('payload não consegue transferir a resposta ao agente direto nem trocar de
   assert.equal((await repositorio.listarConversas({})).length, 0);
 });
 
+/** Espera uma condição virar verdade — o despacho agora corre em segundo plano. */
+async function esperarAte(condicao, { tentativas = 100, intervaloMs = 10 } = {}) {
+  for (let volta = 0; volta < tentativas; volta += 1) {
+    if (await condicao()) return true;
+    await new Promise((resolve) => { setTimeout(resolve, intervaloMs); });
+  }
+  return false;
+}
+
+test('o aceite volta na hora mesmo com o orquestrador lento — o hook do plugin espera só 10s', async (t) => {
+  let liberarDespacho;
+  const despachoSegurado = new Promise((resolve) => { liberarDespacho = resolve; });
+  let despachoTerminou = false;
+
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({
+    repositorio,
+    orquestrador: {
+      disponivel: true,
+      async despacharEvento() {
+        await despachoSegurado;
+        despachoTerminou = true;
+        return { resposta: 'Olá! Como posso ajudar?' };
+      },
+    },
+  });
+  const configuracao = configuracaoDeTeste({ WHATSAPP_WEBHOOK_SECRET: SEGREDO });
+  const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+  t.after(() => app.encerrar());
+
+  const resposta = await enviar(app, EVENTO);
+  assert.equal(resposta.status, 202);
+  const recibo = await resposta.json();
+  assert.equal(recibo.decisao, 'aceita_para_despacho');
+  assert.equal(despachoTerminou, false,
+    'o aceite chegou ANTES de o orquestrador terminar — é essa a garantia');
+
+  // A mensagem do paciente já está gravada no aceite, sem depender da IA.
+  const [conversa] = await repositorio.listarConversas({});
+  assert.equal((await repositorio.listarMensagens(conversa.id))[0].direcao, 'entrada');
+
+  // Liberado o orquestrador, a resposta aparece na conversa — em segundo plano.
+  liberarDespacho();
+  assert.ok(await esperarAte(async () => (
+    (await repositorio.listarMensagens(conversa.id)).some((m) => m.direcao === 'saida')
+  )), 'a resposta da Serena precisa chegar depois do aceite');
+});
+
+test('despacho em segundo plano que falha escala a conversa para a equipe', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({
+    repositorio,
+    orquestrador: {
+      disponivel: true,
+      async despacharEvento() { throw new Error('gateway caiu no meio'); },
+    },
+  });
+  const configuracao = configuracaoDeTeste({ WHATSAPP_WEBHOOK_SECRET: SEGREDO });
+  const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+  t.after(() => app.encerrar());
+
+  const resposta = await enviar(app, EVENTO);
+  assert.equal(resposta.status, 202, 'a falha da IA não pode derrubar o aceite da gravação');
+
+  // O paciente escreveu e ninguém vai responder: a conversa tem de ir para a
+  // equipe sozinha, sem ninguém precisar perceber o silêncio.
+  assert.ok(await esperarAte(async () => {
+    const [conversa] = await repositorio.listarConversas({});
+    return conversa && conversa.assumida_por_humano === true;
+  }), 'a conversa precisa escalar para a equipe quando o despacho morre');
+});
+
 test('GET na porta de ingresso é recusado', async (t) => {
   const { app } = await subirIngresso();
   t.after(() => app.encerrar());

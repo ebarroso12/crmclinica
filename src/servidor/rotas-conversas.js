@@ -332,8 +332,8 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
     },
 
     /** Usado pelo webhook de canal: grava a mensagem e roda o ciclo de atendimento. */
-    async receberMensagemDeCanal(evento) {
-      return atendimento.receberMensagem(evento);
+    async receberMensagemDeCanal(evento, opcoes = {}) {
+      return atendimento.receberMensagem(evento, opcoes);
     },
 
     /** Diagnóstico: o que a automação faria com esta conversa agora. */

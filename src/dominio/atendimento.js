@@ -38,8 +38,15 @@ function criarAtendimento({
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
+   *
+   * `despachoEmSegundoPlano`: a gravação é síncrona sempre; com esta opção, a
+   * resposta da IA (que pode levar dezenas de segundos) roda DEPOIS do retorno.
+   * Existe para a porta de ingresso: o hook do OpenClaw espera no máximo 10s
+   * pelo aceite, e segurar a conexão durante o despacho fazia toda entrega
+   * "falhar" no lado do plugin e ser reagendada — funcionava, mas por acidente.
+   * Se o despacho em segundo plano morrer, a conversa escala para a equipe.
    */
-  async function receberMensagem(evento) {
+  async function receberMensagem(evento, { despachoEmSegundoPlano = false } = {}) {
     // Defesa em profundidade: a porta HTTP já recusa WhatsApp sem dono, mas
     // este método tem outros chamadores — e um deles esquecer o carimbo não
     // pode virar resposta duplicada ao paciente. Falha ANTES de gravar de
@@ -128,6 +135,29 @@ function criarAtendimento({
       return {
         acao: 'importada_do_canal',
         ia_despachada: false,
+        conversa_id: conversa.id,
+        mensagem_id: mensagem.id,
+      };
+    }
+
+    if (despachoEmSegundoPlano) {
+      setImmediate(() => {
+        responderSePossivel(conversa.id, { mensagemEntradaId: mensagem.id }).catch(async (erro) => {
+          // responderSePossivel já converte falha do orquestrador em
+          // escalonamento; cair aqui é falha ANTES disso (banco, regra). O
+          // paciente escreveu e ninguém vai responder — a equipe precisa saber.
+          console.error(`[atendimento] despacho em segundo plano falhou (conversa ${conversa.id}): ${erro.message}`);
+          try {
+            await escalonar(conversa.id, 'falha_no_despacho_em_segundo_plano');
+          } catch (erroDoEscalonamento) {
+            console.error(`[atendimento] e o escalonamento também falhou: ${erroDoEscalonamento.message}`);
+          }
+        });
+      });
+      return {
+        acao: 'aceita_para_despacho',
+        ia_despachada: true,
+        despacho: 'em_segundo_plano',
         conversa_id: conversa.id,
         mensagem_id: mensagem.id,
       };
