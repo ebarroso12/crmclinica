@@ -549,6 +549,7 @@ function criarAplicacao(dependencias = {}) {
     const simples = {
       'GET /api/serena': () => rotasDaSerena.painel(usuario),
       'GET /api/serena/status': () => rotasDaSerena.status(usuario),
+      'GET /api/serena/interruptor': () => rotasDaSerena.interruptor(usuario),
       'POST /api/serena/estado': async () => rotasDaSerena.definirEstado(usuario, await lerJson(req)),
       'GET /api/serena/prompts': () => rotasDaSerena.listarPrompts(usuario),
       'POST /api/serena/prompts': async () => rotasDaSerena.criarPrompt(usuario, await lerJson(req)),

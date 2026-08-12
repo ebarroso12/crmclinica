@@ -1405,7 +1405,78 @@ function mostrarAplicacao() {
   if (precisaTrocar) abrirTela('perfil');
 
   if (usuarioAtual?.master) carregarUsuarios();
+
+  sincronizarParadaDeEmergencia();
 }
+
+// --- Parada de emergência da Serena ---
+//
+// O interruptor completo mora na tela Serena; este botão existe para o
+// momento em que não há tempo de navegar até lá: a IA respondendo errado com
+// paciente na linha. Um clique + uma confirmação, de qualquer tela.
+
+function desenharParadaDeEmergencia(ativa) {
+  const botao = seletor('#parada-emergencia');
+  if (!botao) return;
+  botao.dataset.estado = ativa ? 'armada' : 'parada';
+  botao.textContent = ativa ? '⛔ PARAR SERENA' : '⚠ SERENA PARADA — religar';
+}
+
+async function sincronizarParadaDeEmergencia() {
+  const botao = seletor('#parada-emergencia');
+  if (!botao) return;
+
+  // Quem não pode desligar não vê o botão: um clique que devolve 403 no meio
+  // de uma urgência é pior que botão nenhum.
+  if (!podeFazer('serena:gerenciar')) {
+    botao.hidden = true;
+    return;
+  }
+
+  botao.hidden = false;
+  try {
+    const estado = await pedirJson('/api/serena/interruptor');
+    desenharParadaDeEmergencia(estado.ativa);
+  } catch {
+    // Sem estado, o botão fica armado: no pior caso, parar uma Serena já
+    // parada é inofensivo — o contrário (achar que parou e não parou) não é.
+    desenharParadaDeEmergencia(true);
+  }
+}
+
+seletor('#parada-emergencia')?.addEventListener('click', async () => {
+  const botao = seletor('#parada-emergencia');
+  const parada = botao?.dataset.estado === 'parada';
+
+  if (!parada) {
+    const certeza = window.confirm(
+      'Parar a Serena AGORA?\n\nNenhum paciente receberá resposta automática até alguém religar. As mensagens continuam sendo recebidas e gravadas no CRM.',
+    );
+    if (!certeza) return;
+    try {
+      await pedirJson('/api/serena/estado', {
+        metodo: 'POST',
+        corpo: { ativa: false, motivo: 'PARADA DE EMERGÊNCIA — botão do painel' },
+      });
+      desenharParadaDeEmergencia(false);
+      informar('Serena PARADA. As mensagens continuam entrando; a equipe assume as respostas.');
+    } catch (erro) {
+      informar(`Não consegui parar: ${erro.message}`);
+      sincronizarParadaDeEmergencia();
+    }
+    return;
+  }
+
+  if (!window.confirm('Religar a Serena? Ela volta a responder conforme o horário configurado.')) return;
+  try {
+    await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa: true } });
+    desenharParadaDeEmergencia(true);
+    informar('Serena religada.');
+  } catch (erro) {
+    informar(`Não consegui religar: ${erro.message}`);
+    sincronizarParadaDeEmergencia();
+  }
+});
 
 // --- Conversas ao vivo (Server-Sent Events) ---
 //
@@ -2988,6 +3059,8 @@ async function alternarSerena(ativa) {
     await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa, motivo } });
     informar(ativa ? 'Serena ligada.' : 'Serena desligada — as mensagens continuam sendo gravadas.');
     await carregarSerena();
+    // O botão de emergência do menu espelha o mesmo interruptor.
+    desenharParadaDeEmergencia(ativa);
   } catch (erro) {
     informar(`Não foi possível alterar: ${erro.message}`);
   }

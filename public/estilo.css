@@ -250,7 +250,34 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   font-size: 12px;
 }
 .divisor { color: #8b95a7; font-size: 11px; letter-spacing: 0.13em; margin: 22px 0 6px; padding: 0 12px; }
-.rodape-lateral { margin-top: auto; color: #8b95a7; font-size: 11px; padding: 14px 10px 0; }
+
+/* Parada de emergência: grande, vermelho, impossível de não achar num aperto.
+   `margin-top: auto` empurra o botão para o pé do menu, acima do rodapé. */
+.parada-emergencia {
+  margin: auto 10px 10px;
+  padding: 13px 10px;
+  width: calc(100% - 20px);
+  border: 0;
+  border-radius: 10px;
+  background: #c0182c;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(192, 24, 44, 0.35);
+}
+.parada-emergencia:hover { background: #a01224; }
+.parada-emergencia[data-estado="parada"] {
+  background: #f5b301;
+  color: #402a00;
+  box-shadow: none;
+}
+.parada-emergencia[data-estado="parada"]:hover { background: #dea201; }
+
+.rodape-lateral { margin-top: 0; color: #8b95a7; font-size: 11px; padding: 14px 10px 0; }
+/* Sem o botão (papel sem permissão), o rodapé volta a se ancorar no pé sozinho. */
+.parada-emergencia[hidden] ~ .rodape-lateral { margin-top: auto; }
 
 /* ---------- Área principal ---------- */
 

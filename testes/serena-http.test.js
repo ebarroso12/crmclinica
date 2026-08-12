@@ -123,6 +123,40 @@ test('desligar exige motivo; ligar não', async (t) => {
   assert.equal(religar.status, 200);
 });
 
+test('o interruptor leve serve o botão de emergência sem tocar o gateway', async (t) => {
+  const { ambiente, orquestrador } = await montar(t);
+
+  const chamadasAntes = orquestrador.chamadas?.length ?? null;
+
+  const ligada = await ambiente.pedir('/api/serena/interruptor');
+  assert.equal(ligada.status, 200);
+  assert.equal((await ligada.json()).ativa, true);
+
+  // Emergência de verdade: o botão manda parar com o motivo carimbado.
+  await ambiente.pedir('/api/serena/estado', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ativa: false, motivo: 'PARADA DE EMERGÊNCIA — botão do painel' }),
+  });
+
+  const parada = await (await ambiente.pedir('/api/serena/interruptor')).json();
+  assert.equal(parada.ativa, false);
+  assert.match(parada.motivo ?? '', /EMERGÊNCIA/);
+
+  // Leve de verdade: nenhuma chamada nova ao gateway do canal.
+  if (chamadasAntes !== null) {
+    assert.equal(orquestrador.chamadas.length, chamadasAntes,
+      'o botão de emergência não pode depender do gateway para saber o próprio estado');
+  }
+
+  // O atendente pode VER o estado (serena:ler) — agir é outra permissão.
+  const atendente = await ambiente.entrarComo('atendente');
+  const doAtendente = await ambiente.pedirSemAuth('/api/serena/interruptor', {
+    headers: { authorization: `Bearer ${atendente.access_token}` },
+  });
+  assert.equal(doAtendente.status, 200);
+});
+
 test('só admin liga e desliga; atendente apenas consulta', async (t) => {
   const { ambiente } = await montar(t);
 
