@@ -1063,7 +1063,7 @@ CAMPOS DO RESUMO (inclua sempre que a informação existir):
 - Próxima ação: diga à equipe exatamente o que fazer (ex.: "Tatiana/Lisley entrar em contato no próximo dia, confirmar dados e enviar PIX ou link do cartão").
 
 FORMATO PADRÃO — LEAD QUE FECHOU:
-RESUMO DE LEAD — lead novo
+RESUMO DE LEAD — [NOME DA PESSOA] (lead novo)
 Nome: [nome] | Idade: [idade] | Telefone: [telefone]
 Primeiro contato: [data/hora] | Última interação: [data/hora] | Duração: [aprox.] | Mensagens: [nº]
 Origem: [origem] | Primeiro atendimento: Sim | Consulta para: [quem]
@@ -1084,7 +1084,7 @@ FORMATO PADRÃO — LEAD QUE NÃO FECHOU:
 Mesmos campos; em Agendamento use "ainda não realizado", em Financeiro "nenhum pagamento iniciado", em Situação "não fechou nesta conversa — segue avaliando", e em Próxima ação o follow-up autorizado ou a espera pela resposta.
 
 FORMATO PADRÃO — RESPONSÁVEL AGENDANDO PARA OUTRA PESSOA:
-RESUMO DE LEAD — responsável / lead novo
+RESUMO DE LEAD — [NOME DE QUEM FALA] (responsável / lead novo)
 Contato: [quem fala] | Telefone: [telefone] | Paciente: [nome do paciente] | Idade do paciente: [idade]
 [demais campos iguais aos de cima; em Procura, deixe claro que o responsável agenda para o paciente e o que pediu — horários, endereço, pagamento, acompanhar o paciente etc.]
 
