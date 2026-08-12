@@ -76,13 +76,15 @@ function ofereceuFormulario(mensagens) {
 }
 
 /**
- * O cabeçalho que acompanha o resumo escrito pela IA.
+ * O cabeçalho que acompanha o resumo escrito pela IA — no formato RESUMO DE
+ * LEAD que a equipe aprovou, com o NOME da pessoa no título.
  *
- * Telefone e agendamento vêm DO BANCO, nunca do modelo: são os dois dados que
- * a equipe usa para agir (ligar, conferir a agenda), e dado de ação não pode
- * depender de um resumo que, por regra, só olha a conversa.
+ * Tudo aqui vem DO BANCO, nunca do modelo: nome, telefone, qualificação,
+ * estágio e agendamento são os dados que a equipe usa para agir, e dado de
+ * ação não pode depender de um resumo que, por regra, só olha a conversa.
  */
-function montarCabecalho({ contato, agendamento = null, agora = new Date() }) {
+function montarCabecalho({ contato, lead = null, agendamento = null }) {
+  const nome = contato?.nome?.trim() || null;
   const quando = agendamento
     ? new Date(agendamento.inicio).toLocaleString('pt-BR', {
       timeZone: 'America/Sao_Paulo',
@@ -90,13 +92,20 @@ function montarCabecalho({ contato, agendamento = null, agora = new Date() }) {
     })
     : null;
 
-  return [
-    `Atendimento encerrado · ${agora.toLocaleString('pt-BR', {
-      timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-    })}`,
+  const linhas = [
+    `RESUMO DE LEAD — ${nome ?? contato?.telefone ?? 'contato sem identificação'}`,
+    '',
+    `Nome: ${nome ?? 'não informado'}`,
     `Telefone: ${contato?.telefone ?? '—'}`,
-    agendamento ? `Agendou: SIM — ${quando}` : 'Agendou: NÃO',
-  ].join('\n');
+  ];
+
+  if (lead?.temperatura) {
+    linhas.push(`Qualificacao: ${lead.temperatura}${Number.isInteger(lead.score) ? ` (score ${lead.score})` : ''}`);
+  }
+  if (lead?.estagio) linhas.push(`Estagio: ${lead.estagio}`);
+  if (agendamento) linhas.push(`Agendou: SIM — ${quando}`);
+
+  return linhas.join('\n');
 }
 
 /**
@@ -180,9 +189,11 @@ function criarResumoDeAtendimento({
             chaveIdempotencia: `resumo:conversa:${conversa.id}`,
           });
 
-          const cabecalho = daIa ? montarCabecalho({ contato, agendamento, agora: agora() }) : null;
+          const rodape = `Mensagens trocadas: ${mensagens.length} · ${agora().toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+          })}`;
           const texto = daIa
-            ? `${cabecalho}\n\n${daIa}`
+            ? `${montarCabecalho({ contato, lead, agendamento })}\n\n${daIa}\n\n${rodape}`
             : montarResumo({ contato, mensagens, agendamento, agora: agora() });
 
           // Marca antes de enviar. Se o envio falhar no meio dos destinatários,
