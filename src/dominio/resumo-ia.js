@@ -20,19 +20,20 @@
 // quem chama usa o resumo por recorte, que continua existindo como reserva.
 // Resumo atrasado ou simples é aceitável; resumo inventado, nunca.
 
+// O corpo segue o formato que a equipe aprovou no RESUMO DE LEAD. Nome,
+// telefone, qualificação e estágio NÃO entram aqui: vêm do banco, no cabeçalho.
 const SISTEMA = [
   'Você escreve o resumo interno de um atendimento de WhatsApp de uma clínica de psiquiatria,',
   'para a equipe da clínica (não para o paciente).',
   'Use SOMENTE o que está na conversa. Não invente dados, não diagnostique, não aconselhe.',
   'Escreva em português do Brasil, direto, sem saudação e sem despedida.',
-  'Formato obrigatório, nesta ordem (omita a linha se a conversa não disser):',
-  'Nome: …',
-  'Idade: …',
-  'Motivo do contato: … (1 linha, nas palavras do paciente)',
-  'Conversa: … (2 a 4 linhas: o que foi falado, o que a pessoa perguntou, o que foi respondido)',
-  'Situação: … (agendou? dia e hora; valores discutidos; convênio; primeira consulta ou retorno)',
-  'Pendência: … (o que falta resolver ou o próximo passo, se houver)',
-  'Máximo de 900 caracteres no total.',
+  'NÃO repita nome nem telefone — a equipe já os recebe em outro lugar.',
+  'Formato obrigatório, nesta ordem (omita a linha se a conversa não disser nada sobre ela):',
+  'Procura: … (o que a pessoa busca, para quem, 1 a 2 linhas)',
+  'Situacao: … (o que ficou combinado ou decidido; valores discutidos; convênio; dados ou comprovantes enviados)',
+  'Falta: … (o que a equipe da clínica ainda precisa fazer)',
+  'Duvida: … (perguntas do paciente que ficaram sem resposta)',
+  'Máximo de 700 caracteres no total.',
 ].join('\n');
 
 const MAXIMO_DE_MENSAGENS = 60;

@@ -80,7 +80,9 @@ function montarAmbiente({ respostaDaIa } = {}) {
     async obterContato() { return { id: 3, nome: 'Rafael', telefone: '5516900000001' }; },
     async listarMensagens() { return MENSAGENS; },
     async obterAgendamentoDoContato() { return null; },
-    async obterLeadPorContato() { return { interesse: 'consulta' }; },
+    async obterLeadPorContato() {
+      return { interesse: 'consulta', temperatura: 'quente', score: 71, estagio: 'agendado' };
+    },
     async marcarResumoEnviado(id) { marcadas.push(id); },
   };
 
@@ -96,17 +98,19 @@ function montarAmbiente({ respostaDaIa } = {}) {
   return { resumo, envios, marcadas };
 }
 
-test('com a IA no ar, a equipe recebe o resumo com contexto + cabeçalho do banco', async () => {
-  const daIa = 'Nome: Rafael\nMotivo do contato: consulta por encaminhamento do psicólogo\nConversa: perguntou sobre Unimed e valores.';
+test('com a IA no ar, a equipe recebe o RESUMO DE LEAD: nome no título e dados do banco', async () => {
+  const daIa = 'Procura: consulta por encaminhamento do psicólogo\nSituacao: perguntou sobre Unimed e valores.\nFalta: confirmar horário com a equipe.';
   const { resumo, envios } = montarAmbiente({ respostaDaIa: daIa });
 
   await resumo.enviarPendentes();
 
   assert.equal(envios.length, 2, 'um envio por destinatário');
-  assert.match(envios[0].texto, /Atendimento encerrado/);
+  assert.match(envios[0].texto, /^RESUMO DE LEAD — Rafael/, 'o título leva o NOME da pessoa');
   assert.match(envios[0].texto, /Telefone: 5516900000001/, 'telefone vem do banco, não do modelo');
-  assert.match(envios[0].texto, /Agendou: NÃO/, 'agenda vem do banco, não do modelo');
+  assert.match(envios[0].texto, /Qualificacao: quente \(score 71\)/, 'qualificação vem do lead');
+  assert.match(envios[0].texto, /Estagio: agendado/);
   assert.match(envios[0].texto, /encaminhamento do psicólogo/, 'o contexto da conversa está no corpo');
+  assert.match(envios[0].texto, /Mensagens trocadas: 3/, 'o rodapé conta as mensagens');
 });
 
 test('IA falhando (null), o recorte determinístico continua saindo — nunca silêncio', async () => {
