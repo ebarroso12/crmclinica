@@ -45,6 +45,8 @@ const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
 const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
 const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+const { criarGeradorDeResumo } = require('../src/dominio/resumo-ia');
+const { criarGatewayDeIA } = require('../src/ia/gateway');
 const { criarServicoDeFluxo } = require('../src/dominio/crm-fluxo');
 const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('../src/integracoes/openclaw-gateway');
 const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
@@ -282,12 +284,28 @@ async function main() {
   // Resumo do atendimento para a equipe. Fica no worker porque o gatilho e o
   // silencio: ninguem se despede no WhatsApp, e so um processo que roda sozinho
   // percebe que a conversa esfriou.
+  // O resumo escrito pela IA depende do gateway ter ao menos uma chave; sem
+  // nenhuma, o gerador não é montado e o recorte determinístico continua
+  // valendo — o worker nunca deixa de resumir por causa da IA.
+  let geradorDeResumo = null;
+  try {
+    const gatewayDeIA = criarGatewayDeIA({ configuracao, repositorio });
+    if (gatewayDeIA.disponiveis.length > 0) {
+      geradorDeResumo = criarGeradorDeResumo({ gateway: gatewayDeIA });
+    } else {
+      console.warn('[resumo] nenhum provedor de IA com chave: resumo segue no modo recorte.');
+    }
+  } catch (erro) {
+    console.error(`[resumo] gerador por IA indisponível (${erro.message}): resumo segue no modo recorte.`);
+  }
+
   const resumoParaEquipe = criarResumoDeAtendimento({
     repositorio,
     canal: configuracao.openclaw.canalClinica?.url
       ? criarCanalDeConversas(configuracao.openclaw.canalClinica) : null,
     destinatarios: configuracao.resumoDeAtendimento.destinatarios,
     silencioMin: configuracao.resumoDeAtendimento.silencioMin,
+    gerador: geradorDeResumo,
   });
 
   if (!resumoParaEquipe.ativo) {

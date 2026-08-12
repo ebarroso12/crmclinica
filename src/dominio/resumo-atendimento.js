@@ -76,6 +76,30 @@ function ofereceuFormulario(mensagens) {
 }
 
 /**
+ * O cabeçalho que acompanha o resumo escrito pela IA.
+ *
+ * Telefone e agendamento vêm DO BANCO, nunca do modelo: são os dois dados que
+ * a equipe usa para agir (ligar, conferir a agenda), e dado de ação não pode
+ * depender de um resumo que, por regra, só olha a conversa.
+ */
+function montarCabecalho({ contato, agendamento = null, agora = new Date() }) {
+  const quando = agendamento
+    ? new Date(agendamento.inicio).toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    })
+    : null;
+
+  return [
+    `Atendimento encerrado · ${agora.toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    })}`,
+    `Telefone: ${contato?.telefone ?? '—'}`,
+    agendamento ? `Agendou: SIM — ${quando}` : 'Agendou: NÃO',
+  ].join('\n');
+}
+
+/**
  * Monta o texto que vai para a equipe.
  *
  * Curto e em ordem fixa: quem lê está no celular, entre um paciente e outro, e
@@ -116,9 +140,14 @@ function montarResumo({ contato, mensagens = [], agendamento = null, agora = new
 /**
  * @param {object} dependencias.destinatarios  telefones da equipe
  * @param {object} dependencias.canal  quem entrega no WhatsApp
+ * @param {object} dependencias.gerador  `criarGeradorDeResumo` — opcional. Com
+ *   ele, o resumo é escrito pela IA a partir da conversa inteira; sem ele (ou
+ *   quando a IA falha), vale o recorte determinístico de `montarResumo`. A
+ *   reserva existe porque resumo atrasado é aceitável e resumo nenhum não é.
  */
 function criarResumoDeAtendimento({
   repositorio, canal, destinatarios = [], silencioMin = SILENCIO_PADRAO_MIN, agora = () => new Date(),
+  gerador = null,
 }) {
   if (!repositorio) throw new Error('resumo de atendimento exige o repositório');
 
@@ -135,13 +164,26 @@ function criarResumoDeAtendimento({
       let enviados = 0;
       for (const conversa of conversas) {
         try {
-          const [contato, mensagens, agendamento] = await Promise.all([
+          const [contato, mensagens, agendamento, lead] = await Promise.all([
             repositorio.obterContato(conversa.contato_id),
             repositorio.listarMensagens(conversa.id, { incluirPrivadas: false }),
             repositorio.obterAgendamentoDoContato?.(conversa.contato_id) ?? null,
+            repositorio.obterLeadPorContato?.(conversa.contato_id) ?? null,
           ]);
 
-          const texto = montarResumo({ contato, mensagens, agendamento, agora: agora() });
+          // Primeiro a IA (resumo de verdade, com contexto); na falha, o
+          // recorte. A chave por conversa faz retry reusar o mesmo texto.
+          const daIa = await gerador?.gerar({
+            contato,
+            mensagens,
+            qualificacao: lead,
+            chaveIdempotencia: `resumo:conversa:${conversa.id}`,
+          });
+
+          const cabecalho = daIa ? montarCabecalho({ contato, agendamento, agora: agora() }) : null;
+          const texto = daIa
+            ? `${cabecalho}\n\n${daIa}`
+            : montarResumo({ contato, mensagens, agendamento, agora: agora() });
 
           // Marca antes de enviar. Se o envio falhar no meio dos destinatários,
           // reenviar tudo no próximo ciclo mandaria o resumo duas vezes para
@@ -169,5 +211,5 @@ function criarResumoDeAtendimento({
 }
 
 module.exports = {
-  criarResumoDeAtendimento, montarResumo, extrairIdade, extrairQueixa, ofereceuFormulario,
+  criarResumoDeAtendimento, montarResumo, montarCabecalho, extrairIdade, extrairQueixa, ofereceuFormulario,
 };
