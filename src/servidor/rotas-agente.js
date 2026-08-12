@@ -29,6 +29,7 @@ const ACOES = Object.freeze([
   // A Serena oferecia horario sem ter como consultar a agenda: dizia 'posso
   // verificar' e, se a pessoa aceitasse, nao tinha o que verificar.
   'consultar_horarios', 'agendar',
+  'enviar_resumo_equipe',
 ]);
 
 function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao }) {
@@ -120,6 +121,22 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
             }),
           })),
         };
+      }
+
+
+      // enviar_resumo_equipe: a Serena monta o RESUMO COMPLETO do lead e o
+      // manda para os tres numeros internos (mesmo veiculo do aviso de
+      // marcacao). Uso interno: nunca vai para o paciente e nao precisa de
+      // contato, e so texto indo para a equipe.
+      if (acao === 'enviar_resumo_equipe') {
+        const resumo = String(corpo?.resumo ?? '').trim();
+        if (!resumo) throw new ErroDeContrato('informe o resumo do lead', 'resumo');
+        try {
+          require('../integracoes/aviso-equipe').enviarResumo(resumo);
+        } catch (erro) {
+          console.error('[aviso-equipe] ' + erro.message);
+        }
+        return { enviado: true };
       }
 
       const telefone = String(corpo?.telefone ?? '').trim();
