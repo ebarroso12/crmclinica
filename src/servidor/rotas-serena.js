@@ -331,6 +331,25 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
       return serena.definirContatoDeAtivacao(contatoId, corpo.incluido, { usuarioId: usuario.id });
     },
 
+    /**
+     * GET /api/serena/interruptor — só o estado do interruptor, direto do banco.
+     *
+     * Existe para o botão de parada de emergência, que fica visível em todas
+     * as telas: ele precisa saber "ligada ou parada?" no carregamento sem
+     * pagar o preço do painel completo — `GET /api/serena` consulta o gateway
+     * do canal, e um botão de emergência não pode depender de o gateway estar
+     * de bom humor para desenhar o próprio estado.
+     */
+    async interruptor(usuario) {
+      exigirPermissao(usuario, 'serena:ler');
+      const configuracaoAtual = await serena.obterConfiguracao();
+      return {
+        ativa: configuracaoAtual?.ativa !== false,
+        motivo: configuracaoAtual?.motivo ?? null,
+        pausada_ate: configuracaoAtual?.pausada_ate ?? null,
+      };
+    },
+
     /** POST /api/serena/estado — o interruptor. `{ "ativa": false, "motivo": "…" }` */
     async definirEstado(usuario, corpo) {
       exigirPermissao(usuario, 'serena:gerenciar');
