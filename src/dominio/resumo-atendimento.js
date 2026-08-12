@@ -99,13 +99,41 @@ function montarCabecalho({ contato, lead = null, agendamento = null }) {
     `Telefone: ${contato?.telefone ?? '—'}`,
   ];
 
-  if (lead?.temperatura) {
-    linhas.push(`Qualificacao: ${lead.temperatura}${Number.isInteger(lead.score) ? ` (score ${lead.score})` : ''}`);
+  // "frio (score 0)" é o DEFAULT do banco, não um veredito: todo lead nasce
+  // assim antes de qualquer avaliação. Imprimi-lo com cara de fato faria a
+  // equipe despriorizar um lead quente que simplesmente ainda não foi olhado.
+  const avaliado = lead && (Number(lead.score) > 0 || (lead.temperatura && lead.temperatura !== 'frio'));
+  if (avaliado) {
+    linhas.push(`Qualificacao: ${lead.temperatura}${Number.isInteger(Number(lead.score)) ? ` (score ${Number(lead.score)})` : ''}`);
+  } else if (lead) {
+    linhas.push('Qualificacao: ainda não avaliada');
   }
   if (lead?.estagio) linhas.push(`Estagio: ${lead.estagio}`);
-  if (agendamento) linhas.push(`Agendou: SIM — ${quando}`);
+
+  // SEMPRE presente, nos dois sentidos. Sem o "NÃO" explícito, um paciente que
+  // cancelou (o estágio fica preso em "agendado") viraria silêncio — e
+  // silêncio ao lado de "Estagio: agendado" lê-se como consulta de pé.
+  linhas.push(agendamento ? `Agendou: SIM — ${quando}` : 'Agendou: NÃO');
 
   return linhas.join('\n');
+}
+
+/**
+ * O miolo determinístico — a reserva quando a IA não escreve.
+ *
+ * Recorta e cita, sem interpretar: idade e queixa nas palavras do paciente,
+ * formulário por detecção. É menos rico que o corpo da IA, mas entra no MESMO
+ * layout — quem recebe não percebe troca de formato, só de profundidade.
+ */
+function corpoDeReserva(mensagens) {
+  const idade = extrairIdade(mensagens);
+  const queixa = extrairQueixa(mensagens);
+
+  return [
+    idade !== null ? `Idade: ${idade}` : null,
+    `Procura: ${queixa ?? 'não relatada'}`,
+    `Formulário: ${ofereceuFormulario(mensagens) ? 'enviado' : 'não enviado'}`,
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -181,9 +209,9 @@ function criarResumoDeAtendimento({
           ]);
 
           // Primeiro a IA (resumo de verdade, com contexto); na falha, o
-          // recorte. A chave por conversa faz retry reusar o mesmo texto.
+          // recorte determinístico — DENTRO do mesmo layout. Modo degradado
+          // muda a riqueza do miolo, nunca o formato que a equipe conhece.
           const daIa = await gerador?.gerar({
-            contato,
             mensagens,
             qualificacao: lead,
             chaveIdempotencia: `resumo:conversa:${conversa.id}`,
@@ -192,9 +220,11 @@ function criarResumoDeAtendimento({
           const rodape = `Mensagens trocadas: ${mensagens.length} · ${agora().toLocaleString('pt-BR', {
             timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
           })}`;
-          const texto = daIa
-            ? `${montarCabecalho({ contato, lead, agendamento })}\n\n${daIa}\n\n${rodape}`
-            : montarResumo({ contato, mensagens, agendamento, agora: agora() });
+          const texto = [
+            montarCabecalho({ contato, lead, agendamento }),
+            daIa ?? corpoDeReserva(mensagens),
+            rodape,
+          ].join('\n\n');
 
           // Marca antes de enviar. Se o envio falhar no meio dos destinatários,
           // reenviar tudo no próximo ciclo mandaria o resumo duas vezes para
@@ -222,5 +252,6 @@ function criarResumoDeAtendimento({
 }
 
 module.exports = {
-  criarResumoDeAtendimento, montarResumo, montarCabecalho, extrairIdade, extrairQueixa, ofereceuFormulario,
+  criarResumoDeAtendimento, montarResumo, montarCabecalho, corpoDeReserva,
+  extrairIdade, extrairQueixa, ofereceuFormulario,
 };

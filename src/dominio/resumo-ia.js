@@ -20,32 +20,51 @@
 // quem chama usa o resumo por recorte, que continua existindo como reserva.
 // Resumo atrasado ou simples é aceitável; resumo inventado, nunca.
 
-// O corpo segue o formato que a equipe aprovou no RESUMO DE LEAD. Nome,
-// telefone, qualificação e estágio NÃO entram aqui: vêm do banco, no cabeçalho.
+// O corpo segue o formato que a equipe aprovou no RESUMO DE LEAD. Telefone,
+// qualificação e estágio NÃO entram aqui: vêm do banco, no cabeçalho.
+//
+// A regra "nas palavras da pessoa" não é estilo, é fronteira clínica: pedir "o
+// que a pessoa busca" sem ela convida o modelo a caracterizar quadro ("busca
+// tratamento para ansiedade") — e caracterização clínica circulando no WhatsApp
+// da equipe sem profissional no circuito é exatamente o que este produto não
+// faz. Citar é permitido; interpretar, nunca.
 const SISTEMA = [
   'Você escreve o resumo interno de um atendimento de WhatsApp de uma clínica de psiquiatria,',
   'para a equipe da clínica (não para o paciente).',
   'Use SOMENTE o que está na conversa. Não invente dados, não diagnostique, não aconselhe.',
+  'Nunca caracterize quadro clínico: cite o que a pessoa DISSE, nas palavras dela, sem interpretar.',
   'Escreva em português do Brasil, direto, sem saudação e sem despedida.',
-  'NÃO repita nome nem telefone — a equipe já os recebe em outro lugar.',
   'Formato obrigatório, nesta ordem (omita a linha se a conversa não disser nada sobre ela):',
-  'Procura: … (o que a pessoa busca, para quem, 1 a 2 linhas)',
+  'Nome citado: … (apenas se a pessoa disser o próprio nome, ou o de quem é a consulta, na conversa)',
+  'Idade: … (apenas se dita na conversa; diga de quem é, se for de outra pessoa)',
+  'Procura: … (o que a pessoa busca e para quem, 1 a 2 linhas, nas palavras dela)',
   'Situacao: … (o que ficou combinado ou decidido; valores discutidos; convênio; dados ou comprovantes enviados)',
   'Falta: … (o que a equipe da clínica ainda precisa fazer)',
   'Duvida: … (perguntas do paciente que ficaram sem resposta)',
+  'Não repita o telefone — a equipe já o recebe em outro lugar.',
   'Máximo de 700 caracteres no total.',
 ].join('\n');
+
+// Muda o prompt, muda a versão — e a versão entra na chave de idempotência.
+// O cache do gateway devolve pelo par chave→resposta; sem a versão na chave,
+// um resumo gerado com o prompt antigo voltaria para sempre por baixo do
+// cabeçalho novo, e nenhum deploy consertaria.
+const PROMPT_VERSION = 'resumo-lead-v2';
 
 const MAXIMO_DE_MENSAGENS = 60;
 const MAXIMO_POR_MENSAGEM = 300;
 const MAXIMO_DO_RESUMO = 1500;
 const MINIMO_DO_RESUMO = 30;
 
-/** A transcrição que a IA lê: papel de quem falou + texto, com teto de tamanho. */
-function montarPromptDoResumo({ contato = null, mensagens = [], qualificacao = null }) {
+/**
+ * A transcrição que a IA lê: papel de quem falou + texto, com teto de tamanho.
+ *
+ * O nome do cadastro NÃO entra de propósito: o cabeçalho já o carrega, e
+ * injetá-lo aqui fazia o modelo repeti-lo no corpo — a linha "Nome citado"
+ * existe para o caso oposto, o nome que só aparece NA conversa.
+ */
+function montarPromptDoResumo({ mensagens = [], qualificacao = null }) {
   const linhas = [];
-
-  if (contato?.nome) linhas.push(`Contato: ${contato.nome}`);
 
   // O que a extração de qualificação já apurou entra como apoio — a IA não
   // precisa redescobrir, só conferir com a conversa.
@@ -89,16 +108,17 @@ function criarGeradorDeResumo({ gateway }) {
 
   return {
     /** Nunca lança: qualquer falha devolve `null` e o chamador usa a reserva. */
-    async gerar({ contato = null, mensagens = [], qualificacao = null, chaveIdempotencia }) {
+    async gerar({ mensagens = [], qualificacao = null, chaveIdempotencia }) {
       if (!chaveIdempotencia) return null;
       if (!mensagens.some((mensagem) => String(mensagem?.conteudo ?? '').trim())) return null;
       try {
         const resultado = await gateway.gerar({
           finalidade: 'resumo_atendimento',
           sistema: SISTEMA,
-          prompt: montarPromptDoResumo({ contato, mensagens, qualificacao }),
-          chaveIdempotencia,
-          promptVersion: 'resumo-v1',
+          prompt: montarPromptDoResumo({ mensagens, qualificacao }),
+          // A versão compõe a chave: prompt novo nunca reusa resposta do velho.
+          chaveIdempotencia: `${chaveIdempotencia}:${PROMPT_VERSION}`,
+          promptVersion: PROMPT_VERSION,
         });
         return interpretarResumo(resultado?.resposta);
       } catch {
@@ -108,4 +128,6 @@ function criarGeradorDeResumo({ gateway }) {
   };
 }
 
-module.exports = { criarGeradorDeResumo, montarPromptDoResumo, interpretarResumo, SISTEMA };
+module.exports = {
+  criarGeradorDeResumo, montarPromptDoResumo, interpretarResumo, SISTEMA, PROMPT_VERSION,
+};

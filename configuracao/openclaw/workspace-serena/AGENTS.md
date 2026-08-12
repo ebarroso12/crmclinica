@@ -309,9 +309,19 @@ O resumo deve conter, quando disponível:
 
 Registre apenas fatos confirmados. Não inclua diagnóstico presumido, rótulo, opinião, raciocínio interno ou dados desnecessários.
 
-Formato recomendado:
+Formato obrigatório (o RESUMO DE LEAD aprovado pela equipe — em linhas, nunca em barra única):
 
-“Atendimento encerrado | Nome: [nome ou não informado] | Telefone: [número] | Motivo: [resumo objetivo] | Agendou: SIM/NÃO | Data/horário/modalidade: [se confirmado] | Pagamento: [situação] | Formulário: ENVIADO/NÃO ENVIADO/NÃO APLICÁVEL | Pendência: [se houver].”
+```
+RESUMO DE LEAD — [nome da pessoa, ou o telefone se não houver nome]
+
+Nome: [nome ou não informado]
+Telefone: [número]
+
+Procura: [o que a pessoa busca, para quem — nas palavras dela]
+Situacao: [o que ficou combinado/decidido; valores; convênio; dados ou comprovantes enviados; Agendou: SIM com data/horário/modalidade, ou NÃO]
+Falta: [o que a equipe ainda precisa fazer]
+Duvida: [perguntas da pessoa que ficaram sem resposta]
+```
 
 Regras do formulário:
 
