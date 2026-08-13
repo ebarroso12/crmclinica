@@ -96,6 +96,12 @@ function carregarConfiguracao(ambiente = process.env) {
       // webhook genérico impede que uma integração autorizada para importar
       // eventos antigos ganhe, por acidente, o direito de acionar respostas.
       segredoIngressoWhatsapp: texto(ambiente.WHATSAPP_WEBHOOK_SECRET),
+      // Token alternativo, só para a Evolution API: ela não sabe gerar a
+      // assinatura HMAC acima (isso é exclusivo do adaptador do OpenClaw), mas
+      // sabe repetir uma URL com querystring fixa. Um token simples na URL é o
+      // que ela consegue cumprir sem ajuda. Continua exigindo HTTPS e não
+      // afeta em nada quem já autentica por HMAC.
+      tokenIngressoEvolution: texto(ambiente.EVOLUTION_WEBHOOK_TOKEN),
       tempoLimiteMs: inteiro(ambiente.OPENCLAW_TIMEOUT_MS, 10000),
       // Gateway WebSocket: é por aqui que a mensagem sai de verdade. O token
       // compartilhado sozinho não concede escopo — quem envia precisa ser um
