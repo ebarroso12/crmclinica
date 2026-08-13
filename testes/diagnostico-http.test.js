@@ -117,6 +117,37 @@ test('Evolution configurada mas inalcançável: gera achado próprio, crítico s
   }
 });
 
+// ------------------------------------------------------------- Comando 7, achado A-1
+//
+// A varredura por HTTP precisa incluir a sonda da outbox — sem ela nem
+// heartbeat perdido nem trabalho vencido apareciam no painel, porque a rota
+// (rotas-diagnostico.js) nunca chamava a sonda nenhuma.
+
+test('GET /api/diagnostico: worker da outbox sem heartbeat vira achado crítico de área "outbox"', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio, papel: 'admin' });
+  try {
+    const corpo = await (await ambiente.pedir('/api/diagnostico')).json();
+    const achadoDaOutbox = corpo.achados.find((a) => a.area === 'outbox');
+    assert.ok(achadoDaOutbox, 'sem heartbeat da outbox registrado, tem que aparecer achado');
+    assert.equal(achadoDaOutbox.nivel, 'critico');
+  } finally {
+    await ambiente.encerrar();
+  }
+});
+
+test('GET /api/diagnostico: worker da outbox com heartbeat recente e fila limpa não gera achado', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  await repositorio.registrarBatimentoDoSistema('automacao_outbox_worker', { status: 'ok' });
+  const ambiente = await subirServidor({ repositorio, papel: 'admin' });
+  try {
+    const corpo = await (await ambiente.pedir('/api/diagnostico')).json();
+    assert.ok(!corpo.achados.some((a) => a.area === 'outbox'));
+  } finally {
+    await ambiente.encerrar();
+  }
+});
+
 test('sem Evolution configurada, o comportamento antigo do gateway continua — crítico quando despareado', async () => {
   const repositorio = criarRepositorioEmMemoria();
   const configuracao = configuracaoDeTeste();

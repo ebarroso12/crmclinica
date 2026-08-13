@@ -183,6 +183,53 @@ async function executarDiagnostico(sondas = {}) {
     registrar(achado({ area: 'worker', nivel: 'critico', titulo: 'o worker de lembretes não confirmou atividade', detalhe: worker.detalhe ?? null, reparo: 'Reinicie o serviço do worker e confira os logs do OpenClaw.', comando: 'reiniciar:crmclinica-lembretes' }));
   }
 
+  // --------------------------------------------------------- automação (outbox)
+  //
+  // Comando 7, achado A-1 da auditoria: até aqui esta fila não tinha sonda
+  // nenhuma. É um processo separado do worker de lembretes acima — mesma
+  // classe de risco (fila que para sem avisar), heartbeat próprio.
+  const outbox = await verificar('outbox', sondas.outbox);
+  if (outbox) {
+    if (!outbox.ativo) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'critico',
+        titulo: 'o worker da automação (outbox) não confirmou atividade',
+        detalhe: outbox.detalhe ?? null,
+        reparo: 'Sem esse worker rodando, as respostas da Serena ficam persistidas mas nunca saem. Confira se o processo de bin/worker-outbox.js está de pé.',
+      }));
+    }
+
+    if (outbox.vencidos > 0) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'critico',
+        titulo: `${outbox.vencidos} trabalho(s) da automação vencido(s) sem processar`,
+        detalhe: 'passaram do horário previsto (disponivel_em) e continuam pendentes',
+        reparo: 'A fila parou de andar. Confira se o worker da outbox está rodando e processando lotes.',
+      }));
+    }
+
+    if (outbox.fila?.morto > 0) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'critico',
+        titulo: `${outbox.fila.morto} trabalho(s) da automação esgotaram as tentativas (morto)`,
+        reparo: 'Essas respostas não foram entregues e a automação desistiu. Veja o motivo (ultimo_erro) antes que vire padrão.',
+      }));
+    }
+
+    if (outbox.fila?.incerto > 0) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'falha',
+        titulo: `${outbox.fila.incerto} trabalho(s) da automação com desfecho incerto`,
+        detalhe: 'o envio pode ou não ter chegado ao paciente — a automação não retenta sozinha por segurança',
+        reparo: 'Confira manualmente se a mensagem chegou antes de decidir reenviar ou descartar.',
+      }));
+    }
+  }
+
   // ------------------------------------------------------------------- fila
   const fila = await verificar('lembretes', sondas.fila);
   if (fila) {

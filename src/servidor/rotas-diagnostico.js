@@ -3,7 +3,7 @@
 const { exigirPermissao } = require('../seguranca/rbac');
 const { executarDiagnostico } = require('../dominio/diagnostico');
 const {
-  sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker,
+  sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker, sondaDaOutbox,
 } = require('../dominio/diagnostico-sondas');
 const { decidirAtendimento } = require('../dominio/sincronia-serena');
 const { conferirConexao } = require('../dados/conferir-conexao');
@@ -56,6 +56,9 @@ function criarRotasDeDiagnostico({
         serena: sondaDaSerena(serena, politica, decidirAtendimento),
         google: sondaDoGoogle(googleAgenda),
         worker: sondaDoWorker(repositorio),
+        // Comando 7, achado A-1: worker separado (bin/worker-outbox.js), sem
+        // observabilidade nenhuma até aqui.
+        outbox: sondaDaOutbox(repositorio),
       });
     },
   };

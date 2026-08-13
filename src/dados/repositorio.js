@@ -2674,6 +2674,22 @@ function criarRepositorio(pool) {
       return total;
     },
 
+    /**
+     * Para o diagnóstico (achado A-1 da auditoria do Comando 7): quantos
+     * trabalhos pendentes já passaram de `disponivel_em` há mais do que o
+     * atraso tolerado. Pendente com hora vencida e worker "ativo" (heartbeat
+     * recente) é o sinal mais direto de fila que parou de ser processada —
+     * mesmo raciocínio que `resumirFilaDeLembretes` já aplica à fila de
+     * lembretes, agora também para a fila da automação.
+     */
+    async contarTrabalhosDeOutboxVencidos({ antesDe }) {
+      const { rows } = await consultar(
+        "SELECT count(*)::int AS total FROM automacao_outbox WHERE status = 'pendente' AND disponivel_em < $1::timestamptz",
+        [antesDe],
+      );
+      return Number(rows[0]?.total ?? 0);
+    },
+
     // ---------------------------------------------------------------- tentativas de autenticação
 
     async registrarTentativa({ ip = null, hashConta = null, acao = 'login', sucesso = false }) {

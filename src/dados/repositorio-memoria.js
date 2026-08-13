@@ -1191,6 +1191,20 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return liberados;
     },
 
+    /**
+     * Para o diagnóstico (achado A-1 da auditoria do Comando 7): quantos
+     * trabalhos pendentes já passaram de `disponivel_em` há mais do que o
+     * atraso tolerado. Espelha `repositorio.js`: mesma comparação lexicográfica
+     * de ISO 8601 que `reivindicarTrabalhosDeOutbox` já usa acima.
+     */
+    async contarTrabalhosDeOutboxVencidos({ antesDe }) {
+      let total = 0;
+      for (const trabalho of automacaoOutbox.values()) {
+        if (trabalho.status === 'pendente' && trabalho.disponivel_em < antesDe) total += 1;
+      }
+      return total;
+    },
+
     /** Para o heartbeat do worker: quantos trabalhos em cada estado agora. */
     async contarTrabalhosDeOutboxPorEstado() {
       const total = { pendente: 0, processando: 0, concluido: 0, morto: 0, incerto: 0 };

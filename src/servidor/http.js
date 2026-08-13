@@ -1499,13 +1499,17 @@ function criarAplicacao(dependencias = {}) {
         )).catch(() => [{ estado: 'indisponivel' }, [], []]);
         const saudeOrquestrador = { estado: batimentos.openclaw ?? 'indisponivel' };
         const saudeInboxFinal = { estado: batimentos.inbox ?? (saudeInbox?.estado ?? 'indisponivel') };
+        // Comando 7, achado A-1: o worker da automação (outbox) já grava seu
+        // batimento no mesmo mapa (`automacao_outbox_worker`); só faltava
+        // expor a chave que já estava sendo lida acima.
+        const saudeOutbox = { estado: batimentos.automacao_outbox_worker ?? 'indisponivel' };
         responderJson(
           res,
           200,
           montarResumo(configuracao, saudeOrquestrador, saudeInboxFinal, {
             conversas: conversasDoResumo,
             leads: leadsDoResumo,
-          }),
+          }, saudeOutbox),
           { 'cache-control': 'no-store' },
         );
         return;
