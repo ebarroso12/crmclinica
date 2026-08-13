@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
 const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
-const { subirServidor } = require('./auxiliar');
+const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 
 // O painel da Serena e o CRUD de contatos, pela porta de entrada.
 //
@@ -466,4 +466,32 @@ test('mensagem sem texto é recusada com 400, não com 500', async (t) => {
   });
 
   assert.equal(resposta.status, 400);
+});
+
+// Comando 5, frente 10 — sem NENHUM gateway de sessão configurado (nem
+// clínica, nem comando), o laboratório continua fechado por padrão: 503,
+// não uma tentativa de conexão que teria que estourar por timeout. Este é
+// o único cenário de disponibilidade do laboratório testável sem depender
+// de rede de verdade — os outros (só clínica, só comando, os dois) estão
+// cobertos em testes/laboratorio-serena-gateway.test.js, na função pura que
+// decide qual gateway usar (`escolherConfiguracaoDoLaboratorio`).
+test('sem gateway de sessão nenhum configurado, o laboratório responde 503 canal_nao_configurado — sem tentar rede', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const servicoDaSerena = criarServicoDaSerena({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, serena: servicoDaSerena });
+  const configuracao = configuracaoDeTeste(); // OPENCLAW_*_GATEWAY_URL vazios por padrão
+
+  const ambiente = await subirServidor({ repositorio, orquestrador, atendimento, servicoDaSerena, configuracao });
+  t.after(() => ambiente.encerrar());
+
+  const abrir = await ambiente.pedir('/api/serena/teste', { method: 'POST', body: JSON.stringify({}) });
+  assert.equal(abrir.status, 503);
+  assert.equal((await abrir.json()).codigo, 'canal_nao_configurado');
+
+  const enviar = await ambiente.pedir('/api/serena/teste/mensagem', {
+    method: 'POST', body: JSON.stringify({ sessao: 's', texto: 'oi' }),
+  });
+  assert.equal(enviar.status, 503);
+  assert.equal((await enviar.json()).codigo, 'canal_nao_configurado');
 });

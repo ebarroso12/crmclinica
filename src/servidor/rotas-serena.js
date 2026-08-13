@@ -269,6 +269,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
       if (!conversa) {
         const erro = new Error('gateway do canal não configurado');
         erro.status = 503;
+        erro.codigo = 'canal_nao_configurado';
         throw erro;
       }
 

@@ -38,7 +38,7 @@ const { criarServicoDeLembretes } = require('../dominio/lembretes-servico');
 const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes');
 const { criarRotasDaSerena } = require('./rotas-serena');
 const { criarVinculoDeCanal } = require('../integracoes/openclaw-vinculo');
-const { criarConversaDeTeste } = require('../integracoes/openclaw-conversa');
+const { criarConversaDeTeste, escolherConfiguracaoDoLaboratorio } = require('../integracoes/openclaw-conversa');
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
@@ -265,10 +265,17 @@ function criarAplicacao(dependencias = {}) {
   const vinculoDoCanal = dependencias.vinculoDoCanal
     || (configuracao.openclaw.canalClinica.url ? criarVinculoDeCanal(configuracao.openclaw.canalClinica) : null);
 
-  // Conversa de teste: fala com a Serena pela sessão do painel, sem tocar no
-  // WhatsApp. É o que permite validar o prompt antes de expor ao paciente.
+  // Conversa de teste: fala com a Serena por uma sessão OpenClaw, sem tocar
+  // no WhatsApp. É o que permite validar o prompt antes de expor ao
+  // paciente. Comando 5 / frente 10: gateway da clínica como principal,
+  // gateway de comando como reserva — ver `escolherConfiguracaoDoLaboratorio`
+  // em `openclaw-conversa.js` para o porquê de não usar a Evolution aqui.
+  const configDoLaboratorio = escolherConfiguracaoDoLaboratorio({
+    canalClinica: configuracao.openclaw.canalClinica,
+    comando: configuracao.openclaw.gateway,
+  });
   const conversaDeTeste = dependencias.conversaDeTeste
-    || (configuracao.openclaw.canalClinica.url ? criarConversaDeTeste(configuracao.openclaw.canalClinica) : null);
+    || (configDoLaboratorio ? criarConversaDeTeste(configDoLaboratorio) : null);
 
   // Centro operacional: a varredura que pergunta a todas as peças de uma vez se
   // ainda estão inteiras. Usa a mesma política do canal que o worker usa para
