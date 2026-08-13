@@ -171,3 +171,113 @@ test('GET na porta de ingresso é recusado', async (t) => {
   assert.equal(resposta.status, 405);
   assert.equal(resposta.headers.get('allow'), 'POST');
 });
+
+// --- segunda porta: token da Evolution API, sem HMAC (ela não sabe gerar) ---
+
+const TOKEN_EVOLUTION = 'token-sintetico-da-evolution-com-32-ou-mais-caracteres';
+const MENSAGEM_EVOLUTION = Object.freeze({
+  event: 'messages.upsert',
+  instance: 'clinica',
+  data: {
+    key: { remoteJid: '5511999990000@s.whatsapp.net', fromMe: false, id: '3EB0EVO1' },
+    pushName: 'Paciente Evolution',
+    message: { conversation: 'Mensagem vinda direto da Evolution' },
+    messageTimestamp: 1723500000,
+  },
+});
+
+function enviarSemAssinatura(app, corpo, query = '') {
+  return app.pedirSemAuth(`/api/canais/whatsapp/eventos${query}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(corpo),
+  });
+}
+
+test('a Evolution entra com token na querystring e o payload nativo é traduzido', async (t) => {
+  const { app, repositorio } = await (async () => {
+    const repositorio = criarRepositorioEmMemoria();
+    const atendimento = criarAtendimento({ repositorio, orquestrador: null });
+    const configuracao = configuracaoDeTeste({
+      WHATSAPP_WEBHOOK_SECRET: SEGREDO,
+      EVOLUTION_WEBHOOK_TOKEN: TOKEN_EVOLUTION,
+    });
+    const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+    return { app, repositorio };
+  })();
+  t.after(() => app.encerrar());
+
+  const resposta = await enviarSemAssinatura(app, MENSAGEM_EVOLUTION, `?token=${TOKEN_EVOLUTION}`);
+  assert.equal(resposta.status, 202);
+  const recibo = await resposta.json();
+  assert.equal(recibo.aceito, true);
+  assert.equal(recibo.estrategia_ia, 'crm_despacha');
+
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 1);
+  const mensagens = await repositorio.listarMensagens(conversas[0].id);
+  assert.equal(mensagens[0].conteudo, 'Mensagem vinda direto da Evolution');
+});
+
+test('token errado ou ausente continua recusado com 401, mesmo com EVOLUTION_WEBHOOK_TOKEN configurado', async (t) => {
+  const configuracao = configuracaoDeTeste({
+    WHATSAPP_WEBHOOK_SECRET: SEGREDO,
+    EVOLUTION_WEBHOOK_TOKEN: TOKEN_EVOLUTION,
+  });
+  const app = await subirServidor({
+    repositorio: criarRepositorioEmMemoria(),
+    atendimento: criarAtendimento({ repositorio: criarRepositorioEmMemoria(), orquestrador: null }),
+    configuracao,
+    autenticar: false,
+  });
+  t.after(() => app.encerrar());
+
+  assert.equal((await enviarSemAssinatura(app, MENSAGEM_EVOLUTION, '?token=token-errado-com-tamanho-parecido')).status, 401);
+  assert.equal((await enviarSemAssinatura(app, MENSAGEM_EVOLUTION)).status, 401);
+});
+
+test('sem EVOLUTION_WEBHOOK_TOKEN configurado, a segunda porta não existe — só HMAC vale', async (t) => {
+  const { app } = await subirIngresso(); // configuracaoDeTeste sem EVOLUTION_WEBHOOK_TOKEN
+  t.after(() => app.encerrar());
+
+  assert.equal((await enviarSemAssinatura(app, MENSAGEM_EVOLUTION, `?token=${TOKEN_EVOLUTION}`)).status, 401);
+});
+
+test('evento da Evolution que não é mensagem de paciente é aceito e ignorado (200), não vira conversa', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({ repositorio, orquestrador: null });
+  const configuracao = configuracaoDeTeste({
+    WHATSAPP_WEBHOOK_SECRET: SEGREDO,
+    EVOLUTION_WEBHOOK_TOKEN: TOKEN_EVOLUTION,
+  });
+  const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+  t.after(() => app.encerrar());
+
+  const conexao = await enviarSemAssinatura(app, { event: 'connection.update', data: { state: 'open' } }, `?token=${TOKEN_EVOLUTION}`);
+  assert.equal(conexao.status, 200);
+  assert.equal((await conexao.json()).ignorado, true);
+
+  const eco = await enviarSemAssinatura(app, {
+    ...MENSAGEM_EVOLUTION,
+    data: { ...MENSAGEM_EVOLUTION.data, key: { ...MENSAGEM_EVOLUTION.data.key, fromMe: true } },
+  }, `?token=${TOKEN_EVOLUTION}`);
+  assert.equal(eco.status, 200);
+  assert.equal((await eco.json()).ignorado, true);
+
+  assert.equal((await repositorio.listarConversas({})).length, 0);
+});
+
+test('a assinatura HMAC do OpenClaw continua valendo normalmente com EVOLUTION_WEBHOOK_TOKEN configurado', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({ repositorio, orquestrador: null });
+  const configuracao = configuracaoDeTeste({
+    WHATSAPP_WEBHOOK_SECRET: SEGREDO,
+    EVOLUTION_WEBHOOK_TOKEN: TOKEN_EVOLUTION,
+  });
+  const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+  t.after(() => app.encerrar());
+
+  const resposta = await enviar(app, EVENTO); // assinado por HMAC, como sempre
+  assert.equal(resposta.status, 202);
+  assert.equal((await resposta.json()).aceito, true);
+});

@@ -3,12 +3,14 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const { carregarConfiguracao } = require('../config');
 const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
 const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
+const { normalizarEventoEvolution } = require('../integracoes/evolution-webhook');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
@@ -334,24 +336,48 @@ function criarAplicacao(dependencias = {}) {
     adaptador,
     cabecalhosDeAssinatura,
     nomeDaPorta,
+    tokenAlternativo = null,
   }) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
 
     // A assinatura é conferida antes de interpretar o corpo: nada não autenticado é processado.
+    // `autenticadoPorToken` só fica true quando a assinatura falhou (ou não veio)
+    // e a segunda porta — token na querystring — foi quem aceitou. É o único
+    // caso em que o corpo precisa de tradução antes de `validarEvento`, porque
+    // só quem chega por ali manda o payload nativo de fora (Evolution), não o
+    // contrato do CRM já normalizado.
+    let autenticadoPorToken = false;
     if (segredo) {
       const recebida = cabecalhosDeAssinatura
         .map((cabecalho) => req.headers[cabecalho])
         .find(Boolean);
       if (!assinaturaValida({ corpoBruto, assinaturaRecebida: recebida, segredo })) {
-        responderJson(res, 401, { erro: 'assinatura inválida' });
-        return;
+        if (!tokenAlternativo?.valido) {
+          responderJson(res, 401, { erro: 'assinatura inválida' });
+          return;
+        }
+        autenticadoPorToken = true;
       }
     } else if (configuracao.producao) {
       responderJson(res, 503, { erro: `${nomeDaPorta} indisponível sem segredo configurado` });
       return;
     }
 
-    const validado = validarEvento(interpretarJson(corpoBruto));
+    let corpoInterpretado = interpretarJson(corpoBruto);
+    if (autenticadoPorToken) {
+      const traduzido = tokenAlternativo.adaptar?.(corpoInterpretado) ?? null;
+      // Evento da Evolution que não é mensagem de paciente (CONNECTION_UPDATE,
+      // eco do próprio envio, mensagem de grupo, mídia sem texto…): aceito e
+      // ignorado, não é erro — recusar com 4xx faria a Evolution reter e
+      // martelar retry num evento que nunca vai virar conversa.
+      if (!traduzido) {
+        responderJson(res, 200, { aceito: true, ignorado: true });
+        return;
+      }
+      corpoInterpretado = traduzido;
+    }
+
+    const validado = validarEvento(corpoInterpretado);
 
     // Quem responde por este evento é decisão desta porta, não do payload.
     // Um evento de WhatsApp sem dono declarado é recusado aqui, fechado: se ele
@@ -427,12 +453,36 @@ function criarAplicacao(dependencias = {}) {
     });
   }
 
-  async function receberMensagemDoWhatsapp(req, res) {
+  /**
+   * Compara token recebido contra o configurado sem vazar tempo de execução
+   * — mesmo cuidado que `assinaturaValida` já tem para a assinatura HMAC.
+   */
+  function tokenIngressoValido(recebido, esperado) {
+    if (typeof recebido !== 'string' || !recebido) return false;
+    if (typeof esperado !== 'string' || esperado.length < 16) return false;
+    const bufferRecebido = Buffer.from(recebido, 'utf8');
+    const bufferEsperado = Buffer.from(esperado, 'utf8');
+    if (bufferRecebido.length !== bufferEsperado.length) return false;
+    return crypto.timingSafeEqual(bufferRecebido, bufferEsperado);
+  }
+
+  async function receberMensagemDoWhatsapp(req, res, url) {
+    const tokenEsperado = configuracao.openclaw.tokenIngressoEvolution;
     return receberEventoAssinado(req, res, {
       segredo: configuracao.openclaw.segredoIngressoWhatsapp,
       adaptador: 'openclaw_ingresso_crm',
       cabecalhosDeAssinatura: ['x-whatsapp-assinatura', 'x-whatsapp-signature'],
       nomeDaPorta: 'ingresso do WhatsApp',
+      // Segunda porta, só para a Evolution API: ela não gera a assinatura HMAC
+      // acima, mas consegue repetir uma URL com token fixo na querystring. Só
+      // entra em jogo quando a assinatura falhou E o token está configurado —
+      // nunca enfraquece o caminho do OpenClaw, só abre um segundo já fechado.
+      tokenAlternativo: tokenEsperado ? {
+        valido: tokenIngressoValido(url?.searchParams?.get('token'), tokenEsperado),
+        // O payload nativo da Evolution não é o contrato do CRM — precisa de
+        // tradução antes de `validarEvento` (ver integracoes/evolution-webhook.js).
+        adaptar: normalizarEventoEvolution,
+      } : null,
     });
   }
 
@@ -1525,10 +1575,11 @@ function criarAplicacao(dependencias = {}) {
           responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
           return;
         }
-        // Porta exclusiva da ponte instalada no OpenClaw. A assinatura e o
+        // Porta exclusiva da ponte instalada no OpenClaw (e, como segunda
+        // porta com token próprio, da Evolution API). A assinatura e o
         // adaptador são diferentes de /api/eventos para que o payload nunca
         // possa se promover a dono da resposta automática.
-        await receberMensagemDoWhatsapp(req, res);
+        await receberMensagemDoWhatsapp(req, res, url);
         return;
       }
 
