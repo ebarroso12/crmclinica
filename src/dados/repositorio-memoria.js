@@ -1163,6 +1163,21 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return candidatos.map((trabalho) => ({ ...trabalho }));
     },
 
+    /**
+     * Renova o lease de UM trabalho específico — Comando 7, segunda
+     * auditoria, achado N-9. Espelha `repositorio.js`: só grava se o
+     * trabalho ainda está 'processando' e ainda é deste worker; senão,
+     * devolve `null` (outro worker já retomou este trabalho).
+     */
+    async renovarReivindicacaoDeOutbox(id, { worker, agora: instante }) {
+      const trabalho = automacaoOutbox.get(Number(id));
+      if (!trabalho) return null;
+      if (trabalho.status !== 'processando' || trabalho.reivindicado_por !== String(worker).slice(0, 100)) return null;
+      trabalho.reivindicado_em = instante;
+      trabalho.atualizado_em = instante;
+      return { ...trabalho };
+    },
+
     /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
     async concluirTrabalhoDeOutbox(id, {
       status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,

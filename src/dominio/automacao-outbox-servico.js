@@ -166,6 +166,24 @@ function criarServicoDeOutbox({
    * `reivindicarTrabalhosDeOutbox` é a operação que impede duplicidade entre
    * workers: seleciona com `FOR UPDATE SKIP LOCKED` e já marca 'processando'
    * na mesma transação. Quem chega depois não enxerga o que o primeiro pegou.
+   *
+   * **Comando 7, segunda auditoria, achado N-9.** `reivindicarTrabalhosDeOutbox`
+   * carimba `reivindicado_em` com um único instante para o LOTE inteiro, mas
+   * o laço abaixo processa serialmente. Com um lote grande e trabalhos perto
+   * do pior caso documentado (~75s, ver LEASE_MS em `automacao-outbox.js`),
+   * o carimbo do lote todo pode vencer antes mesmo de o último trabalho
+   * começar a ser processado — e uma varredura concorrente
+   * (`recuperarPresos`, rodando em outro worker de verdade) devolveria esse
+   * trabalho à fila enquanto ele ainda está em voo, abrindo a mesma janela
+   * de duplicata que o M-1 original fechou para o caso de um trabalho só.
+   *
+   * Por isso, ANTES de processar cada trabalho individualmente, o lease
+   * dele é renovado para "agora" — `renovarReivindicacaoDeOutbox` só grava
+   * se o trabalho ainda está 'processando' e ainda pertence a ESTE worker;
+   * se outro worker já o retomou (a corrida que a renovação normalmente
+   * evita, mas que ainda pode acontecer bem no limite), ela devolve `null` e
+   * este worker desiste do trabalho — processá-lo de qualquer jeito depois
+   * de perder a posse seria exatamente a duplicata que se está evitando.
    */
   async function processarLote({ limite = 20, worker = 'worker' } = {}) {
     const momento = agora();
@@ -180,6 +198,16 @@ function criarServicoDeOutbox({
 
     const resultados = [];
     for (const trabalho of reivindicados) {
+      if (repositorio.renovarReivindicacaoDeOutbox) {
+        const renovado = await repositorio.renovarReivindicacaoDeOutbox(trabalho.id, {
+          worker, agora: agora().toISOString(),
+        });
+        if (!renovado) {
+          // Outro worker já retomou este trabalho — não é mais nosso.
+          await auditar('outbox_lease_perdido', trabalho.id, { conversa_id: trabalho.conversa_id, worker });
+          continue;
+        }
+      }
       resultados.push(await processarUm(trabalho));
     }
 

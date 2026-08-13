@@ -41,6 +41,18 @@ const MAX_TENTATIVAS_PADRAO = 5;
 // 5 minutos, no mesmo valor já usado pelo lease análogo de `lembretes.js` —
 // dá margem de ~4x sobre o pior caso documentado, sem deixar um trabalho
 // preso por muito mais tempo que o necessário enquanto o paciente espera.
+//
+// Comando 7, segunda auditoria, achado N-9: a conta de "~4x" só é verdadeira
+// POR TRABALHO — e até a correção do N-9, o lease era efetivamente por LOTE:
+// `reivindicarTrabalhosDeOutbox` carimba `reivindicado_em` uma vez só para
+// o lote inteiro (`repositorio.js`), mas `automacao-outbox-servico.js`
+// processa o lote serialmente. Num lote grande, a soma do tempo de
+// processamento dos trabalhos anteriores comia a margem do trabalho
+// seguinte, na prática deixando uma margem real de ~0,2x no pior caso — bem
+// menor do que esta constante sozinha sugeria. `processarLote` agora renova
+// `reivindicado_em` de CADA trabalho no início do seu próprio processamento
+// (`repositorio.renovarReivindicacaoDeOutbox`), então o lease voltou a ser
+// por trabalho de verdade, e a conta de ~4x acima volta a valer.
 const LEASE_MS = 5 * 60 * 1000;
 
 // Cinco estados, no mesmo espírito de `lembretes.js`: uma falha que ainda pode

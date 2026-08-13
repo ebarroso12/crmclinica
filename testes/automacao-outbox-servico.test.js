@@ -44,8 +44,16 @@ function canalFalso({ comportamento = 'sucesso' } = {}) {
   };
 }
 
-/** Monta conversa + mensagem de entrada, sem processar nada ainda. */
-async function prepararConversa(repositorio) {
+/**
+ * Monta conversa + mensagem de entrada, sem processar nada ainda.
+ *
+ * `overrides` permite montar VÁRIAS conversas distintas no mesmo
+ * repositório (Comando 7, segunda auditoria, achado N-9: o teste de lote
+ * precisa de N conversas reais para provar reivindicação em lote de
+ * verdade) — sem isso, chamar duas vezes com o mesmo `id_externo`/`remetente`
+ * cairia no caminho de idempotência e reaproveitaria a MESMA conversa.
+ */
+async function prepararConversa(repositorio, overrides = {}) {
   const atendimentoDeSetup = criarAtendimento({
     repositorio,
     orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não deveria'); } },
@@ -56,8 +64,10 @@ async function prepararConversa(repositorio) {
   // escalona de verdade), este setup marcaria a conversa como
   // `assumida_por_humano`, e os testes que processam o trabalho de verdade
   // logo depois encontrariam a barreira já fechada por engano.
-  await atendimentoDeSetup.receberMensagem({ ...EVENTO, estrategia_ia: 'openclaw_gerencia' });
-  const [conversa] = await repositorio.listarConversas({});
+  const resultado = await atendimentoDeSetup.receberMensagem({
+    ...EVENTO, estrategia_ia: 'openclaw_gerencia', ...overrides,
+  });
+  const conversa = await repositorio.obterConversa(resultado.conversa_id);
   const [mensagemEntrada] = await repositorio.listarMensagens(conversa.id);
   return { conversa, mensagemEntrada };
 }
@@ -363,6 +373,137 @@ test('processarLote reivindica, processa e resume os desfechos de um ciclo', asy
 
   const mensagens = await repositorio.listarMensagens(conversa.id);
   assert.ok(mensagens.some((m) => m.direcao === 'saida' && m.autor_tipo === 'automacao'));
+});
+
+// ------------------------------------------------------ Comando 7, achado N-9
+//
+// Segunda auditoria independente: `reivindicarTrabalhosDeOutbox` carimba
+// `reivindicado_em` com UM ÚNICO instante para o lote inteiro, mas
+// `processarLote` processa serialmente. Com trabalhos que levam perto do
+// pior caso documentado (~75s cada — ver LEASE_MS em automacao-outbox.js)
+// e um lote grande o bastante, o carimbo do lote todo já pode estar vencido
+// antes mesmo de o último trabalho começar a ser processado — e uma
+// varredura concorrente (`recuperarPresos`, rodando em outro worker de
+// verdade em produção) devolveria esse trabalho À FILA enquanto ele ainda
+// está em voo. Dois workers tentando entregar a MESMA resposta ao mesmo
+// tempo é exatamente o risco que o M-1 original corrigiu para o caso de
+// UM trabalho — este é o mesmo risco, mas no nível do LOTE.
+test('N-9: cada trabalho renova o próprio lease ao começar a ser processado — uma varredura concorrente não pode reivindicar de volta um trabalho em voo', async () => {
+  let agoraSimulado = new Date('2026-08-13T10:00:00.000Z');
+  const repositorio = criarRepositorioEmMemoria({ agora: () => agoraSimulado });
+  const canal = canalFalso();
+
+  // Cinco conversas distintas, cinco trabalhos, todos reivindicados no
+  // MESMO instante por um único processarLote — exatamente como
+  // reivindicarTrabalhosDeOutbox carimba um lote de verdade.
+  const N = 5;
+  // Um pouco acima do pior caso documentado (~75s) para garantir margem
+  // estrita sobre o corte de LEASE_MS ao somar as N-1 chamadas anteriores.
+  const TEMPO_POR_TRABALHO_MS = 80 * 1000;
+  const idsDosTrabalhos = [];
+  for (let i = 0; i < N; i += 1) {
+    const { conversa, mensagemEntrada } = await prepararConversa(repositorio, {
+      id_externo: `wa:outbox:n9:${i}`,
+      remetente: `55169999900${i}`,
+    });
+    const { trabalho } = await repositorio.enfileirarTrabalhoDeOutbox({
+      conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id, chaveIdempotencia: `outbox:n9:${i}`,
+    });
+    idsDosTrabalhos.push(trabalho.id);
+  }
+
+  let chamada = 0;
+  let outboxRef;
+  let estadoDoUltimoTrabalhoNaVarreduraConcorrente = null;
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: {
+      disponivel: true,
+      async despacharEvento() {
+        chamada += 1;
+        if (chamada === N) {
+          // No exato início do processamento do ÚLTIMO trabalho do lote —
+          // ele acabou de ter o PRÓPRIO lease renovado por processarLote,
+          // um instante antes desta chamada —, uma varredura concorrente
+          // roda (o equivalente a outro worker chamando recuperarPresos ao
+          // mesmo tempo). Sob o carimbo por LOTE antigo, as N-1 chamadas
+          // anteriores (80s cada) já teriam somado tempo suficiente para
+          // vencer o lease a partir do carimbo original do lote inteiro.
+          await outboxRef.recuperarPresos();
+          estadoDoUltimoTrabalhoNaVarreduraConcorrente = await repositorio.obterTrabalhoDeOutbox(
+            idsDosTrabalhos.at(-1),
+          );
+        }
+        // Avança o relógio simulando o tempo real de processamento de CADA
+        // trabalho — é a soma dessas N-1 chamadas que, sem a renovação por
+        // trabalho, deixaria o carimbo único do lote vencido bem antes do
+        // último trabalho começar.
+        agoraSimulado = new Date(agoraSimulado.getTime() + TEMPO_POR_TRABALHO_MS);
+        return { resposta: 'Olá! Posso ajudar?' };
+      },
+    },
+  });
+  const outbox = criarServicoDeOutbox({ repositorio, atendimento, agora: () => agoraSimulado });
+  outboxRef = outbox;
+
+  const resultado = await outbox.processarLote({ limite: N, worker: 'worker-1' });
+
+  assert.ok(estadoDoUltimoTrabalhoNaVarreduraConcorrente, 'a checagem concorrente precisa ter rodado de verdade');
+  assert.equal(
+    estadoDoUltimoTrabalhoNaVarreduraConcorrente.status,
+    'processando',
+    'a varredura concorrente não pode ter devolvido à fila um trabalho cujo lease acabou de ser renovado — isso é o achado N-9',
+  );
+  assert.equal(estadoDoUltimoTrabalhoNaVarreduraConcorrente.tentativas, 0, 'não pode ter contado como tentativa abandonada');
+
+  assert.equal(resultado.reivindicados, N);
+  assert.equal(resultado.concluidos, N,
+    'nenhum trabalho do lote pode ter sido perdido/reagendado por lease vencido enquanto ainda estava sendo processado');
+  assert.equal(resultado.reagendados, 0,
+    'devolver à fila um trabalho ainda em voo (por causa do carimbo por LOTE, não por trabalho) é exatamente o achado N-9');
+  assert.equal(canal.envios.length, N, 'as N respostas de fato saíram — nada foi perdido nem duplicado');
+});
+
+test('N-9: se a renovação descobre que o trabalho já não é mais deste worker, ele desiste em vez de processar de novo', async () => {
+  // Isola a guarda de `renovarReivindicacaoDeOutbox` sem depender de duas
+  // conexões concorrentes de verdade: um repositório espião devolve, na
+  // reivindicação, um trabalho "congelado" que na prática já foi retomado
+  // por outro worker — situação que `FOR UPDATE SKIP LOCKED` impede
+  // acontecer por reivindicação dupla, mas que a renovação por trabalho
+  // (N-9) também precisa cobrir como última linha de defesa.
+  const repositorio = criarRepositorioEmMemoria();
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'oi' }) },
+  });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+  const { trabalho } = await repositorio.enfileirarTrabalhoDeOutbox({
+    conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id, chaveIdempotencia: 'outbox:corrida:1',
+  });
+
+  // O trabalho já pertence de fato a "worker-2" no repositório real.
+  await repositorio.reivindicarTrabalhosDeOutbox({ agora: new Date().toISOString(), limite: 1, worker: 'worker-2' });
+
+  const repositorioComTrabalhoJaRoubado = {
+    ...repositorio,
+    async reivindicarTrabalhosDeOutbox() {
+      // Devolve o objeto como se "worker-1" tivesse acabado de reivindicá-lo
+      // — o cenário que `renovarReivindicacaoDeOutbox` precisa recusar.
+      return [{ ...trabalho, status: 'processando', reivindicado_por: 'worker-1' }];
+    },
+  };
+
+  const outbox = criarServicoDeOutbox({ repositorio: repositorioComTrabalhoJaRoubado, atendimento });
+  const resultado = await outbox.processarLote({ limite: 1, worker: 'worker-1' });
+
+  assert.equal(resultado.reivindicados, 1);
+  assert.equal(resultado.concluidos, 0, 'não pode ter processado um trabalho que já não é mais deste worker');
+  assert.equal(canal.envios.length, 0, 'nada pode ter sido enviado por este worker — o outro é quem tem a posse agora');
+
+  const registroDaAuditoria = repositorio._auditoria.find((r) => r.acao === 'outbox_lease_perdido');
+  assert.ok(registroDaAuditoria, 'a desistência precisa ficar registrada, não sumir em silêncio');
 });
 
 // -------------------------------------------------------------- dados sensíveis

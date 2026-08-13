@@ -2629,6 +2629,38 @@ function criarRepositorio(pool) {
       return completos.map(montarTrabalhoDeOutbox);
     },
 
+    /**
+     * Renova o lease de UM trabalho específico, no início do seu próprio
+     * processamento — Comando 7, segunda auditoria, achado N-9.
+     *
+     * `reivindicarTrabalhosDeOutbox` carimba `reivindicado_em` com um único
+     * instante para o lote inteiro, mas `processarLote` processa
+     * serialmente: com um lote grande e trabalhos lentos, o carimbo do
+     * lote todo já pode estar vencido antes mesmo de o N-ésimo trabalho
+     * começar a ser processado, e `liberarTrabalhosDeOutboxPresos` devolveria
+     * esse trabalho À FILA enquanto ele ainda está em voo — dois workers
+     * podem então tentar entregar a MESMA resposta ao paciente (a Evolution
+     * não deduplica, ver evolution-envio.js).
+     *
+     * A condição `status = 'processando' AND reivindicado_por = $2` no WHERE
+     * é a guarda contra corrida: se outro worker já reivindicou este mesmo
+     * trabalho de volta (`recuperarPresos` correu antes desta renovação
+     * conseguir gravar), a instrução não afeta linha nenhuma e devolve
+     * `null` — sinal para quem chamou parar de processar, porque o trabalho
+     * já não é mais deste worker.
+     */
+    async renovarReivindicacaoDeOutbox(id, { worker, agora }) {
+      const { rows } = await consultar(`
+        UPDATE automacao_outbox
+           SET reivindicado_em = $3::timestamptz
+         WHERE id = $1
+           AND status = 'processando'
+           AND reivindicado_por = $2
+        RETURNING *
+      `, [id, String(worker).slice(0, 100), agora]);
+      return rows[0] ? montarTrabalhoDeOutbox(rows[0]) : null;
+    },
+
     /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
     async concluirTrabalhoDeOutbox(id, {
       status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
