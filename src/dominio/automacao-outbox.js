@@ -22,11 +22,26 @@ const MAX_TENTATIVAS_PADRAO = 5;
 //
 // Precisa ser maior que qualquer tentativa plausível de `responderSePossivel`:
 // extração de qualificação (IA, até IA_TIMEOUT_MS), despacho ao orquestrador
-// (idem) e entrega pela Evolution (EVOLUTION_API_TIMEOUT_MS). Somando os
-// piores casos plausíveis, isso não passa de ~1min15s — o dobro dá margem
-// sem deixar um trabalho preso esperando minutos a mais que o necessário
-// enquanto o paciente não recebe nada.
-const LEASE_MS = 2 * 60 * 1000;
+// (até o timeout do gateway do orquestrador) e entrega pela Evolution (até
+// EVOLUTION_API_TIMEOUT_MS). Com os padrões de hoje (30s + 30s + 15s), isso
+// soma ~75s — mas essas três chamadas remotas não são a viagem inteira: há
+// leitura/gravação no banco entre elas, sem timeout nenhum contabilizado aí.
+//
+// Comando 7, achado M-1 da auditoria: o valor antigo (2min) dava só ~1.6x de
+// margem sobre esses 75s, e — mais importante — LEASE_MS é uma constante
+// FIXA deste arquivo: não acompanha automaticamente se alguém configurar
+// IA_TIMEOUT_MS, o timeout do gateway do orquestrador ou
+// EVOLUTION_API_TIMEOUT_MS mais alto via env. Margem fina demais aqui é o
+// que causa o pior cenário possível: reivindicar de novo um trabalho que só
+// está demorando (não morto), dois workers tentando entregar a MESMA
+// resposta ao mesmo tempo — ver o aviso em evolution-envio.js sobre a
+// Evolution não ter idempotência nativa no endpoint de envio; a única defesa
+// real contra essa duplicata é não reivindicar cedo demais.
+//
+// 5 minutos, no mesmo valor já usado pelo lease análogo de `lembretes.js` —
+// dá margem de ~4x sobre o pior caso documentado, sem deixar um trabalho
+// preso por muito mais tempo que o necessário enquanto o paciente espera.
+const LEASE_MS = 5 * 60 * 1000;
 
 // Cinco estados, no mesmo espírito de `lembretes.js`: uma falha que ainda pode
 // tentar de novo volta para 'pendente' (com `disponivel_em` no futuro) — não

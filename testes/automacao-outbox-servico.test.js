@@ -11,6 +11,7 @@ const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria'
 const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
 const { criarServicoDeOutbox } = require('../src/dominio/automacao-outbox-servico');
+const { LEASE_MS } = require('../src/dominio/automacao-outbox');
 
 const EVENTO = Object.freeze({
   canal: 'whatsapp',
@@ -113,8 +114,9 @@ test('trabalho preso além do lease volta para a fila (e conta como tentativa)',
   // Um worker reivindica e "morre" — nunca conclui.
   await repositorio.reivindicarTrabalhosDeOutbox({ agora: agoraSimulado.toISOString(), limite: 20, worker: 'worker-morto' });
 
-  // Tempo passa, além do lease.
-  agoraSimulado = new Date(agoraSimulado.getTime() + 3 * 60 * 1000);
+  // Tempo passa, além do lease (Comando 7, achado M-1: relativo a LEASE_MS,
+  // não a um número fixo — a folga muda se o lease mudar).
+  agoraSimulado = new Date(agoraSimulado.getTime() + LEASE_MS + 60 * 1000);
 
   const liberados = await outbox.recuperarPresos();
   assert.equal(liberados.length, 1);
@@ -140,7 +142,7 @@ test('trabalho preso repetidas vezes esgota as tentativas e vai para dead-letter
   // Duas rodadas de "reivindicar e morrer" esgotam max_tentativas = 2.
   for (let volta = 0; volta < 2; volta += 1) {
     await repositorio.reivindicarTrabalhosDeOutbox({ agora: agoraSimulado.toISOString(), limite: 20, worker: `worker-${volta}` });
-    agoraSimulado = new Date(agoraSimulado.getTime() + 3 * 60 * 1000);
+    agoraSimulado = new Date(agoraSimulado.getTime() + LEASE_MS + 60 * 1000);
     await outbox.recuperarPresos();
   }
 

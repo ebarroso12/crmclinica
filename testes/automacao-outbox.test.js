@@ -34,6 +34,33 @@ test('esgotou é verdadeiro só quando tentativas alcança o máximo', () => {
   assert.equal(MAX_TENTATIVAS_PADRAO, 5);
 });
 
+// ----------------------------------------------------- Comando 7, achado M-1
+//
+// A Evolution API (canal primário desde os PRs #30/#31) não tem idempotência
+// nativa no endpoint de envio — confirmado no próprio código-fonte
+// (evolution-envio.js): a `chave` que canal-conversas.js deriva e repassa
+// nunca chega a ser usada ali, e não há mecanismo do lado da Evolution para
+// usá-la mesmo se chegasse. Com isso, "reenviar não duplica porque o gateway
+// deduplica" (o que o código antigo dizia) é falso pelo canal primário — só é
+// verdade pelo gateway WebSocket do OpenClaw (reserva), que de fato usa
+// `idempotencyKey`. A defesa real contra duplicata aqui é NÃO reentregar sem
+// necessidade — e isso depende de LEASE_MS ter folga suficiente para nunca
+// confundir "ainda processando" com "worker morto".
+test('LEASE_MS tem folga confortável sobre o pior caso documentado (IA + orquestrador + Evolution)', () => {
+  // Valores-padrão hoje (src/config.js): IA_TIMEOUT_MS 30000,
+  // OPENCLAW_CLINICA_GATEWAY_TIMEOUT_MS 30000, EVOLUTION_API_TIMEOUT_MS
+  // 15000 — somados, ~75s. E essas três chamadas remotas não são a viagem
+  // inteira: há leitura/gravação no banco entre elas, sem timeout nenhum
+  // contabilizado nessa soma. LEASE_MS é uma constante fixa deste arquivo —
+  // não acompanha automaticamente se alguém configurar um timeout maior via
+  // env —, então a margem sobre o pior caso DOCUMENTADO precisa ser folgada.
+  const PIOR_CASO_DOCUMENTADO_MS = 30000 + 30000 + 15000;
+  assert.ok(
+    LEASE_MS >= PIOR_CASO_DOCUMENTADO_MS * 2,
+    `LEASE_MS (${LEASE_MS}ms) precisa de pelo menos o dobro do pior caso documentado (${PIOR_CASO_DOCUMENTADO_MS}ms) — margem fina demais é o que causa reivindicação prematura de um trabalho que só está demorando, não morto.`,
+  );
+});
+
 test('abandonado só é verdadeiro para trabalho processando há mais que o lease', () => {
   const agora = new Date('2026-08-13T10:10:00.000Z');
 

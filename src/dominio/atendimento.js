@@ -262,7 +262,13 @@ function criarAtendimento({
 
     // Retentativa depois de queda entre gravar e entregar: a resposta já existe.
     // Não se despacha a IA de novo — reaproveita o texto gravado e tenta só a
-    // entrega, com a mesma chave, que o gateway deduplica.
+    // entrega, com a mesma chave. Comando 7, achado M-1: isso deduplica de
+    // verdade pelo gateway WebSocket do OpenClaw (reserva, que usa
+    // `idempotencyKey`) — mas NÃO pela Evolution (canal primário hoje), que
+    // não expõe idempotência nativa nesse endpoint e ignora a chave (ver
+    // evolution-envio.js). A defesa real contra reenvio duplicado pela
+    // Evolution é LEASE_MS ter folga suficiente para nunca reivindicar de
+    // novo um trabalho que só está demorando (ver automacao-outbox.js).
     const respostaAnterior = mensagens.find((mensagem) => mensagem.id_externo === chaveDaResposta);
     if (respostaAnterior) {
       const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
@@ -393,8 +399,10 @@ function criarAtendimento({
         emissor?.publicarMensagem(conversaId, gravada);
 
         // A resposta precisa CHEGAR ao paciente — gravar no CRM não entrega
-        // nada. A chave determinística faz reentrega concorrente ou retentada
-        // ser deduplicada pelo gateway.
+        // nada. A chave determinística é passada adiante, mas só o gateway
+        // WebSocket do OpenClaw (reserva) de fato deduplica por ela — a
+        // Evolution (canal primário) não usa a chave (Comando 7, achado
+        // M-1; ver o comentário em `entregarAoPaciente`/evolution-envio.js).
         const entrega = await entregarAoPaciente(conversa, gravada.conteudo, gravada.id, {
           origem: 'serena',
         });
