@@ -180,6 +180,38 @@ test('031: a tabela não guarda conteúdo de mensagem — só referências e mot
   }
 });
 
+// ---------------------------------------------------------- 032 (Comando 7, achado A-3)
+
+const SQL_032 = fs.readFileSync(path.join(__dirname, '..', 'db', '032_mensagens_marca_entrega_falhou.sql'), 'utf8');
+
+test('032 é aditiva: só ADD COLUMN, nenhum DROP, DELETE ou UPDATE em linha existente', () => {
+  const semComentarios = SQL_032.replace(/--.*$/gm, '');
+  assert.ok(!/DROP\s+(TABLE|COLUMN)/i.test(semComentarios), '032 não pode remover nada');
+  assert.ok(!/\bDELETE\s+FROM\b/i.test(semComentarios), '032 não pode apagar linha nenhuma');
+  assert.ok(!/\bUPDATE\s+\w+\s+SET\b/i.test(semComentarios), '032 não pode reescrever linha existente');
+  assert.match(SQL_032, /ALTER TABLE public\.mensagens\s+ADD COLUMN IF NOT EXISTS entrega_falhou boolean NOT NULL DEFAULT false/);
+  assert.match(SQL_032, /ALTER TABLE public\.mensagens\s+ADD COLUMN IF NOT EXISTS entrega_falhou_motivo text/);
+});
+
+test('032 não redefine RLS nem GRANT — a coluna herda o que a tabela já tinha', () => {
+  const semComentarios = SQL_032.replace(/--.*$/gm, '');
+  assert.ok(!/ENABLE ROW LEVEL SECURITY/i.test(semComentarios));
+  assert.ok(!/\bGRANT\b/i.test(semComentarios));
+  assert.ok(!/\bREVOKE\b/i.test(semComentarios));
+});
+
+test('032 é atômica: um BEGIN, um COMMIT', () => {
+  assert.equal((SQL_032.match(/^BEGIN;/gm) ?? []).length, 1);
+  assert.equal((SQL_032.match(/^COMMIT;/gm) ?? []).length, 1);
+});
+
+test('032: nenhum conteúdo de conversa nas colunas novas — só a marca técnica', () => {
+  const semComentarios = SQL_032.replace(/--.*$/gm, '');
+  for (const proibida of ['conteudo_paciente', 'texto_gerado', 'prompt', 'resposta_ia']) {
+    assert.ok(!new RegExp(`\\b${proibida}\\b`, 'i').test(semComentarios), `coluna "${proibida}" não pode existir`);
+  }
+});
+
 test('031_rollback existe, é aditivo em espírito (só derruba o que a 031 criou) e documenta o custo', () => {
   assert.match(SQL_031_ROLLBACK, /DROP TABLE IF EXISTS public\.automacao_outbox/);
   // Nenhuma outra tabela do produto é tocada pelo rollback.

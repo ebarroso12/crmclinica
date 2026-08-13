@@ -103,6 +103,11 @@ test('1. Serena desligada durante a geração: a resposta não pode ser entregue
     repositorio._auditoria.some((r) => r.acao === 'envio_abortado_por_controle' && r.detalhe?.motivo === 'serena_desligada'),
     'precisa existir auditoria explícita do aborto',
   );
+
+  // Comando 7, achado A-3: "Desligar" é uma decisão humana recente — a
+  // equipe já sabe o que fez. Escalonar de novo por cima disso seria ruído.
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, false, 'decisão humana explícita não precisa de escalonamento extra');
 });
 
 test('2. Conversa assumida durante a geração: a resposta não pode ser entregue', async () => {
@@ -142,6 +147,10 @@ test('3. Pausa aplicada durante a geração: a resposta não pode ser entregue',
   assert.equal(canal.envios.length, 0);
   assert.equal(resultado.acao, 'resposta_abortada_por_controle');
   assert.equal(resultado.motivo, 'serena_pausada');
+
+  // Comando 7, achado A-3: pausar também é decisão humana recente.
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, false, 'pausa explícita não precisa de escalonamento extra');
 });
 
 test('4. O controle muda durante uma retentativa: a retentativa é cancelada', async () => {
@@ -245,6 +254,80 @@ test('6. Falha ao reler o estado é fail-closed: não envia', async () => {
   assert.equal(canal.envios.length, 0, 'não saber se pode responder não pode virar "responde assim mesmo"');
   assert.equal(resultado.acao, 'resposta_abortada_por_controle');
   assert.equal(resultado.motivo, 'falha_ao_reler_controle');
+
+  // Comando 7, achado A-3: ninguém decidiu nada aqui — o banco piscou. A
+  // resposta gerada ficou perdida, e sem escalonar ninguém saberia.
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, true, 'falha técnica na releitura do controle precisa escalonar');
+});
+
+// ------------------------------------------------------- Comando 7, achado A-3
+//
+// Nem todo bloqueio da barreira final é uma decisão humana recente. Grade
+// automática, ativação gradual e conversa que virou "resolvida" no meio do
+// caminho são exatamente o cenário que motivou a barreira final existir: a
+// automação já gerou uma resposta, e o motivo do bloqueio não é algo que a
+// equipe decidiu nesse instante — ninguém saberia que aquela resposta ficou
+// perdida sem o escalonamento. Usa um `serena` falso que muda de resposta
+// entre a primeira consulta (início de `responderSePossivel`) e a segunda
+// (a releitura da barreira final, em `podeEntregarAgora`) — mesmo efeito de
+// uma corrida real, determinístico e sem precisar reconstruir grade
+// horária nem ativação gradual de verdade.
+function serenaComMudancaNaBarreira(motivoNaBarreira) {
+  let chamadas = 0;
+  return {
+    async podeResponder() {
+      chamadas += 1;
+      if (chamadas === 1) return { responder: true };
+      return { responder: false, motivo: motivoNaBarreira };
+    },
+  };
+}
+
+for (const motivo of ['fora_do_horario', 'fora_da_ativacao_gradual', 'conversa_resolvida']) {
+  test(`barreira final bloqueando por "${motivo}" escalona — ninguém decidiu isso na hora`, async () => {
+    const repositorio = criarRepositorioEmMemoria();
+    const canal = canalFalso();
+    const { conversa, mensagemEntradaId } = await prepararConversa({ repositorio });
+
+    const orquestrador = orquestradorComGeracaoLenta(`Resposta gerada, barreira muda para ${motivo}`, async () => {});
+    const serena = serenaComMudancaNaBarreira(motivo);
+    const atendimento = criarAtendimento({ repositorio, orquestrador, canal, serena });
+
+    const resultado = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId });
+
+    assert.equal(canal.envios.length, 0);
+    assert.equal(resultado.acao, 'resposta_abortada_por_controle');
+    assert.equal(resultado.motivo, motivo);
+
+    const depois = await repositorio.obterConversa(conversa.id);
+    assert.equal(depois.assumida_por_humano, true, `"${motivo}" é automático/erro — precisa escalonar`);
+  });
+}
+
+test('barreira final bloqueando por "serena_desligada" NÃO escalona, mas marca a mensagem como não entregue', async () => {
+  // Complementa o teste 1: a decisão humana não precisa de escalonamento,
+  // mas a mensagem que a automação gravou continua tendo ficado sem
+  // entregar — a marca na própria mensagem (achado A-3, segunda parte) vale
+  // para TODO bloqueio da barreira, escalonando ou não, porque em ambos os
+  // casos o paciente não recebeu a resposta e a tela não pode fingir que sim.
+  const repositorio = criarRepositorioEmMemoria();
+  const serena = criarServicoDaSerena({ repositorio });
+  const canal = canalFalso();
+  const { conversa, mensagemEntradaId } = await prepararConversa({ repositorio });
+
+  const orquestrador = orquestradorComGeracaoLenta('Resposta gerada com a Serena ainda ligada', async () => {
+    await serena.definirAtiva(false, { motivo: 'teste A-3', usuarioId: null });
+  });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal, serena });
+
+  await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId });
+
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  const gerada = mensagens.find((m) => m.autor_tipo === 'automacao');
+  assert.ok(gerada, 'a resposta gerada precisa existir gravada, mesmo sem ter saído');
+  assert.equal(gerada.entrega_falhou, true, 'a tela não pode mostrar como entregue o que a barreira bloqueou');
+  assert.equal(gerada.entrega_falhou_motivo, 'serena_desligada');
 });
 
 test('7. O aborto por controle é auditado com motivo explícito, sem conteúdo clínico', async () => {

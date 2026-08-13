@@ -57,6 +57,31 @@ test('registrar mensagem move o relógio da conversa', async () => {
   assert.equal(atualizada.previa, 'Olá');
 });
 
+// ----------------------------------------------------- Comando 7, achado A-3
+//
+// A mensagem que a automação gerou e a barreira final impediu de entregar
+// ficava indistinguível de uma mensagem que saiu normal — nem no repositório,
+// nem na tela. `marcarEntregaFalhou` grava, na própria linha, que aquela
+// entrega específica não aconteceu.
+
+test('marcarEntregaFalhou grava o motivo na mensagem, sem mexer no conteúdo', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const { conversa } = await comConversa(repositorio);
+  const { mensagem } = await repositorio.registrarMensagem(conversa.id, {
+    direcao: 'saida', conteudo: 'Resposta gerada pela automação', autor_tipo: 'automacao',
+  });
+
+  assert.equal(mensagem.entrega_falhou, false, 'toda mensagem nasce como entregue até prova em contrário');
+
+  const marcada = await repositorio.marcarEntregaFalhou(mensagem.id, 'fora_do_horario');
+  assert.equal(marcada.entrega_falhou, true);
+  assert.equal(marcada.entrega_falhou_motivo, 'fora_do_horario');
+  assert.equal(marcada.conteudo, 'Resposta gerada pela automação', 'o conteúdo não pode mudar');
+
+  const relida = await repositorio.listarMensagens(conversa.id);
+  assert.equal(relida.at(-1).entrega_falhou, true, 'a releitura tem que trazer a marca');
+});
+
 test('nota interna não conta como atividade do atendimento', async () => {
   const repositorio = criarRepositorioEmMemoria();
   const { conversa } = await comConversa(repositorio);

@@ -596,6 +596,12 @@ function desenharThread(mensagens) {
 
     item.className = mensagem.direcao === 'entrada' ? 'recebida' : 'enviada';
     if (mensagem.privada) item.classList.add('privada');
+    // Comando 7, achado A-3: a barreira final pode gravar uma resposta e
+    // depois bloquear a entrega dela — sem esta marca, a tela mostrava as
+    // duas do mesmo jeito, e ninguém enxergava que o paciente não recebeu
+    // nada. `entrega_falhou` só existe em mensagens que o backend marcou
+    // assim (ver src/dominio/atendimento.js); nunca em mensagem de entrada.
+    if (mensagem.entrega_falhou) item.classList.add('nao-entregue');
 
     const corpo = document.createElement('span');
     corpo.textContent = mensagem.conteudo || '';
@@ -607,6 +613,14 @@ function desenharThread(mensagens) {
       .join(' · ');
 
     item.append(corpo, rodape);
+
+    if (mensagem.entrega_falhou) {
+      const aviso = document.createElement('small');
+      aviso.className = 'aviso-nao-entregue';
+      aviso.textContent = '⚠ não entregue ao paciente';
+      item.append(aviso);
+    }
+
     thread.append(item);
   }
 

@@ -386,6 +386,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         privada: Boolean(dados.privada),
         id_externo: dados.id_externo ?? null,
         criado_em: agora().toISOString(),
+        // Comando 7, achado A-3: toda mensagem nasce como entregue até prova
+        // em contrário — a barreira final marca o oposto quando bloqueia.
+        entrega_falhou: false,
+        entrega_falhou_motivo: null,
       };
       mensagens.push(mensagem);
 
@@ -402,6 +406,19 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       }
 
       return { mensagem, duplicada: false };
+    },
+
+    /**
+     * Marca que uma entrega específica (desta mensagem já gravada) não
+     * aconteceu — Comando 7, achado A-3. Não mexe no conteúdo: a resposta
+     * que a automação gerou continua visível, só a marca de entrega muda.
+     */
+    async marcarEntregaFalhou(mensagemId, motivo) {
+      const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
+      if (!mensagem) return null;
+      mensagem.entrega_falhou = true;
+      mensagem.entrega_falhou_motivo = motivo ?? null;
+      return { ...mensagem };
     },
 
     // ---------------------------------------------------------------- contatos

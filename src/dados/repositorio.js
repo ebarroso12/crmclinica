@@ -217,6 +217,12 @@ function montarMensagem(linha) {
     // reconhecer, num retry, que a resposta deste inbound já foi gravada.
     id_externo: linha.id_externo ?? null,
     criado_em: linha.criado_em,
+    // Comando 7, achado A-3: marca de entrega da barreira final. `?? false`
+    // é o fallback antes de a migration 032 estar aplicada — sem a coluna, o
+    // SELECT * simplesmente não a traz, e o front trata como entregue (o
+    // comportamento de hoje), nunca quebra.
+    entrega_falhou: linha.entrega_falhou ?? false,
+    entrega_falhou_motivo: linha.entrega_falhou_motivo ?? null,
   };
 }
 
@@ -593,6 +599,19 @@ function criarRepositorio(pool) {
       } finally {
         cliente.release();
       }
+    },
+
+    /**
+     * Marca que uma entrega específica (desta mensagem já gravada) não
+     * aconteceu — Comando 7, achado A-3. UPDATE isolado, sem tocar em
+     * `conversas`: o conteúdo da mensagem não muda, só a marca de entrega.
+     */
+    async marcarEntregaFalhou(mensagemId, motivo) {
+      const { rows } = await consultar(
+        'UPDATE mensagens SET entrega_falhou = true, entrega_falhou_motivo = $2 WHERE id = $1 RETURNING *',
+        [mensagemId, motivo ?? null],
+      );
+      return rows[0] ? montarMensagem(rows[0]) : null;
     },
 
     // ---------------------------------------------------------------- contatos

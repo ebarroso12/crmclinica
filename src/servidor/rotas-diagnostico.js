@@ -32,6 +32,8 @@ const OBJETOS_ESPERADOS = Object.freeze([
   { tabela: 'serena_configuracao', coluna: 'ligada_ate' },
   { tabela: 'contatos', coluna: 'lembretes_optout' },
   { tabela: 'contatos', coluna: 'excluido_em' },
+  // Comando 7, achado A-3: migration 032, ainda não aplicada em produção.
+  { tabela: 'mensagens', coluna: 'entrega_falhou' },
 ]);
 
 function criarRotasDeDiagnostico({

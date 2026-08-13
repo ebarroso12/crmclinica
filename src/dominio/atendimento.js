@@ -6,6 +6,29 @@ const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificaca
 const { ehPedidoDeOptOut } = require('./lembretes');
 const { ErroDeEstrategia } = require('../contratos/erros');
 
+// Comando 7, achado A-3 da auditoria: a barreira final (`podeEntregarAgora`)
+// bloqueia por vários motivos, mas até aqui NENHUM deles escalonava — a
+// automação gerava uma resposta, a barreira descartava, e a conversa
+// continuava do jeito que estava, sem ninguém saber que uma resposta ficou
+// presa. Isso está certo para motivos que já SÃO uma decisão humana recente
+// (a equipe apertou um botão e sabe o que decidiu) — escalonar de novo seria
+// ruído. Está errado para os demais: grade automática, ativação gradual,
+// conversa que virou "resolvida" no meio do caminho, ou falha ao reler o
+// próprio controle — nesses casos ninguém decidiu nada na hora, e a resposta
+// gerada fica perdida sem aviso.
+//
+// `humano_responsavel` e `ia_pausada` entram na lista pelo mesmo raciocínio
+// de `assumida_por_humano`/`serena_pausada`: também são estado que uma pessoa
+// já decidiu. Qualquer motivo NÃO listado aqui (presente ou futuro) escalona
+// por padrão — fail-open para avisar gente, nunca fail-closed para o silêncio.
+const MOTIVOS_DE_DECISAO_HUMANA_RECENTE = new Set([
+  'serena_desligada', 'serena_pausada', 'assumida_por_humano', 'humano_responsavel', 'ia_pausada',
+]);
+
+function bloqueioDaBarreiraPrecisaEscalar(motivo) {
+  return !MOTIVOS_DE_DECISAO_HUMANA_RECENTE.has(motivo);
+}
+
 // O ciclo de atendimento do crmclinica.
 //
 // Mensagem chega → grava no banco → decide se a automação pode responder →
@@ -623,6 +646,29 @@ function criarAtendimento({
           acao: 'envio_abortado_por_controle',
           detalhe: { mensagem_id: mensagemId, motivo: controle.motivo },
         }).catch(() => {});
+
+        // Comando 7, achado A-3 (segunda parte): a mensagem já está gravada
+        // e visível na tela — sem esta marca, ela aparece indistinguível de
+        // uma resposta que realmente saiu. Vale para TODO bloqueio da
+        // barreira, escalonando ou não: em ambos os casos o paciente não
+        // recebeu nada.
+        if (repositorio.marcarEntregaFalhou) {
+          await repositorio.marcarEntregaFalhou(mensagemId, controle.motivo).catch((erro) => {
+            console.error(`[atendimento] falha ao marcar entrega não realizada: ${erro.message}`);
+          });
+        }
+
+        // Comando 7, achado A-3: motivo que não é uma decisão humana recente
+        // (ver MOTIVOS_DE_DECISAO_HUMANA_RECENTE) precisa escalonar — sem
+        // isso, a resposta que a automação acabou de gerar fica descartada
+        // em silêncio, e a conversa segue do jeito que estava como se nada
+        // tivesse acontecido.
+        if (bloqueioDaBarreiraPrecisaEscalar(controle.motivo)) {
+          await escalonar(conversa.id, `barreira_final:${controle.motivo}`).catch((erro) => {
+            console.error(`[atendimento] falha ao escalonar bloqueio da barreira final: ${erro.message}`);
+          });
+        }
+
         // Nem Evolution, nem o fallback do OpenClaw: `canal.enviar` não é
         // chamado neste caminho, então nenhum dos dois transportes é acionado.
         return { enviada: false, motivo: 'envio_abortado_por_controle', motivoControle: controle.motivo };
