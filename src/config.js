@@ -144,6 +144,17 @@ function carregarConfiguracao(ambiente = process.env) {
       // não respondeu qual número está vinculado — nunca para decidir envio.
       numeroWhatsapp: texto(ambiente.WHATSAPP_BUSINESS_PHONE),
     },
+    // Envio nativo pela Evolution API — via REST, sem depender do gateway
+    // WebSocket do OpenClaw (que exige um processo próprio sempre de pé). É a
+    // via PRIMÁRIA de entrega ao paciente quando configurada; o gateway do
+    // OpenClaw (canalClinica, acima) continua como reserva se este envio
+    // falhar ou não estiver configurado — ver integracoes/evolution-envio.js.
+    evolution: {
+      apiUrl: urlValida(ambiente.EVOLUTION_API_URL),
+      apiKey: texto(ambiente.EVOLUTION_API_KEY),
+      instancia: texto(ambiente.EVOLUTION_INSTANCE) || 'clinica',
+      timeoutMs: inteiro(ambiente.EVOLUTION_API_TIMEOUT_MS, 15000),
+    },
     // Lembretes de agendamento. O modo de entrega é a variável que decide se
     // alguma mensagem sai de fato — e ela é conservadora por padrão: `dry_run`
     // roda a fila inteira sem enviar nada. Ver docs/LEMBRETES.md.
