@@ -214,7 +214,17 @@ function criarAtendimento({
     }
 
     if (!orquestrador?.disponivel) {
-      return { acao: 'sem_orquestrador', conversa_id: conversaId, motivo: 'openclaw_nao_configurado' };
+      // Comando 7, achado A-2 da auditoria: até aqui isto voltava como
+      // `sem_orquestrador` sem escalonar — a outbox (`decidirDesfecho`) trata
+      // qualquer resultado sem `entregaIncerta` como "resolvido" e marcava o
+      // trabalho `concluido`. Paciente sem resposta, conversa sem dono,
+      // ninguém avisado. Falta de configuração não é transitória (o valor de
+      // `disponivel` vem de config estática, não muda sozinho entre
+      // tentativas) — mesmo raciocínio que já vale para
+      // `motor_ia_nao_configurado` e `falha_no_orquestrador` logo abaixo.
+      // Escalação imediata, não retentativa.
+      await escalonar(conversaId, 'sem_orquestrador');
+      return { acao: 'escalonada_para_equipe', conversa_id: conversaId, motivo: 'openclaw_nao_configurado' };
     }
 
     const mensagens = await repositorio.listarMensagens(conversaId, { incluirPrivadas: false });

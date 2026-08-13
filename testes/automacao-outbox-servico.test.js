@@ -49,7 +49,13 @@ async function prepararConversa(repositorio) {
     repositorio,
     orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não deveria'); } },
   });
-  await atendimentoDeSetup.receberMensagem(EVENTO);
+  // `estrategia_ia: 'openclaw_gerencia'` faz `receberMensagem` gravar a
+  // conversa/mensagem e voltar ANTES de decidir automação nenhuma — sem isso,
+  // com o Comando 7 / achado A-2 (sem orquestrador configurado agora
+  // escalona de verdade), este setup marcaria a conversa como
+  // `assumida_por_humano`, e os testes que processam o trabalho de verdade
+  // logo depois encontrariam a barreira já fechada por engano.
+  await atendimentoDeSetup.receberMensagem({ ...EVENTO, estrategia_ia: 'openclaw_gerencia' });
   const [conversa] = await repositorio.listarConversas({});
   const [mensagemEntrada] = await repositorio.listarMensagens(conversa.id);
   return { conversa, mensagemEntrada };
@@ -243,6 +249,42 @@ test('entrega com desfecho incerto (timeout) nunca é retentada automaticamente'
   assert.equal(conversaDepois.assumida_por_humano, true);
 });
 
+// ----------------------------------------------------- Comando 7, achado A-2
+//
+// Antes: um trabalho processado sem o orquestrador configurado voltava como
+// `sem_orquestrador`, `decidirDesfecho` tratava isso como "resolvido" (correto
+// — não é uma falha transitória, retentar não ajudaria) e a outbox marcava
+// `concluido` SEM que `atendimento` tivesse escalonado nada. Resultado:
+// paciente sem resposta, conversa "aberta" sem dono, trabalho "concluído" —
+// nada gritava. Este teste prova, pelo caminho real do worker (não pelo
+// atalho de teste de atendimento.test.js), que agora a escalação acontece.
+
+test('trabalho processado sem orquestrador configurado escalona para a equipe e conclui — não fica silencioso', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({
+    repositorio,
+    orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não deveria'); } },
+  });
+  const outbox = criarServicoDeOutbox({ repositorio, atendimento });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+  await outbox.enfileirar({ conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id });
+
+  const [trabalho] = await repositorio.reivindicarTrabalhosDeOutbox({
+    agora: new Date().toISOString(), limite: 1, worker: 'w',
+  });
+  const resultado = await outbox.processarUm(trabalho);
+
+  // O trabalho está mesmo resolvido — não é caso de retentativa (a config não
+  // vai se consertar sozinha entre uma tentativa e outra).
+  assert.equal(resultado.status, 'concluido');
+  assert.equal(resultado.acao, 'escalonada_para_equipe');
+
+  // Mas a equipe FOI avisada: é essa a diferença do achado A-2.
+  const conversaDepois = await repositorio.obterConversa(conversa.id);
+  assert.equal(conversaDepois.assumida_por_humano, true, 'sem isso, ninguém sabe que o paciente ficou sem resposta');
+});
+
 // -------------------------------------------------- barreira de controle (Comando 2)
 
 test('Serena desligada enquanto o trabalho espera na fila cancela a entrega quando o worker processa', async () => {
@@ -338,7 +380,9 @@ test('nada do texto da conversa aparece nos registros técnicos da outbox', asyn
   const atendimentoDeSetup = criarAtendimento({
     repositorio, orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não'); } },
   });
-  await atendimentoDeSetup.receberMensagem({ ...EVENTO, id_externo: 'wa:sensivel:1', texto: TEXTO_CLINICO });
+  await atendimentoDeSetup.receberMensagem({
+    ...EVENTO, id_externo: 'wa:sensivel:1', texto: TEXTO_CLINICO, estrategia_ia: 'openclaw_gerencia',
+  });
   const [conversa] = await repositorio.listarConversas({});
   const [mensagemEntrada] = await repositorio.listarMensagens(conversa.id);
 

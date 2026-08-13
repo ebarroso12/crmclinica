@@ -71,7 +71,12 @@ function repositorioComGanchoAntesDaRetentativa(base, gancho) {
 
 async function prepararConversa({ repositorio, orquestrador = { disponivel: true, despacharEvento: async () => ({ resposta: 'oi' }) } }) {
   const atendimentoDeSetup = criarAtendimento({ repositorio, orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não deveria'); } } });
-  await atendimentoDeSetup.receberMensagem(EVENTO);
+  // `estrategia_ia: 'openclaw_gerencia'` grava a conversa/mensagem e volta
+  // antes de decidir automação nenhuma — sem isso, com o Comando 7 / achado
+  // A-2 (sem orquestrador configurado agora escalona de verdade), este setup
+  // marcaria a conversa como `assumida_por_humano` e fecharia a barreira
+  // antes mesmo do teste começar.
+  await atendimentoDeSetup.receberMensagem({ ...EVENTO, estrategia_ia: 'openclaw_gerencia' });
   const [conversa] = await repositorio.listarConversas({});
   const [mensagemDeEntrada] = await repositorio.listarMensagens(conversa.id);
   return { conversa, mensagemEntradaId: mensagemDeEntrada.id };
@@ -150,7 +155,7 @@ test('4. O controle muda durante uma retentativa: a retentativa é cancelada', a
   const canal = canalFalso();
 
   const atendimentoDeSetup = criarAtendimento({ repositorio: base, serena, canal, orquestrador: { disponivel: false, despacharEvento: async () => { throw new Error('não deveria'); } } });
-  await atendimentoDeSetup.receberMensagem(EVENTO);
+  await atendimentoDeSetup.receberMensagem({ ...EVENTO, estrategia_ia: 'openclaw_gerencia' });
   const [conversa] = await base.listarConversas({});
   const [mensagemDeEntrada] = await base.listarMensagens(conversa.id);
 

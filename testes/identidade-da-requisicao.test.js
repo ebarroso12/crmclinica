@@ -30,8 +30,17 @@ async function subir() {
   const orquestrador = orquestradorFalso();
   const atendimento = criarAtendimento({ repositorio, orquestrador });
 
+  // `estrategia_ia: 'openclaw_gerencia'` grava a conversa e a mensagem de
+  // entrada sem decidir automação nenhuma — o orquestrador falso aqui existe
+  // só para o resto da suíte, não para este setup. Com `crm_despacha`, desde
+  // o Comando 7 / achado A-2, um orquestrador indisponível escalona de
+  // verdade (`assumida_por_humano: true`) — o que faria os testes deste
+  // arquivo (identidade de quem RESPONDE, não da mensagem de entrada) achar a
+  // conversa já "assumida" pelo sistema antes mesmo do atendente postar nada,
+  // e `responderComoEquipe` só chama `assumir` (que grava `atribuido_a`)
+  // quando a conversa ainda não estava assumida.
   await atendimento.receberMensagem({
-    canal: 'whatsapp', estrategia_ia: 'crm_despacha',
+    canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
     id_externo: 'id:1', remetente: '5516999999999',
     nome: 'Marina', texto: 'Olá',
   });
