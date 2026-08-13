@@ -1238,14 +1238,30 @@ seletor('#botao-nota')?.addEventListener('click', async () => {
 });
 
 for (const botao of document.querySelectorAll('.acoes-conversa .acao[data-acao]')) {
-  botao.addEventListener('click', () => {
+  botao.addEventListener('click', async () => {
     const acoes = {
       assumir: () => agir('assumir', {}),
       liberar: () => agir('assumir', { liberar: true }),
       resolver: () => agir('estado', { status: 'resolvida' }),
       reabrir: () => agir('estado', { status: 'aberta' }),
     };
-    acoes[botao.dataset.acao]?.();
+    const executar = acoes[botao.dataset.acao];
+    if (!executar) return;
+
+    // "Assumir" é o que impede a automação de responder a partir de agora —
+    // não cancela uma geração que já estava em voo no instante do clique.
+    // Desabilitar aqui evita o duplo clique virando dois comandos
+    // concorrentes; "Aplicando…" é o único texto honesto entre o clique e a
+    // confirmação do servidor (`agir` já redesenha a barra inteira ao final).
+    const textoOriginal = botao.textContent;
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
+    try {
+      await executar();
+    } finally {
+      botao.disabled = false;
+      botao.textContent = textoOriginal;
+    }
   });
 }
 
@@ -1453,28 +1469,44 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
       'Parar a Serena AGORA?\n\nNenhum paciente receberá resposta automática até alguém religar. As mensagens continuam sendo recebidas e gravadas no CRM.',
     );
     if (!certeza) return;
+    // Só o `disabled` é gerido aqui: o texto do botão, em qualquer desfecho
+    // (sucesso ou erro), é responsabilidade de `desenharParadaDeEmergencia` /
+    // `sincronizarParadaDeEmergencia` — restaurar um texto fixo aqui por
+    // cima delas reintroduziria exatamente a discordância entre painel e
+    // estado real que este botão existe para não ter.
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
     try {
       await pedirJson('/api/serena/estado', {
         metodo: 'POST',
         corpo: { ativa: false, motivo: 'PARADA DE EMERGÊNCIA — botão do painel' },
       });
       desenharParadaDeEmergencia(false);
-      informar('Serena PARADA. As mensagens continuam entrando; a equipe assume as respostas.');
+      // "Comando recebido" — não "toda resposta em curso foi cancelada". Uma
+      // geração que já estava em voo no instante do clique pode ter sido
+      // entregue antes de este comando alcançar a barreira final.
+      informar('Comando recebido: Serena PARADA a partir de agora. As mensagens continuam entrando; a equipe assume as respostas. Se havia uma resposta sendo gerada no instante do clique, ela pode ainda ter sido entregue — confira a conversa.');
     } catch (erro) {
       informar(`Não consegui parar: ${erro.message}`);
       sincronizarParadaDeEmergencia();
+    } finally {
+      botao.disabled = false;
     }
     return;
   }
 
   if (!window.confirm('Religar a Serena? Ela volta a responder conforme o horário configurado.')) return;
+  botao.disabled = true;
+  botao.textContent = 'Aplicando…';
   try {
     await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa: true } });
     desenharParadaDeEmergencia(true);
-    informar('Serena religada.');
+    informar('Comando recebido: Serena religada.');
   } catch (erro) {
     informar(`Não consegui religar: ${erro.message}`);
     sincronizarParadaDeEmergencia();
+  } finally {
+    botao.disabled = false;
   }
 });
 
@@ -3051,18 +3083,39 @@ seletor('#serena-voz-consentimento')?.addEventListener('change', desenharEstadoD
 seletor('#serena-voz-iniciar')?.addEventListener('click', iniciarVoz);
 seletor('#serena-voz-parar')?.addEventListener('click', pararVoz);
 
-async function alternarSerena(ativa) {
+/**
+ * `botao`, quando informado, fica desabilitado e com o texto "Aplicando…"
+ * enquanto o comando ainda não foi confirmado pelo servidor — clique duplo
+ * não pode virar dois comandos concorrentes, e "Aplicando…" é o único estado
+ * honesto entre "cliquei" e "o servidor confirmou".
+ */
+async function alternarSerena(ativa, botao = null) {
   const motivo = ativa ? null : prompt('Motivo do desligamento (obrigatório):');
   if (!ativa && !motivo) return;
 
+  const textoOriginal = botao?.textContent;
+  if (botao) {
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
+  }
   try {
     await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa, motivo } });
-    informar(ativa ? 'Serena ligada.' : 'Serena desligada — as mensagens continuam sendo gravadas.');
+    // "Comando recebido" não é "Serena efetivamente parada": uma resposta que
+    // já estava em geração pode ter sido enviada antes de este comando
+    // chegar à barreira final. O texto não promete parada retroativa.
+    informar(ativa
+      ? 'Comando recebido: Serena ligada.'
+      : 'Comando recebido: Serena desligada a partir de agora. Uma resposta que já estava sendo gerada no momento do clique pode ainda ter sido entregue — a barreira de controle bloqueia o que não foi enviado, não o que já saiu.');
     await carregarSerena();
     // O botão de emergência do menu espelha o mesmo interruptor.
     desenharParadaDeEmergencia(ativa);
   } catch (erro) {
     informar(`Não foi possível alterar: ${erro.message}`);
+  } finally {
+    if (botao) {
+      botao.disabled = false;
+      if (textoOriginal !== undefined) botao.textContent = textoOriginal;
+    }
   }
 }
 
@@ -3176,8 +3229,8 @@ document.addEventListener('click', async (evento) => {
   if (!alvo) return;
 
   try {
-    if (alvo.id === 'serena-ligar') await alternarSerena(true);
-    if (alvo.id === 'serena-desligar') await alternarSerena(false);
+    if (alvo.id === 'serena-ligar') await alternarSerena(true, alvo);
+    if (alvo.id === 'serena-desligar') await alternarSerena(false, alvo);
     if (alvo.id === 'serena-novo-prompt') abrirEditorDePrompt(null);
     if (alvo.id === 'serena-cancelar-editor') seletor('#serena-editor').hidden = true;
     if (alvo.id === 'serena-nova-regra') abrirEditorDeRegra(null);
@@ -3433,14 +3486,34 @@ async function salvarHorario() {
   }
 }
 
-/** Pausa, retomada e plantão: uma chamada, e a tela se redesenha com a resposta. */
-async function mexerNoAtendimento(caminho, opcoes) {
+/**
+ * Pausa, retomada e plantão: uma chamada, e a tela se redesenha com a resposta.
+ *
+ * `botao`, quando informado, fica "Aplicando…" e desabilitado até a resposta
+ * do servidor — impede o duplo clique de virar dois comandos concorrentes.
+ */
+async function mexerNoAtendimento(caminho, opcoes, botao = null) {
+  const textoOriginal = botao?.textContent;
+  if (botao) {
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
+  }
   try {
     const { horario } = await pedirJson(caminho, opcoes);
     if (serenaPainel) serenaPainel.horario = horario;
     desenharHorario(horario);
+    // Pausar cala a automação a partir de agora — "comando recebido", não
+    // "geração em andamento cancelada retroativamente".
+    if (opcoes.metodo === 'POST' && caminho === '/api/serena/pausa') {
+      informar('Comando recebido: Serena pausada. Uma resposta que já estava sendo gerada no momento do clique pode ainda ter sido entregue.');
+    }
   } catch (erro) {
     informar(erro.detalhe ?? `não foi possível: ${erro.message}`);
+  } finally {
+    if (botao) {
+      botao.disabled = false;
+      if (textoOriginal !== undefined) botao.textContent = textoOriginal;
+    }
   }
 }
 
@@ -3708,13 +3781,13 @@ document.addEventListener('click', (evento) => {
   // alguém esqueça a Serena calada — ou falando num domingo.
   if (alvo.id === 'horario-salvar') salvarHorario();
   if (alvo.id === 'serena-pausar') {
-    mexerNoAtendimento('/api/serena/pausa', { metodo: 'POST', corpo: { minutos: 15 } });
+    mexerNoAtendimento('/api/serena/pausa', { metodo: 'POST', corpo: { minutos: 15 } }, alvo);
   }
   if (alvo.id === 'serena-despausar') {
-    mexerNoAtendimento('/api/serena/pausa', { metodo: 'DELETE' });
+    mexerNoAtendimento('/api/serena/pausa', { metodo: 'DELETE' }, alvo);
   }
   if (alvo.id === 'serena-plantao') {
-    mexerNoAtendimento('/api/serena/plantao', { metodo: 'POST', corpo: { minutos: 60 } });
+    mexerNoAtendimento('/api/serena/plantao', { metodo: 'POST', corpo: { minutos: 60 } }, alvo);
   }
 });
 

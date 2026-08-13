@@ -228,6 +228,14 @@ function criarAtendimento({
       const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
         origem: 'serena',
       });
+      if (entrega.motivo === 'envio_abortado_por_controle') {
+        return {
+          acao: 'resposta_abortada_por_controle',
+          conversa_id: conversaId,
+          motivo: entrega.motivoControle,
+          entregue: false,
+        };
+      }
       return {
         acao: 'respondida_pela_automacao',
         conversa_id: conversaId,
@@ -325,6 +333,23 @@ function criarAtendimento({
         const entrega = await entregarAoPaciente(conversa, gravada.conteudo, gravada.id, {
           origem: 'serena',
         });
+
+        // O controle mudou entre a leitura do início desta função e o instante
+        // do envio (Desligar, Pausar, Assumir, PARAR SERENA, ou a conversa foi
+        // resolvida/assumida por outro caminho). `entregarAoPaciente` já
+        // recusou e auditou o motivo em `envio_abortado_por_controle`; aqui só
+        // resta relatar — sem escalonar (um humano já decidiu, forçar
+        // atribuição por cima disso seria o oposto do que ele pediu) e sem
+        // tratar como falha de entrega (não é rede fora do ar, é o comando
+        // tendo sido obedecido).
+        if (entrega.motivo === 'envio_abortado_por_controle') {
+          return {
+            acao: 'resposta_abortada_por_controle',
+            conversa_id: conversaId,
+            motivo: entrega.motivoControle,
+            entregue: false,
+          };
+        }
 
         if (!entrega.enviada && entrega.motivo !== 'canal_nao_configurado') {
           await repositorio.registrarAuditoria({
@@ -487,6 +512,45 @@ function criarAtendimento({
   }
 
   /**
+   * A barreira final: relê o controle no último instante possível antes de
+   * qualquer envio gerado pela automação.
+   *
+   * `responderSePossivel` já consultou `podeResponder` no início — mas entre
+   * aquela leitura e este ponto passam a extração de qualificação, a chamada
+   * ao orquestrador (rede, pode levar dezenas de segundos) e a gravação da
+   * resposta. Desligar, Pausar, Assumir ou PARAR SERENA clicado nesse
+   * intervalo precisa valer, e só vale se alguém checar de novo bem aqui —
+   * reaproveitar a decisão antiga é exatamente o defeito que motivou esta
+   * função existir.
+   *
+   * Relê do zero, nunca do que já estava em memória: `conversa` chega para
+   * `entregarAoPaciente` como o objeto lido no início da chamada, e é
+   * justamente esse objeto que pode estar desatualizado.
+   *
+   * Falha ao reler o estado é fail-closed: não saber se pode responder não é
+   * "responde assim mesmo", é "não responde".
+   */
+  async function podeEntregarAgora(conversaId) {
+    let conversaFresca;
+    try {
+      conversaFresca = await repositorio.obterConversa(conversaId);
+    } catch {
+      return { permitido: false, motivo: 'falha_ao_reler_controle' };
+    }
+    if (!conversaFresca) return { permitido: false, motivo: 'conversa_nao_encontrada' };
+
+    try {
+      const decisao = serena
+        ? await serena.podeResponder(conversaFresca)
+        : decidirAutomacao(conversaFresca);
+      if (!decisao.responder) return { permitido: false, motivo: decisao.motivo };
+      return { permitido: true };
+    } catch {
+      return { permitido: false, motivo: 'falha_ao_reler_controle' };
+    }
+  }
+
+  /**
    * Entrega ao paciente pelo canal de onde a conversa veio.
    *
    * Falha de envio não desfaz o registro: a resposta da equipe é um fato que
@@ -494,6 +558,29 @@ function criarAtendimento({
    * O que muda é a marca — enviada ou não —, para a tela poder dizer a verdade.
    */
   async function entregarAoPaciente(conversa, texto, mensagemId, { origem = 'equipe' } = {}) {
+    // Só a automação passa pela barreira final. Uma resposta escrita por um
+    // humano não precisa reconferir "a Serena pode responder": quem decide
+    // por um humano é o próprio humano, no instante em que ele clicou em
+    // enviar — não há geração assíncrona entre a decisão e o envio para uma
+    // corrida acontecer.
+    if (origem === 'serena') {
+      const controle = await podeEntregarAgora(conversa.id);
+      if (!controle.permitido) {
+        // Auditoria com motivo técnico e o identificador da mensagem, nunca o
+        // texto: nem o que a Serena gerou, nem o que o paciente escreveu, nem
+        // qualquer coisa que possa carregar conteúdo clínico.
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversa.id,
+          acao: 'envio_abortado_por_controle',
+          detalhe: { mensagem_id: mensagemId, motivo: controle.motivo },
+        }).catch(() => {});
+        // Nem Evolution, nem o fallback do OpenClaw: `canal.enviar` não é
+        // chamado neste caminho, então nenhum dos dois transportes é acionado.
+        return { enviada: false, motivo: 'envio_abortado_por_controle', motivoControle: controle.motivo };
+      }
+    }
+
     if (!canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
 
     try {
