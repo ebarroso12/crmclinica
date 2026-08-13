@@ -420,13 +420,28 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
      *
      * Separado do status geral porque responde outra pergunta: não é "o canal
      * está no ar?", é "qual telefone está conectado, e preciso reconectar?".
+     *
+     * `evolucao` vai em toda resposta, com ou sem `vinculo` — Comando 4: antes,
+     * sem o gateway do OpenClaw pareado (`vinculo` nulo), a rota dizia
+     * `disponivel: false` mesmo quando a Evolution API já era o canal efetivo
+     * de entrega (`canal-conversas.js` prioriza Evolution sobre o gateway,
+     * desde os PRs #30/#31). Os campos de `vinculo`/QR continuam só sobre o
+     * gateway do OpenClaw — que segue existindo como reserva —, mas a tela
+     * agora recebe também se a Evolution está configurada, para não anunciar
+     * "canal indisponível" com o canal que realmente entrega funcionando.
      */
     async estadoDoCanal(usuario) {
       exigirPermissao(usuario, 'serena:ler');
-      if (!vinculo) return { disponivel: false, motivo: 'gateway do canal não configurado' };
+
+      const evolucao = {
+        configurada: Boolean(configuracao?.evolution?.apiUrl && configuracao?.evolution?.apiKey),
+        instancia: configuracao?.evolution?.instancia ?? null,
+      };
+
+      if (!vinculo) return { disponivel: false, motivo: 'gateway do canal não configurado', evolucao };
 
       try {
-        return { disponivel: true, ...(await vinculo.estado()) };
+        return { disponivel: true, ...(await vinculo.estado()), evolucao };
       } catch (erro) {
         // A mensagem crua do gateway carrega URL, identificador de dispositivo e
         // escopos. Quem tem `serena:ler` é a recepção, não quem administra o
@@ -436,6 +451,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
           disponivel: false,
           motivo: 'não foi possível falar com o WhatsApp agora',
           codigo: erro.codigo ?? null,
+          evolucao,
         };
       }
     },

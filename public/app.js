@@ -3609,6 +3609,14 @@ let relogioDoQr = null;
 // velho pertence a uma janela já fechada e é descartada.
 let aberturaDoQr = 0;
 
+/**
+ * Comando 4 / frente 8: a Evolution API é o canal PRIMÁRIO de entrega desde
+ * os PRs #30/#31 (ver `canal-conversas.js` — ela é tentada antes, o gateway
+ * do OpenClaw abaixo só entra como reserva se ela falhar ou não estiver
+ * configurada). Antes, este cartão só sabia falar do gateway e podia dizer
+ * "conexão indisponível" com o canal que realmente entrega funcionando —
+ * agora `/api/serena/canal` sempre traz `evolucao`, e a tela mostra os dois.
+ */
 async function desenharEstadoDoCanal() {
   const descricao = seletor('#canal-descricao');
   const acoes = seletor('#canal-acoes');
@@ -3616,26 +3624,35 @@ async function desenharEstadoDoCanal() {
 
   try {
     const canal = await pedirJson('/api/serena/canal');
+    const evolucaoOk = canal.evolucao?.configurada === true;
+    const rotuloDoGateway = evolucaoOk ? 'gateway do OpenClaw (reserva)' : 'gateway do OpenClaw';
+
+    const prefixo = evolucaoOk
+      ? `Evolution API configurada${canal.evolucao.instancia ? ` (instância "${canal.evolucao.instancia}")` : ''} — via principal de entrega. `
+      : 'Evolution API não configurada. ';
 
     if (!canal.disponivel) {
-      descricao.textContent = `conexão indisponível — ${canal.motivo ?? 'gateway não configurado'}`;
+      descricao.textContent = evolucaoOk
+        ? `${prefixo}${rotuloDoGateway}: ${canal.motivo ?? 'indisponível'}`
+        : `${prefixo}${rotuloDoGateway} também indisponível — ${canal.motivo ?? 'não configurado'}. Nenhum canal de entrega ativo.`;
       if (acoes) acoes.hidden = true;
       return;
     }
 
-    if (canal.vinculado) {
-      descricao.textContent = canal.conectado
-        ? `conectado no ${formatarTelefone(canal.numero)}`
-        : `vinculado ao ${formatarTelefone(canal.numero)}, mas fora do ar agora`;
-    } else {
-      descricao.textContent = 'nenhum telefone conectado — os pacientes não são atendidos';
-    }
+    const estadoDoGateway = canal.vinculado
+      ? (canal.conectado ? `conectado no ${formatarTelefone(canal.numero)}` : `vinculado ao ${formatarTelefone(canal.numero)}, mas fora do ar agora`)
+      : 'nenhum telefone conectado nele';
+    descricao.textContent = `${prefixo}${rotuloDoGateway}: ${estadoDoGateway}`;
 
     // Só o master conecta: trocar o telefone muda por onde a clínica atende.
     if (acoes) {
       acoes.hidden = !usuarioAtual?.master;
       const botao = seletor('#canal-conectar');
-      if (botao) botao.textContent = canal.vinculado ? 'Reconectar' : 'Conectar WhatsApp';
+      if (botao) {
+        botao.textContent = canal.vinculado
+          ? 'Reconectar'
+          : (evolucaoOk ? 'Conectar WhatsApp (reserva)' : 'Conectar WhatsApp');
+      }
     }
 
     // Sem await: é um aviso, não um pré-requisito para mostrar o estado.

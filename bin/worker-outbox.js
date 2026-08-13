@@ -92,8 +92,6 @@ async function main() {
     process.exit(1);
   }
 
-  const crmDespachaWhatsapp = configuracao.serena.transporteWhatsapp === 'crm_despacha';
-
   // Duas vias de entrega, mesma ordem e mesma composição que o servidor HTTP
   // usa (ver criarAplicacao em src/servidor/http.js): Evolution primeiro
   // quando configurada, o gateway do OpenClaw como reserva. Sem a Evolution
@@ -123,9 +121,20 @@ async function main() {
     })
     : null;
 
+  // Comando 4 / frente 8: era condicionado a `SERENA_TRANSPORTE_WHATSAPP ===
+  // 'crm_despacha'` — cópia indevida do padrão de `bin/worker-lembretes.js`,
+  // onde essa variável decide se a sincronia de conversas por LEITURA (outra
+  // funcionalidade) deve rodar. Aqui não faz sentido: todo trabalho que chega
+  // à outbox já nasceu carimbado `crm_despacha` pela própria porta do webhook
+  // (ver `exigirEstrategiaDoAdaptador`, adaptador `openclaw_ingresso_crm`) —
+  // condicionar o orquestrador a essa variável fazia o worker, com o valor
+  // padrão do `.env.exemplo` (`openclaw_gerencia`), nunca responder paciente
+  // nenhum: todo trabalho reivindicado caía em `sem_orquestrador`. Mesma
+  // composição incondicional que `criarAplicacao` já usa em
+  // src/servidor/http.js.
   const atendimento = criarAtendimento({
     repositorio,
-    orquestrador: crmDespachaWhatsapp ? criarClienteOpenClaw(configuracao.openclaw) : null,
+    orquestrador: criarClienteOpenClaw(configuracao.openclaw),
     leads: servicoDeLeads,
     lembretes: servicoDeLembretes,
     serena: servicoDaSerena,
