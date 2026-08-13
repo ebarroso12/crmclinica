@@ -9,6 +9,11 @@ const CAMINHO_ENV = path.join(__dirname, '..', '.env');
 if (fs.existsSync(CAMINHO_ENV) && typeof process.loadEnvFile === 'function') process.loadEnvFile(CAMINHO_ENV);
 const { criarPool } = require('../src/dados/pool');
 const { carregarConfiguracao } = require('../src/config');
+// Comando 4 / frente 9: reaproveita a mesma sonda do centro operacional
+// (`/api/diagnostico`) em vez de reimplementar a checagem — mesma regra
+// honesta sobre "alcançável" (não presume rota da API da Evolution, só que
+// o host responde).
+const { sondaDaEvolution } = require('../src/dominio/diagnostico-sondas');
 const INTERVALO_MS = Number(process.env.CRM_BATIMENTO_INTERVALO_MS) || 30000;
 const GATEWAY_HOST = '172.17.0.1';
 const GATEWAY_PORTA = 18790;
@@ -31,14 +36,23 @@ async function up(pool, c, st, det) {
   );
 }
 async function main() {
-  const pool = criarPool(carregarConfiguracao().banco);
+  const configuracao = carregarConfiguracao();
+  const pool = criarPool(configuracao.banco);
+  // Uma sonda por processo: `sondaDaEvolution` não abre conexão nenhuma na
+  // criação, só na chamada — reconstruir a cada ciclo seria trabalho à toa.
+  const sondaEvolution = sondaDaEvolution(configuracao.evolution);
   let parando = false;
   async function ciclo() {
     try {
       const oc = await checarPorta(GATEWAY_HOST, GATEWAY_PORTA, 3000);
+      const evolucao = await sondaEvolution();
       await up(pool, 'serena', 'ok', { fonte: 'ponte' });
       await up(pool, 'inbox', 'ok', { fonte: 'ponte' });
       await up(pool, 'openclaw', oc ? 'ok' : 'degradado', { gateway: GATEWAY_HOST + ':' + GATEWAY_PORTA, alcancavel: oc });
+      // A Evolution é o canal PRIMÁRIO de entrega (Comando 1/3): sem
+      // componente próprio no batimento, uma queda dela nunca aparecia aqui
+      // — só o `openclaw` (a reserva) era observado.
+      await up(pool, 'evolution', !evolucao.configurada ? 'nao_configurado' : (evolucao.alcancavel ? 'ok' : 'degradado'), evolucao);
     } catch (e) { console.error('[batimento] ' + e.message); }
   }
   await ciclo();

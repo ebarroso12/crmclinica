@@ -68,6 +68,58 @@ function sondaDoCanal(vinculo) {
 }
 
 /**
+ * Saúde da Evolution API — o canal PRIMÁRIO de entrega desde os PRs #30/#31
+ * (Comando 1 e 3). Comando 4 / frente 9: até aqui só `sondaDoCanal` (o
+ * gateway do OpenClaw) existia, e o diagnóstico não sabia dizer nada sobre o
+ * canal que realmente entrega as mensagens hoje.
+ *
+ * `alcancavel` é uma checagem de rede mínima e deliberadamente honesta: só
+ * confirma que alguma coisa responde no host configurado (`EVOLUTION_API_URL`).
+ * Não presume uma rota específica da API da Evolution para "consultar
+ * status" — o contrato exato dos endpoints dela não está documentado neste
+ * repositório (conferido: nenhum lugar em `docs/` descreve um endpoint de
+ * saúde/status da Evolution), e inventar um caminho aqui seria inventar
+ * comportamento, não verificá-lo.
+ *
+ * `fila`, quando o repositório está disponível, reaproveita a contagem por
+ * estado da outbox (Comando 3) como sinal real de entrega recente — sem
+ * inventar um campo de "última entrega" que a tabela não guarda hoje.
+ */
+function sondaDaEvolution(configuracaoEvolution, { fetchImpl = globalThis.fetch, repositorio = null } = {}) {
+  const configurada = Boolean(configuracaoEvolution?.apiUrl && configuracaoEvolution?.apiKey);
+  if (!configurada) {
+    return async () => ({ configurada: false, instancia: null, alcancavel: null, fila: null });
+  }
+
+  return async () => {
+    let alcancavel = null;
+    try {
+      const resposta = await fetchImpl(configuracaoEvolution.apiUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(configuracaoEvolution.timeoutMs ?? 5000),
+      });
+      // Qualquer resposta HTTP — mesmo 401/404 — prova que o host está de pé.
+      // Validar a rota exata exigiria conhecer o contrato da API, que este
+      // repositório não documenta.
+      alcancavel = Boolean(resposta);
+    } catch {
+      alcancavel = false;
+    }
+
+    const fila = repositorio?.contarTrabalhosDeOutboxPorEstado
+      ? await repositorio.contarTrabalhosDeOutboxPorEstado().catch(() => null)
+      : null;
+
+    return {
+      configurada: true,
+      instancia: configuracaoEvolution.instancia ?? null,
+      alcancavel,
+      fila,
+    };
+  };
+}
+
+/**
  * Compara o que o painel decidiu com o que o canal está fazendo.
  *
  * É a verificação que teria pego, sozinha, o defeito que a equipe descobriu com
@@ -102,4 +154,6 @@ function sondaDoWorker(repositorio, limiteMs = 3 * 60 * 1000) {
   };
 }
 
-module.exports = { sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena, sondaDoGoogle, sondaDoWorker };
+module.exports = {
+  sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker,
+};

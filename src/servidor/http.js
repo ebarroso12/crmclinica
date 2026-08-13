@@ -283,6 +283,8 @@ function criarAplicacao(dependencias = {}) {
     vinculo: vinculoDoCanal,
     politica: politicaDoCanal,
     googleAgenda: agendaDoGoogle,
+    evolucaoConfig: configuracao.evolution,
+    evolucaoFetchImpl: dependencias.evolucaoFetchImpl,
   });
 
   const rotasDaSerena = criarRotasDaSerena({

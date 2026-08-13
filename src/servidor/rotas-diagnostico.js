@@ -3,7 +3,7 @@
 const { exigirPermissao } = require('../seguranca/rbac');
 const { executarDiagnostico } = require('../dominio/diagnostico');
 const {
-  sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena, sondaDoGoogle, sondaDoWorker,
+  sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker,
 } = require('../dominio/diagnostico-sondas');
 const { decidirAtendimento } = require('../dominio/sincronia-serena');
 const { conferirConexao } = require('../dados/conferir-conexao');
@@ -34,7 +34,10 @@ const OBJETOS_ESPERADOS = Object.freeze([
   { tabela: 'contatos', coluna: 'excluido_em' },
 ]);
 
-function criarRotasDeDiagnostico({ repositorio, serena, pool = null, vinculo = null, politica = null, googleAgenda = null }) {
+function criarRotasDeDiagnostico({
+  repositorio, serena, pool = null, vinculo = null, politica = null, googleAgenda = null,
+  evolucaoConfig = null, evolucaoFetchImpl = undefined,
+}) {
   return {
     /** GET /api/diagnostico — a varredura completa. */
     async varrer(usuario) {
@@ -44,6 +47,12 @@ function criarRotasDeDiagnostico({ repositorio, serena, pool = null, vinculo = n
         banco: sondaDoBanco(repositorio, OBJETOS_ESPERADOS, pool ? () => conferirConexao(pool) : null),
         fila: sondaDaFila(repositorio),
         canal: sondaDoCanal(vinculo),
+        // Comando 4 / frente 9: o canal PRIMÁRIO de entrega, ao lado do
+        // gateway do OpenClaw (reserva, sondado acima).
+        evolucao: sondaDaEvolution(evolucaoConfig, {
+          repositorio,
+          ...(evolucaoFetchImpl ? { fetchImpl: evolucaoFetchImpl } : {}),
+        }),
         serena: sondaDaSerena(serena, politica, decidirAtendimento),
         google: sondaDoGoogle(googleAgenda),
         worker: sondaDoWorker(repositorio),

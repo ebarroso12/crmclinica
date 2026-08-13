@@ -125,23 +125,52 @@ async function executarDiagnostico(sondas = {}) {
 
   // ------------------------------------------------------------------ canal
   const canal = await verificar('canal', sondas.canal);
+  const evolucao = await verificar('evolucao', sondas.evolucao);
+  // A Evolution é o canal PRIMÁRIO de entrega desde os PRs #30/#31 (Comando 1
+  // e 3): o gateway do OpenClaw abaixo é reserva. "Ninguém atende" só é
+  // verdade de fato quando os DOIS estão fora — dizer "crítico" com a
+  // Evolution respondendo é exatamente o diagnóstico que confundia a equipe
+  // (Comando 1, seção 5: "painel e diagnóstico ainda misturam OpenClaw e Evolution").
+  const evolucaoAtendendo = evolucao?.configurada === true && evolucao?.alcancavel !== false;
+
   if (canal) {
     if (!canal.vinculado) {
       registrar(achado({
         area: 'canal',
-        nivel: 'critico',
-        titulo: 'nenhum telefone conectado no WhatsApp',
-        reparo: 'Os pacientes não são atendidos e os lembretes não saem. Reconecte pelo botão do painel.',
+        nivel: evolucaoAtendendo ? 'aviso' : 'critico',
+        titulo: evolucaoAtendendo
+          ? 'o gateway do OpenClaw (reserva) não está pareado — a Evolution é quem atende'
+          : 'nenhum telefone conectado no WhatsApp',
+        reparo: evolucaoAtendendo
+          ? 'Sem urgência: a Evolution é o canal primário e está respondendo. Parear o gateway garante uma reserva se ela falhar.'
+          : 'Os pacientes não são atendidos e os lembretes não saem. Reconecte pelo botão do painel.',
       }));
     } else if (!canal.conectado) {
       registrar(achado({
         area: 'canal',
-        nivel: 'falha',
-        titulo: 'o WhatsApp está vinculado mas fora do ar',
+        nivel: evolucaoAtendendo ? 'aviso' : 'falha',
+        titulo: evolucaoAtendendo
+          ? 'o gateway do OpenClaw (reserva) está vinculado mas fora do ar — a Evolution é quem atende'
+          : 'o WhatsApp está vinculado mas fora do ar',
         detalhe: canal.numero ?? null,
-        reparo: 'A sessão caiu. Costuma voltar sozinha; se persistir, reconecte pelo painel.',
+        reparo: evolucaoAtendendo
+          ? 'Sem urgência: a Evolution é o canal primário e está respondendo.'
+          : 'A sessão caiu. Costuma voltar sozinha; se persistir, reconecte pelo painel.',
       }));
     }
+  }
+
+  if (evolucao?.configurada && evolucao.alcancavel === false) {
+    const gatewayAtendendo = canal?.vinculado === true && canal?.conectado === true;
+    registrar(achado({
+      area: 'evolucao',
+      nivel: gatewayAtendendo ? 'falha' : 'critico',
+      titulo: 'a Evolution API (canal primário de entrega) não responde',
+      detalhe: evolucao.instancia ? `instância "${evolucao.instancia}"` : null,
+      reparo: gatewayAtendendo
+        ? 'Confira EVOLUTION_API_URL/EVOLUTION_API_KEY e se a instância está no ar. O gateway do OpenClaw está atendendo como reserva enquanto isso.'
+        : 'Confira EVOLUTION_API_URL/EVOLUTION_API_KEY e se a instância está no ar. Nenhum canal de reserva está atendendo agora.',
+    }));
   }
 
   const google = await verificar('google', sondas.google);
