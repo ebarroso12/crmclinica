@@ -5,6 +5,11 @@ const { exigirPermissao } = require('../seguranca/rbac');
 const { CATEGORIAS, dentroDoHorario } = require('../dominio/serena');
 const { avaliarRiscoDoCanal } = require('../dominio/risco-canal');
 const { urlDoControle } = require('../integracoes/openclaw-vinculo');
+// Comando 5 / frente 12: mesmo cálculo que o centro operacional já fazia
+// (`sondaDaSerena`) — reaproveitado aqui, nunca recalculado, para o painel
+// principal poder mostrar o desejado ao lado do efetivo.
+const { sondaDaSerena } = require('../dominio/diagnostico-sondas');
+const { decidirAtendimento } = require('../dominio/sincronia-serena');
 
 // API da Serena: estado, interruptor, prompt versionado e regras.
 //
@@ -30,7 +35,9 @@ function exigirIdentificador(valor, campo) {
   return numero;
 }
 
-function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null, conversa = null }) {
+function criarRotasDaSerena({
+  serena, entregaDeLembretes, configuracao, vinculo = null, conversa = null, politica = null,
+}) {
   // Modelos oferecidos no ensaio. A lista é curta de propósito: comparar quinze
   // opções não responde "qual serve para a clínica", e cada uma custa dinheiro
   // por conversa. Ficam os três que fazem sentido comparar — o barato que está
@@ -125,6 +132,20 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
     // distinguir para saber se reconecta o celular ou chama o suporte.
     const gatewayRespondeu = canal.conectado !== undefined || canal.disponivel === true;
 
+    // Comando 5 / frente 12: o que o painel MANDA (config lida agora) ao lado
+    // do que o canal do OpenClaw está de fato aplicando — a mesma verificação
+    // que já existia só no centro operacional (`GET /api/diagnostico`), agora
+    // também aqui, onde a equipe já olha o status da Serena todo dia.
+    //
+    // Só existe quando há política de canal configurada (Arquitetura A —
+    // gateway da clínica pareado). Em Arquitetura B (`crm_despacha`), a
+    // política do canal fica sempre calada de propósito — quem decide é a
+    // barreira do CRM (Comando 2), não uma política sincronizada no canal —
+    // então a comparação não é aplicável ali, e vem `null` em vez de fingir
+    // uma divergência que não existe.
+    const sondaDoDesejadoVsEfetivo = sondaDaSerena(serena, politica, decidirAtendimento);
+    const desejadoVsEfetivo = sondaDoDesejadoVsEfetivo ? await sondaDoDesejadoVsEfetivo() : null;
+
     return {
       openclaw: {
         estado: !gatewayConfigurado ? 'nao_configurado' : (gatewayRespondeu ? 'online' : 'offline'),
@@ -145,6 +166,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
         alterado_em: config.alterado_em ?? null,
         alterado_por: config.alterado_por_nome ?? null,
         motivo: config.motivo ?? null,
+        desejado_vs_efetivo: desejadoVsEfetivo,
       },
       // Separado de `serena.estado` porque responde outra pergunta: aquele diz
       // se o interruptor está ligado, este diz se ela está atendendo agora.

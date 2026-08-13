@@ -303,6 +303,9 @@ function criarAplicacao(dependencias = {}) {
     configuracao,
     vinculo: vinculoDoCanal,
     conversa: conversaDeTeste,
+    // Comando 5 / frente 12: a mesma política que o centro operacional já
+    // usava para comparar desejado × efetivo, agora também aqui.
+    politica: politicaDoCanal,
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
   const rotasDeAuditoria = criarRotasDeAuditoria({ repositorio });

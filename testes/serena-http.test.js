@@ -77,6 +77,40 @@ test('o status separa OpenClaw, WhatsApp, Serena, entrega e horário', async (t)
   assert.equal(corpo.whatsapp.estado, 'desconectado');
 });
 
+// Comando 5, frente 12 — desejado (o que a configuração manda agora) ao lado
+// do efetivo (o que o canal do OpenClaw está de fato aplicando). Antes só
+// existia no centro operacional (`GET /api/diagnostico`); agora também no
+// status principal, reaproveitando `sondaDaSerena` — não recalculado.
+
+test('sem política de canal configurada (Arquitetura B), desejado_vs_efetivo vem null — não inventa divergência', async (t) => {
+  const { ambiente } = await montar(t); // sem politicaDoCanal injetada
+
+  const corpo = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.equal(corpo.serena.desejado_vs_efetivo, null);
+});
+
+test('com política de canal e os dois lados concordando, desejado e efetivo aparecem iguais', async (t) => {
+  const politicaFalsa = { async ler() { return { atendendo: true }; } };
+  const { ambiente } = await montar(t, { politicaDoCanal: politicaFalsa });
+
+  const corpo = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.equal(corpo.serena.desejado_vs_efetivo.desejado, true, 'Serena ligada, sem horário: desejado é atender');
+  assert.equal(corpo.serena.desejado_vs_efetivo.aplicado, true);
+});
+
+test('com política de canal discordando do desejado, a divergência aparece — o defeito que motivou este comando', async (t) => {
+  // O painel manda atender (Serena ligada), mas o canal está calado — é
+  // exatamente o cenário que a auditoria original descreveu: "o painel dizia
+  // desligada e a Serena respondia" (ou o inverso). Agora dá para ver os
+  // dois lados no mesmo lugar onde o status já aparece.
+  const politicaFalsa = { async ler() { return { atendendo: false }; } };
+  const { ambiente } = await montar(t, { politicaDoCanal: politicaFalsa });
+
+  const corpo = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.equal(corpo.serena.desejado_vs_efetivo.desejado, true);
+  assert.equal(corpo.serena.desejado_vs_efetivo.aplicado, false);
+});
+
 test('o painel entrega estado, prompt e regras de uma vez', async (t) => {
   const { ambiente, servicoDaSerena } = await montar(t);
 

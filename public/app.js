@@ -2848,6 +2848,27 @@ function desenharEstadoDaSerena(dados) {
   const detalheEntrega = seletor('#serena-entrega-detalhe');
   if (detalheEntrega) detalheEntrega.textContent = entrega.significado ?? '—';
 
+  // Comando 5 / frente 12: desejado (o que a configuração manda agora) ao
+  // lado do efetivo (o que o canal do OpenClaw está de fato aplicando). Só
+  // existe com política de canal configurada (Arquitetura A) — em
+  // Arquitetura B (crm_despacha, o modo efetivo hoje) a barreira que decide
+  // é a do CRM, não uma política sincronizada no canal, e o servidor manda
+  // `null` em vez de fingir uma comparação que não é aplicável.
+  const coerencia = serena.desejado_vs_efetivo;
+  if (coerencia) {
+    const bate = coerencia.desejado === coerencia.aplicado;
+    pintarEstado('#serena-coerencia', bate ? 'Coerente' : 'DIVERGENTE', bate ? 'ok' : 'ruim');
+    const detalheCoerencia = seletor('#serena-coerencia-detalhe');
+    if (detalheCoerencia) {
+      detalheCoerencia.textContent = `desejado: ${coerencia.desejado ? 'atender' : 'calar'} · `
+        + `efetivo: ${coerencia.aplicado ? 'atendendo' : 'calado'}`;
+    }
+  } else {
+    pintarEstado('#serena-coerencia', 'Não aplicável', 'neutro');
+    const detalheCoerencia = seletor('#serena-coerencia-detalhe');
+    if (detalheCoerencia) detalheCoerencia.textContent = 'sem política de canal (Arquitetura B / Evolution)';
+  }
+
   const pilula = seletor('#estado-serena');
   if (pilula) {
     pilula.textContent = serena.ativa ? 'Ligada' : 'Desligada';
