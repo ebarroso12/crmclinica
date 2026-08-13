@@ -692,8 +692,18 @@ function criarAtendimento({
       const resultado = await canal.enviar({
         telefone: contato.telefone,
         texto,
-        // Determinística: um clique duplo, ou uma retentativa da rede, não faz
-        // o paciente receber a mesma resposta duas vezes.
+        // Comando 7, segunda auditoria, achado N-10: este comentário dizia
+        // que a chave, sozinha, impedia o paciente de receber a mesma
+        // resposta duas vezes — falso para a Evolution (canal primário
+        // hoje), que recebe a chave mas nunca a usa (documentado em
+        // evolution-envio.js:9-11: o endpoint de envio não tem idempotência
+        // nativa nenhuma). A chave protege contra DUPLO PROCESSAMENTO do
+        // MESMO trabalho pelo mecanismo de outbox/lease — cada trabalho só
+        // é reivindicado por um worker de cada vez, e o lease agora é
+        // renovado por trabalho individual (achado N-9, `processarLote`),
+        // não mais por lote inteiro. O transporte Evolution em si não
+        // deduplica no lado dele; só o gateway WebSocket do OpenClaw
+        // (reserva) usa a chave de verdade (`idempotencyKey`).
         chave: `${origem}:${conversa.id}:${mensagemId}`,
       });
 
