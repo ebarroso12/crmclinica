@@ -50,11 +50,22 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
           signal: AbortSignal.timeout(configuracao.timeoutMs ?? 15000),
         });
       } catch (erro) {
-        throw new Error(`falha de rede ao chamar a Evolution API: ${erro.message}`);
+        const falha = new Error(`falha de rede ao chamar a Evolution API: ${erro.message}`);
+        // O timeout do AbortSignal (`TimeoutError`/`AbortError`) não diz que a
+        // mensagem não saiu — diz que NÃO SABEMOS. A Evolution pode ter
+        // recebido e processado o envio; só a nossa espera pela resposta é
+        // que estourou. Retentar automaticamente aqui arrisca mandar a mesma
+        // mensagem duas vezes ao paciente. Qualquer outro erro de rede (recusa
+        // de conexão, DNS, etc.) acontece ANTES do pedido chegar ao servidor —
+        // aí sim é seguro dizer "não foi enviada" e permitir retentativa.
+        falha.indeterminado = erro.name === 'TimeoutError' || erro.name === 'AbortError';
+        throw falha;
       }
 
       if (!resposta.ok) {
         const corpo = await resposta.text().catch(() => '');
+        // Resposta HTTP de erro é o servidor dizendo "recebi e recusei" — não
+        // é incerteza, é uma recusa conhecida. Seguro retentar.
         throw new Error(`Evolution API respondeu HTTP ${resposta.status}${corpo ? `: ${corpo.slice(0, 300)}` : ''}`);
       }
 

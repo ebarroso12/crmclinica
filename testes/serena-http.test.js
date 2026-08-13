@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
 const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
-const { subirServidor } = require('./auxiliar');
+const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 
 // O painel da Serena e o CRUD de contatos, pela porta de entrada.
 //
@@ -75,6 +75,80 @@ test('o status separa OpenClaw, WhatsApp, Serena, entrega e horário', async (t)
   // "offline", que faria alguém procurar um serviço fora do ar que não existe.
   assert.equal(corpo.openclaw.estado, 'nao_configurado');
   assert.equal(corpo.whatsapp.estado, 'desconectado');
+});
+
+// Comando 5, frente 12 — desejado (o que a configuração manda agora) ao lado
+// do efetivo (o que o canal do OpenClaw está de fato aplicando). Antes só
+// existia no centro operacional (`GET /api/diagnostico`); agora também no
+// status principal, reaproveitando `sondaDaSerena` — não recalculado.
+
+test('sem política de canal configurada (Arquitetura B), desejado_vs_efetivo vem null — não inventa divergência', async (t) => {
+  const { ambiente } = await montar(t); // sem politicaDoCanal injetada
+
+  const corpo = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.equal(corpo.serena.desejado_vs_efetivo, null);
+});
+
+test('com política de canal e os dois lados concordando, desejado e efetivo aparecem iguais', async (t) => {
+  const politicaFalsa = { async ler() { return { atendendo: true }; } };
+  const { ambiente } = await montar(t, { politicaDoCanal: politicaFalsa });
+
+  const corpo = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.equal(corpo.serena.desejado_vs_efetivo.desejado, true, 'Serena ligada, sem horário: desejado é atender');
+  assert.equal(corpo.serena.desejado_vs_efetivo.aplicado, true);
+});
+
+test('com política de canal discordando do desejado, a divergência aparece — o defeito que motivou este comando', async (t) => {
+  // O painel manda atender (Serena ligada), mas o canal está calado — é
+  // exatamente o cenário que a auditoria original descreveu: "o painel dizia
+  // desligada e a Serena respondia" (ou o inverso). Agora dá para ver os
+  // dois lados no mesmo lugar onde o status já aparece.
+  const politicaFalsa = { async ler() { return { atendendo: false }; } };
+  const { ambiente } = await montar(t, { politicaDoCanal: politicaFalsa });
+
+  const corpo = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.equal(corpo.serena.desejado_vs_efetivo.desejado, true);
+  assert.equal(corpo.serena.desejado_vs_efetivo.aplicado, false);
+});
+
+// Comando 7, achado C-1 (auditoria independente) — `politica.ler()` é um RPC
+// WebSocket de verdade ao gateway da clínica, com timeout de até 30s. Uma
+// falha ali (o gateway está parado no VPS, segundo o Comando 4) não pode
+// derrubar a rota inteira: isso escondia a tela de controle inteira
+// (Ligar/Desligar/Pausar/Plantão) no front-end, porque `#serena-controle` só
+// sai de `hidden` se a chamada suceder.
+test('C-1: política de canal que lança não derruba /api/serena/status — resto do payload intacto, desejado_vs_efetivo null', async (t) => {
+  const politicaQueLanca = { async ler() { throw new Error('ECONNREFUSED: gateway da clínica fora do ar'); } };
+  const { ambiente } = await montar(t, { politicaDoCanal: politicaQueLanca });
+
+  const resposta = await ambiente.pedir('/api/serena/status');
+  assert.equal(resposta.status, 200, 'a rota inteira não pode cair por causa da política do canal');
+
+  const corpo = await resposta.json();
+  assert.equal(corpo.serena.desejado_vs_efetivo, null, 'sem saber o efetivo, não finge — mas também não quebra');
+  // O resto do payload precisa continuar de pé: é o que a tela de controle
+  // usa para decidir se mostra os botões.
+  assert.equal(corpo.serena.estado, 'ligada');
+  assert.equal(corpo.serena.ativa, true);
+  assert.ok(corpo.horario);
+  assert.ok(corpo.openclaw);
+  assert.ok(corpo.whatsapp);
+});
+
+test('C-1: o mesmo vale para GET /api/serena (painel) — prompt, versões e regras continuam vindo', async (t) => {
+  const politicaQueLanca = { async ler() { throw new Error('timeout no gateway'); } };
+  const { ambiente, servicoDaSerena } = await montar(t, { politicaDoCanal: politicaQueLanca });
+
+  const prompt = await servicoDaSerena.criarPrompt({ titulo: 'Política', conteudo: 'Você é Serena, da clínica.' });
+  await servicoDaSerena.publicarPrompt(prompt.id, {});
+
+  const resposta = await ambiente.pedir('/api/serena');
+  assert.equal(resposta.status, 200);
+
+  const corpo = await resposta.json();
+  assert.equal(corpo.serena.desejado_vs_efetivo, null);
+  assert.equal(corpo.prompt_ativo.versao, 1);
+  assert.equal(corpo.pode_gerenciar, true);
 });
 
 test('o painel entrega estado, prompt e regras de uma vez', async (t) => {
@@ -466,4 +540,32 @@ test('mensagem sem texto é recusada com 400, não com 500', async (t) => {
   });
 
   assert.equal(resposta.status, 400);
+});
+
+// Comando 5, frente 10 — sem NENHUM gateway de sessão configurado (nem
+// clínica, nem comando), o laboratório continua fechado por padrão: 503,
+// não uma tentativa de conexão que teria que estourar por timeout. Este é
+// o único cenário de disponibilidade do laboratório testável sem depender
+// de rede de verdade — os outros (só clínica, só comando, os dois) estão
+// cobertos em testes/laboratorio-serena-gateway.test.js, na função pura que
+// decide qual gateway usar (`escolherConfiguracaoDoLaboratorio`).
+test('sem gateway de sessão nenhum configurado, o laboratório responde 503 canal_nao_configurado — sem tentar rede', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const servicoDaSerena = criarServicoDaSerena({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, serena: servicoDaSerena });
+  const configuracao = configuracaoDeTeste(); // OPENCLAW_*_GATEWAY_URL vazios por padrão
+
+  const ambiente = await subirServidor({ repositorio, orquestrador, atendimento, servicoDaSerena, configuracao });
+  t.after(() => ambiente.encerrar());
+
+  const abrir = await ambiente.pedir('/api/serena/teste', { method: 'POST', body: JSON.stringify({}) });
+  assert.equal(abrir.status, 503);
+  assert.equal((await abrir.json()).codigo, 'canal_nao_configurado');
+
+  const enviar = await ambiente.pedir('/api/serena/teste/mensagem', {
+    method: 'POST', body: JSON.stringify({ sessao: 's', texto: 'oi' }),
+  });
+  assert.equal(enviar.status, 503);
+  assert.equal((await enviar.json()).codigo, 'canal_nao_configurado');
 });

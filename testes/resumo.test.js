@@ -114,6 +114,32 @@ test('com batimento recente no banco, o resumo mostra o orquestrador operacional
   assert.equal(resumo.plataforma.orquestrador.saude, 'operacional');
 });
 
+// -------------------------------------------------------- Comando 7, achado A-1
+//
+// O worker da outbox já grava seu batimento em `system_heartbeats`
+// (componente `automacao_outbox_worker`, ver bin/worker-outbox.js), mas
+// `/api/resumo` só extraía `openclaw` e `inbox` do mapa de batimentos — o
+// dado existia e nunca chegava ao painel.
+
+test('sem batimento da outbox, o resumo mostra o componente indisponível — não some do payload', async (t) => {
+  const app = await subirServidor({ repositorio: criarRepositorioEmMemoria() });
+  t.after(() => app.encerrar());
+
+  const resumo = await (await app.pedir('/api/resumo')).json();
+  assert.equal(resumo.plataforma.outbox.saude, 'indisponivel');
+});
+
+test('com batimento recente da outbox, o resumo mostra o componente operacional', async (t) => {
+  const repositorio = criarRepositorioEmMemoria({
+    batimentos: { automacao_outbox_worker: { status: 'ok', atualizadoEm: new Date().toISOString() } },
+  });
+  const app = await subirServidor({ repositorio });
+  t.after(() => app.encerrar());
+
+  const resumo = await (await app.pedir('/api/resumo')).json();
+  assert.equal(resumo.plataforma.outbox.saude, 'operacional');
+});
+
 test('POST em /api/resumo é recusado', async (t) => {
   const app = await subirServidor({ repositorio: criarRepositorioEmMemoria() });
   t.after(() => app.encerrar());

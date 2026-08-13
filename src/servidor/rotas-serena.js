@@ -5,6 +5,11 @@ const { exigirPermissao } = require('../seguranca/rbac');
 const { CATEGORIAS, dentroDoHorario } = require('../dominio/serena');
 const { avaliarRiscoDoCanal } = require('../dominio/risco-canal');
 const { urlDoControle } = require('../integracoes/openclaw-vinculo');
+// Comando 5 / frente 12: mesmo cálculo que o centro operacional já fazia
+// (`sondaDaSerena`) — reaproveitado aqui, nunca recalculado, para o painel
+// principal poder mostrar o desejado ao lado do efetivo.
+const { sondaDaSerena } = require('../dominio/diagnostico-sondas');
+const { decidirAtendimento } = require('../dominio/sincronia-serena');
 
 // API da Serena: estado, interruptor, prompt versionado e regras.
 //
@@ -30,7 +35,9 @@ function exigirIdentificador(valor, campo) {
   return numero;
 }
 
-function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo = null, conversa = null }) {
+function criarRotasDaSerena({
+  serena, entregaDeLembretes, configuracao, vinculo = null, conversa = null, politica = null,
+}) {
   // Modelos oferecidos no ensaio. A lista é curta de propósito: comparar quinze
   // opções não responde "qual serve para a clínica", e cada uma custa dinheiro
   // por conversa. Ficam os três que fazem sentido comparar — o barato que está
@@ -125,6 +132,37 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
     // distinguir para saber se reconecta o celular ou chama o suporte.
     const gatewayRespondeu = canal.conectado !== undefined || canal.disponivel === true;
 
+    // Comando 5 / frente 12: o que o painel MANDA (config lida agora) ao lado
+    // do que o canal do OpenClaw está de fato aplicando — a mesma verificação
+    // que já existia só no centro operacional (`GET /api/diagnostico`), agora
+    // também aqui, onde a equipe já olha o status da Serena todo dia.
+    //
+    // Só existe quando há política de canal configurada (Arquitetura A —
+    // gateway da clínica pareado). Em Arquitetura B (`crm_despacha`), a
+    // política do canal fica sempre calada de propósito — quem decide é a
+    // barreira do CRM (Comando 2), não uma política sincronizada no canal —
+    // então a comparação não é aplicável ali, e vem `null` em vez de fingir
+    // uma divergência que não existe.
+    //
+    // Comando 7 / achado C-1 (auditoria independente): `politica.ler()` é um
+    // RPC de verdade ao gateway WebSocket da clínica, com timeout de até
+    // 30s — e esse gateway está parado no VPS desde o Comando 4. Sem este
+    // try/catch, uma falha ali derrubava a rota INTEIRA (500), escondendo a
+    // tela de controle (Ligar/Desligar/Pausar/Plantão) no front-end, porque
+    // `#serena-controle` só sai de `hidden` se a chamada suceder. Mesmo
+    // padrão de `verificar()` em src/dominio/diagnostico.js:58-70: falha na
+    // sonda vira `null`, nunca derruba o resto.
+    const sondaDoDesejadoVsEfetivo = sondaDaSerena(serena, politica, decidirAtendimento);
+    let desejadoVsEfetivo = null;
+    if (sondaDoDesejadoVsEfetivo) {
+      try {
+        desejadoVsEfetivo = await sondaDoDesejadoVsEfetivo();
+      } catch (erro) {
+        console.error('[crmclinica] falha ao comparar desejado x efetivo da Serena:', erro.message);
+        desejadoVsEfetivo = null;
+      }
+    }
+
     return {
       openclaw: {
         estado: !gatewayConfigurado ? 'nao_configurado' : (gatewayRespondeu ? 'online' : 'offline'),
@@ -145,6 +183,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
         alterado_em: config.alterado_em ?? null,
         alterado_por: config.alterado_por_nome ?? null,
         motivo: config.motivo ?? null,
+        desejado_vs_efetivo: desejadoVsEfetivo,
       },
       // Separado de `serena.estado` porque responde outra pergunta: aquele diz
       // se o interruptor está ligado, este diz se ela está atendendo agora.
@@ -269,6 +308,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
       if (!conversa) {
         const erro = new Error('gateway do canal não configurado');
         erro.status = 503;
+        erro.codigo = 'canal_nao_configurado';
         throw erro;
       }
 
@@ -420,13 +460,28 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
      *
      * Separado do status geral porque responde outra pergunta: não é "o canal
      * está no ar?", é "qual telefone está conectado, e preciso reconectar?".
+     *
+     * `evolucao` vai em toda resposta, com ou sem `vinculo` — Comando 4: antes,
+     * sem o gateway do OpenClaw pareado (`vinculo` nulo), a rota dizia
+     * `disponivel: false` mesmo quando a Evolution API já era o canal efetivo
+     * de entrega (`canal-conversas.js` prioriza Evolution sobre o gateway,
+     * desde os PRs #30/#31). Os campos de `vinculo`/QR continuam só sobre o
+     * gateway do OpenClaw — que segue existindo como reserva —, mas a tela
+     * agora recebe também se a Evolution está configurada, para não anunciar
+     * "canal indisponível" com o canal que realmente entrega funcionando.
      */
     async estadoDoCanal(usuario) {
       exigirPermissao(usuario, 'serena:ler');
-      if (!vinculo) return { disponivel: false, motivo: 'gateway do canal não configurado' };
+
+      const evolucao = {
+        configurada: Boolean(configuracao?.evolution?.apiUrl && configuracao?.evolution?.apiKey),
+        instancia: configuracao?.evolution?.instancia ?? null,
+      };
+
+      if (!vinculo) return { disponivel: false, motivo: 'gateway do canal não configurado', evolucao };
 
       try {
-        return { disponivel: true, ...(await vinculo.estado()) };
+        return { disponivel: true, ...(await vinculo.estado()), evolucao };
       } catch (erro) {
         // A mensagem crua do gateway carrega URL, identificador de dispositivo e
         // escopos. Quem tem `serena:ler` é a recepção, não quem administra o
@@ -436,6 +491,7 @@ function criarRotasDaSerena({ serena, entregaDeLembretes, configuracao, vinculo 
           disponivel: false,
           motivo: 'não foi possível falar com o WhatsApp agora',
           codigo: erro.codigo ?? null,
+          evolucao,
         };
       }
     },

@@ -38,12 +38,17 @@ function calcularIndicadores(conversas = [], leads = []) {
  * @param {object} saudeOrquestrador estado devolvido pelo cliente OpenClaw
  * @param {object} saudeInbox estado do repositório
  * @param {object} dados conversas e leads já lidos do repositório
+ * @param {object} saudeOutbox estado do worker da automação (outbox), lido
+ *   do mesmo batimento (Comando 7, achado A-1: o dado já existia em
+ *   `system_heartbeats`, componente `automacao_outbox_worker`, e nunca
+ *   chegava ao painel).
  */
 function montarResumo(
   configuracao,
   saudeOrquestrador = { estado: 'nao_configurado' },
   saudeInbox = { estado: 'nao_configurado' },
   dados = { conversas: [], leads: [] },
+  saudeOutbox = { estado: 'nao_configurado' },
 ) {
   const descricao = descreverConfiguracao(configuracao);
 
@@ -56,6 +61,7 @@ function montarResumo(
       orquestrador: { ...descricao.orquestrador, saude: saudeOrquestrador.estado },
       atendimento: descricao.atendimento,
       inbox: { ...descricao.inbox, saude: saudeInbox.estado },
+      outbox: { saude: saudeOutbox.estado },
       provedorModelo: descricao.provedorModelo,
       fonteDeVerdade: { nome: 'CRM', banco: descricao.banco },
     },

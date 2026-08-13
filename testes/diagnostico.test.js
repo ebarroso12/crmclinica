@@ -114,6 +114,72 @@ test('sonda ausente não vira falha — nem toda instalação tem tudo', async (
   assert.equal(r.saudavel, true);
 });
 
+// ----------------------------------------------------- Comando 7, achado A-1
+//
+// O worker da automação (outbox) não tinha observabilidade nenhuma: sem
+// heartbeat verificado, sem alerta de trabalho pendente vencido, sem alerta
+// de trabalho morto/incerto. Estes testes provam que a varredura agora fala
+// sobre essa fila, com a mesma disciplina de "achado com reparo" das demais.
+
+test('worker da outbox sem heartbeat (nunca rodou ou caiu) é crítico', async () => {
+  const r = await executarDiagnostico(comFalha({
+    outbox: async () => ({ ativo: false, detalhe: null, idade_ms: null, fila: null, vencidos: 0 }),
+  }));
+  assert.equal(r.nivel, 'critico');
+  const item = r.achados.find((a) => a.area === 'outbox');
+  assert.ok(item, 'precisa gerar achado quando o worker não confirma atividade');
+});
+
+test('worker da outbox ativo e fila limpa não gera achado', async () => {
+  const r = await executarDiagnostico(comFalha({
+    outbox: async () => ({
+      ativo: true, detalhe: null, idade_ms: 1000,
+      fila: { pendente: 1, processando: 0, concluido: 40, morto: 0, incerto: 0 },
+      vencidos: 0,
+    }),
+  }));
+  assert.ok(!r.achados.some((a) => a.area === 'outbox'));
+});
+
+test('trabalho pendente vencido na outbox é crítico — fila parou de andar', async () => {
+  const r = await executarDiagnostico(comFalha({
+    outbox: async () => ({
+      ativo: true, detalhe: null, idade_ms: 1000,
+      fila: { pendente: 3, processando: 0, concluido: 0, morto: 0, incerto: 0 },
+      vencidos: 3,
+    }),
+  }));
+  assert.equal(r.nivel, 'critico');
+  const item = r.achados.find((a) => a.area === 'outbox' && a.titulo.includes('vencido'));
+  assert.ok(item);
+});
+
+test('trabalho morto (esgotou tentativas) na outbox é crítico', async () => {
+  const r = await executarDiagnostico(comFalha({
+    outbox: async () => ({
+      ativo: true, detalhe: null, idade_ms: 1000,
+      fila: { pendente: 0, processando: 0, concluido: 10, morto: 2, incerto: 0 },
+      vencidos: 0,
+    }),
+  }));
+  assert.equal(r.nivel, 'critico');
+  const item = r.achados.find((a) => a.area === 'outbox' && a.titulo.includes('morto'));
+  assert.ok(item);
+});
+
+test('trabalho com desfecho incerto na outbox é falha, não crítico — decisão exige checar antes', async () => {
+  const r = await executarDiagnostico(comFalha({
+    outbox: async () => ({
+      ativo: true, detalhe: null, idade_ms: 1000,
+      fila: { pendente: 0, processando: 0, concluido: 10, morto: 0, incerto: 1 },
+      vencidos: 0,
+    }),
+  }));
+  const item = r.achados.find((a) => a.area === 'outbox' && a.titulo.includes('incerto'));
+  assert.ok(item);
+  assert.equal(item.nivel, 'falha');
+});
+
 test('todo achado diz o que fazer', async () => {
   // Achado sem reparo transfere para quem lê o trabalho de descobrir o que fazer
   // — que é justamente o trabalho que a varredura deveria poupar.

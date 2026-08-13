@@ -125,23 +125,52 @@ async function executarDiagnostico(sondas = {}) {
 
   // ------------------------------------------------------------------ canal
   const canal = await verificar('canal', sondas.canal);
+  const evolucao = await verificar('evolucao', sondas.evolucao);
+  // A Evolution é o canal PRIMÁRIO de entrega desde os PRs #30/#31 (Comando 1
+  // e 3): o gateway do OpenClaw abaixo é reserva. "Ninguém atende" só é
+  // verdade de fato quando os DOIS estão fora — dizer "crítico" com a
+  // Evolution respondendo é exatamente o diagnóstico que confundia a equipe
+  // (Comando 1, seção 5: "painel e diagnóstico ainda misturam OpenClaw e Evolution").
+  const evolucaoAtendendo = evolucao?.configurada === true && evolucao?.alcancavel !== false;
+
   if (canal) {
     if (!canal.vinculado) {
       registrar(achado({
         area: 'canal',
-        nivel: 'critico',
-        titulo: 'nenhum telefone conectado no WhatsApp',
-        reparo: 'Os pacientes não são atendidos e os lembretes não saem. Reconecte pelo botão do painel.',
+        nivel: evolucaoAtendendo ? 'aviso' : 'critico',
+        titulo: evolucaoAtendendo
+          ? 'o gateway do OpenClaw (reserva) não está pareado — a Evolution é quem atende'
+          : 'nenhum telefone conectado no WhatsApp',
+        reparo: evolucaoAtendendo
+          ? 'Sem urgência: a Evolution é o canal primário e está respondendo. Parear o gateway garante uma reserva se ela falhar.'
+          : 'Os pacientes não são atendidos e os lembretes não saem. Reconecte pelo botão do painel.',
       }));
     } else if (!canal.conectado) {
       registrar(achado({
         area: 'canal',
-        nivel: 'falha',
-        titulo: 'o WhatsApp está vinculado mas fora do ar',
+        nivel: evolucaoAtendendo ? 'aviso' : 'falha',
+        titulo: evolucaoAtendendo
+          ? 'o gateway do OpenClaw (reserva) está vinculado mas fora do ar — a Evolution é quem atende'
+          : 'o WhatsApp está vinculado mas fora do ar',
         detalhe: canal.numero ?? null,
-        reparo: 'A sessão caiu. Costuma voltar sozinha; se persistir, reconecte pelo painel.',
+        reparo: evolucaoAtendendo
+          ? 'Sem urgência: a Evolution é o canal primário e está respondendo.'
+          : 'A sessão caiu. Costuma voltar sozinha; se persistir, reconecte pelo painel.',
       }));
     }
+  }
+
+  if (evolucao?.configurada && evolucao.alcancavel === false) {
+    const gatewayAtendendo = canal?.vinculado === true && canal?.conectado === true;
+    registrar(achado({
+      area: 'evolucao',
+      nivel: gatewayAtendendo ? 'falha' : 'critico',
+      titulo: 'a Evolution API (canal primário de entrega) não responde',
+      detalhe: evolucao.instancia ? `instância "${evolucao.instancia}"` : null,
+      reparo: gatewayAtendendo
+        ? 'Confira EVOLUTION_API_URL/EVOLUTION_API_KEY e se a instância está no ar. O gateway do OpenClaw está atendendo como reserva enquanto isso.'
+        : 'Confira EVOLUTION_API_URL/EVOLUTION_API_KEY e se a instância está no ar. Nenhum canal de reserva está atendendo agora.',
+    }));
   }
 
   const google = await verificar('google', sondas.google);
@@ -152,6 +181,53 @@ async function executarDiagnostico(sondas = {}) {
   const worker = await verificar('worker', sondas.worker);
   if (worker && !worker.ativo) {
     registrar(achado({ area: 'worker', nivel: 'critico', titulo: 'o worker de lembretes não confirmou atividade', detalhe: worker.detalhe ?? null, reparo: 'Reinicie o serviço do worker e confira os logs do OpenClaw.', comando: 'reiniciar:crmclinica-lembretes' }));
+  }
+
+  // --------------------------------------------------------- automação (outbox)
+  //
+  // Comando 7, achado A-1 da auditoria: até aqui esta fila não tinha sonda
+  // nenhuma. É um processo separado do worker de lembretes acima — mesma
+  // classe de risco (fila que para sem avisar), heartbeat próprio.
+  const outbox = await verificar('outbox', sondas.outbox);
+  if (outbox) {
+    if (!outbox.ativo) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'critico',
+        titulo: 'o worker da automação (outbox) não confirmou atividade',
+        detalhe: outbox.detalhe ?? null,
+        reparo: 'Sem esse worker rodando, as respostas da Serena ficam persistidas mas nunca saem. Confira se o processo de bin/worker-outbox.js está de pé.',
+      }));
+    }
+
+    if (outbox.vencidos > 0) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'critico',
+        titulo: `${outbox.vencidos} trabalho(s) da automação vencido(s) sem processar`,
+        detalhe: 'passaram do horário previsto (disponivel_em) e continuam pendentes',
+        reparo: 'A fila parou de andar. Confira se o worker da outbox está rodando e processando lotes.',
+      }));
+    }
+
+    if (outbox.fila?.morto > 0) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'critico',
+        titulo: `${outbox.fila.morto} trabalho(s) da automação esgotaram as tentativas (morto)`,
+        reparo: 'Essas respostas não foram entregues e a automação desistiu. Veja o motivo (ultimo_erro) antes que vire padrão.',
+      }));
+    }
+
+    if (outbox.fila?.incerto > 0) {
+      registrar(achado({
+        area: 'outbox',
+        nivel: 'falha',
+        titulo: `${outbox.fila.incerto} trabalho(s) da automação com desfecho incerto`,
+        detalhe: 'o envio pode ou não ter chegado ao paciente — a automação não retenta sozinha por segurança',
+        reparo: 'Confira manualmente se a mensagem chegou antes de decidir reenviar ou descartar.',
+      }));
+    }
   }
 
   // ------------------------------------------------------------------- fila

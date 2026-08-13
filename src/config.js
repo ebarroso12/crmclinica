@@ -70,6 +70,16 @@ function decodificarChave(valor) {
 function carregarConfiguracao(ambiente = process.env) {
   const nodeEnv = NIVEIS_VALIDOS.has(texto(ambiente.NODE_ENV)) ? texto(ambiente.NODE_ENV) : 'development';
   const producao = nodeEnv === 'production';
+  // Comando 4: o padrão continua 'openclaw_gerencia' de propósito — ver o
+  // comentário de SERENA_TRANSPORTE_WHATSAPP em .env.exemplo. Este valor não
+  // decide mais o canal de entrega (isso é EVOLUTION_API_URL/KEY/INSTANCE) e
+  // não é consultado por nenhum caminho de atendimento; só
+  // bin/worker-lembretes.js o lê, para a sincronia de conversas por leitura
+  // (Arquitetura A). Trocar o padrão para 'crm_despacha' ativaria exigências
+  // extras em validarTransporteWhatsapp/validarConfiguracao (dois gateways
+  // WebSocket do OpenClaw + OPENCLAW_SESSION_ID) que este comando não
+  // confirmou estarem presentes em todo ambiente que roda `node
+  // src/index.js` com NODE_ENV=production.
   const transporteWhatsapp = texto(ambiente.SERENA_TRANSPORTE_WHATSAPP) || 'openclaw_gerencia';
 
   return {

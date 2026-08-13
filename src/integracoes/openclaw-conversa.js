@@ -27,6 +27,37 @@ const {
 // depois — e é por isso que `enviar` e `historico` são separados: a tela mostra
 // a pergunta imediatamente e preenche a resposta quando ela chega.
 
+/**
+ * Qual gateway o laboratório usa para gerar a resposta de ensaio.
+ *
+ * Comando 5 / frente 10: até aqui o laboratório dependia só do gateway da
+ * CLÍNICA — ponto único de falha. A Evolution (canal efetivo de entrega
+ * desde o Comando 4) não é uma alternativa válida aqui: ela só transporta
+ * WhatsApp, não tem sessão nem modelo — quem GERA a resposta da Serena é
+ * sempre uma sessão OpenClaw (`sessions.create`/`chat.send`), com ou sem
+ * WhatsApp de verdade atrás dela. O que existe para reaproveitar, no mesmo
+ * espírito de "principal, depois reserva" de `canal-conversas.js`, são os
+ * DOIS gateways de sessão que este sistema já tem:
+ *
+ *   1. `canalClinica` (principal) — a mesma conexão que a tela usa para
+ *      vincular o WhatsApp da clínica; testar por ela reflete o canal que o
+ *      painel já mostra.
+ *   2. `comando` (reserva) — o gateway que `criarClienteOpenClaw` usa para
+ *      o atendimento real (`crm_despacha`). Seguro para o laboratório
+ *      porque `abrir()` sempre chama `sessions.create` (uma sessão NOVA);
+ *      nunca reaproveita a sessão fixa (`OPENCLAW_SESSION_ID`) do
+ *      atendimento — testar não mistura contexto com paciente real, mesmo
+ *      compartilhando a conexão do gateway.
+ *
+ * Nenhum dos dois configurado: `null`, e o chamador decide o 503 —
+ * continua sendo o comportamento correto (falha fechada), não um bug.
+ */
+function escolherConfiguracaoDoLaboratorio({ canalClinica, comando } = {}) {
+  if (canalClinica?.url) return canalClinica;
+  if (comando?.url) return comando;
+  return null;
+}
+
 /** Extrai o texto da resposta, que vem em formatos diferentes conforme o provedor. */
 function textoDaMensagem(mensagem) {
   const conteudo = mensagem?.content;
@@ -142,4 +173,4 @@ function criarConversaDeTeste(configuracao = {}, dependencias = {}) {
   };
 }
 
-module.exports = { criarConversaDeTeste, textoDaMensagem };
+module.exports = { criarConversaDeTeste, textoDaMensagem, escolherConfiguracaoDoLaboratorio };

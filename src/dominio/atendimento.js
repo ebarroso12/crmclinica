@@ -6,6 +6,29 @@ const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificaca
 const { ehPedidoDeOptOut } = require('./lembretes');
 const { ErroDeEstrategia } = require('../contratos/erros');
 
+// Comando 7, achado A-3 da auditoria: a barreira final (`podeEntregarAgora`)
+// bloqueia por vários motivos, mas até aqui NENHUM deles escalonava — a
+// automação gerava uma resposta, a barreira descartava, e a conversa
+// continuava do jeito que estava, sem ninguém saber que uma resposta ficou
+// presa. Isso está certo para motivos que já SÃO uma decisão humana recente
+// (a equipe apertou um botão e sabe o que decidiu) — escalonar de novo seria
+// ruído. Está errado para os demais: grade automática, ativação gradual,
+// conversa que virou "resolvida" no meio do caminho, ou falha ao reler o
+// próprio controle — nesses casos ninguém decidiu nada na hora, e a resposta
+// gerada fica perdida sem aviso.
+//
+// `humano_responsavel` e `ia_pausada` entram na lista pelo mesmo raciocínio
+// de `assumida_por_humano`/`serena_pausada`: também são estado que uma pessoa
+// já decidiu. Qualquer motivo NÃO listado aqui (presente ou futuro) escalona
+// por padrão — fail-open para avisar gente, nunca fail-closed para o silêncio.
+const MOTIVOS_DE_DECISAO_HUMANA_RECENTE = new Set([
+  'serena_desligada', 'serena_pausada', 'assumida_por_humano', 'humano_responsavel', 'ia_pausada',
+]);
+
+function bloqueioDaBarreiraPrecisaEscalar(motivo) {
+  return !MOTIVOS_DE_DECISAO_HUMANA_RECENTE.has(motivo);
+}
+
 // O ciclo de atendimento do crmclinica.
 //
 // Mensagem chega → grava no banco → decide se a automação pode responder →
@@ -141,25 +164,32 @@ function criarAtendimento({
     }
 
     if (despachoEmSegundoPlano) {
-      setImmediate(() => {
-        responderSePossivel(conversa.id, { mensagemEntradaId: mensagem.id }).catch(async (erro) => {
-          // responderSePossivel já converte falha do orquestrador em
-          // escalonamento; cair aqui é falha ANTES disso (banco, regra). O
-          // paciente escreveu e ninguém vai responder — a equipe precisa saber.
-          console.error(`[atendimento] despacho em segundo plano falhou (conversa ${conversa.id}): ${erro.message}`);
-          try {
-            await escalonar(conversa.id, 'falha_no_despacho_em_segundo_plano');
-          } catch (erroDoEscalonamento) {
-            console.error(`[atendimento] e o escalonamento também falhou: ${erroDoEscalonamento.message}`);
-          }
-        });
+      // Comando 3: era `setImmediate` aqui — uma promessa sem garantia
+      // nenhuma numa função serverless da Vercel, que pode ser congelada ou
+      // encerrada assim que a resposta HTTP sai. Agora é um trabalho gravado
+      // na outbox durável (`automacao_outbox`, db/031), na MESMA transação
+      // que já gravou a mensagem — quem chama isto (a rota do webhook) faz
+      // essa transação existir, com `repositorio.comUsuario`. O `202` que a
+      // rota devolve depois disto só sai depois do commit: "aceito" volta a
+      // significar "persistido", não "vou tentar continuar nesta função".
+      //
+      // Quem processa o trabalho é o worker (`bin/worker-outbox.js`), que
+      // chama exatamente `responderSePossivel` — a mesma barreira de
+      // controle do Comando 2 vale para o processamento aqui e para o
+      // síncrono logo abaixo; nenhum caminho novo de envio foi criado.
+      const chave = `outbox:${conversa.id}:${mensagem.id}`;
+      const { trabalho } = await repositorio.enfileirarTrabalhoDeOutbox({
+        conversaId: conversa.id,
+        mensagemEntradaId: mensagem.id,
+        chaveIdempotencia: chave,
       });
       return {
         acao: 'aceita_para_despacho',
         ia_despachada: true,
-        despacho: 'em_segundo_plano',
+        despacho: 'outbox',
         conversa_id: conversa.id,
         mensagem_id: mensagem.id,
+        trabalho_id: trabalho.id,
       };
     }
 
@@ -207,7 +237,17 @@ function criarAtendimento({
     }
 
     if (!orquestrador?.disponivel) {
-      return { acao: 'sem_orquestrador', conversa_id: conversaId, motivo: 'openclaw_nao_configurado' };
+      // Comando 7, achado A-2 da auditoria: até aqui isto voltava como
+      // `sem_orquestrador` sem escalonar — a outbox (`decidirDesfecho`) trata
+      // qualquer resultado sem `entregaIncerta` como "resolvido" e marcava o
+      // trabalho `concluido`. Paciente sem resposta, conversa sem dono,
+      // ninguém avisado. Falta de configuração não é transitória (o valor de
+      // `disponivel` vem de config estática, não muda sozinho entre
+      // tentativas) — mesmo raciocínio que já vale para
+      // `motor_ia_nao_configurado` e `falha_no_orquestrador` logo abaixo.
+      // Escalação imediata, não retentativa.
+      await escalonar(conversaId, 'sem_orquestrador');
+      return { acao: 'escalonada_para_equipe', conversa_id: conversaId, motivo: 'openclaw_nao_configurado' };
     }
 
     const mensagens = await repositorio.listarMensagens(conversaId, { incluirPrivadas: false });
@@ -222,12 +262,51 @@ function criarAtendimento({
 
     // Retentativa depois de queda entre gravar e entregar: a resposta já existe.
     // Não se despacha a IA de novo — reaproveita o texto gravado e tenta só a
-    // entrega, com a mesma chave, que o gateway deduplica.
+    // entrega, com a mesma chave. Comando 7, achado M-1: isso deduplica de
+    // verdade pelo gateway WebSocket do OpenClaw (reserva, que usa
+    // `idempotencyKey`) — mas NÃO pela Evolution (canal primário hoje), que
+    // não expõe idempotência nativa nesse endpoint e ignora a chave (ver
+    // evolution-envio.js). A defesa real contra reenvio duplicado pela
+    // Evolution é LEASE_MS ter folga suficiente para nunca reivindicar de
+    // novo um trabalho que só está demorando (ver automacao-outbox.js).
     const respostaAnterior = mensagens.find((mensagem) => mensagem.id_externo === chaveDaResposta);
     if (respostaAnterior) {
       const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
         origem: 'serena',
       });
+      if (entrega.motivo === 'envio_abortado_por_controle') {
+        return {
+          acao: 'resposta_abortada_por_controle',
+          conversa_id: conversaId,
+          motivo: entrega.motivoControle,
+          entregue: false,
+        };
+      }
+
+      // Mesmo tratamento da entrega "de primeira" logo abaixo: uma
+      // retentativa que continua sem conseguir entregar não pode voltar como
+      // "respondida" — a equipe precisa ver isto, e a outbox precisa saber
+      // que não é um caso para reagendar sozinha (ver `entregaIncerta`).
+      if (!entrega.enviada && entrega.motivo !== 'canal_nao_configurado') {
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversaId,
+          acao: 'resposta_nao_entregue',
+          detalhe: {
+            mensagem_id: respostaAnterior.id, motivo: entrega.motivo, autor: 'automacao',
+            indeterminado: entrega.indeterminado === true,
+          },
+        }).catch(() => {});
+        await escalonar(conversaId, 'falha_na_entrega_da_automacao');
+        return {
+          acao: 'escalonada_por_falha_entrega',
+          conversa_id: conversaId,
+          motivo: entrega.motivo,
+          entregue: false,
+          entregaIncerta: entrega.indeterminado === true,
+        };
+      }
+
       return {
         acao: 'respondida_pela_automacao',
         conversa_id: conversaId,
@@ -320,18 +399,40 @@ function criarAtendimento({
         emissor?.publicarMensagem(conversaId, gravada);
 
         // A resposta precisa CHEGAR ao paciente — gravar no CRM não entrega
-        // nada. A chave determinística faz reentrega concorrente ou retentada
-        // ser deduplicada pelo gateway.
+        // nada. A chave determinística é passada adiante, mas só o gateway
+        // WebSocket do OpenClaw (reserva) de fato deduplica por ela — a
+        // Evolution (canal primário) não usa a chave (Comando 7, achado
+        // M-1; ver o comentário em `entregarAoPaciente`/evolution-envio.js).
         const entrega = await entregarAoPaciente(conversa, gravada.conteudo, gravada.id, {
           origem: 'serena',
         });
+
+        // O controle mudou entre a leitura do início desta função e o instante
+        // do envio (Desligar, Pausar, Assumir, PARAR SERENA, ou a conversa foi
+        // resolvida/assumida por outro caminho). `entregarAoPaciente` já
+        // recusou e auditou o motivo em `envio_abortado_por_controle`; aqui só
+        // resta relatar — sem escalonar (um humano já decidiu, forçar
+        // atribuição por cima disso seria o oposto do que ele pediu) e sem
+        // tratar como falha de entrega (não é rede fora do ar, é o comando
+        // tendo sido obedecido).
+        if (entrega.motivo === 'envio_abortado_por_controle') {
+          return {
+            acao: 'resposta_abortada_por_controle',
+            conversa_id: conversaId,
+            motivo: entrega.motivoControle,
+            entregue: false,
+          };
+        }
 
         if (!entrega.enviada && entrega.motivo !== 'canal_nao_configurado') {
           await repositorio.registrarAuditoria({
             entidade: 'conversa',
             entidadeId: conversaId,
             acao: 'resposta_nao_entregue',
-            detalhe: { mensagem_id: gravada.id, motivo: entrega.motivo, autor: 'automacao' },
+            detalhe: {
+              mensagem_id: gravada.id, motivo: entrega.motivo, autor: 'automacao',
+              indeterminado: entrega.indeterminado === true,
+            },
           }).catch(() => {});
 
           // Arquitetura B: com o agente do canal calado, entrega que falhou
@@ -345,6 +446,9 @@ function criarAtendimento({
             conversa_id: conversaId,
             motivo: entrega.motivo,
             entregue: false,
+            // A outbox nunca deve retentar sozinha um envio de desfecho
+            // incerto — ver `entregarAoPaciente` e `evolution-envio.js`.
+            entregaIncerta: entrega.indeterminado === true,
           };
         }
 
@@ -487,6 +591,45 @@ function criarAtendimento({
   }
 
   /**
+   * A barreira final: relê o controle no último instante possível antes de
+   * qualquer envio gerado pela automação.
+   *
+   * `responderSePossivel` já consultou `podeResponder` no início — mas entre
+   * aquela leitura e este ponto passam a extração de qualificação, a chamada
+   * ao orquestrador (rede, pode levar dezenas de segundos) e a gravação da
+   * resposta. Desligar, Pausar, Assumir ou PARAR SERENA clicado nesse
+   * intervalo precisa valer, e só vale se alguém checar de novo bem aqui —
+   * reaproveitar a decisão antiga é exatamente o defeito que motivou esta
+   * função existir.
+   *
+   * Relê do zero, nunca do que já estava em memória: `conversa` chega para
+   * `entregarAoPaciente` como o objeto lido no início da chamada, e é
+   * justamente esse objeto que pode estar desatualizado.
+   *
+   * Falha ao reler o estado é fail-closed: não saber se pode responder não é
+   * "responde assim mesmo", é "não responde".
+   */
+  async function podeEntregarAgora(conversaId) {
+    let conversaFresca;
+    try {
+      conversaFresca = await repositorio.obterConversa(conversaId);
+    } catch {
+      return { permitido: false, motivo: 'falha_ao_reler_controle' };
+    }
+    if (!conversaFresca) return { permitido: false, motivo: 'conversa_nao_encontrada' };
+
+    try {
+      const decisao = serena
+        ? await serena.podeResponder(conversaFresca)
+        : decidirAutomacao(conversaFresca);
+      if (!decisao.responder) return { permitido: false, motivo: decisao.motivo };
+      return { permitido: true };
+    } catch {
+      return { permitido: false, motivo: 'falha_ao_reler_controle' };
+    }
+  }
+
+  /**
    * Entrega ao paciente pelo canal de onde a conversa veio.
    *
    * Falha de envio não desfaz o registro: a resposta da equipe é um fato que
@@ -494,6 +637,52 @@ function criarAtendimento({
    * O que muda é a marca — enviada ou não —, para a tela poder dizer a verdade.
    */
   async function entregarAoPaciente(conversa, texto, mensagemId, { origem = 'equipe' } = {}) {
+    // Só a automação passa pela barreira final. Uma resposta escrita por um
+    // humano não precisa reconferir "a Serena pode responder": quem decide
+    // por um humano é o próprio humano, no instante em que ele clicou em
+    // enviar — não há geração assíncrona entre a decisão e o envio para uma
+    // corrida acontecer.
+    if (origem === 'serena') {
+      const controle = await podeEntregarAgora(conversa.id);
+      if (!controle.permitido) {
+        // Auditoria com motivo técnico e o identificador da mensagem, nunca o
+        // texto: nem o que a Serena gerou, nem o que o paciente escreveu, nem
+        // qualquer coisa que possa carregar conteúdo clínico.
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversa.id,
+          acao: 'envio_abortado_por_controle',
+          detalhe: { mensagem_id: mensagemId, motivo: controle.motivo },
+        }).catch(() => {});
+
+        // Comando 7, achado A-3 (segunda parte): a mensagem já está gravada
+        // e visível na tela — sem esta marca, ela aparece indistinguível de
+        // uma resposta que realmente saiu. Vale para TODO bloqueio da
+        // barreira, escalonando ou não: em ambos os casos o paciente não
+        // recebeu nada.
+        if (repositorio.marcarEntregaFalhou) {
+          await repositorio.marcarEntregaFalhou(mensagemId, controle.motivo).catch((erro) => {
+            console.error(`[atendimento] falha ao marcar entrega não realizada: ${erro.message}`);
+          });
+        }
+
+        // Comando 7, achado A-3: motivo que não é uma decisão humana recente
+        // (ver MOTIVOS_DE_DECISAO_HUMANA_RECENTE) precisa escalonar — sem
+        // isso, a resposta que a automação acabou de gerar fica descartada
+        // em silêncio, e a conversa segue do jeito que estava como se nada
+        // tivesse acontecido.
+        if (bloqueioDaBarreiraPrecisaEscalar(controle.motivo)) {
+          await escalonar(conversa.id, `barreira_final:${controle.motivo}`).catch((erro) => {
+            console.error(`[atendimento] falha ao escalonar bloqueio da barreira final: ${erro.message}`);
+          });
+        }
+
+        // Nem Evolution, nem o fallback do OpenClaw: `canal.enviar` não é
+        // chamado neste caminho, então nenhum dos dois transportes é acionado.
+        return { enviada: false, motivo: 'envio_abortado_por_controle', motivoControle: controle.motivo };
+      }
+    }
+
     if (!canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
 
     try {
@@ -503,14 +692,27 @@ function criarAtendimento({
       const resultado = await canal.enviar({
         telefone: contato.telefone,
         texto,
-        // Determinística: um clique duplo, ou uma retentativa da rede, não faz
-        // o paciente receber a mesma resposta duas vezes.
+        // Comando 7, segunda auditoria, achado N-10: este comentário dizia
+        // que a chave, sozinha, impedia o paciente de receber a mesma
+        // resposta duas vezes — falso para a Evolution (canal primário
+        // hoje), que recebe a chave mas nunca a usa (documentado em
+        // evolution-envio.js:9-11: o endpoint de envio não tem idempotência
+        // nativa nenhuma). A chave protege contra DUPLO PROCESSAMENTO do
+        // MESMO trabalho pelo mecanismo de outbox/lease — cada trabalho só
+        // é reivindicado por um worker de cada vez, e o lease agora é
+        // renovado por trabalho individual (achado N-9, `processarLote`),
+        // não mais por lote inteiro. O transporte Evolution em si não
+        // deduplica no lado dele; só o gateway WebSocket do OpenClaw
+        // (reserva) usa a chave de verdade (`idempotencyKey`).
         chave: `${origem}:${conversa.id}:${mensagemId}`,
       });
 
       return { enviada: true, identificador: resultado?.identificador ?? null };
     } catch (erro) {
-      return { enviada: false, motivo: erro.message };
+      // `indeterminado`: a chamada estourou o tempo sem resposta — não dá para
+      // dizer se a mensagem saiu ou não. Quem chama (a outbox) precisa saber
+      // disso para NUNCA reenviar automaticamente neste caso.
+      return { enviada: false, motivo: erro.message, indeterminado: erro.indeterminado === true };
     }
   }
 

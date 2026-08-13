@@ -38,7 +38,7 @@ const { criarServicoDeLembretes } = require('../dominio/lembretes-servico');
 const { criarAdaptadorDeLembretes } = require('../integracoes/openclaw-lembretes');
 const { criarRotasDaSerena } = require('./rotas-serena');
 const { criarVinculoDeCanal } = require('../integracoes/openclaw-vinculo');
-const { criarConversaDeTeste } = require('../integracoes/openclaw-conversa');
+const { criarConversaDeTeste, escolherConfiguracaoDoLaboratorio } = require('../integracoes/openclaw-conversa');
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
@@ -265,10 +265,17 @@ function criarAplicacao(dependencias = {}) {
   const vinculoDoCanal = dependencias.vinculoDoCanal
     || (configuracao.openclaw.canalClinica.url ? criarVinculoDeCanal(configuracao.openclaw.canalClinica) : null);
 
-  // Conversa de teste: fala com a Serena pela sessão do painel, sem tocar no
-  // WhatsApp. É o que permite validar o prompt antes de expor ao paciente.
+  // Conversa de teste: fala com a Serena por uma sessão OpenClaw, sem tocar
+  // no WhatsApp. É o que permite validar o prompt antes de expor ao
+  // paciente. Comando 5 / frente 10: gateway da clínica como principal,
+  // gateway de comando como reserva — ver `escolherConfiguracaoDoLaboratorio`
+  // em `openclaw-conversa.js` para o porquê de não usar a Evolution aqui.
+  const configDoLaboratorio = escolherConfiguracaoDoLaboratorio({
+    canalClinica: configuracao.openclaw.canalClinica,
+    comando: configuracao.openclaw.gateway,
+  });
   const conversaDeTeste = dependencias.conversaDeTeste
-    || (configuracao.openclaw.canalClinica.url ? criarConversaDeTeste(configuracao.openclaw.canalClinica) : null);
+    || (configDoLaboratorio ? criarConversaDeTeste(configDoLaboratorio) : null);
 
   // Centro operacional: a varredura que pergunta a todas as peças de uma vez se
   // ainda estão inteiras. Usa a mesma política do canal que o worker usa para
@@ -283,6 +290,8 @@ function criarAplicacao(dependencias = {}) {
     vinculo: vinculoDoCanal,
     politica: politicaDoCanal,
     googleAgenda: agendaDoGoogle,
+    evolucaoConfig: configuracao.evolution,
+    evolucaoFetchImpl: dependencias.evolucaoFetchImpl,
   });
 
   const rotasDaSerena = criarRotasDaSerena({
@@ -294,6 +303,9 @@ function criarAplicacao(dependencias = {}) {
     configuracao,
     vinculo: vinculoDoCanal,
     conversa: conversaDeTeste,
+    // Comando 5 / frente 12: a mesma política que o centro operacional já
+    // usava para comparar desejado × efetivo, agora também aqui.
+    politica: politicaDoCanal,
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
   const rotasDeAuditoria = criarRotasDeAuditoria({ repositorio });
@@ -412,44 +424,71 @@ function criarAplicacao(dependencias = {}) {
       throw erro;
     }
 
-    // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
-    const jaProcessado = await repositorio.consultarEvento(evento.chave_idempotencia);
-    if (jaProcessado) {
-      responderJson(res, 200, { ...jaProcessado, duplicado: true });
-      return;
+    // Só a porta da ponte (Evolution/OpenClaw ingresso) vai para a outbox —
+    // a porta do orquestrador (`openclaw_webhook`, `/api/eventos`) continua
+    // despachando a IA de forma síncrona, dentro desta requisição, como
+    // sempre fez.
+    const despachoEmSegundoPlano = adaptador === 'openclaw_ingresso_crm';
+
+    async function processarEGravarRecibo() {
+      // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
+      const jaProcessado = await repositorio.consultarEvento(evento.chave_idempotencia);
+      if (jaProcessado) return { status: 200, corpo: { ...jaProcessado, duplicado: true } };
+
+      // A mensagem entra no inbox: vira contato, conversa e linha no histórico.
+      //
+      // Na porta da ponte, o trabalho de responder vai para a outbox durável
+      // em vez de rodar nesta requisição: o plugin do OpenClaw espera no
+      // máximo 10s pelo aceite, e gerar a resposta da IA leva mais que isso —
+      // segurar a conexão fazia toda entrega estourar o timeout do hook e ser
+      // reagendada pelo spool. O aceite atesta a GRAVAÇÃO E O ENFILEIRAMENTO
+      // (síncronos, na mesma transação); quem entrega ao paciente é o worker
+      // da outbox (`bin/worker-outbox.js`), não esta requisição.
+      const resultado = await conversas.receberMensagemDeCanal(evento, { despachoEmSegundoPlano });
+
+      const recibo = {
+        aceito: true,
+        duplicado: false,
+        chave_idempotencia: evento.chave_idempotencia,
+        tipo: evento.tipo,
+        canal: evento.canal,
+        // Quem é o dono da resposta, e o que o transporte fez de fato: junto com
+        // `decisao`, é o que permite auditar "importou sem reenviar" de fora.
+        estrategia_ia: evento.estrategia_ia,
+        decisao_transporte: resultado.ia_despachada === false
+          ? 'importada_sem_despacho'
+          : 'despacho_pelo_crm',
+        conversa_id: resultado.conversa_id ?? null,
+        decisao: resultado.acao,
+        recebido_em: new Date().toISOString(),
+      };
+
+      await repositorio.registrarEvento(evento.chave_idempotencia, recibo);
+      return { status: 202, corpo: recibo };
     }
 
-    // A mensagem entra no inbox: vira contato, conversa e linha no histórico.
+    // Comando 3: na porta da ponte, checar duplicidade, gravar a mensagem
+    // (contato, conversa, linha no histórico), enfileirar o trabalho da
+    // automação na outbox durável e registrar o recibo do evento acontecem
+    // NUMA TRANSAÇÃO SÓ — `repositorio.comUsuario` é o mesmo mecanismo que já
+    // protege as outras rotas que gravam mais de uma coisa (ver
+    // `comIdentidade`, mais abaixo neste arquivo). Se qualquer escrita falhar
+    // no meio, a exceção sobe, a transação sofre ROLLBACK e este `try/catch`
+    // de fora responde o erro — nunca um `202` para um trabalho que não
+    // existe. O `202` só sai DEPOIS do COMMIT: "aceito" volta a significar
+    // "gravado com segurança", nunca "vou tentar continuar nesta função
+    // depois de responder" — a promessa que o `setImmediate` não cumpria.
     //
-    // Na porta da ponte, o despacho da IA roda em segundo plano: o plugin do
-    // OpenClaw espera no máximo 10s pelo aceite, e o despacho leva mais que
-    // isso — segurar a resposta fazia toda entrega estourar o timeout do hook
-    // e ser reagendada pelo spool. O aceite atesta a GRAVAÇÃO (síncrona); a
-    // resposta ao paciente segue por conta do atendimento, que escala para a
-    // equipe se o despacho morrer.
-    const resultado = await conversas.receberMensagemDeCanal(evento, {
-      despachoEmSegundoPlano: adaptador === 'openclaw_ingresso_crm',
-    });
+    // Na porta do orquestrador (síncrona, IA despachada dentro da própria
+    // requisição), NÃO abrimos transação: prender a conexão do pool durante
+    // uma chamada de IA que pode levar dezenas de segundos é exatamente o
+    // problema que a ponte evita ao ir para a outbox — aqui o caminho
+    // continua sem transação, como sempre foi.
+    const resultadoDaTransacao = despachoEmSegundoPlano
+      ? await repositorio.comUsuario(null, processarEGravarRecibo)
+      : await processarEGravarRecibo();
 
-    const recibo = {
-      aceito: true,
-      duplicado: false,
-      chave_idempotencia: evento.chave_idempotencia,
-      tipo: evento.tipo,
-      canal: evento.canal,
-      // Quem é o dono da resposta, e o que o transporte fez de fato: junto com
-      // `decisao`, é o que permite auditar "importou sem reenviar" de fora.
-      estrategia_ia: evento.estrategia_ia,
-      decisao_transporte: resultado.ia_despachada === false
-        ? 'importada_sem_despacho'
-        : 'despacho_pelo_crm',
-      conversa_id: resultado.conversa_id ?? null,
-      decisao: resultado.acao,
-      recebido_em: new Date().toISOString(),
-    };
-
-    await repositorio.registrarEvento(evento.chave_idempotencia, recibo);
-    responderJson(res, 202, recibo);
+    responderJson(res, resultadoDaTransacao.status, resultadoDaTransacao.corpo);
   }
 
   async function receberEventoDoOrquestrador(req, res) {
@@ -1460,13 +1499,17 @@ function criarAplicacao(dependencias = {}) {
         )).catch(() => [{ estado: 'indisponivel' }, [], []]);
         const saudeOrquestrador = { estado: batimentos.openclaw ?? 'indisponivel' };
         const saudeInboxFinal = { estado: batimentos.inbox ?? (saudeInbox?.estado ?? 'indisponivel') };
+        // Comando 7, achado A-1: o worker da automação (outbox) já grava seu
+        // batimento no mesmo mapa (`automacao_outbox_worker`); só faltava
+        // expor a chave que já estava sendo lida acima.
+        const saudeOutbox = { estado: batimentos.automacao_outbox_worker ?? 'indisponivel' };
         responderJson(
           res,
           200,
           montarResumo(configuracao, saudeOrquestrador, saudeInboxFinal, {
             conversas: conversasDoResumo,
             leads: leadsDoResumo,
-          }),
+          }, saudeOutbox),
           { 'cache-control': 'no-store' },
         );
         return;

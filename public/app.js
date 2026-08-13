@@ -596,6 +596,12 @@ function desenharThread(mensagens) {
 
     item.className = mensagem.direcao === 'entrada' ? 'recebida' : 'enviada';
     if (mensagem.privada) item.classList.add('privada');
+    // Comando 7, achado A-3: a barreira final pode gravar uma resposta e
+    // depois bloquear a entrega dela — sem esta marca, a tela mostrava as
+    // duas do mesmo jeito, e ninguém enxergava que o paciente não recebeu
+    // nada. `entrega_falhou` só existe em mensagens que o backend marcou
+    // assim (ver src/dominio/atendimento.js); nunca em mensagem de entrada.
+    if (mensagem.entrega_falhou) item.classList.add('nao-entregue');
 
     const corpo = document.createElement('span');
     corpo.textContent = mensagem.conteudo || '';
@@ -607,6 +613,14 @@ function desenharThread(mensagens) {
       .join(' · ');
 
     item.append(corpo, rodape);
+
+    if (mensagem.entrega_falhou) {
+      const aviso = document.createElement('small');
+      aviso.className = 'aviso-nao-entregue';
+      aviso.textContent = '⚠ não entregue ao paciente';
+      item.append(aviso);
+    }
+
     thread.append(item);
   }
 
@@ -1238,14 +1252,30 @@ seletor('#botao-nota')?.addEventListener('click', async () => {
 });
 
 for (const botao of document.querySelectorAll('.acoes-conversa .acao[data-acao]')) {
-  botao.addEventListener('click', () => {
+  botao.addEventListener('click', async () => {
     const acoes = {
       assumir: () => agir('assumir', {}),
       liberar: () => agir('assumir', { liberar: true }),
       resolver: () => agir('estado', { status: 'resolvida' }),
       reabrir: () => agir('estado', { status: 'aberta' }),
     };
-    acoes[botao.dataset.acao]?.();
+    const executar = acoes[botao.dataset.acao];
+    if (!executar) return;
+
+    // "Assumir" é o que impede a automação de responder a partir de agora —
+    // não cancela uma geração que já estava em voo no instante do clique.
+    // Desabilitar aqui evita o duplo clique virando dois comandos
+    // concorrentes; "Aplicando…" é o único texto honesto entre o clique e a
+    // confirmação do servidor (`agir` já redesenha a barra inteira ao final).
+    const textoOriginal = botao.textContent;
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
+    try {
+      await executar();
+    } finally {
+      botao.disabled = false;
+      botao.textContent = textoOriginal;
+    }
   });
 }
 
@@ -1453,28 +1483,44 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
       'Parar a Serena AGORA?\n\nNenhum paciente receberá resposta automática até alguém religar. As mensagens continuam sendo recebidas e gravadas no CRM.',
     );
     if (!certeza) return;
+    // Só o `disabled` é gerido aqui: o texto do botão, em qualquer desfecho
+    // (sucesso ou erro), é responsabilidade de `desenharParadaDeEmergencia` /
+    // `sincronizarParadaDeEmergencia` — restaurar um texto fixo aqui por
+    // cima delas reintroduziria exatamente a discordância entre painel e
+    // estado real que este botão existe para não ter.
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
     try {
       await pedirJson('/api/serena/estado', {
         metodo: 'POST',
         corpo: { ativa: false, motivo: 'PARADA DE EMERGÊNCIA — botão do painel' },
       });
       desenharParadaDeEmergencia(false);
-      informar('Serena PARADA. As mensagens continuam entrando; a equipe assume as respostas.');
+      // "Comando recebido" — não "toda resposta em curso foi cancelada". Uma
+      // geração que já estava em voo no instante do clique pode ter sido
+      // entregue antes de este comando alcançar a barreira final.
+      informar('Comando recebido: Serena PARADA a partir de agora. As mensagens continuam entrando; a equipe assume as respostas. Se havia uma resposta sendo gerada no instante do clique, ela pode ainda ter sido entregue — confira a conversa.');
     } catch (erro) {
       informar(`Não consegui parar: ${erro.message}`);
       sincronizarParadaDeEmergencia();
+    } finally {
+      botao.disabled = false;
     }
     return;
   }
 
   if (!window.confirm('Religar a Serena? Ela volta a responder conforme o horário configurado.')) return;
+  botao.disabled = true;
+  botao.textContent = 'Aplicando…';
   try {
     await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa: true } });
     desenharParadaDeEmergencia(true);
-    informar('Serena religada.');
+    informar('Comando recebido: Serena religada.');
   } catch (erro) {
     informar(`Não consegui religar: ${erro.message}`);
     sincronizarParadaDeEmergencia();
+  } finally {
+    botao.disabled = false;
   }
 });
 
@@ -2816,6 +2862,27 @@ function desenharEstadoDaSerena(dados) {
   const detalheEntrega = seletor('#serena-entrega-detalhe');
   if (detalheEntrega) detalheEntrega.textContent = entrega.significado ?? '—';
 
+  // Comando 5 / frente 12: desejado (o que a configuração manda agora) ao
+  // lado do efetivo (o que o canal do OpenClaw está de fato aplicando). Só
+  // existe com política de canal configurada (Arquitetura A) — em
+  // Arquitetura B (crm_despacha, o modo efetivo hoje) a barreira que decide
+  // é a do CRM, não uma política sincronizada no canal, e o servidor manda
+  // `null` em vez de fingir uma comparação que não é aplicável.
+  const coerencia = serena.desejado_vs_efetivo;
+  if (coerencia) {
+    const bate = coerencia.desejado === coerencia.aplicado;
+    pintarEstado('#serena-coerencia', bate ? 'Coerente' : 'DIVERGENTE', bate ? 'ok' : 'ruim');
+    const detalheCoerencia = seletor('#serena-coerencia-detalhe');
+    if (detalheCoerencia) {
+      detalheCoerencia.textContent = `desejado: ${coerencia.desejado ? 'atender' : 'calar'} · `
+        + `efetivo: ${coerencia.aplicado ? 'atendendo' : 'calado'}`;
+    }
+  } else {
+    pintarEstado('#serena-coerencia', 'Não aplicável', 'neutro');
+    const detalheCoerencia = seletor('#serena-coerencia-detalhe');
+    if (detalheCoerencia) detalheCoerencia.textContent = 'sem política de canal (Arquitetura B / Evolution)';
+  }
+
   const pilula = seletor('#estado-serena');
   if (pilula) {
     pilula.textContent = serena.ativa ? 'Ligada' : 'Desligada';
@@ -3051,18 +3118,39 @@ seletor('#serena-voz-consentimento')?.addEventListener('change', desenharEstadoD
 seletor('#serena-voz-iniciar')?.addEventListener('click', iniciarVoz);
 seletor('#serena-voz-parar')?.addEventListener('click', pararVoz);
 
-async function alternarSerena(ativa) {
+/**
+ * `botao`, quando informado, fica desabilitado e com o texto "Aplicando…"
+ * enquanto o comando ainda não foi confirmado pelo servidor — clique duplo
+ * não pode virar dois comandos concorrentes, e "Aplicando…" é o único estado
+ * honesto entre "cliquei" e "o servidor confirmou".
+ */
+async function alternarSerena(ativa, botao = null) {
   const motivo = ativa ? null : prompt('Motivo do desligamento (obrigatório):');
   if (!ativa && !motivo) return;
 
+  const textoOriginal = botao?.textContent;
+  if (botao) {
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
+  }
   try {
     await pedirJson('/api/serena/estado', { metodo: 'POST', corpo: { ativa, motivo } });
-    informar(ativa ? 'Serena ligada.' : 'Serena desligada — as mensagens continuam sendo gravadas.');
+    // "Comando recebido" não é "Serena efetivamente parada": uma resposta que
+    // já estava em geração pode ter sido enviada antes de este comando
+    // chegar à barreira final. O texto não promete parada retroativa.
+    informar(ativa
+      ? 'Comando recebido: Serena ligada.'
+      : 'Comando recebido: Serena desligada a partir de agora. Uma resposta que já estava sendo gerada no momento do clique pode ainda ter sido entregue — a barreira de controle bloqueia o que não foi enviado, não o que já saiu.');
     await carregarSerena();
     // O botão de emergência do menu espelha o mesmo interruptor.
     desenharParadaDeEmergencia(ativa);
   } catch (erro) {
     informar(`Não foi possível alterar: ${erro.message}`);
+  } finally {
+    if (botao) {
+      botao.disabled = false;
+      if (textoOriginal !== undefined) botao.textContent = textoOriginal;
+    }
   }
 }
 
@@ -3176,8 +3264,8 @@ document.addEventListener('click', async (evento) => {
   if (!alvo) return;
 
   try {
-    if (alvo.id === 'serena-ligar') await alternarSerena(true);
-    if (alvo.id === 'serena-desligar') await alternarSerena(false);
+    if (alvo.id === 'serena-ligar') await alternarSerena(true, alvo);
+    if (alvo.id === 'serena-desligar') await alternarSerena(false, alvo);
     if (alvo.id === 'serena-novo-prompt') abrirEditorDePrompt(null);
     if (alvo.id === 'serena-cancelar-editor') seletor('#serena-editor').hidden = true;
     if (alvo.id === 'serena-nova-regra') abrirEditorDeRegra(null);
@@ -3359,53 +3447,132 @@ function frasePara(horario) {
   return horario.agenda?.ativa ? 'atendendo, dentro do horário' : 'atendendo — sem limite de horário';
 }
 
+/**
+ * Uma linha editável para um intervalo: início, fim e o botão de remover.
+ * Cada linha carrega o dia no dataset — é assim que `lerGradeDaTela` sabe a
+ * quem ela pertence sem depender da ordem no DOM.
+ */
+function desenharJanelaDaGrade(dia, inicio = '', fim = '') {
+  const linha = criarElemento('div', { classe: 'horario-janela' });
+  linha.dataset.dia = String(dia);
+
+  for (const [classe, valor] of [['inicio', inicio], ['fim', fim]]) {
+    const campo = document.createElement('input');
+    campo.type = 'time';
+    campo.className = `horario-${classe}`;
+    campo.dataset.dia = String(dia);
+    campo.value = valor;
+    linha.append(campo);
+  }
+
+  const remover = document.createElement('button');
+  remover.type = 'button';
+  remover.className = 'acao horario-remover';
+  remover.textContent = '×';
+  remover.dataset.dia = String(dia);
+  remover.setAttribute('aria-label', `Remover este intervalo (${DIAS_DA_SEMANA[dia]})`);
+  linha.append(remover);
+
+  return linha;
+}
+
+/**
+ * O bloco de um dia inteiro: nome, uma linha por intervalo (TODOS — nenhum
+ * vira nota de texto) e um botão para adicionar mais um.
+ *
+ * Sem intervalo nenhum, ainda desenha uma linha vazia: é o que deixa o dia
+ * pronto para receber um horário sem precisar clicar em "+ intervalo"
+ * primeiro — o caso mais comum (um intervalo por dia) continua sendo o mais
+ * rápido de preencher.
+ */
+function desenharDiaDaGrade(dia, nome, janelas) {
+  const bloco = criarElemento('div', { classe: 'horario-dia' });
+  bloco.dataset.dia = String(dia);
+  bloco.append(criarElemento('span', { texto: nome, classe: 'horario-nome' }));
+
+  const lista = criarElemento('div', { classe: 'horario-janelas' });
+  lista.dataset.dia = String(dia);
+  const linhasIniciais = janelas.length > 0 ? janelas : [['', '']];
+  for (const [inicio, fim] of linhasIniciais) {
+    lista.append(desenharJanelaDaGrade(dia, inicio ?? '', fim ?? ''));
+  }
+  bloco.append(lista);
+
+  const adicionar = document.createElement('button');
+  adicionar.type = 'button';
+  adicionar.className = 'acao horario-adicionar';
+  adicionar.textContent = '+ intervalo';
+  adicionar.dataset.dia = String(dia);
+  bloco.append(adicionar);
+
+  return bloco;
+}
+
 function desenharGradeDeHorario(agenda) {
   const grade = seletor('#horario-grade');
   if (!grade) return;
 
-  grade.replaceChildren(...DIAS_DA_SEMANA.map((nome, dia) => {
-    const janelas = agenda?.dias?.[String(dia)] ?? [];
-    const linha = criarElemento('div', { classe: 'horario-dia' });
-    linha.append(criarElemento('span', { texto: nome, classe: 'horario-nome' }));
-
-    // Uma faixa por dia cobre o caso real da clínica. Duas faixas (almoço) o
-    // banco e a API aceitam; a tela mostra a primeira e preserva o resto ao
-    // salvar, para não apagar em silêncio o que alguém configurou pela API.
-    const [inicio = '', fim = ''] = janelas[0] ?? [];
-    for (const [classe, valor] of [['inicio', inicio], ['fim', fim]]) {
-      const campo = document.createElement('input');
-      campo.type = 'time';
-      campo.className = `horario-${classe}`;
-      campo.dataset.dia = String(dia);
-      campo.value = valor;
-      linha.append(campo);
-    }
-
-    if (janelas.length > 1) {
-      linha.append(criarElemento('span', {
-        texto: `+${janelas.length - 1} faixa(s) definidas pela API`, classe: 'nota',
-      }));
-    }
-    return linha;
-  }));
+  // TODAS as janelas de cada dia viram linha editável — nenhuma fica
+  // escondida atrás de uma nota "+N faixa(s)" que se perderia ao salvar
+  // (Comando 4: era exatamente isso que acontecia com `janelas[1]` em diante).
+  grade.replaceChildren(...DIAS_DA_SEMANA.map(
+    (nome, dia) => desenharDiaDaGrade(dia, nome, agenda?.dias?.[String(dia)] ?? []),
+  ));
 }
 
-/** Lê a grade da tela. Faixa pela metade é erro, não meia-configuração. */
+/**
+ * Adiciona uma linha vazia ao dia informado, e coloca o foco nela — quem
+ * clicou em "+ intervalo" está prestes a digitar um horário nela.
+ */
+function adicionarJanelaNaGrade(dia) {
+  const lista = seletor(`.horario-janelas[data-dia="${dia}"]`);
+  if (!lista) return;
+  const linha = desenharJanelaDaGrade(dia, '', '');
+  lista.append(linha);
+  linha.querySelector('.horario-inicio')?.focus();
+}
+
+/**
+ * Remove a linha do intervalo clicado. Um dia nunca fica sem nenhuma linha
+ * visível — a última é limpa em vez de removida, porque "sem linha nenhuma"
+ * não tem como virar "sem horário neste dia" de volta sem reabrir a tela.
+ */
+function removerJanelaDaGrade(botao) {
+  const linha = botao.closest('.horario-janela');
+  if (!linha) return;
+  const lista = linha.parentElement;
+  if (lista && lista.children.length > 1) {
+    linha.remove();
+    return;
+  }
+  for (const campo of linha.querySelectorAll('input[type="time"]')) campo.value = '';
+}
+
+/**
+ * Lê a grade da tela inteira, direto do DOM — nenhum estado "anterior" é
+ * consultado, porque agora não existe mais janela escondida para preservar:
+ * o que está na tela é exatamente o que existe. Linha com um lado só
+ * preenchido é erro, não meia-configuração salva por engano.
+ */
 function lerGradeDaTela() {
-  const anterior = serenaPainel?.horario?.agenda?.dias ?? {};
+  const grade = seletor('#horario-grade');
   const dias = {};
 
   for (let dia = 0; dia <= 6; dia += 1) {
-    const inicio = seletor(`.horario-inicio[data-dia="${dia}"]`)?.value ?? '';
-    const fim = seletor(`.horario-fim[data-dia="${dia}"]`)?.value ?? '';
+    const linhas = grade ? [...grade.querySelectorAll(`.horario-janela[data-dia="${dia}"]`)] : [];
+    const janelas = [];
 
-    if (!inicio && !fim) { dias[String(dia)] = []; continue; }
-    if (!inicio || !fim) {
-      throw new Error(`${DIAS_DA_SEMANA[dia]}: preencha o início e o fim, ou deixe os dois vazios`);
+    for (const linha of linhas) {
+      const inicio = linha.querySelector('.horario-inicio')?.value ?? '';
+      const fim = linha.querySelector('.horario-fim')?.value ?? '';
+      if (!inicio && !fim) continue; // linha vazia: nenhum intervalo aqui
+      if (!inicio || !fim) {
+        throw new Error(`${DIAS_DA_SEMANA[dia]}: preencha o início e o fim de cada intervalo, ou remova o intervalo`);
+      }
+      janelas.push([inicio, fim]);
     }
 
-    // As faixas extras que só existem pela API seguem intactas.
-    dias[String(dia)] = [[inicio, fim], ...(anterior[String(dia)] ?? []).slice(1)];
+    dias[String(dia)] = janelas;
   }
 
   return { ativa: seletor('#horario-ativo')?.checked === true, fuso: FUSO_DA_CLINICA, dias };
@@ -3433,14 +3600,34 @@ async function salvarHorario() {
   }
 }
 
-/** Pausa, retomada e plantão: uma chamada, e a tela se redesenha com a resposta. */
-async function mexerNoAtendimento(caminho, opcoes) {
+/**
+ * Pausa, retomada e plantão: uma chamada, e a tela se redesenha com a resposta.
+ *
+ * `botao`, quando informado, fica "Aplicando…" e desabilitado até a resposta
+ * do servidor — impede o duplo clique de virar dois comandos concorrentes.
+ */
+async function mexerNoAtendimento(caminho, opcoes, botao = null) {
+  const textoOriginal = botao?.textContent;
+  if (botao) {
+    botao.disabled = true;
+    botao.textContent = 'Aplicando…';
+  }
   try {
     const { horario } = await pedirJson(caminho, opcoes);
     if (serenaPainel) serenaPainel.horario = horario;
     desenharHorario(horario);
+    // Pausar cala a automação a partir de agora — "comando recebido", não
+    // "geração em andamento cancelada retroativamente".
+    if (opcoes.metodo === 'POST' && caminho === '/api/serena/pausa') {
+      informar('Comando recebido: Serena pausada. Uma resposta que já estava sendo gerada no momento do clique pode ainda ter sido entregue.');
+    }
   } catch (erro) {
     informar(erro.detalhe ?? `não foi possível: ${erro.message}`);
+  } finally {
+    if (botao) {
+      botao.disabled = false;
+      if (textoOriginal !== undefined) botao.textContent = textoOriginal;
+    }
   }
 }
 
@@ -3457,6 +3644,14 @@ let relogioDoQr = null;
 // velho pertence a uma janela já fechada e é descartada.
 let aberturaDoQr = 0;
 
+/**
+ * Comando 4 / frente 8: a Evolution API é o canal PRIMÁRIO de entrega desde
+ * os PRs #30/#31 (ver `canal-conversas.js` — ela é tentada antes, o gateway
+ * do OpenClaw abaixo só entra como reserva se ela falhar ou não estiver
+ * configurada). Antes, este cartão só sabia falar do gateway e podia dizer
+ * "conexão indisponível" com o canal que realmente entrega funcionando —
+ * agora `/api/serena/canal` sempre traz `evolucao`, e a tela mostra os dois.
+ */
 async function desenharEstadoDoCanal() {
   const descricao = seletor('#canal-descricao');
   const acoes = seletor('#canal-acoes');
@@ -3464,26 +3659,35 @@ async function desenharEstadoDoCanal() {
 
   try {
     const canal = await pedirJson('/api/serena/canal');
+    const evolucaoOk = canal.evolucao?.configurada === true;
+    const rotuloDoGateway = evolucaoOk ? 'gateway do OpenClaw (reserva)' : 'gateway do OpenClaw';
+
+    const prefixo = evolucaoOk
+      ? `Evolution API configurada${canal.evolucao.instancia ? ` (instância "${canal.evolucao.instancia}")` : ''} — via principal de entrega. `
+      : 'Evolution API não configurada. ';
 
     if (!canal.disponivel) {
-      descricao.textContent = `conexão indisponível — ${canal.motivo ?? 'gateway não configurado'}`;
+      descricao.textContent = evolucaoOk
+        ? `${prefixo}${rotuloDoGateway}: ${canal.motivo ?? 'indisponível'}`
+        : `${prefixo}${rotuloDoGateway} também indisponível — ${canal.motivo ?? 'não configurado'}. Nenhum canal de entrega ativo.`;
       if (acoes) acoes.hidden = true;
       return;
     }
 
-    if (canal.vinculado) {
-      descricao.textContent = canal.conectado
-        ? `conectado no ${formatarTelefone(canal.numero)}`
-        : `vinculado ao ${formatarTelefone(canal.numero)}, mas fora do ar agora`;
-    } else {
-      descricao.textContent = 'nenhum telefone conectado — os pacientes não são atendidos';
-    }
+    const estadoDoGateway = canal.vinculado
+      ? (canal.conectado ? `conectado no ${formatarTelefone(canal.numero)}` : `vinculado ao ${formatarTelefone(canal.numero)}, mas fora do ar agora`)
+      : 'nenhum telefone conectado nele';
+    descricao.textContent = `${prefixo}${rotuloDoGateway}: ${estadoDoGateway}`;
 
     // Só o master conecta: trocar o telefone muda por onde a clínica atende.
     if (acoes) {
       acoes.hidden = !usuarioAtual?.master;
       const botao = seletor('#canal-conectar');
-      if (botao) botao.textContent = canal.vinculado ? 'Reconectar' : 'Conectar WhatsApp';
+      if (botao) {
+        botao.textContent = canal.vinculado
+          ? 'Reconectar'
+          : (evolucaoOk ? 'Conectar WhatsApp (reserva)' : 'Conectar WhatsApp');
+      }
     }
 
     // Sem await: é um aviso, não um pré-requisito para mostrar o estado.
@@ -3707,14 +3911,16 @@ document.addEventListener('click', (evento) => {
   // durar o tempo de uma intervenção, e voltar sozinhos é o que impede que
   // alguém esqueça a Serena calada — ou falando num domingo.
   if (alvo.id === 'horario-salvar') salvarHorario();
+  if (alvo.classList.contains('horario-adicionar')) adicionarJanelaNaGrade(alvo.dataset.dia);
+  if (alvo.classList.contains('horario-remover')) removerJanelaDaGrade(alvo);
   if (alvo.id === 'serena-pausar') {
-    mexerNoAtendimento('/api/serena/pausa', { metodo: 'POST', corpo: { minutos: 15 } });
+    mexerNoAtendimento('/api/serena/pausa', { metodo: 'POST', corpo: { minutos: 15 } }, alvo);
   }
   if (alvo.id === 'serena-despausar') {
-    mexerNoAtendimento('/api/serena/pausa', { metodo: 'DELETE' });
+    mexerNoAtendimento('/api/serena/pausa', { metodo: 'DELETE' }, alvo);
   }
   if (alvo.id === 'serena-plantao') {
-    mexerNoAtendimento('/api/serena/plantao', { metodo: 'POST', corpo: { minutos: 60 } });
+    mexerNoAtendimento('/api/serena/plantao', { metodo: 'POST', corpo: { minutos: 60 } }, alvo);
   }
 });
 

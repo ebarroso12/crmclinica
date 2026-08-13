@@ -216,7 +216,16 @@ test('falha do orquestrador escalona para a equipe em vez de travar', async () =
   assert.equal(depois.assumida_por_humano, true, 'a conversa não pode ficar órfã');
 });
 
-test('sem orquestrador configurado, a conversa fica com a equipe', async () => {
+test('sem orquestrador configurado, a conversa é escalonada para a equipe — Comando 7, achado A-2', async () => {
+  // Antes deste achado: `sem_orquestrador` era tratado como resultado "resolvido"
+  // pela outbox (ver decidirDesfecho em automacao-outbox.js) e a função
+  // devolvia sem chamar `escalonar` nenhuma vez — a conversa ficava "aberta",
+  // sem `assumida_por_humano`, sem aviso de sistema, sem ninguém sabendo que o
+  // paciente não teve resposta. Falta de configuração não é transitória: não
+  // adianta reagendar e tentar de novo (o valor de `disponivel` vem de config
+  // estática, não muda sozinho entre tentativas) — o mesmo raciocínio que já
+  // vale para `motor_ia_nao_configurado` (mais abaixo em `atendimento.js`) e
+  // para `falha_no_orquestrador`. Escalação imediata, não retentativa.
   const repositorio = criarRepositorioEmMemoria();
   const atendimento = criarAtendimento({
     repositorio,
@@ -224,11 +233,16 @@ test('sem orquestrador configurado, a conversa fica com a equipe', async () => {
   });
 
   const resultado = await atendimento.receberMensagem(EVENTO);
-  assert.equal(resultado.acao, 'sem_orquestrador');
+  assert.equal(resultado.acao, 'escalonada_para_equipe');
+  assert.equal(resultado.motivo, 'openclaw_nao_configurado');
 
   // A mensagem não se perde: está gravada e esperando.
   const [conversa] = await repositorio.listarConversas({});
-  assert.equal((await repositorio.listarMensagens(conversa.id)).length, 1);
+  assert.equal((await repositorio.listarMensagens(conversa.id)).length, 2, 'a mensagem do paciente + o aviso de escalonamento');
+
+  // A conversa vai para a equipe de verdade — não fica "aberta" sem dono.
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, true, 'a conversa não pode ficar órfã, sem ninguém saber que não foi respondida');
 });
 
 test('definir temperatura preserva as etiquetas da equipe e reflete no lead', async () => {

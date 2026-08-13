@@ -734,6 +734,11 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 .mensagens li { max-width: 78%; padding: 11px 14px; border-radius: 12px; }
 .recebida { background: #f0f3f8; }
 .enviada { margin-left: auto; background: #ddf3f5; }
+/* Comando 7, achado A-3: a automação gerou isto, mas a barreira final não
+   deixou sair — precisa ficar visualmente diferente de uma entrega normal,
+   não só sinalizado por cor (ver .aviso-nao-entregue, que é texto). */
+.enviada.nao-entregue { background: #fdeaea; border: 1px dashed #b02a2a; }
+.aviso-nao-entregue { color: #8a1f1f; font-weight: 600; }
 .composer { display: flex; gap: 8px; margin-top: 14px; }
 .composer input { flex: 1; border: 1px solid var(--linha); border-radius: 8px; padding: 10px; font: inherit; }
 
@@ -1450,7 +1455,7 @@ button.perigo:hover { background: #fecaca; }
 
 .horario-dia {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -1461,11 +1466,42 @@ button.perigo:hover { background: #fecaca; }
   flex: 0 0 84px;
   font-size: 14px;
   color: var(--apoio);
+  padding-top: 8px;
 }
 
 .horario-dia input[type="time"] {
   width: auto;
   padding: 6px 8px;
+}
+
+/* Comando 4: cada dia pode ter mais de um intervalo (ex.: 00:00–08:00 e
+   18:00–23:59), e todos precisam caber como linhas próprias — nenhum vira
+   nota de texto que se perde ao salvar. */
+.horario-janelas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.horario-janela {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.horario-remover {
+  padding: 2px 9px;
+  line-height: 1;
+  font-size: 15px;
+}
+
+.horario-adicionar {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 5px 10px;
 }
 
 /* Aviso de risco do canal. Só aparece quando os números pedem — por isso pode
