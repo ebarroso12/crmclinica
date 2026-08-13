@@ -143,8 +143,25 @@ function criarRotasDaSerena({
     // barreira do CRM (Comando 2), não uma política sincronizada no canal —
     // então a comparação não é aplicável ali, e vem `null` em vez de fingir
     // uma divergência que não existe.
+    //
+    // Comando 7 / achado C-1 (auditoria independente): `politica.ler()` é um
+    // RPC de verdade ao gateway WebSocket da clínica, com timeout de até
+    // 30s — e esse gateway está parado no VPS desde o Comando 4. Sem este
+    // try/catch, uma falha ali derrubava a rota INTEIRA (500), escondendo a
+    // tela de controle (Ligar/Desligar/Pausar/Plantão) no front-end, porque
+    // `#serena-controle` só sai de `hidden` se a chamada suceder. Mesmo
+    // padrão de `verificar()` em src/dominio/diagnostico.js:58-70: falha na
+    // sonda vira `null`, nunca derruba o resto.
     const sondaDoDesejadoVsEfetivo = sondaDaSerena(serena, politica, decidirAtendimento);
-    const desejadoVsEfetivo = sondaDoDesejadoVsEfetivo ? await sondaDoDesejadoVsEfetivo() : null;
+    let desejadoVsEfetivo = null;
+    if (sondaDoDesejadoVsEfetivo) {
+      try {
+        desejadoVsEfetivo = await sondaDoDesejadoVsEfetivo();
+      } catch (erro) {
+        console.error('[crmclinica] falha ao comparar desejado x efetivo da Serena:', erro.message);
+        desejadoVsEfetivo = null;
+      }
+    }
 
     return {
       openclaw: {

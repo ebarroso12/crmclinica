@@ -111,6 +111,46 @@ test('com política de canal discordando do desejado, a divergência aparece —
   assert.equal(corpo.serena.desejado_vs_efetivo.aplicado, false);
 });
 
+// Comando 7, achado C-1 (auditoria independente) — `politica.ler()` é um RPC
+// WebSocket de verdade ao gateway da clínica, com timeout de até 30s. Uma
+// falha ali (o gateway está parado no VPS, segundo o Comando 4) não pode
+// derrubar a rota inteira: isso escondia a tela de controle inteira
+// (Ligar/Desligar/Pausar/Plantão) no front-end, porque `#serena-controle` só
+// sai de `hidden` se a chamada suceder.
+test('C-1: política de canal que lança não derruba /api/serena/status — resto do payload intacto, desejado_vs_efetivo null', async (t) => {
+  const politicaQueLanca = { async ler() { throw new Error('ECONNREFUSED: gateway da clínica fora do ar'); } };
+  const { ambiente } = await montar(t, { politicaDoCanal: politicaQueLanca });
+
+  const resposta = await ambiente.pedir('/api/serena/status');
+  assert.equal(resposta.status, 200, 'a rota inteira não pode cair por causa da política do canal');
+
+  const corpo = await resposta.json();
+  assert.equal(corpo.serena.desejado_vs_efetivo, null, 'sem saber o efetivo, não finge — mas também não quebra');
+  // O resto do payload precisa continuar de pé: é o que a tela de controle
+  // usa para decidir se mostra os botões.
+  assert.equal(corpo.serena.estado, 'ligada');
+  assert.equal(corpo.serena.ativa, true);
+  assert.ok(corpo.horario);
+  assert.ok(corpo.openclaw);
+  assert.ok(corpo.whatsapp);
+});
+
+test('C-1: o mesmo vale para GET /api/serena (painel) — prompt, versões e regras continuam vindo', async (t) => {
+  const politicaQueLanca = { async ler() { throw new Error('timeout no gateway'); } };
+  const { ambiente, servicoDaSerena } = await montar(t, { politicaDoCanal: politicaQueLanca });
+
+  const prompt = await servicoDaSerena.criarPrompt({ titulo: 'Política', conteudo: 'Você é Serena, da clínica.' });
+  await servicoDaSerena.publicarPrompt(prompt.id, {});
+
+  const resposta = await ambiente.pedir('/api/serena');
+  assert.equal(resposta.status, 200);
+
+  const corpo = await resposta.json();
+  assert.equal(corpo.serena.desejado_vs_efetivo, null);
+  assert.equal(corpo.prompt_ativo.versao, 1);
+  assert.equal(corpo.pode_gerenciar, true);
+});
+
 test('o painel entrega estado, prompt e regras de uma vez', async (t) => {
   const { ambiente, servicoDaSerena } = await montar(t);
 
