@@ -11,6 +11,7 @@ const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
 const { normalizarEventoEvolution } = require('../integracoes/evolution-webhook');
+const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
@@ -140,9 +141,16 @@ function criarAplicacao(dependencias = {}) {
     repositorio, serena: servicoDaSerena, configuracao,
   });
 
+  const clienteEvolucaoEnvio = dependencias.clienteEvolucaoEnvio
+    || criarClienteEvolucaoEnvio(configuracao.evolution);
+
+  // O canal existe se houver PELO MENOS UMA via de envio configurada — antes
+  // só o gateway do OpenClaw contava; agora a Evolution sozinha também basta,
+  // e "canal_nao_configurado" só volta a aparecer se nenhuma das duas estiver.
   const canalDeConversas = dependencias.canalDeConversas
-    || (configuracao.openclaw.canalClinica.url
-      ? criarCanalDeConversas(configuracao.openclaw.canalClinica) : null);
+    || ((configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel)
+      ? criarCanalDeConversas(configuracao.openclaw.canalClinica, { evolucao: clienteEvolucaoEnvio })
+      : null);
 
   // Barramento das Conversas ao vivo: cada mensagem gravada passa por aqui e
   // é anunciada a quem está com a tela aberta via SSE (rota mais abaixo).
