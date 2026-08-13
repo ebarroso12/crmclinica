@@ -13,9 +13,9 @@ programa de correção do controle da Serena. Duas rodadas até aqui:
 - **Segunda auditoria independente**, rodada em cima do commit `1351499`
   (fim do Comando 7): veredito **APROVADO COM RESSALVAS** — confirmou C-1,
   A-1 e A-2 como de fato resolvidos, com evidência própria do auditor.
-  Achados **N-9** e **N-10** foram corrigidos (commits `6349327` e
-  `af623ac`). **N-1 a N-13** e uma nota informativa ficaram pendentes,
-  registrados na seção correspondente abaixo.
+  Achados **N-9**, **N-10** e **N-13** foram corrigidos. **N-1 a N-12** e
+  uma nota informativa ficaram pendentes, registrados na seção
+  correspondente abaixo.
 
 Nenhum código relativo aos achados pendentes foi alterado por este
 documento; é só a lista de pendências, para não perder o que cada auditoria
@@ -237,9 +237,10 @@ projeto. Não afeta esta branch — já foi tratado.
 ## Segunda auditoria independente — achados N-1 a N-13 (registro, não correção)
 
 Rodada em cima do commit `1351499`. Veredito **APROVADO COM RESSALVAS**.
-**N-9** e **N-10** foram corrigidos (ver commits `6349327` e `af623ac`); os
-achados abaixo — de risco baixo/médio, não bloqueantes — ficam só
-registrados, por decisão explícita de escopo desta rodada.
+**N-9**, **N-10** e **N-13** foram corrigidos (ver commits `6349327`,
+`af623ac` e o rollback da migration 032); os demais achados abaixo — de
+risco baixo/médio, não bloqueantes — ficam só registrados, por decisão
+explícita de escopo desta rodada.
 
 ### ⚠️ N-3 (médio — PRECONDIÇÃO OPERACIONAL, não é bug de código) — a única coisa desta lista que o Dr. Edson precisa saber pessoalmente antes de autorizar produção
 
@@ -375,13 +376,18 @@ exercitar o caminho de ingestão real.
 `'crm_despacha'` com o escalonamento do A-2 ativo, em vez de desviar dele
 no setup.
 
-### N-13 (baixo)
+### N-13 (baixo) — ✅ RESOLVIDO
 
 `db/032_mensagens_marca_entrega_falhou.sql`: sem arquivo de rollback,
 contra a convenção do próprio repositório (010, 031). `DROP COLUMN` é
 trivial, mas vale criar o rollback por consistência.
 
-**Status:** pendente de correção.
+**Status:** resolvido — `db/032_mensagens_marca_entrega_falhou_rollback.sql`
+criado, seguindo o mesmo padrão de `db/031_automacao_outbox_rollback.sql`
+(o que apaga, o que custa, aviso de não rodar por reflexo, instrução de
+reverter código+banco juntos). Nenhuma migration foi aplicada em produção
+por este commit — só o arquivo de rollback foi criado, para a 032 já
+nascer com caminho de volta documentado antes de ser aplicada.
 
 ### Nota informativa (sem ação)
 
