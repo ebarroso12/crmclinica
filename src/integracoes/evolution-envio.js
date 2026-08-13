@@ -43,7 +43,9 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
           body: JSON.stringify({
             number: numero,
             text: String(texto ?? ''),
-            delay: 1200,
+            // Aninhado em `options`, não solto: é o formato confirmado por
+            // teste real contra a instância de produção (HTTP 201).
+            options: { delay: 1200, presence: 'composing' },
           }),
           signal: AbortSignal.timeout(configuracao.timeoutMs ?? 15000),
         });

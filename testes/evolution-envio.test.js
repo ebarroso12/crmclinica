@@ -42,6 +42,7 @@ test('envia POST /message/sendText/{instancia} com apikey no header e number sem
   const corpo = JSON.parse(opcoes.body);
   assert.equal(corpo.number, '5511999990000');
   assert.equal(corpo.text, 'Olá!');
+  assert.deepEqual(corpo.options, { delay: 1200, presence: 'composing' });
 });
 
 test('HTTP não-2xx vira erro com o status e o corpo', async () => {
