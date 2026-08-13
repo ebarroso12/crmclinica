@@ -80,6 +80,68 @@ test('janela que cruza a meia-noite vale nas duas metades', () => {
   assert.equal(dentroDoHorario(noturno, emSaoPaulo('2026-08-06T21:00:00')), false, 'quinta 21h ainda não abriu');
 });
 
+// ------------------------------------------------------------------ Comando 4
+//
+// Achado do Comando 1: `fim` é exclusivo na comparação (`minutos < fim`), e
+// isso deixa 23:59 fora da própria janela que deveria terminar nela — a
+// configuração REAL em produção (segunda a sexta: 00:00–08:00 e 18:00–23:59;
+// fins de semana: 00:00–23:59) tinha 1 minuto de lacuna (23:59–00:00) em que
+// a Serena não estava nem programada para atender, nem para calar: ela
+// simplesmente não decidia nada de propósito ali.
+//
+// A correção: 23:59, como fim de janela, é tratado como o último minuto do
+// relógio — "até virar o dia", não "até o penúltimo minuto". Isso fecha a
+// janela sem exigir migrar o valor já salvo no banco (que continua sendo
+// literalmente "18:00" a "23:59").
+
+test('23:59 como fim de janela cobre o minuto inteiro — sem lacuna até 00:00 (config real de produção)', () => {
+  const configReal = {
+    ativa: true,
+    fuso: FUSO_PADRAO,
+    dias: {
+      0: [['00:00', '23:59']], 6: [['00:00', '23:59']],
+      1: [['00:00', '08:00'], ['18:00', '23:59']],
+      2: [['00:00', '08:00'], ['18:00', '23:59']],
+      3: [['00:00', '08:00'], ['18:00', '23:59']],
+      4: [['00:00', '08:00'], ['18:00', '23:59']],
+      5: [['00:00', '08:00'], ['18:00', '23:59']],
+    },
+  };
+
+  // A quinta é dia 4: 18:00–23:59 deveria cobrir literalmente até a virada.
+  assert.equal(dentroDoHorario(configReal, emSaoPaulo('2026-08-06T23:59:00')), true, 'o próprio minuto 23:59 tem que estar dentro');
+  assert.equal(dentroDoHorario(configReal, emSaoPaulo('2026-08-06T23:59:30')), true, '23:59:30 também');
+  // A virada para 00:00 do dia seguinte já é outro dia (sexta, 00:00–08:00
+  // continua atendendo) — não é sobre isto que o teste é: é sobre não haver
+  // buraco DENTRO do minuto 23:59 do dia 4, que a comparação exclusiva antiga produzia.
+  assert.equal(dentroDoHorario(configReal, emSaoPaulo('2026-08-06T17:59:00')), false, 'ainda no expediente da equipe, um minuto antes de abrir');
+  assert.equal(dentroDoHorario(configReal, emSaoPaulo('2026-08-06T18:00:00')), true, 'abre pontualmente às 18h');
+
+  // Fim de semana: 00:00–23:59 é "o dia inteiro" com a mesma notação da
+  // produção real — tem que valer o dia inteiro, sem lacuna às 23:59.
+  assert.equal(dentroDoHorario(configReal, emSaoPaulo('2026-08-02T23:59:00')), true, 'domingo 23:59');
+  assert.equal(dentroDoHorario(configReal, emSaoPaulo('2026-08-02T12:00:00')), true, 'domingo meio-dia');
+});
+
+test('23:59 como fim continua exclusivo do minuto 00:00 do MESMO dia — não vira 24h retroativo', () => {
+  // A janela ["18:00","23:59"] cobre até o fim do dia 4 (quinta). Não pode,
+  // por engano, também "vazar" e contar como se já fosse quinta às 00:00:01
+  // — isso seria o dia 4 inteiro, não uma janela que abre às 18h.
+  const noturna = { ativa: true, fuso: FUSO_PADRAO, dias: { 4: [['18:00', '23:59']] } };
+  assert.equal(dentroDoHorario(noturna, emSaoPaulo('2026-08-06T00:30:00')), false, 'quinta de madrugada, antes das 18h, continua fechada');
+  assert.equal(dentroDoHorario(noturna, emSaoPaulo('2026-08-07T00:30:00')), false, 'sexta de madrugada não é a janela de quinta');
+});
+
+test('fim que não é 23:59 continua exclusivo — a correção não vira "todo fim inclui o minuto"', () => {
+  // Guarda contra generalizar demais: só 23:59 (o último minuto do relógio)
+  // ganha o tratamento especial. 18:00 como fim continua sendo o instante em
+  // que a janela fecha, não o último minuto aberto — mesmo teste que já
+  // existia para 08:00–18:00, agora explícito também com um fim diferente.
+  const tarde = { ativa: true, fuso: FUSO_PADRAO, dias: { 4: [['08:00', '17:00']] } };
+  assert.equal(dentroDoHorario(tarde, emSaoPaulo('2026-08-06T17:00:00')), false, '17:00 fecha, não é mais o último minuto aberto');
+  assert.equal(dentroDoHorario(tarde, emSaoPaulo('2026-08-06T16:59:00')), true);
+});
+
 test('00:00–00:00 é como se escreve "o dia inteiro"', () => {
   const sempre = { ativa: true, fuso: FUSO_PADRAO, dias: { 4: [['00:00', '00:00']] } };
   assert.equal(dentroDoHorario(sempre, QUINTA_10H), true);
@@ -183,4 +245,23 @@ test('horário malformado é recusado com o dia e a janela que o causaram', () =
 test('grade ausente continua ausente — não vira grade vazia que cala tudo', () => {
   assert.equal(validarAgenda(null), null);
   assert.equal(validarAgenda(undefined), null);
+});
+
+test('Comando 4: dois ou mais intervalos no mesmo dia sobrevivem inteiros à validação', () => {
+  // A configuração real de produção é exatamente esta: dois intervalos na
+  // segunda-feira. A camada de validação (a mesma que o editor da tela e a
+  // rota HTTP chamam) precisa devolver os dois, na ordem, sem descartar nada.
+  const limpa = validarAgenda({
+    ativa: true,
+    dias: { 1: [['00:00', '08:00'], ['18:00', '23:59']] },
+  });
+  assert.deepEqual(limpa.dias['1'], [['00:00', '08:00'], ['18:00', '23:59']]);
+});
+
+test('Comando 4: três intervalos no mesmo dia também sobrevivem — não é um caso especial de "dois"', () => {
+  const limpa = validarAgenda({
+    ativa: true,
+    dias: { 3: [['06:00', '09:00'], ['12:00', '13:30'], ['18:00', '22:00']] },
+  });
+  assert.deepEqual(limpa.dias['3'], [['06:00', '09:00'], ['12:00', '13:30'], ['18:00', '22:00']]);
 });

@@ -3412,53 +3412,132 @@ function frasePara(horario) {
   return horario.agenda?.ativa ? 'atendendo, dentro do horário' : 'atendendo — sem limite de horário';
 }
 
+/**
+ * Uma linha editável para um intervalo: início, fim e o botão de remover.
+ * Cada linha carrega o dia no dataset — é assim que `lerGradeDaTela` sabe a
+ * quem ela pertence sem depender da ordem no DOM.
+ */
+function desenharJanelaDaGrade(dia, inicio = '', fim = '') {
+  const linha = criarElemento('div', { classe: 'horario-janela' });
+  linha.dataset.dia = String(dia);
+
+  for (const [classe, valor] of [['inicio', inicio], ['fim', fim]]) {
+    const campo = document.createElement('input');
+    campo.type = 'time';
+    campo.className = `horario-${classe}`;
+    campo.dataset.dia = String(dia);
+    campo.value = valor;
+    linha.append(campo);
+  }
+
+  const remover = document.createElement('button');
+  remover.type = 'button';
+  remover.className = 'acao horario-remover';
+  remover.textContent = '×';
+  remover.dataset.dia = String(dia);
+  remover.setAttribute('aria-label', `Remover este intervalo (${DIAS_DA_SEMANA[dia]})`);
+  linha.append(remover);
+
+  return linha;
+}
+
+/**
+ * O bloco de um dia inteiro: nome, uma linha por intervalo (TODOS — nenhum
+ * vira nota de texto) e um botão para adicionar mais um.
+ *
+ * Sem intervalo nenhum, ainda desenha uma linha vazia: é o que deixa o dia
+ * pronto para receber um horário sem precisar clicar em "+ intervalo"
+ * primeiro — o caso mais comum (um intervalo por dia) continua sendo o mais
+ * rápido de preencher.
+ */
+function desenharDiaDaGrade(dia, nome, janelas) {
+  const bloco = criarElemento('div', { classe: 'horario-dia' });
+  bloco.dataset.dia = String(dia);
+  bloco.append(criarElemento('span', { texto: nome, classe: 'horario-nome' }));
+
+  const lista = criarElemento('div', { classe: 'horario-janelas' });
+  lista.dataset.dia = String(dia);
+  const linhasIniciais = janelas.length > 0 ? janelas : [['', '']];
+  for (const [inicio, fim] of linhasIniciais) {
+    lista.append(desenharJanelaDaGrade(dia, inicio ?? '', fim ?? ''));
+  }
+  bloco.append(lista);
+
+  const adicionar = document.createElement('button');
+  adicionar.type = 'button';
+  adicionar.className = 'acao horario-adicionar';
+  adicionar.textContent = '+ intervalo';
+  adicionar.dataset.dia = String(dia);
+  bloco.append(adicionar);
+
+  return bloco;
+}
+
 function desenharGradeDeHorario(agenda) {
   const grade = seletor('#horario-grade');
   if (!grade) return;
 
-  grade.replaceChildren(...DIAS_DA_SEMANA.map((nome, dia) => {
-    const janelas = agenda?.dias?.[String(dia)] ?? [];
-    const linha = criarElemento('div', { classe: 'horario-dia' });
-    linha.append(criarElemento('span', { texto: nome, classe: 'horario-nome' }));
-
-    // Uma faixa por dia cobre o caso real da clínica. Duas faixas (almoço) o
-    // banco e a API aceitam; a tela mostra a primeira e preserva o resto ao
-    // salvar, para não apagar em silêncio o que alguém configurou pela API.
-    const [inicio = '', fim = ''] = janelas[0] ?? [];
-    for (const [classe, valor] of [['inicio', inicio], ['fim', fim]]) {
-      const campo = document.createElement('input');
-      campo.type = 'time';
-      campo.className = `horario-${classe}`;
-      campo.dataset.dia = String(dia);
-      campo.value = valor;
-      linha.append(campo);
-    }
-
-    if (janelas.length > 1) {
-      linha.append(criarElemento('span', {
-        texto: `+${janelas.length - 1} faixa(s) definidas pela API`, classe: 'nota',
-      }));
-    }
-    return linha;
-  }));
+  // TODAS as janelas de cada dia viram linha editável — nenhuma fica
+  // escondida atrás de uma nota "+N faixa(s)" que se perderia ao salvar
+  // (Comando 4: era exatamente isso que acontecia com `janelas[1]` em diante).
+  grade.replaceChildren(...DIAS_DA_SEMANA.map(
+    (nome, dia) => desenharDiaDaGrade(dia, nome, agenda?.dias?.[String(dia)] ?? []),
+  ));
 }
 
-/** Lê a grade da tela. Faixa pela metade é erro, não meia-configuração. */
+/**
+ * Adiciona uma linha vazia ao dia informado, e coloca o foco nela — quem
+ * clicou em "+ intervalo" está prestes a digitar um horário nela.
+ */
+function adicionarJanelaNaGrade(dia) {
+  const lista = seletor(`.horario-janelas[data-dia="${dia}"]`);
+  if (!lista) return;
+  const linha = desenharJanelaDaGrade(dia, '', '');
+  lista.append(linha);
+  linha.querySelector('.horario-inicio')?.focus();
+}
+
+/**
+ * Remove a linha do intervalo clicado. Um dia nunca fica sem nenhuma linha
+ * visível — a última é limpa em vez de removida, porque "sem linha nenhuma"
+ * não tem como virar "sem horário neste dia" de volta sem reabrir a tela.
+ */
+function removerJanelaDaGrade(botao) {
+  const linha = botao.closest('.horario-janela');
+  if (!linha) return;
+  const lista = linha.parentElement;
+  if (lista && lista.children.length > 1) {
+    linha.remove();
+    return;
+  }
+  for (const campo of linha.querySelectorAll('input[type="time"]')) campo.value = '';
+}
+
+/**
+ * Lê a grade da tela inteira, direto do DOM — nenhum estado "anterior" é
+ * consultado, porque agora não existe mais janela escondida para preservar:
+ * o que está na tela é exatamente o que existe. Linha com um lado só
+ * preenchido é erro, não meia-configuração salva por engano.
+ */
 function lerGradeDaTela() {
-  const anterior = serenaPainel?.horario?.agenda?.dias ?? {};
+  const grade = seletor('#horario-grade');
   const dias = {};
 
   for (let dia = 0; dia <= 6; dia += 1) {
-    const inicio = seletor(`.horario-inicio[data-dia="${dia}"]`)?.value ?? '';
-    const fim = seletor(`.horario-fim[data-dia="${dia}"]`)?.value ?? '';
+    const linhas = grade ? [...grade.querySelectorAll(`.horario-janela[data-dia="${dia}"]`)] : [];
+    const janelas = [];
 
-    if (!inicio && !fim) { dias[String(dia)] = []; continue; }
-    if (!inicio || !fim) {
-      throw new Error(`${DIAS_DA_SEMANA[dia]}: preencha o início e o fim, ou deixe os dois vazios`);
+    for (const linha of linhas) {
+      const inicio = linha.querySelector('.horario-inicio')?.value ?? '';
+      const fim = linha.querySelector('.horario-fim')?.value ?? '';
+      if (!inicio && !fim) continue; // linha vazia: nenhum intervalo aqui
+      if (!inicio || !fim) {
+        throw new Error(`${DIAS_DA_SEMANA[dia]}: preencha o início e o fim de cada intervalo, ou remova o intervalo`);
+      }
+      janelas.push([inicio, fim]);
     }
 
-    // As faixas extras que só existem pela API seguem intactas.
-    dias[String(dia)] = [[inicio, fim], ...(anterior[String(dia)] ?? []).slice(1)];
+    dias[String(dia)] = janelas;
   }
 
   return { ativa: seletor('#horario-ativo')?.checked === true, fuso: FUSO_DA_CLINICA, dias };
@@ -3780,6 +3859,8 @@ document.addEventListener('click', (evento) => {
   // durar o tempo de uma intervenção, e voltar sozinhos é o que impede que
   // alguém esqueça a Serena calada — ou falando num domingo.
   if (alvo.id === 'horario-salvar') salvarHorario();
+  if (alvo.classList.contains('horario-adicionar')) adicionarJanelaNaGrade(alvo.dataset.dia);
+  if (alvo.classList.contains('horario-remover')) removerJanelaDaGrade(alvo);
   if (alvo.id === 'serena-pausar') {
     mexerNoAtendimento('/api/serena/pausa', { metodo: 'POST', corpo: { minutos: 15 } }, alvo);
   }

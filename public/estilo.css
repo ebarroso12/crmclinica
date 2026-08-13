@@ -1450,7 +1450,7 @@ button.perigo:hover { background: #fecaca; }
 
 .horario-dia {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -1461,11 +1461,42 @@ button.perigo:hover { background: #fecaca; }
   flex: 0 0 84px;
   font-size: 14px;
   color: var(--apoio);
+  padding-top: 8px;
 }
 
 .horario-dia input[type="time"] {
   width: auto;
   padding: 6px 8px;
+}
+
+/* Comando 4: cada dia pode ter mais de um intervalo (ex.: 00:00–08:00 e
+   18:00–23:59), e todos precisam caber como linhas próprias — nenhum vira
+   nota de texto que se perde ao salvar. */
+.horario-janelas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.horario-janela {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.horario-remover {
+  padding: 2px 9px;
+  line-height: 1;
+  font-size: 15px;
+}
+
+.horario-adicionar {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 5px 10px;
 }
 
 /* Aviso de risco do canal. Só aparece quando os números pedem — por isso pode

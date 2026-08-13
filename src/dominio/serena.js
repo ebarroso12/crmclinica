@@ -68,6 +68,31 @@ function emMinutos(texto) {
   return horas * 60 + minutos;
 }
 
+// 23:59 em minutos (23*60+59). É o maior valor que `emMinutos` devolve — não
+// existe "23:60" nem "24:00" na notação HH:MM de dois dígitos que a grade usa.
+const ULTIMO_MINUTO_DO_DIA = 23 * 60 + 59;
+
+/**
+ * Minutos do FIM de uma janela — com uma exceção sobre `emMinutos`: 23:59 é
+ * como a grade escreve "até virar o dia", não "até o penúltimo minuto".
+ *
+ * Achado do Comando 1: a comparação de fim era exclusiva (`minutos < fim`),
+ * então uma janela `["18:00","23:59"]` cobria só até 23:58 — o minuto 23:59
+ * inteiro (00 a 59 segundos) ficava numa lacuna de vigência indefinida, nem
+ * dentro da janela da noite, nem do dia seguinte. Tratar 23:59 como 24:00
+ * (1440) só quando ele aparece como FIM fecha essa lacuna sem tocar no dado
+ * já salvo: a configuração real de produção grava literalmente "23:59" como
+ * fim de expediente da automação, e depois desta mudança o mesmo valor salvo
+ * passa a significar "até a virada do dia", sem precisar de migração.
+ *
+ * Como INÍCIO, 23:59 continua significando exatamente 23:59 — só o lado do
+ * fim ganha este tratamento; ver `dentroDoHorario`.
+ */
+function fimEmMinutos(texto) {
+  const minutos = emMinutos(texto);
+  return minutos === ULTIMO_MINUTO_DO_DIA ? 24 * 60 : minutos;
+}
+
 /**
  * Que horas são, e que dia da semana é, **no fuso da clínica**.
  *
@@ -123,10 +148,13 @@ function dentroDoHorario(agenda, agora = new Date()) {
 
   for (const [inicioBruto, fimBruto] of janelasDe(dia)) {
     const inicio = emMinutos(inicioBruto);
-    const fim = emMinutos(fimBruto);
+    const fim = fimEmMinutos(fimBruto);
     if (inicio === null || fim === null) continue;
     // Fim igual ao início seria janela de duração zero; tratamos como o dia todo
     // só quando for explicitamente 00:00–00:00, que é como se escreve "sempre".
+    // (Note: fim aqui já veio de `fimEmMinutos` — "00:00" como fim não é
+    // 23:59, então não sofre a conversão para 24:00; a igualdade só dá
+    // 0 === 0 quando início E fim são literalmente "00:00".)
     if (inicio === fim) { if (inicio === 0) return true; continue; }
     if (inicio < fim) { if (minutos >= inicio && minutos < fim) return true; continue; }
     // Cruza a meia-noite: vale do início até 24h.
@@ -136,7 +164,7 @@ function dentroDoHorario(agenda, agora = new Date()) {
   // A outra metade de uma janela que começou ontem e atravessou a meia-noite.
   for (const [inicioBruto, fimBruto] of janelasDe(ontem)) {
     const inicio = emMinutos(inicioBruto);
-    const fim = emMinutos(fimBruto);
+    const fim = fimEmMinutos(fimBruto);
     if (inicio === null || fim === null || inicio <= fim) continue;
     if (minutos < fim) return true;
   }

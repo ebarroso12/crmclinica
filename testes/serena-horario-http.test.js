@@ -87,6 +87,34 @@ test('a grade é salva e volta no status', async (t) => {
   assert.deepEqual(status.horario.agenda.dias['4'], []);
 });
 
+test('Comando 4: dois intervalos no mesmo dia (a configuração real de produção) são salvos e voltam inteiros', async (t) => {
+  const { ambiente } = await montar(t);
+
+  // Segunda a sexta, na configuração real relatada no Comando 1: madrugada
+  // (00:00–08:00) e noite (18:00–23:59). É exatamente o caso que o editor
+  // antigo escondia como "+1 faixa(s)" e descartava se a pessoa salvasse.
+  const grade = {
+    ativa: true,
+    fuso: 'America/Sao_Paulo',
+    dias: {
+      1: [['00:00', '08:00'], ['18:00', '23:59']],
+      2: [['00:00', '08:00'], ['18:00', '23:59']],
+    },
+  };
+
+  const salvou = await ambiente.pedir('/api/serena/horario', {
+    method: 'PUT', headers: JSON_H, body: JSON.stringify(grade),
+  });
+  assert.equal(salvou.status, 200);
+  assert.deepEqual((await salvou.json()).horario.agenda.dias['1'], grade.dias['1'],
+    'a resposta do PUT já precisa trazer os dois intervalos');
+
+  // E relendo do zero (como a tela faz ao reabrir), os dois continuam lá.
+  const status = await (await ambiente.pedir('/api/serena/status')).json();
+  assert.deepEqual(status.horario.agenda.dias['1'], grade.dias['1']);
+  assert.deepEqual(status.horario.agenda.dias['2'], grade.dias['2']);
+});
+
 test('horário inválido é recusado com 400, não salvo pela metade', async (t) => {
   const { ambiente } = await montar(t);
 
