@@ -62,6 +62,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const iaAvaliacoes = [];
   const notificacoes = [];
   const serenaAtivacaoContatos = new Set();
+  // A outbox durável da automação — ver db/031_automacao_outbox.sql e
+  // src/dominio/automacao-outbox.js. Um Map, não um array: reivindicar e
+  // concluir mexem numa linha por id, e Map é O(1) para isso.
+  const automacaoOutbox = new Map();
   // O catálogo em memória espelha o seed da migration 027.
   const iaModelos = [
     { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
@@ -143,7 +147,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     contato: 1, conversa: 1, mensagem: 1, nota: 1,
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
-    serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1,
+    serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1, automacaoOutbox: 1,
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da fila de lembretes. */
@@ -269,6 +273,24 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         mapa[componente] = estado;
       }
       return mapa;
+    },
+
+    /**
+     * Grava (upsert) o batimento de um componente, com detalhe livre em jsonb
+     * no banco real — aqui, o objeto tal como veio. É como o worker da outbox
+     * publica versão, última execução e contagem da fila (ver
+     * `bin/worker-outbox.js`), no mesmo mecanismo que `bin/worker-heartbeat.js`
+     * já usa para `system_heartbeats`.
+     */
+    async registrarBatimentoDoSistema(componente, { status = 'ok', detalhe = null } = {}) {
+      batimentosDoSistema.set(componente, { status, detalhe, atualizadoEm: agora().toISOString() });
+    },
+
+    /** Leitura de um único componente, detalhe incluso — para telas e testes. */
+    async obterBatimentoDoSistema(componente) {
+      const registro = batimentosDoSistema.get(componente);
+      if (!registro) return null;
+      return { componente, status: registro.status, detalhe: registro.detalhe ?? null, atualizado_em: registro.atualizadoEm };
     },
 
     // ---------------------------------------------------------------- conversas
@@ -1058,6 +1080,124 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       if (incluido) serenaAtivacaoContatos.add(Number(contatoId));
       else serenaAtivacaoContatos.delete(Number(contatoId));
       return { contato_id: Number(contatoId), incluido };
+    },
+
+    // ------------------------------------------------- automação: outbox durável
+    //
+    // Substitui o `setImmediate` como garantia de processamento. Duas operações
+    // carregam as garantias inteiras — `enfileirarTrabalhoDeOutbox` (idempotência,
+    // mesmo espírito de `enfileirarLembrete`) e `reivindicarTrabalhosDeOutbox`
+    // (exclusão entre workers, mesmo espírito de `reivindicarLembretes`).
+
+    /** Enfileira um trabalho. Repetir com a mesma chave não cria segunda linha. */
+    async enfileirarTrabalhoDeOutbox({
+      conversaId, mensagemEntradaId = null, chaveIdempotencia, maxTentativas = 5,
+    }) {
+      const existente = [...automacaoOutbox.values()]
+        .find((trabalho) => trabalho.chave_idempotencia === chaveIdempotencia);
+      if (existente) return { trabalho: { ...existente }, criado: false };
+
+      const agoraIso = agora().toISOString();
+      const trabalho = {
+        id: proximoId.automacaoOutbox++,
+        conversa_id: Number(conversaId),
+        mensagem_entrada_id: mensagemEntradaId ? Number(mensagemEntradaId) : null,
+        chave_idempotencia: chaveIdempotencia,
+        status: 'pendente',
+        tentativas: 0,
+        max_tentativas: maxTentativas,
+        disponivel_em: agoraIso,
+        reivindicado_por: null,
+        reivindicado_em: null,
+        ultimo_erro: null,
+        criado_em: agoraIso,
+        atualizado_em: agoraIso,
+        concluido_em: null,
+      };
+      automacaoOutbox.set(trabalho.id, trabalho);
+      return { trabalho: { ...trabalho }, criado: true };
+    },
+
+    async obterTrabalhoDeOutbox(id) {
+      const trabalho = automacaoOutbox.get(Number(id));
+      return trabalho ? { ...trabalho } : null;
+    },
+
+    /**
+     * Reivindica trabalhos pendentes cuja hora chegou. No banco real isto é
+     * `FOR UPDATE SKIP LOCKED` numa única instrução — aqui, sem concorrência
+     * real dentro do processo Node, a exclusão entre "workers" simulados nos
+     * testes vem de cada chamada já marcar 'processando' antes de devolver,
+     * síncrono dentro do laço: duas chamadas seguidas nunca reivindicam a
+     * mesma linha, que é a garantia que importa provar.
+     */
+    async reivindicarTrabalhosDeOutbox({ agora: instante, limite = 20, worker = 'worker' }) {
+      const candidatos = [...automacaoOutbox.values()]
+        .filter((trabalho) => trabalho.status === 'pendente' && trabalho.disponivel_em <= instante)
+        .sort((a, b) => new Date(a.disponivel_em) - new Date(b.disponivel_em) || a.id - b.id)
+        .slice(0, Number(limite));
+
+      for (const trabalho of candidatos) {
+        trabalho.status = 'processando';
+        trabalho.reivindicado_por = String(worker).slice(0, 100);
+        trabalho.reivindicado_em = instante;
+        trabalho.atualizado_em = instante;
+      }
+      return candidatos.map((trabalho) => ({ ...trabalho }));
+    },
+
+    /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
+    async concluirTrabalhoDeOutbox(id, {
+      status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
+    }) {
+      const trabalho = automacaoOutbox.get(Number(id));
+      if (!trabalho) return null;
+
+      trabalho.status = status;
+      if (ultimoErro !== undefined) trabalho.ultimo_erro = ultimoErro;
+      if (tentativas !== undefined) trabalho.tentativas = tentativas;
+      if (disponivelEm !== undefined) trabalho.disponivel_em = disponivelEm;
+      // Sair de 'processando' devolve o trabalho limpo: um lease velho faria a
+      // recuperação achar que ainda há alguém trabalhando nele.
+      if (status !== 'processando') { trabalho.reivindicado_por = null; trabalho.reivindicado_em = null; }
+      if (['concluido', 'morto', 'incerto'].includes(status)) trabalho.concluido_em = agora().toISOString();
+      trabalho.atualizado_em = agora().toISOString();
+      return { ...trabalho };
+    },
+
+    /**
+     * Devolve à fila o que ficou preso em 'processando' — o worker que morreu
+     * no meio de um envio deixa a linha reservada para sempre, sem isto.
+     * Conta como tentativa, para que um trabalho que derruba o worker toda vez
+     * termine em 'morto' (dead-letter) em vez de circular eterno.
+     */
+    async liberarTrabalhosDeOutboxPresos({ antesDe, agora: instante }) {
+      const liberados = [];
+      for (const trabalho of automacaoOutbox.values()) {
+        if (trabalho.status !== 'processando' || !trabalho.reivindicado_em) continue;
+        if (trabalho.reivindicado_em >= antesDe) continue;
+
+        const tentativas = trabalho.tentativas + 1;
+        trabalho.tentativas = tentativas;
+        trabalho.status = tentativas >= trabalho.max_tentativas ? 'morto' : 'pendente';
+        trabalho.disponivel_em = instante;
+        trabalho.ultimo_erro = 'processamento abandonado por worker inativo';
+        trabalho.reivindicado_por = null;
+        trabalho.reivindicado_em = null;
+        if (trabalho.status === 'morto') trabalho.concluido_em = instante;
+        trabalho.atualizado_em = instante;
+        liberados.push({ ...trabalho });
+      }
+      return liberados;
+    },
+
+    /** Para o heartbeat do worker: quantos trabalhos em cada estado agora. */
+    async contarTrabalhosDeOutboxPorEstado() {
+      const total = { pendente: 0, processando: 0, concluido: 0, morto: 0, incerto: 0 };
+      for (const trabalho of automacaoOutbox.values()) {
+        total[trabalho.status] = (total[trabalho.status] ?? 0) + 1;
+      }
+      return total;
     },
 
     // ---------------------------------------------------------------- analítica

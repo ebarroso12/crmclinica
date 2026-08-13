@@ -135,3 +135,58 @@ test('verificar-banco cobra o não-DELETE das tabelas de operação', () => {
   assert.match(semDelete, /'operacao_heartbeats'/);
   assert.match(semDelete, /'auditoria_exportacoes'/);
 });
+
+// ---------------------------------------------------------- 031 (Comando 3)
+
+const SQL_031 = fs.readFileSync(path.join(__dirname, '..', 'db', '031_automacao_outbox.sql'), 'utf8');
+const SQL_031_ROLLBACK = fs.readFileSync(path.join(__dirname, '..', 'db', '031_automacao_outbox_rollback.sql'), 'utf8');
+
+test('031: automacao_outbox habilita RLS e revoga anon/authenticated explicitamente', () => {
+  assert.match(SQL_031, /ALTER TABLE public\.automacao_outbox ENABLE ROW LEVEL SECURITY/);
+  assert.match(SQL_031, /REVOKE ALL ON public\.automacao_outbox FROM %I/);
+  assert.match(SQL_031, /ARRAY\['anon', 'authenticated'\]/);
+});
+
+test('031: só crmclinica_app recebe GRANT na tabela nova, com guard de existência da role', () => {
+  assert.match(SQL_031, /GRANT SELECT, INSERT, UPDATE, DELETE ON public\.automacao_outbox TO crmclinica_app/);
+  assert.match(SQL_031, /pg_roles WHERE rolname = 'crmclinica_app'/);
+  // Nenhuma outra role nomeada recebe GRANT nesta tabela.
+  const concessoes = [...SQL_031.matchAll(/GRANT [\s\S]*?ON public\.automacao_outbox TO (\w+)/g)].map((m) => m[1]);
+  assert.deepEqual(concessoes, ['crmclinica_app']);
+});
+
+test('031 é aditiva: nenhum DROP TABLE, DROP COLUMN ou TRUNCATE', () => {
+  const semComentarios = SQL_031.replace(/--.*$/gm, '');
+  assert.ok(!/DROP\s+TABLE/i.test(semComentarios), '031 não pode fazer DROP TABLE de nada — nem da própria tabela nova');
+  assert.ok(!/DROP\s+COLUMN/i.test(semComentarios));
+  assert.ok(!/TRUNCATE/i.test(semComentarios));
+  assert.match(SQL_031, /CREATE TABLE IF NOT EXISTS automacao_outbox/);
+});
+
+test('031 é atômica: um BEGIN, um COMMIT', () => {
+  assert.equal((SQL_031.match(/^BEGIN;/gm) ?? []).length, 1);
+  assert.equal((SQL_031.match(/^COMMIT;/gm) ?? []).length, 1);
+});
+
+test('031: a tabela não guarda conteúdo de mensagem — só referências e motivo técnico', () => {
+  // Só o SQL executável, sem os comentários que EXPLICAM por que essas
+  // colunas não existem (que citam as próprias palavras de propósito).
+  const semComentarios = SQL_031.replace(/--.*$/gm, '');
+  // Nenhuma coluna de texto livre de conversa: nem "conteudo", nem "texto",
+  // nem "prompt", nem "resposta". Só IDs, status, contadores, timestamps e
+  // `ultimo_erro` (documentado como técnico).
+  for (const proibida of ['conteudo', 'texto_paciente', 'prompt', 'resposta_ia', 'token', 'segredo']) {
+    assert.ok(!new RegExp(`\\b${proibida}\\b`, 'i').test(semComentarios), `coluna "${proibida}" não pode existir em automacao_outbox`);
+  }
+});
+
+test('031_rollback existe, é aditivo em espírito (só derruba o que a 031 criou) e documenta o custo', () => {
+  assert.match(SQL_031_ROLLBACK, /DROP TABLE IF EXISTS public\.automacao_outbox/);
+  // Nenhuma outra tabela do produto é tocada pelo rollback.
+  for (const foraDoEscopo of ['mensagens', 'conversas', 'contatos', 'leads', 'agendamentos', 'lembretes']) {
+    assert.ok(!new RegExp(`\\b${foraDoEscopo}\\b`).test(SQL_031_ROLLBACK.replace(/--.*$/gm, '')),
+      `o rollback da 031 não pode tocar em ${foraDoEscopo}`);
+  }
+  assert.match(SQL_031_ROLLBACK, /BEGIN;/);
+  assert.match(SQL_031_ROLLBACK, /COMMIT;/);
+});

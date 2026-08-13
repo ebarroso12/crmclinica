@@ -91,30 +91,24 @@ test('payload não consegue transferir a resposta ao agente direto nem trocar de
   assert.equal((await repositorio.listarConversas({})).length, 0);
 });
 
-/** Espera uma condição virar verdade — o despacho agora corre em segundo plano. */
-async function esperarAte(condicao, { tentativas = 100, intervaloMs = 10 } = {}) {
-  for (let volta = 0; volta < tentativas; volta += 1) {
-    if (await condicao()) return true;
-    await new Promise((resolve) => { setTimeout(resolve, intervaloMs); });
-  }
-  return false;
-}
+// Comando 3: o `setImmediate` que rodava a IA depois do aceite foi removido —
+// não é mais durabilidade "por acidente" de um processo que continua vivo
+// depois do 202. O que a porta de ingresso garante agora é mais modesto e
+// mais forte ao mesmo tempo: a mensagem E o trabalho da outbox são
+// persistidos ANTES do 202, e NADA mais acontece dentro da requisição. Quem
+// processa o trabalho é o worker — testado em
+// testes/automacao-outbox-servico.test.js e testes/automacao-outbox-http.test.js.
 
-test('o aceite volta na hora mesmo com o orquestrador lento — o hook do plugin espera só 10s', async (t) => {
-  let liberarDespacho;
-  const despachoSegurado = new Promise((resolve) => { liberarDespacho = resolve; });
-  let despachoTerminou = false;
-
+test('o aceite volta na hora e não despacha a IA dentro da requisição — o trabalho fica na outbox', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const atendimento = criarAtendimento({
     repositorio,
     orquestrador: {
       disponivel: true,
-      async despacharEvento() {
-        await despachoSegurado;
-        despachoTerminou = true;
-        return { resposta: 'Olá! Como posso ajudar?' };
-      },
+      // Se isto for chamado durante o POST, o teste tem que estourar: a
+      // garantia do Comando 3 é que NADA depois da gravação roda dentro da
+      // requisição — nem para o caminho feliz, nem para o lento.
+      async despacharEvento() { throw new Error('a IA não pode ser despachada dentro da requisição HTTP'); },
     },
   });
   const configuracao = configuracaoDeTeste({ WHATSAPP_WEBHOOK_SECRET: SEGREDO });
@@ -125,42 +119,40 @@ test('o aceite volta na hora mesmo com o orquestrador lento — o hook do plugin
   assert.equal(resposta.status, 202);
   const recibo = await resposta.json();
   assert.equal(recibo.decisao, 'aceita_para_despacho');
-  assert.equal(despachoTerminou, false,
-    'o aceite chegou ANTES de o orquestrador terminar — é essa a garantia');
 
   // A mensagem do paciente já está gravada no aceite, sem depender da IA.
   const [conversa] = await repositorio.listarConversas({});
-  assert.equal((await repositorio.listarMensagens(conversa.id))[0].direcao, 'entrada');
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  assert.equal(mensagens.length, 1);
+  assert.equal(mensagens[0].direcao, 'entrada');
 
-  // Liberado o orquestrador, a resposta aparece na conversa — em segundo plano.
-  liberarDespacho();
-  assert.ok(await esperarAte(async () => (
-    (await repositorio.listarMensagens(conversa.id)).some((m) => m.direcao === 'saida')
-  )), 'a resposta da Serena precisa chegar depois do aceite');
+  // E o trabalho de responder está na outbox, pendente — não processado, não
+  // perdido, esperando o worker.
+  const fila = await repositorio.contarTrabalhosDeOutboxPorEstado();
+  assert.equal(fila.pendente, 1);
+  assert.equal(fila.processando, 0);
+  assert.equal(fila.concluido, 0);
 });
 
-test('despacho em segundo plano que falha escala a conversa para a equipe', async (t) => {
+test('a mensagem e o trabalho da outbox nascem juntos, atomicamente', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
-  const atendimento = criarAtendimento({
-    repositorio,
-    orquestrador: {
-      disponivel: true,
-      async despacharEvento() { throw new Error('gateway caiu no meio'); },
-    },
-  });
+  const atendimento = criarAtendimento({ repositorio, orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'oi' }) } });
   const configuracao = configuracaoDeTeste({ WHATSAPP_WEBHOOK_SECRET: SEGREDO });
   const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
   t.after(() => app.encerrar());
 
-  const resposta = await enviar(app, EVENTO);
-  assert.equal(resposta.status, 202, 'a falha da IA não pode derrubar o aceite da gravação');
+  await enviar(app, EVENTO);
 
-  // O paciente escreveu e ninguém vai responder: a conversa tem de ir para a
-  // equipe sozinha, sem ninguém precisar perceber o silêncio.
-  assert.ok(await esperarAte(async () => {
-    const [conversa] = await repositorio.listarConversas({});
-    return conversa && conversa.assumida_por_humano === true;
-  }), 'a conversa precisa escalar para a equipe quando o despacho morre');
+  const [conversa] = await repositorio.listarConversas({});
+  const [mensagemDeEntrada] = await repositorio.listarMensagens(conversa.id);
+  const fila = await repositorio.contarTrabalhosDeOutboxPorEstado();
+  assert.equal(fila.pendente, 1, 'precisa existir um trabalho pendente correspondente à mensagem gravada');
+
+  // O trabalho referencia exatamente esta conversa e esta mensagem — não é
+  // um trabalho qualquer, é O trabalho desta mensagem.
+  const trabalho = await repositorio.obterTrabalhoDeOutbox(1);
+  assert.equal(trabalho.conversa_id, conversa.id);
+  assert.equal(trabalho.mensagem_entrada_id, mensagemDeEntrada.id);
 });
 
 test('GET na porta de ingresso é recusado', async (t) => {

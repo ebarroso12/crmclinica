@@ -4,6 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 const { assinar } = require('../src/integracoes/openclaw');
+const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
+const { criarAtendimento } = require('../src/dominio/atendimento');
 
 // Segredo sintético de teste. Não corresponde a nenhum ambiente real.
 const SEGREDO_DE_TESTE = 'segredo-apenas-para-teste-com-32-caracteres';
@@ -60,6 +62,58 @@ test('reenvio do mesmo evento é idempotente e não reprocessa', async (t) => {
   assert.equal(repetida.duplicado, true);
   assert.equal(repetida.chave_idempotencia, primeira.chave_idempotencia);
   assert.equal(repetida.recebido_em, primeira.recebido_em);
+});
+
+test('Comando 3: /api/eventos com canal fora do WhatsApp continua despachando a IA de forma síncrona, SEM abrir transação', async (t) => {
+  // Guarda contra a regressão que a implementação da outbox quase introduziu:
+  // envolver esta rota inteira em `repositorio.comUsuario` prenderia uma
+  // conexão do pool durante a chamada ao orquestrador, que pode levar dezenas
+  // de segundos — exatamente o problema que a outbox existe para evitar na
+  // OUTRA porta (a da ponte do WhatsApp). Esta porta (`openclaw_webhook`)
+  // nunca foi para a outbox: só WhatsApp declarado `openclaw_gerencia` entra
+  // aqui, e outros canais (site, formulário) continuam com despacho síncrono,
+  // como sempre foi.
+  const repositorio = criarRepositorioEmMemoria();
+  let comUsuarioChamado = false;
+  const repositorioComEspiao = {
+    ...repositorio,
+    async comUsuario(usuarioId, acao) {
+      comUsuarioChamado = true;
+      return repositorio.comUsuario(usuarioId, acao);
+    },
+  };
+
+  let despacharChamado = false;
+  const atendimento = criarAtendimento({
+    repositorio: repositorioComEspiao,
+    orquestrador: {
+      disponivel: true,
+      async despacharEvento() {
+        despacharChamado = true;
+        return { resposta: 'Olá! Temos horários esta semana.' };
+      },
+    },
+  });
+
+  const configuracao = configuracaoDeTeste();
+  const app = await subirServidor({ repositorio: repositorioComEspiao, atendimento, configuracao });
+  t.after(() => app.encerrar());
+
+  const resposta = await enviar(app, JSON.stringify({
+    tipo: 'mensagem.recebida',
+    canal: 'site',
+    id_externo: 'site:evento-sincrono-1',
+    remetente: 'visitante-1',
+    texto: 'Quero saber sobre a primeira consulta',
+    // Sem `estrategia_ia`: a própria porta decide `crm_despacha` para canais
+    // fora do WhatsApp (ver exigirEstrategiaDoAdaptador em src/contratos/evento.js).
+  }));
+
+  assert.equal(resposta.status, 202);
+  const recibo = await resposta.json();
+  assert.equal(recibo.decisao, 'respondida_pela_automacao');
+  assert.equal(despacharChamado, true, 'o orquestrador precisa ter sido chamado dentro desta mesma requisição');
+  assert.equal(comUsuarioChamado, false, 'esta porta não pode abrir transação — prenderia a conexão durante a chamada de IA');
 });
 
 test('evento fora do contrato responde 400 apontando o campo', async (t) => {

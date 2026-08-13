@@ -78,6 +78,11 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
         try {
           return await evolucao.enviar({ telefone: destino, texto, chave });
         } catch (erroEvolucao) {
+          // Indeterminado (timeout): não sabemos se a Evolution já entregou.
+          // Cair para a reserva aqui seria o pior caso possível — duas vias
+          // tentando mandar a mesma mensagem ao mesmo tempo. Melhor propagar a
+          // incerteza e deixar quem chama decidir (não retentar sozinho).
+          if (erroEvolucao.indeterminado) throw erroEvolucao;
           if (!configuracao.url) throw erroEvolucao; // sem reserva configurada, o erro é o que há
           console.warn(`[canal] Evolution falhou, tentando o gateway do OpenClaw como reserva: ${erroEvolucao.message}`);
         }

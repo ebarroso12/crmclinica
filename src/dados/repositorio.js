@@ -176,6 +176,26 @@ const SELECAO_LEMBRETE = `
   ct.lembretes_optout AS contato_optout
 `;
 
+function montarTrabalhoDeOutbox(linha) {
+  if (!linha) return null;
+  return {
+    id: Number(linha.id),
+    conversa_id: Number(linha.conversa_id),
+    mensagem_entrada_id: linha.mensagem_entrada_id !== null ? Number(linha.mensagem_entrada_id) : null,
+    chave_idempotencia: linha.chave_idempotencia,
+    status: linha.status,
+    tentativas: Number(linha.tentativas),
+    max_tentativas: Number(linha.max_tentativas),
+    disponivel_em: linha.disponivel_em,
+    reivindicado_por: linha.reivindicado_por,
+    reivindicado_em: linha.reivindicado_em,
+    ultimo_erro: linha.ultimo_erro,
+    criado_em: linha.criado_em,
+    atualizado_em: linha.atualizado_em,
+    concluido_em: linha.concluido_em,
+  };
+}
+
 const JUNCOES_LEMBRETE = `
   FROM lembretes l
   JOIN agendamentos a ON a.id = l.agendamento_id
@@ -406,6 +426,31 @@ function criarRepositorio(pool) {
       } catch {
         return {};
       }
+    },
+
+    /**
+     * Grava (upsert) o batimento de um componente em `system_heartbeats`, com
+     * detalhe livre em jsonb — mesma tabela que `bin/worker-heartbeat.js` já
+     * mantém para openclaw/serena/inbox, agora também escrita por um
+     * repositório em vez de SQL solto no worker. `detalhe` é onde o worker da
+     * outbox publica versão, última execução e a contagem da fila (ver
+     * `bin/worker-outbox.js`) — nunca conteúdo de mensagem.
+     */
+    async registrarBatimentoDoSistema(componente, { status = 'ok', detalhe = null } = {}) {
+      await consultar(
+        `INSERT INTO system_heartbeats (componente, status, detalhe, updated_at)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (componente) DO UPDATE SET status = EXCLUDED.status, detalhe = EXCLUDED.detalhe, updated_at = now()`,
+        [componente, status, detalhe ? JSON.stringify(detalhe) : null],
+      );
+    },
+
+    async obterBatimentoDoSistema(componente) {
+      const { rows } = await consultar(
+        'SELECT componente, status, detalhe, updated_at AS atualizado_em FROM system_heartbeats WHERE componente = $1',
+        [componente],
+      );
+      return rows[0] ?? null;
     },
 
     // ---------------------------------------------------------------- conversas
@@ -2495,6 +2540,138 @@ function criarRepositorio(pool) {
         [rows.map((linha) => Number(linha.id))],
       );
       return completos.map(montarLembrete);
+    },
+
+    // ------------------------------------------------- automação: outbox durável
+    //
+    // Substitui o `setImmediate` do webhook do WhatsApp como garantia de
+    // processamento (ver db/031_automacao_outbox.sql). Mesmo desenho das duas
+    // filas acima: `enfileirarTrabalhoDeOutbox` (idempotência) e
+    // `reivindicarTrabalhosDeOutbox` (exclusão entre workers) carregam a
+    // garantia inteira.
+
+    /** Enfileira um trabalho. Repetir com a mesma chave não cria segunda linha. */
+    async enfileirarTrabalhoDeOutbox({
+      conversaId, mensagemEntradaId = null, chaveIdempotencia, maxTentativas = 5,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO automacao_outbox (conversa_id, mensagem_entrada_id, chave_idempotencia, max_tentativas)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (chave_idempotencia) DO NOTHING
+        RETURNING *
+      `, [conversaId, mensagemEntradaId, chaveIdempotencia, maxTentativas]);
+
+      if (rows.length > 0) return { trabalho: montarTrabalhoDeOutbox(rows[0]), criado: true };
+
+      const { rows: existente } = await consultar(
+        'SELECT * FROM automacao_outbox WHERE chave_idempotencia = $1', [chaveIdempotencia],
+      );
+      return { trabalho: montarTrabalhoDeOutbox(existente[0]), criado: false };
+    },
+
+    async obterTrabalhoDeOutbox(id) {
+      const { rows } = await consultar('SELECT * FROM automacao_outbox WHERE id = $1', [id]);
+      return montarTrabalhoDeOutbox(rows[0]);
+    },
+
+    /**
+     * Reivindica trabalhos para processar. **É a operação que impede duplicidade.**
+     *
+     * `FOR UPDATE SKIP LOCKED` faz o segundo worker pular a linha que o
+     * primeiro travou, em vez de esperar por ela — os dois recebem conjuntos
+     * disjuntos, e a marcação para 'processando' acontece na mesma instrução:
+     * não há intervalo entre selecionar e reservar em que um terceiro
+     * pudesse entrar. Mesmo mecanismo de `reivindicarLembretes`, acima.
+     */
+    async reivindicarTrabalhosDeOutbox({ agora, limite = 20, worker = 'worker' }) {
+      const { rows } = await consultar(`
+        WITH candidatos AS (
+          SELECT id FROM automacao_outbox
+           WHERE status = 'pendente'
+             AND disponivel_em <= $1::timestamptz
+           ORDER BY disponivel_em, id
+           FOR UPDATE SKIP LOCKED
+           LIMIT $2
+        )
+        UPDATE automacao_outbox t
+           SET status = 'processando',
+               reivindicado_por = $3,
+               reivindicado_em = $1::timestamptz
+          FROM candidatos c
+         WHERE t.id = c.id
+        RETURNING t.id
+      `, [agora, Number(limite), String(worker).slice(0, 100)]);
+
+      if (rows.length === 0) return [];
+      const { rows: completos } = await consultar(
+        'SELECT * FROM automacao_outbox WHERE id = ANY($1::bigint[]) ORDER BY disponivel_em, id',
+        [rows.map((linha) => Number(linha.id))],
+      );
+      return completos.map(montarTrabalhoDeOutbox);
+    },
+
+    /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
+    async concluirTrabalhoDeOutbox(id, {
+      status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
+    }) {
+      const partes = ['status = $2'];
+      const valores = [id, status];
+
+      const acrescentar = (coluna, valor, cast = '') => {
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}${cast}`);
+      };
+
+      if (ultimoErro !== undefined) acrescentar('ultimo_erro', ultimoErro);
+      if (tentativas !== undefined) acrescentar('tentativas', tentativas);
+      if (disponivelEm !== undefined) acrescentar('disponivel_em', disponivelEm, '::timestamptz');
+
+      // Sair de 'processando' devolve o trabalho limpo: um lease velho faria a
+      // recuperação achar que ainda há alguém trabalhando nele.
+      if (status !== 'processando') partes.push('reivindicado_por = NULL, reivindicado_em = NULL');
+      if (['concluido', 'morto', 'incerto'].includes(status)) partes.push('concluido_em = now()');
+
+      await consultar(`UPDATE automacao_outbox SET ${partes.join(', ')} WHERE id = $1`, valores);
+      return this.obterTrabalhoDeOutbox(id);
+    },
+
+    /**
+     * Devolve à fila o que ficou preso em 'processando'.
+     *
+     * O worker que morre no meio de um envio deixa a linha reservada para
+     * sempre. Aqui ela volta — contando a tentativa, para que um trabalho que
+     * derruba o worker toda vez termine em 'morto' (dead-letter) em vez de
+     * circular eterno.
+     */
+    async liberarTrabalhosDeOutboxPresos({ antesDe, agora }) {
+      const { rows } = await consultar(`
+        UPDATE automacao_outbox
+           SET tentativas = tentativas + 1,
+               status = CASE WHEN tentativas + 1 >= max_tentativas THEN 'morto' ELSE 'pendente' END,
+               disponivel_em = $2::timestamptz,
+               ultimo_erro = 'processamento abandonado por worker inativo',
+               reivindicado_por = NULL,
+               reivindicado_em = NULL,
+               concluido_em = CASE WHEN tentativas + 1 >= max_tentativas THEN $2::timestamptz ELSE NULL END
+         WHERE status = 'processando'
+           AND reivindicado_em < $1::timestamptz
+        RETURNING id
+      `, [antesDe, agora]);
+
+      if (rows.length === 0) return [];
+      const { rows: completos } = await consultar(
+        'SELECT * FROM automacao_outbox WHERE id = ANY($1::bigint[])',
+        [rows.map((linha) => Number(linha.id))],
+      );
+      return completos.map(montarTrabalhoDeOutbox);
+    },
+
+    /** Para o heartbeat do worker: quantos trabalhos em cada estado agora. */
+    async contarTrabalhosDeOutboxPorEstado() {
+      const { rows } = await consultar('SELECT status, count(*)::int AS total FROM automacao_outbox GROUP BY status');
+      const total = { pendente: 0, processando: 0, concluido: 0, morto: 0, incerto: 0 };
+      for (const linha of rows) total[linha.status] = linha.total;
+      return total;
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

@@ -141,25 +141,32 @@ function criarAtendimento({
     }
 
     if (despachoEmSegundoPlano) {
-      setImmediate(() => {
-        responderSePossivel(conversa.id, { mensagemEntradaId: mensagem.id }).catch(async (erro) => {
-          // responderSePossivel já converte falha do orquestrador em
-          // escalonamento; cair aqui é falha ANTES disso (banco, regra). O
-          // paciente escreveu e ninguém vai responder — a equipe precisa saber.
-          console.error(`[atendimento] despacho em segundo plano falhou (conversa ${conversa.id}): ${erro.message}`);
-          try {
-            await escalonar(conversa.id, 'falha_no_despacho_em_segundo_plano');
-          } catch (erroDoEscalonamento) {
-            console.error(`[atendimento] e o escalonamento também falhou: ${erroDoEscalonamento.message}`);
-          }
-        });
+      // Comando 3: era `setImmediate` aqui — uma promessa sem garantia
+      // nenhuma numa função serverless da Vercel, que pode ser congelada ou
+      // encerrada assim que a resposta HTTP sai. Agora é um trabalho gravado
+      // na outbox durável (`automacao_outbox`, db/031), na MESMA transação
+      // que já gravou a mensagem — quem chama isto (a rota do webhook) faz
+      // essa transação existir, com `repositorio.comUsuario`. O `202` que a
+      // rota devolve depois disto só sai depois do commit: "aceito" volta a
+      // significar "persistido", não "vou tentar continuar nesta função".
+      //
+      // Quem processa o trabalho é o worker (`bin/worker-outbox.js`), que
+      // chama exatamente `responderSePossivel` — a mesma barreira de
+      // controle do Comando 2 vale para o processamento aqui e para o
+      // síncrono logo abaixo; nenhum caminho novo de envio foi criado.
+      const chave = `outbox:${conversa.id}:${mensagem.id}`;
+      const { trabalho } = await repositorio.enfileirarTrabalhoDeOutbox({
+        conversaId: conversa.id,
+        mensagemEntradaId: mensagem.id,
+        chaveIdempotencia: chave,
       });
       return {
         acao: 'aceita_para_despacho',
         ia_despachada: true,
-        despacho: 'em_segundo_plano',
+        despacho: 'outbox',
         conversa_id: conversa.id,
         mensagem_id: mensagem.id,
+        trabalho_id: trabalho.id,
       };
     }
 
@@ -236,6 +243,31 @@ function criarAtendimento({
           entregue: false,
         };
       }
+
+      // Mesmo tratamento da entrega "de primeira" logo abaixo: uma
+      // retentativa que continua sem conseguir entregar não pode voltar como
+      // "respondida" — a equipe precisa ver isto, e a outbox precisa saber
+      // que não é um caso para reagendar sozinha (ver `entregaIncerta`).
+      if (!entrega.enviada && entrega.motivo !== 'canal_nao_configurado') {
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversaId,
+          acao: 'resposta_nao_entregue',
+          detalhe: {
+            mensagem_id: respostaAnterior.id, motivo: entrega.motivo, autor: 'automacao',
+            indeterminado: entrega.indeterminado === true,
+          },
+        }).catch(() => {});
+        await escalonar(conversaId, 'falha_na_entrega_da_automacao');
+        return {
+          acao: 'escalonada_por_falha_entrega',
+          conversa_id: conversaId,
+          motivo: entrega.motivo,
+          entregue: false,
+          entregaIncerta: entrega.indeterminado === true,
+        };
+      }
+
       return {
         acao: 'respondida_pela_automacao',
         conversa_id: conversaId,
@@ -356,7 +388,10 @@ function criarAtendimento({
             entidade: 'conversa',
             entidadeId: conversaId,
             acao: 'resposta_nao_entregue',
-            detalhe: { mensagem_id: gravada.id, motivo: entrega.motivo, autor: 'automacao' },
+            detalhe: {
+              mensagem_id: gravada.id, motivo: entrega.motivo, autor: 'automacao',
+              indeterminado: entrega.indeterminado === true,
+            },
           }).catch(() => {});
 
           // Arquitetura B: com o agente do canal calado, entrega que falhou
@@ -370,6 +405,9 @@ function criarAtendimento({
             conversa_id: conversaId,
             motivo: entrega.motivo,
             entregue: false,
+            // A outbox nunca deve retentar sozinha um envio de desfecho
+            // incerto — ver `entregarAoPaciente` e `evolution-envio.js`.
+            entregaIncerta: entrega.indeterminado === true,
           };
         }
 
@@ -597,7 +635,10 @@ function criarAtendimento({
 
       return { enviada: true, identificador: resultado?.identificador ?? null };
     } catch (erro) {
-      return { enviada: false, motivo: erro.message };
+      // `indeterminado`: a chamada estourou o tempo sem resposta — não dá para
+      // dizer se a mensagem saiu ou não. Quem chama (a outbox) precisa saber
+      // disso para NUNCA reenviar automaticamente neste caso.
+      return { enviada: false, motivo: erro.message, indeterminado: erro.indeterminado === true };
     }
   }
 
