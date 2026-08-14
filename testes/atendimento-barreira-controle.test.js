@@ -153,6 +153,36 @@ test('3. Pausa aplicada durante a geração: a resposta não pode ser entregue',
   assert.equal(depois.assumida_por_humano, false, 'pausa explícita não precisa de escalonamento extra');
 });
 
+test('3b. Conversa resolvida durante a geração: a resposta não pode ser entregue', async () => {
+  // Faltava nesta suíte: PENDÊNCIA 2 do comando mestre lista explicitamente
+  // Desligar, Pausar, Assumir OU Resolver como os quatro gatilhos que a
+  // barreira final precisa sobreviver — só os três primeiros tinham teste.
+  // "Resolver" muda `conversas.status` para 'resolvida' (rota
+  // POST /api/conversas/:id/estado, src/servidor/rotas-conversas.js) sem
+  // necessariamente passar por `assumir()` — por isso é um caminho distinto
+  // do teste 2, não uma repetição dele.
+  const repositorio = criarRepositorioEmMemoria();
+  const serena = criarServicoDaSerena({ repositorio });
+  const canal = canalFalso();
+  const { conversa, mensagemEntradaId } = await prepararConversa({ repositorio });
+
+  const orquestrador = orquestradorComGeracaoLenta('Resposta gerada antes de a conversa ser resolvida', async () => {
+    // "Enquanto a IA gera" — a equipe marca a conversa como resolvida.
+    await repositorio.atualizarConversa(conversa.id, { status: 'resolvida' });
+  });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal, serena });
+
+  const resultado = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId });
+
+  assert.equal(canal.envios.length, 0, 'entregarAoPaciente não pode ter chamado o canal (nem Evolution, nem OpenClaw)');
+  assert.equal(resultado.acao, 'resposta_abortada_por_controle');
+  assert.equal(resultado.motivo, 'conversa_resolvida');
+  assert.ok(
+    repositorio._auditoria.some((r) => r.acao === 'envio_abortado_por_controle' && r.detalhe?.motivo === 'conversa_resolvida'),
+    'precisa existir auditoria explícita do aborto',
+  );
+});
+
 test('4. O controle muda durante uma retentativa: a retentativa é cancelada', async () => {
   // Cenário: a resposta já foi gerada e gravada numa chamada anterior (queda
   // entre gravar e entregar — o comentário do próprio código em
