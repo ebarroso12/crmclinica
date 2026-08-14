@@ -4,6 +4,7 @@
 // Serve aos testes e ao desenvolvimento local sem banco: o resto do sistema
 // não distingue um do outro. Não persiste nada entre reinícios, de propósito.
 
+const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 
 const ETIQUETAS_INICIAIS = [
@@ -29,6 +30,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const notas = [];
   const leads = new Map();
   const eventos = new Map();
+  // Log durável do chat ao vivo (migration 037) — array append-only, `id`
+  // (1-based, contador próprio) faz o papel do `bigserial` do Postgres.
+  const conversasEventos = [];
+  let proximoIdDeEventoDeConversa = 1;
+  const conversasEventosTickets = new Map();
   const auditoria = [];
   // Espelha `system_heartbeats` do Postgres: componente → { status, atualizadoEm }.
   // Sem escritor próprio (quem grava, no banco real, é um worker externo ao
@@ -1638,6 +1644,52 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         }
       }
       return total;
+    },
+
+    // ------------------------------------------------- chat ao vivo durável
+    // Paridade com repositorio.js — ver os comentários lá para o raciocínio.
+
+    async registrarEventoDeConversa({ conversaId, tipo, payload = {} }) {
+      const linha = {
+        id: proximoIdDeEventoDeConversa,
+        conversa_id: Number(conversaId),
+        tipo,
+        payload: payload ?? {},
+        criado_em: agora().toISOString(),
+      };
+      proximoIdDeEventoDeConversa += 1;
+      conversasEventos.push(linha);
+      return { ...linha };
+    },
+
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500 } = {}) {
+      if (cursor === null) {
+        return conversasEventos.slice(-limite).map((linha) => ({ ...linha }));
+      }
+      return conversasEventos
+        .filter((linha) => linha.id > Number(cursor))
+        .slice(0, limite)
+        .map((linha) => ({ ...linha }));
+    },
+
+    async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
+      const bruto = crypto.randomBytes(32).toString('base64url');
+      conversasEventosTickets.set(bruto, {
+        usuarioId: Number(usuarioId),
+        papel,
+        expiraEm: new Date(agora().getTime() + ttlMs),
+        usadoEm: null,
+      });
+      return bruto;
+    },
+
+    async resgatarTicketDeEventos(bruto) {
+      const ticket = conversasEventosTickets.get(bruto);
+      if (!ticket) return null;
+      if (ticket.usadoEm) return null;
+      if (ticket.expiraEm.getTime() <= agora().getTime()) return null;
+      ticket.usadoEm = agora();
+      return { usuarioId: ticket.usuarioId, papel: ticket.papel };
     },
 
     // ---------------------------------------------------------------- agenda

@@ -154,7 +154,7 @@ function criarAplicacao(dependencias = {}) {
 
   // Barramento das Conversas ao vivo: cada mensagem gravada passa por aqui e
   // é anunciada a quem está com a tela aberta via SSE (rota mais abaixo).
-  const emissorDeConversas = dependencias.emissorDeConversas || criarEmissorDeConversas();
+  const emissorDeConversas = dependencias.emissorDeConversas || criarEmissorDeConversas({ repositorio });
 
   // Gateway multi-IA: chaves só no servidor, catálogo no banco, fallback
   // técnico e telemetria com chave de idempotência. Vem antes do atendimento
@@ -206,7 +206,7 @@ function criarAplicacao(dependencias = {}) {
   const autenticacao = dependencias.autenticacao
     || criarAutenticacao({ repositorio, configuracao, contas, limitador });
 
-  const conversas = criarRotasDeConversas({ repositorio, atendimento });
+  const conversas = criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
 
@@ -1524,6 +1524,25 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
+      // Bilhete de uso único para abrir o SSE de Conversas ao vivo — ver o
+      // cabeçalho de `eventos-conversas.js` e a migration 037. Rota comum,
+      // autenticada normalmente (Authorization); o gate de p2f (linha
+      // ~1444, acima) já se aplica aqui como em qualquer outra rota — uma
+      // conta com segundo fator pendente nunca CHEGA a pedir bilhete, então
+      // o bilhete em si já nasce de uma identidade plenamente autenticada.
+      if (rota === '/api/conversas/eventos/ticket') {
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST' });
+          return;
+        }
+        exigirPermissao(usuario, 'conversas:ler');
+        const ticket = await repositorio.criarTicketDeEventos({
+          usuarioId: usuario.id, papel: usuario.papel,
+        });
+        responderJson(res, 200, { ticket, expira_em_ms: 30_000 }, { 'cache-control': 'no-store' });
+        return;
+      }
+
       // Conversas ao vivo: a conexão fica aberta por horas, enquanto a
       // recepção está com a tela aberta. Dentro de `comIdentidade` isso
       // seguraria uma conexão do pool pelo mesmo tempo — o inbox inteiro
@@ -1536,29 +1555,26 @@ function criarAplicacao(dependencias = {}) {
           return;
         }
 
-        // `EventSource` do navegador não manda cabeçalho `Authorization` — não
-        // há como. O token chega pela querystring só para abrir esta conexão
-        // de leitura; nenhuma escrita passa por aqui.
-        const tokenDaQuery = url.searchParams.get('token');
-        const usuarioDoEvento = usuario
-          || (tokenDaQuery ? autenticacao.identificar(`Bearer ${tokenDaQuery}`) : null);
-
-        // P1-04, achado da auditoria: o gate do segundo fator (acima, linha
-        // ~1444) só enxerga `usuario` — resolvido do cabeçalho `Authorization`,
-        // que o EventSource nunca manda. Para esta rota `usuario` chega
-        // sempre `null`, o gate passa direto, e SÓ AQUI a identidade de
-        // verdade é resolvida a partir do token da querystring. Sem esta
-        // checagem, uma conta com segundo fator pendente (login feito, TOTP
-        // ainda não confirmado) conseguia abrir o fluxo ao vivo de conversas
-        // — mensagem de paciente — só passando o token na URL desta rota,
-        // driblando o mesmo gate que bloqueia QUALQUER outra rota da API.
-        if (usuarioDoEvento?.p2f) {
-          responderJson(res, 403, {
-            erro: 'segundo fator obrigatório',
-            codigo: 'segundo_fator_pendente',
-          }, { 'cache-control': 'no-store' });
+        // NUNCA o token de sessão na URL (achado original: `?token=` expunha
+        // o JWT inteiro em log de acesso, histórico do navegador, Referer).
+        // `EventSource` não manda `Authorization` — por isso a troca é em
+        // duas etapas: `POST .../ticket` (autenticado normalmente) devolve um
+        // bilhete opaco, de uso único, validade de 30s; só ELE vai na URL do
+        // EventSource, e é resgatado (consumido) aqui.
+        const ticketDaQuery = url.searchParams.get('ticket');
+        if (!ticketDaQuery) {
+          responderJson(res, 401, { erro: 'bilhete de conexão ausente' }, { 'cache-control': 'no-store' });
           return;
         }
+        const resgate = await repositorio.resgatarTicketDeEventos(ticketDaQuery);
+        if (!resgate) {
+          responderJson(res, 401, { erro: 'bilhete inválido, expirado ou já usado' }, { 'cache-control': 'no-store' });
+          return;
+        }
+        // Reconstrói só o suficiente para `exigirPermissao` — o bilhete já
+        // nasceu de uma conta sem p2f pendente (ver a rota do bilhete acima),
+        // então não há checagem de segundo fator a refazer aqui.
+        const usuarioDoEvento = { id: resgate.usuarioId, papel: resgate.papel };
         exigirPermissao(usuarioDoEvento, 'conversas:ler');
 
         res.writeHead(200, {
@@ -1575,7 +1591,31 @@ function criarAplicacao(dependencias = {}) {
         res.on('error', () => {});
         req.on('error', () => {});
 
-        const cancelarInscricao = emissorDeConversas.inscrever(res);
+        // REPLAY primeiro, ASSINATURA depois — nessa ordem, sempre. O cliente
+        // manda o cursor de onde parou (`?cursor=123` — número puro, não é
+        // segredo, seguro na URL) via `Last-Event-ID` (reconexão automática
+        // do navegador) ou `?cursor=` (primeira conexão depois de reabrir a
+        // aba). Sem cursor nenhum, replay dos últimos eventos como ponto de
+        // partida — não o histórico inteiro.
+        const cursorDoCabecalho = req.headers['last-event-id'];
+        const cursorDaQuery = url.searchParams.get('cursor');
+        const cursorBruto = cursorDoCabecalho ?? cursorDaQuery;
+        const cursorRecebido = cursorBruto !== null && cursorBruto !== undefined && cursorBruto !== ''
+          ? Number(cursorBruto) : null;
+        const cursorValido = Number.isInteger(cursorRecebido) && cursorRecebido >= 0 ? cursorRecebido : null;
+
+        let cursorAposReplay = cursorValido ?? 0;
+        try {
+          const eventosPerdidos = await repositorio.listarEventosDeConversasDesde({ cursor: cursorValido });
+          for (const evento of eventosPerdidos) {
+            res.write(`id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`);
+            if (evento.id > cursorAposReplay) cursorAposReplay = evento.id;
+          }
+        } catch (erro) {
+          console.error(`[eventos-conversas] falha no replay: ${erro.message}`);
+        }
+
+        const cancelarInscricao = emissorDeConversas.inscrever(res, { depoisDeCursor: cursorAposReplay });
         // Sem batimento, uma conexão ociosa é indistinguível de uma caída para
         // qualquer proxy no meio do caminho — ele derruba silenciosamente.
         const batimento = setInterval(() => {

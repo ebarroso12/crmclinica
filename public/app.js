@@ -1531,16 +1531,20 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
   }
 });
 
-// --- Conversas ao vivo (Server-Sent Events) ---
+// --- Conversas ao vivo (Server-Sent Events, log durável) ---
 //
-// `EventSource` não manda cabeçalho `Authorization` — não há como. O token vai
-// na querystring só para abrir esta conexão de leitura; nenhuma escrita passa
-// por aqui. A reconexão é manual, não a automática do navegador: a nativa
-// insiste na mesma URL, com o mesmo token — e ele vence a cada 15 minutos.
-// Reabrir com `accessToken` na hora da falha garante um token válido.
+// `EventSource` não manda cabeçalho `Authorization` — não há como. Por isso
+// a conexão troca em duas etapas: pede um BILHETE de uso único
+// (`POST /api/conversas/eventos/ticket`, autenticado normalmente) e só ELE
+// vai na URL do EventSource — nunca o token de sessão. `cursorDeEventos`
+// guarda o último `id` recebido; toda reconexão (manual, na queda, ou
+// abrindo a aba de novo) manda esse cursor, e o servidor reproduz (replay)
+// tudo que ficou perdido no intervalo antes de retomar ao vivo — não perde
+// eventos, não duplica (ver `src/servidor/eventos-conversas.js`).
 
 let fonteDeEventos = null;
 let reconexaoDeEventosAgendada = null;
+let cursorDeEventos = null;
 
 function encerrarEventosDeConversas() {
   clearTimeout(reconexaoDeEventosAgendada);
@@ -1549,11 +1553,36 @@ function encerrarEventosDeConversas() {
   fonteDeEventos = null;
 }
 
-function conectarEventosDeConversas() {
+function reagirAEventoDeConversa(dados) {
+  if (typeof dados.id === 'number') cursorDeEventos = dados.id;
+
+  const tiposDeMensagem = ['mensagem_recebida', 'mensagem_enviada'];
+  if (!tiposDeMensagem.includes(dados?.tipo)) return;
+
+  // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
+  if (!seletor('#conversas')?.hidden) carregarConversas();
+
+  // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
+  if (dados.conversa_id === conversaAberta) {
+    pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
+  }
+}
+
+async function conectarEventosDeConversas() {
   if (!accessToken || typeof EventSource === 'undefined') return;
   encerrarEventosDeConversas();
 
-  fonteDeEventos = new EventSource(`/api/conversas/eventos?token=${encodeURIComponent(accessToken)}`);
+  let ticket;
+  try {
+    ({ ticket } = await pedirJson('/api/conversas/eventos/ticket', { method: 'POST' }));
+  } catch {
+    // Sem bilhete, sem conexão — tenta de novo no mesmo ritmo do onerror.
+    reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
+    return;
+  }
+
+  const cursor = cursorDeEventos !== null ? `&cursor=${encodeURIComponent(cursorDeEventos)}` : '';
+  fonteDeEventos = new EventSource(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}${cursor}`);
 
   fonteDeEventos.onmessage = (evento) => {
     let dados;
@@ -1562,21 +1591,15 @@ function conectarEventosDeConversas() {
     } catch {
       return;
     }
-    if (dados?.tipo !== 'mensagem') return;
-
-    // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
-    if (!seletor('#conversas')?.hidden) carregarConversas();
-
-    // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
-    if (dados.conversa_id === conversaAberta) {
-      pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
-    }
+    reagirAEventoDeConversa(dados);
   };
 
   fonteDeEventos.onerror = () => {
     encerrarEventosDeConversas();
     // Um intervalo fixo evita martelar o servidor se ele estiver fora do ar;
     // 5s ainda é rápido o bastante para não se notar numa queda passageira.
+    // `cursorDeEventos` já guarda onde parou — a próxima chamada reproduz o
+    // que foi perdido nesses 5s, não parte do zero.
     reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
   };
 }
