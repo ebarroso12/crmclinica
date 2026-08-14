@@ -302,7 +302,25 @@ function criarContas({
     return { solicitado: true };
   }
 
-  /** Redefine a senha com o token recebido por e-mail. */
+  /**
+   * Redefine a senha com o token recebido por e-mail.
+   *
+   * Antes desta correção, a reivindicação do token (`marcarRecuperacaoUsada`)
+   * tinha a guarda certa no SQL (`WHERE usado_em IS NULL`), mas o resultado
+   * era descartado — e as quatro escritas (senha, consumo do token, revogação
+   * de sessões, auditoria) rodavam soltas, sem transação. Duas consequências
+   * reais: (1) duas requisições concorrentes com o MESMO token válido podiam
+   * ambas passar pela checagem antes de qualquer uma marcar o token usado —
+   * a segunda sobrescrevia a senha da primeira sem que ninguém soubesse que
+   * perdeu a corrida; (2) uma queda no meio (banco caiu depois da senha, antes
+   * de marcar o token) deixava o link ainda válido para trocar a senha de
+   * novo, ou o token consumido sem a senha ter mudado.
+   *
+   * A correção: reivindicar o token é a PRIMEIRA escrita, dentro da mesma
+   * transação das outras três — se a reivindicação não for desta chamada
+   * (perdeu a corrida, ou o token já foi usado), nada mais roda, e o que já
+   * tiver rodado antes do lançamento é desfeito pelo ROLLBACK de `comUsuario`.
+   */
   async function redefinirSenha(token, senhaNova, { ip = null } = {}) {
     // O token tem 32 bytes, mas adivinhação por força bruta ainda merece teto.
     if (limitador) await limitador.exigirDentroDoLimite({ ip, acao: 'redefinicao' });
@@ -320,22 +338,40 @@ function criarContas({
     const usuario = await repositorio.obterUsuarioPorId(recuperacao.usuario_id);
     if (!podeEntrar(usuario)) throw erroDeSituacao(usuario?.situacao ?? 'desativado');
 
-    await repositorio.atualizarUsuario(usuario.id, {
-      senhaHash: await gerarHash(senhaNova),
-      precisaTrocarSenha: false,
-    });
-    await repositorio.marcarRecuperacaoUsada(recuperacao.id);
-    // Quem redefiniu a senha provavelmente perdeu o controle da conta: derruba tudo.
-    await repositorio.revogarSessoesDoUsuario(usuario.id);
+    // Hash da senha nova é CPU-bound (bcrypt) — calculado ANTES de abrir a
+    // transação, para não segurar a conexão do banco durante esse trabalho.
+    const senhaHash = await gerarHash(senhaNova);
 
-    await repositorio.registrarAuditoria({
-      entidade: 'usuario',
-      entidadeId: usuario.id,
-      acao: 'senha_redefinida',
-      usuarioId: usuario.id,
-    });
+    try {
+      return await repositorio.comUsuario(usuario.id, async (repo) => {
+        const reivindicado = await repo.marcarRecuperacaoUsada(recuperacao.id);
+        if (!reivindicado) {
+          // Perdeu a corrida para outra requisição com o mesmo token — ou o
+          // token já tinha sido usado entre a leitura acima e agora. Mesma
+          // resposta do caso "inválido ou expirado": não existe motivo para
+          // esta chamada distinguir os dois perante quem pediu.
+          const erro = new Error('link de recuperação inválido ou expirado');
+          erro.status = 400;
+          throw erro;
+        }
 
-    return { redefinida: true };
+        await repo.atualizarUsuario(usuario.id, { senhaHash, precisaTrocarSenha: false });
+        // Quem redefiniu a senha provavelmente perdeu o controle da conta: derruba tudo.
+        await repo.revogarSessoesDoUsuario(usuario.id);
+
+        await repo.registrarAuditoria({
+          entidade: 'usuario',
+          entidadeId: usuario.id,
+          acao: 'senha_redefinida',
+          usuarioId: usuario.id,
+        });
+
+        return { redefinida: true };
+      });
+    } catch (erro) {
+      if (limitador) await limitador.registrar({ ip, acao: 'redefinicao', sucesso: false });
+      throw erro;
+    }
   }
 
   // ---------------------------------------------------------------- segundo fator

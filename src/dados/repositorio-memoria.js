@@ -1618,9 +1618,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return encontrada ? { ...encontrada } : null;
     },
 
+    // Paridade com repositorio.js: devolve `true` só se ESTA chamada reivindicou
+    // o token agora — quem chama precisa saber se ganhou a corrida.
     async marcarRecuperacaoUsada(id) {
       const recuperacao = recuperacoes.get(Number(id));
-      if (recuperacao && !recuperacao.usado_em) recuperacao.usado_em = agora().toISOString();
+      if (recuperacao && !recuperacao.usado_em) {
+        recuperacao.usado_em = agora().toISOString();
+        return true;
+      }
+      return false;
     },
 
     async invalidarRecuperacoesDoUsuario(usuarioId) {

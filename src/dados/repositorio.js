@@ -1877,8 +1877,21 @@ function criarRepositorio(pool) {
       return rows[0] ? { ...rows[0], id: Number(rows[0].id), usuario_id: Number(rows[0].usuario_id) } : null;
     },
 
+    /**
+     * Reivindica o token de recuperação — devolve `true` só se ESTA chamada
+     * foi quem marcou `usado_em`. `WHERE usado_em IS NULL` já impede duas
+     * reivindicações no banco; o `RETURNING` é o que deixa o chamador SABER
+     * se ganhou a corrida, em vez de assumir que sim. Duas requisições
+     * concorrentes com o mesmo token válido: sem isto, ambas seguiam adiante
+     * e a segunda sobrescrevia a senha da primeira sem que ninguém soubesse
+     * que perdeu.
+     */
     async marcarRecuperacaoUsada(id) {
-      await consultar('UPDATE recuperacoes_senha SET usado_em = now() WHERE id = $1 AND usado_em IS NULL', [id]);
+      const { rows } = await consultar(
+        'UPDATE recuperacoes_senha SET usado_em = now() WHERE id = $1 AND usado_em IS NULL RETURNING id',
+        [id],
+      );
+      return rows.length > 0;
     },
 
     /** Um pedido novo invalida os anteriores: só o último link deve funcionar. */
