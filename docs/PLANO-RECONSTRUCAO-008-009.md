@@ -79,17 +79,43 @@ $function$;
 `totp_segredo_cifrado` do snapshot) — ou seja, a versão do Git já é a
 autoridade para ela, e a reconstrução deve usar `db/017_...` como fonte.
 
-**Achados da extração, a resolver na reconstrução (não são invenção — estão no
-banco):**
+**Achados da extração (atualizado em 2026-08-14, segunda rodada de
+reconstrução — ver db/034, db/035, db/036):**
 
-- `current_usuario_id()` referencia `u.ativo`, coluna que **não existe** no
-  esquema versionado (`usuarios` usa `situacao`). A função funciona hoje porque
-  nada mais consulta esse caminho com JWT de e-mail; a reconstrução deve
-  registrar essa discrepância e decidir com o dono se corrige (`situacao =
-  'ativo'`) ou preserva o texto atual.
+- ~~`current_usuario_id()` referencia `u.ativo`, coluna que não existe no
+  esquema versionado~~ — **CORREÇÃO: esta alegação era FALSA.**
+  `usuarios.ativo` existe desde `db/001_inbox.sql` linha 24
+  (`ativo boolean NOT NULL DEFAULT true`), lado a lado com `situacao`. Não há
+  discrepância nenhuma aqui — a versão anterior deste documento estava errada
+  ao afirmar o contrário. Confirmado por leitura direta de `db/001_inbox.sql`,
+  não por suposição.
 - `current_app_role()` usa `search_path TO 'public', 'pg_temp'`, diferente do
   padrão `''` do hardening da 007 — preservar como está, mudança é decisão
-  separada.
+  separada. (Este achado permanece válido.)
+- **Três funções adicionais, não listadas na primeira rodada deste plano,
+  foram encontradas como dependência das policies `crm008_*`:**
+  `is_admin()`, `can_access_conversa(bigint)`, `can_access_agendamento(bigint,
+  bigint)`. Sem elas, `CREATE POLICY` para `agendamentos`, `conversa_etiquetas`,
+  `conversas`, `lead_eventos`, `leads`, `mensagens` e `usuarios` falha por
+  função inexistente. Extraídas e incluídas em `db/034`.
+- **Achado novo, mais sério:** `current_usuario_id()` depende de
+  `auth.jwt()->>'email'` — mas o backend (`comUsuario()`, `repositorio.js`)
+  nunca inclui `email` em `request.jwt.claims` (só `usuario_id`/`app_role`).
+  `current_usuario_id()` devolve `NULL` para toda requisição do backend, e
+  toda cláusula `campo = current_usuario_id()` nas policies `crm008_*` (há
+  várias: `sessoes`, `usuarios`, `notas_internas`, `contatos`, `conversas`)
+  nunca casa por essa via — só os ramos `is_backend()`/`is_gestor_or_admin()`/
+  `is_admin()` ou `atribuido_a IS NULL` concedem acesso de fato. Ver o
+  cabeçalho de `db/034_reconstrucao_funcoes_e_policies_008.sql`, achado 4,
+  para o detalhamento completo. Registrado para decisão do dono; nenhuma
+  correção foi aplicada (mudaria comportamento de RLS em produção sem
+  autorização).
+- **`is_admin_master()`/`is_colaborador()` e as 13 policies `restrict_*`
+  (não documentadas na primeira rodada) são uma camada LEGADA e hoje
+  INERTE** — dependem de `authenticated`, role que perdeu `USAGE ON SCHEMA
+  public` em `db/007_hardening.sql` (já commitada). Reconstruídas em
+  `db/036` por completude, não porque protegem algo hoje. Ver o cabeçalho de
+  `db/036_reconstrucao_policies_restrict_legado.sql`.
 
 ### 2.2 As policies `crm008_*`
 
