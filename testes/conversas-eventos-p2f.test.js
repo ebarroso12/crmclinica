@@ -55,21 +55,72 @@ test('[p2f] segundo fator pendente: /api/conversas/eventos (SSE) também é recu
   assert.equal((await resposta.json()).codigo, 'segundo_fator_pendente');
 });
 
-test('[p2f] com TOTP confirmado, a mesma conta acessa normalmente o SSE', async (t) => {
-  // Controle negativo: prova que a recusa acima é especificamente sobre p2f
-  // pendente, não uma quebra geral da rota para contas master/admin.
+test('[p2f] papel sem 2FA obrigatório (atendente) nunca ganha p2f — acessa o SSE normalmente', async (t) => {
+  // Controle negativo FRACO: só prova que um papel que nunca recebe `p2f`
+  // (não é master/admin) continua acessando. NÃO prova que um master/admin
+  // com TOTP confirmado acessa — ver o teste seguinte, que é o controle de
+  // verdade. (Achado da auditoria independente desta sessão: o teste
+  // original desta suíte usava só este caso e o rotulava como prova de que
+  // "TOTP confirmado continua acessando" — não era; nenhum teste cobria de
+  // fato uma conta master/admin com TOTP ativo.)
   const repositorio = criarRepositorioEmMemoria();
   const configuracao = configuracaoDeTeste({ CRMCLINICA_2FA_OBRIGATORIO: 'sim' });
   const app = await subirServidor({ repositorio, configuracao, papel: 'atendente', master: false });
   t.after(() => app.encerrar());
 
-  // Papel "atendente" (não master/admin) nunca ganha p2f — token sem a marca.
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
     `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
     { signal: controle.signal },
   );
   assert.equal(resposta.status, 200);
+  controle.abort();
+  await resposta.body?.cancel().catch(() => {});
+});
+
+test('[p2f] master com TOTP CONFIRMADO acessa o SSE normalmente — a recusa é só sobre p2f pendente', async (t) => {
+  // Controle negativo de verdade: mesma conta (master, 2FA obrigatório
+  // ligado) que o primeiro teste desta suíte recusa — mas depois de ativar o
+  // segundo fator pelo fluxo real (preparar → confirmar), o que zera `p2f`
+  // no PRÓXIMO token emitido (ver src/seguranca/sessoes.js:39-42). Prova que
+  // a recusa é especificamente sobre segundo fator pendente, não uma quebra
+  // geral da rota para contas privilegiadas.
+  const { gerarCodigo } = require('../src/seguranca/totp');
+  const { SENHA_DE_TESTE } = require('./auxiliar');
+
+  const repositorio = criarRepositorioEmMemoria();
+  const configuracao = configuracaoDeTeste({ CRMCLINICA_2FA_OBRIGATORIO: 'sim' });
+  const app = await subirServidor({ repositorio, configuracao, papel: 'admin', master: true });
+  t.after(() => app.encerrar());
+
+  // `/api/auth/segundo-fator*` é a exceção do gate — é exatamente por onde
+  // uma conta com p2f pendente ativa o TOTP, com o token que já tem.
+  const preparo = await (await app.pedir('/api/auth/segundo-fator', { method: 'POST' })).json();
+  const confirmado = await app.pedir('/api/auth/segundo-fator/confirmar', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ codigo: gerarCodigo(preparo.segredo) }),
+  });
+  assert.equal(confirmado.status, 200, 'confirmação do TOTP precisa suceder para o teste fazer sentido');
+
+  // Login de novo: só agora `totp_ativo` é true no momento da emissão do
+  // token, então só este novo access_token vem sem `p2f`.
+  const login = await fetch(`${app.base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: app.sessao.email, senha: SENHA_DE_TESTE, codigo: gerarCodigo(preparo.segredo),
+    }),
+  });
+  assert.equal(login.status, 200, 'login com o código do segundo fator precisa suceder');
+  const { access_token: accessToken } = await login.json();
+
+  const controle = new AbortController();
+  const resposta = await app.pedirSemAuth(
+    `/api/conversas/eventos?token=${encodeURIComponent(accessToken)}`,
+    { signal: controle.signal },
+  );
+  assert.equal(resposta.status, 200, 'master com TOTP confirmado não pode ser recusado pela mesma checagem de p2f');
   controle.abort();
   await resposta.body?.cancel().catch(() => {});
 });

@@ -110,6 +110,64 @@ test('dois workers reivindicando ao mesmo tempo não pegam o mesmo trabalho', as
   assert.equal(peloWorkerA[0].reivindicado_por, 'worker-a');
 });
 
+// ----------------------------------------------------------------- posse (fencing)
+//
+// A prova PRINCIPAL da posse (migration 033, `posse_token`) roda contra
+// PostgreSQL real em testes/outbox-fencing-pg.test.js — é lá que a guarda de
+// SQL é o que importa. Este teste fecha uma lacuna que a auditoria
+// independente desta sessão encontrou: nenhum teste exercitava o caminho
+// `perdeuPosse` DENTRO do serviço (`processarUm`, automacao-outbox-servico.js)
+// nem as guardas equivalentes do repositório EM MEMÓRIA
+// (repositorio-memoria.js) — só a versão contra Postgres tinha prova.
+
+test('worker que perdeu a posse: processarUm devolve posse_perdida e audita, sem sobrescrever quem venceu (repositório em memória)', async () => {
+  let agoraSimulado = new Date('2026-08-13T10:00:00.000Z');
+  const repositorio = criarRepositorioEmMemoria({ agora: () => agoraSimulado });
+  const atendimento = criarAtendimento({
+    repositorio,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'oi' }) },
+  });
+  const outbox = criarServicoDeOutbox({ repositorio, atendimento, agora: () => agoraSimulado });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+  await outbox.enfileirar({ conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id });
+
+  const [paraA] = await repositorio.reivindicarTrabalhosDeOutbox({
+    agora: agoraSimulado.toISOString(), limite: 20, worker: 'worker-A',
+  });
+  const tokenDeA = paraA.posse_token;
+  assert.equal(tokenDeA, 1, 'primeira reivindicação leva a posse ao token 1');
+
+  // O lease de A vence — mesma simulação de tempo do teste de recuperarPresos acima.
+  agoraSimulado = new Date(agoraSimulado.getTime() + LEASE_MS + 60 * 1000);
+  const liberados = await outbox.recuperarPresos();
+  assert.equal(liberados.length, 1, 'o trabalho preso precisa ter voltado à fila');
+
+  const [paraB] = await repositorio.reivindicarTrabalhosDeOutbox({
+    agora: agoraSimulado.toISOString(), limite: 20, worker: 'worker-B',
+  });
+  assert.ok(paraB, 'B precisa ter reivindicado o trabalho liberado');
+  assert.ok(paraB.posse_token > tokenDeA, 'a nova posse precisa ter token maior que a de A');
+
+  // A volta (alheio a tudo) com o token velho. `processarUm` ainda ENVIA — a
+  // barreira de posse protege só a ESCRITA do desfecho, não o envio em si
+  // (ver o comentário no início de `processarUm`, automacao-outbox-servico.js)
+  // — mas não pode sobrescrever o registro de quem já assumiu.
+  const resultado = await outbox.processarUm(paraA, { worker: 'worker-A', posseToken: tokenDeA });
+  assert.equal(resultado.status, 'posse_perdida');
+  assert.equal(resultado.trabalho, null);
+
+  assert.ok(
+    repositorio._auditoria.some((r) => r.acao === 'outbox_posse_perdida' && r.entidadeId === paraA.id),
+    'a perda de posse precisa ficar auditada — é como a equipe descobre, sem log manual',
+  );
+
+  // O registro real continua com B, intocado pela tentativa de A.
+  const registro = await repositorio.obterTrabalhoDeOutbox(paraA.id);
+  assert.equal(registro.reivindicado_por, 'worker-B');
+  assert.equal(registro.posse_token, paraB.posse_token);
+});
+
 // --------------------------------------------------------------- lease e recuperação
 
 test('trabalho preso além do lease volta para a fila (e conta como tentativa)', async () => {

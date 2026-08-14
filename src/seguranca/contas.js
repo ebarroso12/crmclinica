@@ -369,7 +369,19 @@ function criarContas({
         return { redefinida: true };
       });
     } catch (erro) {
-      if (limitador) await limitador.registrar({ ip, acao: 'redefinicao', sucesso: false });
+      // Protegido por try/catch próprio (achado da auditoria independente
+      // desta sessão): isto está dentro de um `catch` — se `registrar` em si
+      // lançasse (ex.: banco piscando bem nesse instante), sem esta guarda a
+      // exceção NOVA substituiria `erro` antes do `throw erro` abaixo, e quem
+      // chamou veria "falha ao registrar limite" no lugar do motivo real da
+      // redefinição ter falhado.
+      if (limitador) {
+        try {
+          await limitador.registrar({ ip, acao: 'redefinicao', sucesso: false });
+        } catch {
+          // Auditoria de limite é best-effort aqui; o erro real é o que importa.
+        }
+      }
       throw erro;
     }
   }
