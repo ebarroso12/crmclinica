@@ -1542,6 +1542,23 @@ function criarAplicacao(dependencias = {}) {
         const tokenDaQuery = url.searchParams.get('token');
         const usuarioDoEvento = usuario
           || (tokenDaQuery ? autenticacao.identificar(`Bearer ${tokenDaQuery}`) : null);
+
+        // P1-04, achado da auditoria: o gate do segundo fator (acima, linha
+        // ~1444) só enxerga `usuario` — resolvido do cabeçalho `Authorization`,
+        // que o EventSource nunca manda. Para esta rota `usuario` chega
+        // sempre `null`, o gate passa direto, e SÓ AQUI a identidade de
+        // verdade é resolvida a partir do token da querystring. Sem esta
+        // checagem, uma conta com segundo fator pendente (login feito, TOTP
+        // ainda não confirmado) conseguia abrir o fluxo ao vivo de conversas
+        // — mensagem de paciente — só passando o token na URL desta rota,
+        // driblando o mesmo gate que bloqueia QUALQUER outra rota da API.
+        if (usuarioDoEvento?.p2f) {
+          responderJson(res, 403, {
+            erro: 'segundo fator obrigatório',
+            codigo: 'segundo_fator_pendente',
+          }, { 'cache-control': 'no-store' });
+          return;
+        }
         exigirPermissao(usuarioDoEvento, 'conversas:ler');
 
         res.writeHead(200, {
