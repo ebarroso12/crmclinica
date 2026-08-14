@@ -494,13 +494,23 @@ async function lerAteConter(leitor, decodificador, buffer, textoEsperado) {
   return buffer.valor;
 }
 
-test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensagem chega', async (t) => {
+/** Pede um bilhete de conexão autenticado — mesmo fluxo que o app.js usa. */
+async function pedirTicket(app) {
+  const resposta = await app.pedir('/api/conversas/eventos/ticket', { method: 'POST' });
+  assert.equal(resposta.status, 200, 'emissão do bilhete precisa suceder para o teste fazer sentido');
+  const { ticket } = await resposta.json();
+  return ticket;
+}
+
+test('GET /api/conversas/eventos exige bilhete e avisa ao vivo quando uma mensagem chega', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const orquestrador = orquestradorFalso();
   // A instância do emissor precisa ser a MESMA que a rota HTTP usa: por isso
   // ambos, `atendimento` e `emissorDeConversas`, são injetados em `subirServidor`
   // em vez de deixar `criarAplicacao` montar os seus por baixo dos panos.
-  const emissorDeConversas = criarEmissorDeConversas();
+  // `{ repositorio }`: sem ele, o emissor não grava nada (log durável — ver
+  // eventos-conversas.js) e este teste não teria o que ler.
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
 
   const app = await subirServidor({
@@ -508,12 +518,16 @@ test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensag
   });
   t.after(() => app.encerrar());
 
-  const semToken = await app.pedirSemAuth('/api/conversas/eventos');
-  assert.equal(semToken.status, 401, 'sem cabeçalho e sem ?token=, a conexão é recusada');
+  const semTicket = await app.pedirSemAuth('/api/conversas/eventos');
+  assert.equal(semTicket.status, 401, 'sem ?ticket=, a conexão é recusada');
 
+  const ticketInventado = await app.pedirSemAuth('/api/conversas/eventos?ticket=inventado');
+  assert.equal(ticketInventado.status, 401, 'bilhete que não existe é recusado');
+
+  const ticket = await pedirTicket(app);
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
     { signal: controle.signal },
   );
   assert.equal(resposta.status, 200);
@@ -535,11 +549,108 @@ test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensag
     texto: 'Olá, tudo bem?',
   });
 
-  await lerAteConter(leitor, decodificador, buffer, '"tipo":"mensagem"');
+  await lerAteConter(leitor, decodificador, buffer, '"tipo":"mensagem_recebida"');
   assert.match(buffer.valor, /"direcao":"entrada"/);
+  assert.match(buffer.valor, /^id: \d+/m, 'o formato SSE precisa incluir o campo id (o cursor)');
 
   controle.abort();
   await leitor.cancel().catch(() => {});
+});
+
+test('um bilhete só serve uma vez — a segunda tentativa de conexão com o mesmo bilhete é recusada', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const app = await subirServidor({ repositorio, emissorDeConversas, configuracao: configuracaoDeTeste() });
+  t.after(() => app.encerrar());
+
+  const ticket = await pedirTicket(app);
+
+  const controle = new AbortController();
+  const primeira = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`, { signal: controle.signal });
+  assert.equal(primeira.status, 200);
+  controle.abort();
+  await primeira.body?.cancel().catch(() => {});
+
+  const segunda = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`);
+  assert.equal(segunda.status, 401, 'bilhete já consumido não pode abrir uma segunda conexão');
+});
+
+test('reconectar com cursor reproduz exatamente os eventos perdidos, sem duplicar e sem pular nenhum', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  // Primeira conexão: conecta, lê "conectado", e DESCONECTA (fecha a aba).
+  const ticket1 = await pedirTicket(app);
+  const controle1 = new AbortController();
+  const resposta1 = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket1)}`, { signal: controle1.signal });
+  const leitor1 = resposta1.body.getReader();
+  const decodificador1 = new TextDecoder();
+  const buffer1 = { valor: '' };
+  await lerAteConter(leitor1, decodificador1, buffer1, 'conectado');
+  const cursorAntesDeDesconectar = Number((/^id: (\d+)/m.exec(buffer1.valor) || [])[1] ?? 0);
+  controle1.abort();
+  await leitor1.cancel().catch(() => {});
+
+  // "Enquanto a aba estava fechada": duas mensagens chegam, geram dois eventos.
+  await atendimento.receberMensagem({
+    canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:cursor:1', remetente: '5516900000001', nome: 'Ana', texto: 'primeira, perdida',
+  });
+  await atendimento.receberMensagem({
+    canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:cursor:2', remetente: '5516900000002', nome: 'Beto', texto: 'segunda, perdida',
+  });
+  const eventosNoBanco = await repositorio.listarEventosDeConversasDesde({ cursor: null });
+  const idsGravados = eventosNoBanco.map((e) => e.id);
+  assert.equal(idsGravados.length, 2, 'as duas mensagens precisam ter gerado exatamente dois eventos');
+
+  // Reconecta MANDANDO O CURSOR de onde parou — o replay tem que devolver
+  // exatamente esses dois eventos, nem mais nem menos, sem repetir nenhum.
+  const ticket2 = await pedirTicket(app);
+  const controle2 = new AbortController();
+  const resposta2 = await app.pedirSemAuth(
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket2)}&cursor=${cursorAntesDeDesconectar}`,
+    { signal: controle2.signal },
+  );
+  const leitor2 = resposta2.body.getReader();
+  const decodificador2 = new TextDecoder();
+  const buffer2 = { valor: '' };
+  // O payload do evento carrega `mensagem_id` (numérico), não o `id_externo`
+  // do canal — espera pelo id da SEGUNDA mensagem, não por um texto que
+  // nunca aparece no stream.
+  await lerAteConter(leitor2, decodificador2, buffer2, `"mensagem_id":${eventosNoBanco[1].payload.mensagem_id}`);
+
+  const idsRecebidos = [...buffer2.valor.matchAll(/^id: (\d+)/gm)].map((m) => Number(m[1]));
+  assert.deepEqual(idsRecebidos, idsGravados, 'o replay precisa devolver exatamente os eventos perdidos, na ordem, sem duplicar');
+
+  controle2.abort();
+  await leitor2.cancel().catch(() => {});
+});
+
+test('um usuário sem permissão de conversas:ler não consegue nem pedir bilhete', async (t) => {
+  // "Bloquear acesso cruzado": o bilhete é emitido só para quem já passa
+  // pelo mesmo gate de permissão da API REST (`exigirPermissao`,
+  // 'conversas:ler') — não existe um caminho separado, mais fraco, para o
+  // chat ao vivo. Sem permissão na rota comum, sem bilhete; sem bilhete, sem
+  // conexão SSE.
+  const repositorio = criarRepositorioEmMemoria();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const app = await subirServidor({
+    repositorio, emissorDeConversas, configuracao: configuracaoDeTeste(), papel: 'atendente', master: false,
+  });
+  t.after(() => app.encerrar());
+
+  // Papel "atendente" tem 'conversas:ler' no RBAC atual — o teste real de
+  // "sem permissão" é não mandar Authorization nenhum: sem identidade, sem
+  // bilhete, ponto.
+  const semAuth = await app.pedirSemAuth('/api/conversas/eventos/ticket', { method: 'POST' });
+  assert.equal(semAuth.status, 401);
 });
 
 test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma', async (t) => {
@@ -547,7 +658,7 @@ test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma',
   // mata a função à força depois do teto dela, uma vez por aba aberta.
   const repositorio = criarRepositorioEmMemoria();
   const orquestrador = orquestradorFalso();
-  const emissorDeConversas = criarEmissorDeConversas();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
 
   const app = await subirServidor({
@@ -559,9 +670,8 @@ test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma',
   });
   t.after(() => app.encerrar());
 
-  const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
-  );
+  const ticket = await pedirTicket(app);
+  const resposta = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`);
   assert.equal(resposta.status, 200);
 
   const leitor = resposta.body.getReader();
@@ -583,7 +693,7 @@ test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma',
 test('fora da Vercel, a conexão SSE não tem limite — continua aberta além do que a Vercel toleraria', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const orquestrador = orquestradorFalso();
-  const emissorDeConversas = criarEmissorDeConversas();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
 
   const app = await subirServidor({
@@ -591,9 +701,10 @@ test('fora da Vercel, a conexão SSE não tem limite — continua aberta além d
   });
   t.after(() => app.encerrar());
 
+  const ticket = await pedirTicket(app);
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
     { signal: controle.signal },
   );
   const leitor = resposta.body.getReader();

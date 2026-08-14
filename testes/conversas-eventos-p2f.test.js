@@ -1,18 +1,19 @@
 'use strict';
 
-// P1-04, achado da auditoria desta sessão: o gate do segundo fator (em
+// P1-04, achado da auditoria da sessão anterior: o gate do segundo fator (em
 // src/servidor/http.js, perto da linha 1444) só enxerga `usuario` — resolvido
 // do cabeçalho `Authorization`. A rota `/api/conversas/eventos` (o fluxo ao
 // vivo de conversas, por SSE) não recebe esse cabeçalho — `EventSource` do
-// navegador não manda um — então `usuario` chega SEMPRE `null` ali, o gate
-// passa direto, e só DEPOIS a identidade de verdade é resolvida a partir do
-// token da querystring (`?token=`).
+// navegador não manda um. NA ÉPOCA, a identidade real era resolvida de um
+// `?token=` na querystring, DEPOIS do gate — driblando a checagem.
 //
-// Sem a checagem extra dentro da própria rota, uma conta com segundo fator
-// pendente (master/admin, TOTP ainda não confirmado) conseguia abrir o fluxo
-// ao vivo de conversas — mensagem de paciente — só passando o token na URL
-// desta rota, driblando o mesmo gate que bloqueia QUALQUER outra rota da API
-// para essa mesma conta.
+// Nesta sessão (Pendência 4, reconstrução do chat ao vivo), o token de
+// sessão saiu da URL de vez: a conexão agora troca um BILHETE de uso único
+// (POST /api/conversas/eventos/ticket, autenticado normalmente) por acesso
+// ao stream. Como a emissão do bilhete é uma rota comum, o gate de p2f já a
+// alcança sem nenhuma checagem extra — a proteção contra o bypass original
+// continua valendo, só que por construção, não por uma segunda checagem
+// dentro da rota SSE (ver o cabeçalho de src/servidor/eventos-conversas.js).
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -33,7 +34,14 @@ test('[p2f] segundo fator pendente: /api/conversas é recusado (referência de c
   assert.equal((await resposta.json()).codigo, 'segundo_fator_pendente');
 });
 
-test('[p2f] segundo fator pendente: /api/conversas/eventos (SSE) também é recusado — não pode ser a exceção', async (t) => {
+test('[p2f] segundo fator pendente: nem consegue pedir o bilhete de SSE — não pode ser a exceção', async (t) => {
+  // Achado desta sessão (reconstrução do chat ao vivo, Pendência 4): o token
+  // não vai mais na URL — a rota agora exige um bilhete de uso único, pedido
+  // por POST /api/conversas/eventos/ticket (autenticado normalmente). Essa
+  // rota começa com /api/ e não com /api/auth/, então passa pelo MESMO gate
+  // geral de p2f (linha ~1444 de http.js) que qualquer outra rota — uma
+  // conta com segundo fator pendente nunca chega a ter um bilhete válido, e
+  // por construção nunca alcança o SSE.
   const repositorio = criarRepositorioEmMemoria();
   const configuracao = configuracaoDeTeste({ CRMCLINICA_2FA_OBRIGATORIO: 'sim' });
   const app = await subirServidor({ repositorio, configuracao, papel: 'admin', master: true, autenticar: false });
@@ -44,13 +52,14 @@ test('[p2f] segundo fator pendente: /api/conversas/eventos (SSE) também é recu
   // reproduzir exatamente a conta que o restante da API já recusa.
   const sessao = await autenticar({ base: app.base, repositorio, papel: 'admin', master: true });
 
-  const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(sessao.access_token)}`,
-  );
+  const resposta = await fetch(`${app.base}/api/conversas/eventos/ticket`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${sessao.access_token}` },
+  });
 
   assert.equal(
     resposta.status, 403,
-    'a rota de eventos ao vivo não pode deixar passar quem o resto da API recusa por segundo fator pendente',
+    'o bilhete do chat ao vivo não pode ser emitido para quem o resto da API recusa por segundo fator pendente',
   );
   assert.equal((await resposta.json()).codigo, 'segundo_fator_pendente');
 });
@@ -68,9 +77,10 @@ test('[p2f] papel sem 2FA obrigatório (atendente) nunca ganha p2f — acessa o 
   const app = await subirServidor({ repositorio, configuracao, papel: 'atendente', master: false });
   t.after(() => app.encerrar());
 
+  const { ticket } = await (await app.pedir('/api/conversas/eventos/ticket', { method: 'POST' })).json();
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
     { signal: controle.signal },
   );
   assert.equal(resposta.status, 200);
@@ -115,9 +125,16 @@ test('[p2f] master com TOTP CONFIRMADO acessa o SSE normalmente — a recusa é 
   assert.equal(login.status, 200, 'login com o código do segundo fator precisa suceder');
   const { access_token: accessToken } = await login.json();
 
+  const respostaDoBilhete = await fetch(`${app.base}/api/conversas/eventos/ticket`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  assert.equal(respostaDoBilhete.status, 200, 'sem p2f pendente, o bilhete precisa ser emitido normalmente');
+  const { ticket } = await respostaDoBilhete.json();
+
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(accessToken)}`,
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
     { signal: controle.signal },
   );
   assert.equal(resposta.status, 200, 'master com TOTP confirmado não pode ser recusado pela mesma checagem de p2f');

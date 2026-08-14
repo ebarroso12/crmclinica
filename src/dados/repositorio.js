@@ -6,6 +6,7 @@
 //
 // Consultas sempre parametrizadas ($1, $2…): nada de concatenar valor em SQL.
 
+const crypto = require('node:crypto');
 const contexto = require('./contexto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 
@@ -1883,6 +1884,93 @@ function criarRepositorio(pool) {
         [usuarioId],
       );
       return rowCount;
+    },
+
+    // ------------------------------------------------- chat ao vivo durável
+
+    /**
+     * Grava um evento no log durável (migration 037). `id` (bigserial) é o
+     * cursor monotônico que o replay usa — nunca reaproveitado, sempre
+     * crescente, é o que permite "me dê tudo que aconteceu depois do X".
+     */
+    async registrarEventoDeConversa({ conversaId, tipo, payload = {} }) {
+      const { rows } = await consultar(
+        `INSERT INTO conversas_eventos (conversa_id, tipo, payload)
+         VALUES ($1, $2, $3::jsonb) RETURNING id, conversa_id, tipo, payload, criado_em`,
+        [conversaId, tipo, JSON.stringify(payload ?? {})],
+      );
+      const linha = rows[0];
+      return {
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      };
+    },
+
+    /**
+     * Eventos com `id > cursor` — o replay depois de reconectar. `cursor:
+     * null` devolve os últimos `limite` eventos (primeira conexão, sem
+     * histórico prévio para recuperar). `limite` existe para uma reconexão
+     * depois de horas offline não tentar devolver dezenas de milhares de
+     * linhas de uma vez.
+     */
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500 } = {}) {
+      const { rows } = await consultar(
+        cursor === null
+          ? `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
+             ORDER BY id DESC LIMIT $1`
+          : `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
+             WHERE id > $2 ORDER BY id ASC LIMIT $1`,
+        cursor === null ? [limite] : [limite, cursor],
+      );
+      const ordenados = cursor === null ? rows.slice().reverse() : rows;
+      return ordenados.map((linha) => ({
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      }));
+    },
+
+    /**
+     * Ticket de uso único para abrir a conexão SSE sem carregar o token de
+     * sessão na querystring. Validade curta de propósito: o tempo entre
+     * pedir o ticket e abrir o EventSource é de milissegundos no uso normal;
+     * 30s já é folga generosa.
+     */
+    async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
+      const bruto = crypto.randomBytes(32).toString('base64url');
+      const hash = crypto.createHash('sha256').update(bruto).digest('hex');
+      const expiraEm = new Date(Date.now() + ttlMs).toISOString();
+      await consultar(
+        `INSERT INTO conversas_eventos_tickets (hash_ticket, usuario_id, papel, expira_em)
+         VALUES ($1, $2, $3, $4)`,
+        [hash, usuarioId, papel, expiraEm],
+      );
+      return bruto;
+    },
+
+    /**
+     * Resgata o ticket — atômico, com `RETURNING` conferido (mesma correção
+     * que `marcarRecuperacaoUsada` recebeu nesta sessão: sem isto, duas
+     * conexões simultâneas com o MESMO ticket poderiam ambas passar). Token
+     * inexistente, já usado ou expirado devolve `null` — o chamador nunca
+     * distingue os três motivos, para não revelar qual dos três foi.
+     */
+    async resgatarTicketDeEventos(bruto) {
+      const hash = crypto.createHash('sha256').update(String(bruto ?? '')).digest('hex');
+      const { rows } = await consultar(
+        `UPDATE conversas_eventos_tickets
+            SET usado_em = now()
+          WHERE hash_ticket = $1 AND usado_em IS NULL AND expira_em > now()
+        RETURNING usuario_id, papel`,
+        [hash],
+      );
+      if (rows.length === 0) return null;
+      return { usuarioId: Number(rows[0].usuario_id), papel: rows[0].papel };
     },
 
     // ---------------------------------------------------------------- agenda
