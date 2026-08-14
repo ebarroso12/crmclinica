@@ -1915,9 +1915,11 @@ function criarRepositorio(pool) {
     },
 
     async definirDisponibilidades(profissionalId, janelas) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
+      await executarNaTransacao(async (cliente) => {
+        // Apagar e reinserir é a substituição do conjunto inteiro: o horário
+        // de um profissional é declarado por completo, não emendado. As duas
+        // instruções só fazem sentido juntas — no meio delas o profissional
+        // fica sem horário nenhum.
         await cliente.query('DELETE FROM disponibilidades WHERE profissional_id = $1', [profissionalId]);
 
         for (const janela of janelas) {
@@ -1926,13 +1928,7 @@ function criarRepositorio(pool) {
             [profissionalId, janela.dia_semana, janela.hora_inicio, janela.hora_fim],
           );
         }
-        await cliente.query('COMMIT');
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      });
 
       return this.listarDisponibilidades(profissionalId);
     },
