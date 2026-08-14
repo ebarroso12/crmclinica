@@ -44,9 +44,16 @@ function abrirTela(tela) {
   if (tela === 'perfil') desenharPerfil();
 }
 
-for (const gatilho of document.querySelectorAll('nav [data-tela]')) {
-  gatilho.addEventListener('click', () => abrirTela(gatilho.dataset.tela));
-}
+// Delegado no `document`, não um listener por botão do menu: existem
+// gatilhos `[data-tela]` FORA do `<nav>` — "Ver todas" e "Agenda" no painel
+// inicial (public/index.html) — que a busca antiga, restrita ao menu,
+// nunca alcançava. Sem delegação, esses dois botões clicavam e não faziam
+// nada: sem erro no console, sem handler nenhum — o tipo de falha silenciosa
+// que só aparece quando alguém clica e nada muda de tela.
+document.addEventListener('click', (evento) => {
+  const gatilho = evento.target.closest('[data-tela]');
+  if (gatilho) abrirTela(gatilho.dataset.tela);
+});
 
 // Cidade exibida no relógio. Franca/SP fica no fuso America/Sao_Paulo, então o
 // fuso NÃO muda — muda só o rótulo. (No futuro dá para vir de admin_config,
@@ -1676,6 +1683,12 @@ seletor('#form-recuperar')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   limparRetornoDoPortao();
 
+  // Duplo clique aqui não corrompe dado (cada pedido novo invalida o anterior
+  // — ver `pedirRecuperacao`/`invalidarRecuperacoesDoUsuario`), mas manda
+  // e-mail duplicado à toa. O guard evita o desperdício, no mesmo padrão já
+  // usado nos outros envios desta tela.
+  const botao = evento.target.querySelector('button[type="submit"]');
+  if (botao) botao.disabled = true;
   try {
     const resposta = await fetch('/api/auth/recuperar', {
       method: 'POST',
@@ -1689,6 +1702,8 @@ seletor('#form-recuperar')?.addEventListener('submit', async (evento) => {
     avisarNoPortao(dados.detalhe || 'Se houver uma conta com esse e-mail, o link foi enviado.', 'aviso');
   } catch {
     avisarNoPortao('Não foi possível enviar o link agora.');
+  } finally {
+    if (botao) botao.disabled = false;
   }
 });
 
@@ -1696,6 +1711,12 @@ seletor('#form-redefinir')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   limparRetornoDoPortao();
 
+  // O backend (`redefinirSenha`, src/seguranca/contas.js) já reivindica o
+  // token numa transação — só uma chamada concorrente pode vencer. Este
+  // guard evita a segunda chamada nem sair (e a mensagem de erro confusa que
+  // isso geraria), não é ele quem garante a atomicidade.
+  const botao = evento.target.querySelector('button[type="submit"]');
+  if (botao) botao.disabled = true;
   try {
     const resposta = await fetch('/api/auth/redefinir', {
       method: 'POST',
@@ -1713,6 +1734,8 @@ seletor('#form-redefinir')?.addEventListener('submit', async (evento) => {
     avisarNoPortao('Senha alterada. Entre com a senha nova.', 'aviso');
   } catch (erro) {
     avisarNoPortao(erro.message);
+  } finally {
+    if (botao) botao.disabled = false;
   }
 });
 
