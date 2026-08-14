@@ -117,6 +117,7 @@ const TESTES_DE_POSTGRES = Object.freeze([
   'testes/contrato-repositorio.test.js',
   'testes/lembretes-concorrencia.test.js',
   'testes/ingresso-transacao-pg.test.js',
+  'testes/outbox-fencing-pg.test.js',
 ]);
 
 function existentes(arquivos) {

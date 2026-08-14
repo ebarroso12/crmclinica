@@ -1158,6 +1158,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         trabalho.status = 'processando';
         trabalho.reivindicado_por = String(worker).slice(0, 100);
         trabalho.reivindicado_em = instante;
+        // Espelha a migration 033: a posse ganha um número novo a cada
+        // reivindicação. Aqui não há concorrência real (thread única), mas a
+        // paridade importa — sem ela um teste em memória passaria com token
+        // errado e o defeito só apareceria contra PostgreSQL.
+        trabalho.posse_token = Number(trabalho.posse_token ?? 0) + 1;
         trabalho.atualizado_em = instante;
       }
       return candidatos.map((trabalho) => ({ ...trabalho }));
@@ -1169,21 +1174,38 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * trabalho ainda está 'processando' e ainda é deste worker; senão,
      * devolve `null` (outro worker já retomou este trabalho).
      */
-    async renovarReivindicacaoDeOutbox(id, { worker, agora: instante }) {
+    async renovarReivindicacaoDeOutbox(id, { worker, agora: instante, posseToken = null }) {
       const trabalho = automacaoOutbox.get(Number(id));
       if (!trabalho) return null;
       if (trabalho.status !== 'processando' || trabalho.reivindicado_por !== String(worker).slice(0, 100)) return null;
+      if (posseToken !== null && Number(trabalho.posse_token ?? 0) !== Number(posseToken)) return null;
       trabalho.reivindicado_em = instante;
       trabalho.atualizado_em = instante;
       return { ...trabalho };
     },
 
-    /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
+    /**
+     * Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto.
+     *
+     * Espelha `repositorio.js`: quando o chamador informa `worker`/`posseToken`,
+     * eles entram na guarda e `null` significa posse perdida — o worker antigo
+     * não conclui, não reagenda e não sobrescreve o dono atual.
+     */
     async concluirTrabalhoDeOutbox(id, {
       status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
+      worker = null, posseToken = null,
     }) {
       const trabalho = automacaoOutbox.get(Number(id));
       if (!trabalho) return null;
+
+      // Guardas só valem para quem DECLARA posse. Quem não declara não está no
+      // fluxo concorrente do worker (semeadura, teste, ajuste administrativo),
+      // e exigir 'processando' recusaria transições legítimas de um trabalho
+      // que nunca foi reivindicado.
+      const declarouPosse = worker !== null || posseToken !== null;
+      if (declarouPosse && trabalho.status !== 'processando') return null;
+      if (worker !== null && trabalho.reivindicado_por !== String(worker).slice(0, 100)) return null;
+      if (posseToken !== null && Number(trabalho.posse_token ?? 0) !== Number(posseToken)) return null;
 
       trabalho.status = status;
       if (ultimoErro !== undefined) trabalho.ultimo_erro = ultimoErro;

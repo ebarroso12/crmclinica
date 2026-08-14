@@ -189,6 +189,11 @@ function montarTrabalhoDeOutbox(linha) {
     disponivel_em: linha.disponivel_em,
     reivindicado_por: linha.reivindicado_por,
     reivindicado_em: linha.reivindicado_em,
+    // Sem esta linha, `automacao-outbox-servico.js` (que lê
+    // `trabalho.posse_token` para levar a posse adiante) sempre recebia
+    // `undefined` — a guarda de fencing nunca tinha o dado que precisa.
+    posse_token: linha.posse_token !== undefined && linha.posse_token !== null
+      ? Number(linha.posse_token) : null,
     ultimo_erro: linha.ultimo_erro,
     criado_em: linha.criado_em,
     atualizado_em: linha.atualizado_em,
@@ -2627,6 +2632,12 @@ function criarRepositorio(pool) {
      * disjuntos, e a marcação para 'processando' acontece na mesma instrução:
      * não há intervalo entre selecionar e reservar em que um terceiro
      * pudesse entrar. Mesmo mecanismo de `reivindicarLembretes`, acima.
+     *
+     * `posse_token` sobe a cada reivindicação (migration 033). É ele que quem
+     * conclui terá de apresentar: `reivindicado_por` sozinho não distingue
+     * "sou o dono agora" de "fui dono antes, este trabalho passou por outro
+     * worker e voltou para mim" — nos dois casos o nome bate, e no segundo a
+     * conclusão do worker antigo seria indevida.
      */
     async reivindicarTrabalhosDeOutbox({ agora, limite = 20, worker = 'worker' }) {
       const { rows } = await consultar(`
@@ -2641,7 +2652,8 @@ function criarRepositorio(pool) {
         UPDATE automacao_outbox t
            SET status = 'processando',
                reivindicado_por = $3,
-               reivindicado_em = $1::timestamptz
+               reivindicado_em = $1::timestamptz,
+               posse_token = t.posse_token + 1
           FROM candidatos c
          WHERE t.id = c.id
         RETURNING t.id
@@ -2674,22 +2686,30 @@ function criarRepositorio(pool) {
      * conseguir gravar), a instrução não afeta linha nenhuma e devolve
      * `null` — sinal para quem chamou parar de processar, porque o trabalho
      * já não é mais deste worker.
+     *
+     * `posseToken`, quando informado, entra na guarda e fecha o buraco que
+     * `reivindicado_por` sozinho deixava: o mesmo worker pode ter perdido e
+     * retomado o trabalho no intervalo, e aí o nome bate mas a posse é outra.
+     * A comparação `$4::bigint IS NULL OR ...` mantém compatível quem ainda
+     * não passa o token (repositório em memória, banco sem a migration 033).
      */
-    async renovarReivindicacaoDeOutbox(id, { worker, agora }) {
+    async renovarReivindicacaoDeOutbox(id, { worker, agora, posseToken = null }) {
       const { rows } = await consultar(`
         UPDATE automacao_outbox
            SET reivindicado_em = $3::timestamptz
          WHERE id = $1
            AND status = 'processando'
            AND reivindicado_por = $2
+           AND ($4::bigint IS NULL OR posse_token = $4::bigint)
         RETURNING *
-      `, [id, String(worker).slice(0, 100), agora]);
+      `, [id, String(worker).slice(0, 100), agora, posseToken]);
       return rows[0] ? montarTrabalhoDeOutbox(rows[0]) : null;
     },
 
     /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
     async concluirTrabalhoDeOutbox(id, {
       status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
+      worker = null, posseToken = null,
     }) {
       const partes = ['status = $2'];
       const valores = [id, status];
@@ -2708,8 +2728,52 @@ function criarRepositorio(pool) {
       if (status !== 'processando') partes.push('reivindicado_por = NULL, reivindicado_em = NULL');
       if (['concluido', 'morto', 'incerto'].includes(status)) partes.push('concluido_em = now()');
 
-      await consultar(`UPDATE automacao_outbox SET ${partes.join(', ')} WHERE id = $1`, valores);
-      return this.obterTrabalhoDeOutbox(id);
+      // Guardas de posse. Antes, este UPDATE filtrava só por `id`: um worker
+      // cujo lease havia vencido — e cujo trabalho já fora retomado por outro —
+      // conseguia marcar `concluido` por cima do dono atual, e ainda recebia de
+      // volta a linha lida depois, o que fazia o chamador acreditar que deu
+      // certo. Com paciente do outro lado, isso é mensagem duplicada ou
+      // resposta que nunca sai.
+      //
+      // As três condições são cumulativas e cada uma cobre um caso:
+      //   status = 'processando'  — o trabalho não foi fechado por outro antes;
+      //   reivindicado_por        — é este worker, não outro;
+      //   posse_token             — é ESTA posse, não uma anterior do mesmo
+      //                             worker (que pode ter perdido e retomado).
+      //
+      // `IS NULL OR` mantém compatível quem ainda chama sem informar posse:
+      // a guarda extra só entra quando o chamador tem a informação.
+      // As guardas só entram quando o chamador DECLARA posse. Quem não declara
+      // não está no fluxo concorrente do worker — é semeadura, teste ou ajuste
+      // administrativo, e nesses casos exigir `status = 'processando'` recusaria
+      // transições legítimas de um trabalho que nunca foi reivindicado.
+      const declarouPosse = worker !== null || posseToken !== null;
+      const guardas = ['id = $1'];
+      if (declarouPosse) guardas.push("status = 'processando'");
+      if (worker !== null) {
+        valores.push(String(worker).slice(0, 100));
+        guardas.push(`reivindicado_por = $${valores.length}`);
+      }
+      if (posseToken !== null) {
+        valores.push(posseToken);
+        guardas.push(`posse_token = $${valores.length}::bigint`);
+      }
+
+      const { rows } = await consultar(
+        `UPDATE automacao_outbox SET ${partes.join(', ')} WHERE ${guardas.join(' AND ')} RETURNING *`,
+        valores,
+      );
+
+      // Zero linhas = posse perdida. Devolve `null`, o mesmo sinal que
+      // `renovarReivindicacaoDeOutbox` já usa para a mesma situação — um
+      // vocabulário só para "este trabalho não é mais seu".
+      //
+      // Não é erro de infraestrutura e não vira exceção: perder a posse é
+      // desfecho normal numa fila com recuperação. O chamador precisa saber
+      // para PARAR — nunca para tentar de novo, reagendar ou sobrescrever.
+      if (rows.length === 0) return null;
+
+      return montarTrabalhoDeOutbox(rows[0]);
     },
 
     /**
