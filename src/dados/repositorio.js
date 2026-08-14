@@ -273,6 +273,49 @@ function criarRepositorio(pool) {
   const consultar = (texto, valores) => consultarNoCliente(contexto.atual()?.client ?? pool, texto, valores);
 
   /**
+   * Roda um trecho de várias instruções que precisam ser atômicas entre si.
+   *
+   * Existe porque `consultar` resolve a consulta solta, mas não o caso de duas
+   * ou três escritas que só fazem sentido juntas. Quem precisava disso abria
+   * `pool.connect()` e emitia `BEGIN` — e aí estava o defeito: dentro de uma
+   * requisição já existe transação aberta (`comUsuario`), e uma conexão nova
+   * não enxerga o que a primeira ainda não commitou. Uma conversa criada
+   * segundos antes, na mesma requisição, simplesmente não existia para a
+   * segunda conexão, e o INSERT batia na chave estrangeira. Em produção isso
+   * foram centenas de HTTP 500 no webhook do WhatsApp, só para contato novo.
+   *
+   * Com transação ambiente: usa o mesmo client e **não** emite
+   * `BEGIN`/`COMMIT`/`ROLLBACK` nem devolve a conexão — quem abriu a transação
+   * é quem a fecha. Um `ROLLBACK` daqui desfaria escritas legítimas vizinhas;
+   * um `COMMIT` publicaria pela metade o que ainda estava em curso.
+   *
+   * Sem transação ambiente (semeadura, worker, manutenção): conexão e
+   * transação próprias, exatamente como antes.
+   */
+  async function executarNaTransacao(trabalho) {
+    const ambiente = contexto.atual();
+    if (ambiente?.client) return trabalho(ambiente.client);
+
+    const cliente = await pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      const resultado = await trabalho(cliente);
+      await cliente.query('COMMIT');
+      return resultado;
+    } catch (erro) {
+      try {
+        await cliente.query('ROLLBACK');
+      } catch {
+        // Conexão já perdida; o pool a descarta ao liberar. O erro original é
+        // o que importa e segue subindo.
+      }
+      throw erro;
+    } finally {
+      cliente.release();
+    }
+  }
+
+  /**
    * Roda uma instrução como o **sistema**, não como o usuário da requisição.
    *
    * Existe por causa de uma regra do banco que está certa: a policy de INSERT em
@@ -543,10 +586,7 @@ function criarRepositorio(pool) {
      * some do topo da lista e a equipe não a vê.
      */
     async registrarMensagem(conversaId, mensagem) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
-
+      const gravar = async (cliente) => {
         const { rows } = await cliente.query(`
           INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -564,10 +604,13 @@ function criarRepositorio(pool) {
           mensagem.id_externo || null,
         ]);
 
-        // Sem linha devolvida, a mensagem já existia: reentrega do canal.
+        // Sem linha devolvida, a mensagem já existia: reentrega do canal. Isso
+        // não é erro e não pode desfazer nada — antes havia um `ROLLBACK` aqui,
+        // inofensivo numa conexão só desta função, mas desastroso quando o
+        // cliente é a transação da requisição: abortaria contato, conversa e o
+        // trabalho da outbox por causa de uma duplicata esperada.
         if (rows.length === 0) {
-          await cliente.query('ROLLBACK');
-          const existente = await consultar('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
+          const existente = await cliente.query('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
           return { mensagem: montarMensagem(existente.rows[0]), duplicada: true };
         }
 
@@ -591,14 +634,10 @@ function criarRepositorio(pool) {
           }
         }
 
-        await cliente.query('COMMIT');
         return { mensagem: montarMensagem(rows[0]), duplicada: false };
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      };
+
+      return executarNaTransacao(gravar);
     },
 
     /**
@@ -904,9 +943,7 @@ function criarRepositorio(pool) {
      * Nomes desconhecidos são ignorados — não se cria etiqueta por digitação errada.
      */
     async definirEtiquetasDaConversa(conversaId, nomes) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
+      await executarNaTransacao(async (cliente) => {
         await cliente.query('DELETE FROM conversa_etiquetas WHERE conversa_id = $1', [conversaId]);
 
         if (nomes.length > 0) {
@@ -916,14 +953,7 @@ function criarRepositorio(pool) {
             ON CONFLICT DO NOTHING
           `, [conversaId, nomes]);
         }
-
-        await cliente.query('COMMIT');
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      });
 
       return this.listarEtiquetasDaConversa(conversaId);
     },
