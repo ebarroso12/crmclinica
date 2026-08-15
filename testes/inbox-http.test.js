@@ -609,6 +609,76 @@ test('GET /api/conversas/eventos exige bilhete e avisa ao vivo quando uma mensag
   await leitor.cancel().catch(() => {});
 });
 
+// Gate 2 da auditoria ("chat realmente ao vivo", 2026-08-15): antes deste
+// commit, `status_entrega` era publicado por `eventos-conversas.js` mas
+// NUNCA CHAMADO por lugar nenhum do código — a mensagem ficava marcada
+// `entregue_em`/`entrega_falhou`/`entrega_indeterminada` no banco, mas quem
+// estivesse com a tela aberta só via a mudança ao trocar de conversa ou
+// recarregar. Este teste prova que `entregarAoPaciente` (atendimento.js)
+// agora publica o evento, e que assumir/devolver/resolver — já publicados
+// antes, mas ignorados pela TELA (não pelo backend) — continuam chegando
+// ao vivo pela mesma conexão SSE.
+test('status de entrega e transições de conversa chegam ao vivo pela mesma conexão SSE', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const canal = { async enviar() { return { identificador: 'wa-saida-1' }; } };
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:sse-status-1',
+    remetente: '5516966666666',
+    nome: 'Igor Souza',
+    texto: 'Olá',
+  });
+  const [conversa] = await repositorio.listarConversas({});
+
+  const ticket = await pedirTicket(app);
+  const controle = new AbortController();
+  const resposta = await app.pedirSemAuth(
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
+    { signal: controle.signal },
+  );
+  assert.equal(resposta.status, 200);
+
+  const leitor = resposta.body.getReader();
+  const decodificador = new TextDecoder();
+  const buffer = { valor: '' };
+  try {
+    await lerAteConter(leitor, decodificador, buffer, 'conectado');
+
+    // status_entrega: uma resposta da equipe entregue com sucesso.
+    await atendimento.responderComoEquipe(conversa.id, 'Já te retorno!', { autorNome: 'Recepção' });
+    await lerAteConter(leitor, decodificador, buffer, '"tipo":"status_entrega"');
+    assert.match(buffer.valor, /"status":"entregue"/);
+
+    // conversa_assumida já foi publicada pelo responderComoEquipe acima
+    // (assume a conversa antes de entregar) — confirmado no mesmo buffer.
+    assert.match(buffer.valor, /"tipo":"conversa_assumida"/);
+
+    // conversa_devolvida.
+    await atendimento.liberar(conversa.id);
+    await lerAteConter(leitor, decodificador, buffer, '"tipo":"conversa_devolvida"');
+
+    // conversa_resolvida, pela rota HTTP (é lá que o evento é publicado).
+    await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' });
+    await lerAteConter(leitor, decodificador, buffer, '"tipo":"conversa_resolvida"');
+  } finally {
+    // Sem isto, uma asserção que lança no meio (RED proposital, ou uma
+    // regressão futura) deixa a conexão SSE aberta — o handle pendente
+    // some com o resto da suíte no timeout do runner, não só este teste.
+    controle.abort();
+    await leitor.cancel().catch(() => {});
+  }
+});
+
 test('um bilhete só serve uma vez — a segunda tentativa de conexão com o mesmo bilhete é recusada', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const emissorDeConversas = criarEmissorDeConversas({ repositorio });

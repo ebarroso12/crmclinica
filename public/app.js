@@ -1574,16 +1574,31 @@ function encerrarEventosDeConversas() {
   fonteDeEventos = null;
 }
 
+// Gate 2 da auditoria ("chat realmente ao vivo", 2026-08-15): antes só
+// mensagem_recebida/mensagem_enviada reagiam aqui — conversa_assumida,
+// conversa_devolvida, conversa_resolvida, status_entrega e erro (envio
+// abortado pela barreira) eram publicados no log durável (Pendência 4) mas
+// IGNORADOS pela tela: só apareciam ao trocar de conversa ou recarregar a
+// página. Todos os tipos do CHECK de conversas_eventos (migration 037)
+// precisam reagir da mesma forma — não há tipo "silencioso" nesta lista.
+const TIPOS_DE_EVENTO_CONHECIDOS = [
+  'mensagem_recebida', 'mensagem_enviada', 'status_entrega',
+  'conversa_assumida', 'conversa_devolvida', 'conversa_resolvida', 'erro',
+];
+
 function reagirAEventoDeConversa(dados) {
   if (typeof dados.id === 'number') cursorDeEventos = dados.id;
 
-  const tiposDeMensagem = ['mensagem_recebida', 'mensagem_enviada'];
-  if (!tiposDeMensagem.includes(dados?.tipo)) return;
+  if (!TIPOS_DE_EVENTO_CONHECIDOS.includes(dados?.tipo)) return;
 
-  // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
+  // A lista sempre reflete o estado novo: prévia, "há X min", fila (assumida/
+  // devolvida/resolvida mudam quem vê a conversa em qual fila) e ordenação.
   if (!seletor('#conversas')?.hidden) carregarConversas();
 
-  // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
+  // A conversa aberta ganha a atualização na hora — sem esperar o próximo
+  // clique nem precisar recarregar a página. Cobre mensagem nova, status de
+  // entrega (entregue/falhou/indeterminada), assumir/devolver/resolver e
+  // aborto pela barreira — todos afetam o que a thread mostra.
   if (dados.conversa_id === conversaAberta) {
     pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
   }
