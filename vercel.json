@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "fix/auditoria-integral-crm-sem-deploy": false
+    }
+  },
   "rewrites": [
     { "source": "/health", "destination": "/api/index" },
     { "source": "/api/:caminho*", "destination": "/api/index" }

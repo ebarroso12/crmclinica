@@ -4,6 +4,7 @@
 // Serve aos testes e ao desenvolvimento local sem banco: o resto do sistema
 // não distingue um do outro. Não persiste nada entre reinícios, de propósito.
 
+const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 
 const ETIQUETAS_INICIAIS = [
@@ -29,6 +30,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const notas = [];
   const leads = new Map();
   const eventos = new Map();
+  // Log durável do chat ao vivo (migration 037) — array append-only, `id`
+  // (1-based, contador próprio) faz o papel do `bigserial` do Postgres.
+  const conversasEventos = [];
+  let proximoIdDeEventoDeConversa = 1;
+  const conversasEventosTickets = new Map();
   const auditoria = [];
   // Espelha `system_heartbeats` do Postgres: componente → { status, atualizadoEm }.
   // Sem escritor próprio (quem grava, no banco real, é um worker externo ao
@@ -1158,6 +1164,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         trabalho.status = 'processando';
         trabalho.reivindicado_por = String(worker).slice(0, 100);
         trabalho.reivindicado_em = instante;
+        // Espelha a migration 033: a posse ganha um número novo a cada
+        // reivindicação. Aqui não há concorrência real (thread única), mas a
+        // paridade importa — sem ela um teste em memória passaria com token
+        // errado e o defeito só apareceria contra PostgreSQL.
+        trabalho.posse_token = Number(trabalho.posse_token ?? 0) + 1;
         trabalho.atualizado_em = instante;
       }
       return candidatos.map((trabalho) => ({ ...trabalho }));
@@ -1169,21 +1180,38 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * trabalho ainda está 'processando' e ainda é deste worker; senão,
      * devolve `null` (outro worker já retomou este trabalho).
      */
-    async renovarReivindicacaoDeOutbox(id, { worker, agora: instante }) {
+    async renovarReivindicacaoDeOutbox(id, { worker, agora: instante, posseToken = null }) {
       const trabalho = automacaoOutbox.get(Number(id));
       if (!trabalho) return null;
       if (trabalho.status !== 'processando' || trabalho.reivindicado_por !== String(worker).slice(0, 100)) return null;
+      if (posseToken !== null && Number(trabalho.posse_token ?? 0) !== Number(posseToken)) return null;
       trabalho.reivindicado_em = instante;
       trabalho.atualizado_em = instante;
       return { ...trabalho };
     },
 
-    /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
+    /**
+     * Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto.
+     *
+     * Espelha `repositorio.js`: quando o chamador informa `worker`/`posseToken`,
+     * eles entram na guarda e `null` significa posse perdida — o worker antigo
+     * não conclui, não reagenda e não sobrescreve o dono atual.
+     */
     async concluirTrabalhoDeOutbox(id, {
       status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
+      worker = null, posseToken = null,
     }) {
       const trabalho = automacaoOutbox.get(Number(id));
       if (!trabalho) return null;
+
+      // Guardas só valem para quem DECLARA posse. Quem não declara não está no
+      // fluxo concorrente do worker (semeadura, teste, ajuste administrativo),
+      // e exigir 'processando' recusaria transições legítimas de um trabalho
+      // que nunca foi reivindicado.
+      const declarouPosse = worker !== null || posseToken !== null;
+      if (declarouPosse && trabalho.status !== 'processando') return null;
+      if (worker !== null && trabalho.reivindicado_por !== String(worker).slice(0, 100)) return null;
+      if (posseToken !== null && Number(trabalho.posse_token ?? 0) !== Number(posseToken)) return null;
 
       trabalho.status = status;
       if (ultimoErro !== undefined) trabalho.ultimo_erro = ultimoErro;
@@ -1596,9 +1624,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return encontrada ? { ...encontrada } : null;
     },
 
+    // Paridade com repositorio.js: devolve `true` só se ESTA chamada reivindicou
+    // o token agora — quem chama precisa saber se ganhou a corrida.
     async marcarRecuperacaoUsada(id) {
       const recuperacao = recuperacoes.get(Number(id));
-      if (recuperacao && !recuperacao.usado_em) recuperacao.usado_em = agora().toISOString();
+      if (recuperacao && !recuperacao.usado_em) {
+        recuperacao.usado_em = agora().toISOString();
+        return true;
+      }
+      return false;
     },
 
     async invalidarRecuperacoesDoUsuario(usuarioId) {
@@ -1610,6 +1644,52 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         }
       }
       return total;
+    },
+
+    // ------------------------------------------------- chat ao vivo durável
+    // Paridade com repositorio.js — ver os comentários lá para o raciocínio.
+
+    async registrarEventoDeConversa({ conversaId, tipo, payload = {} }) {
+      const linha = {
+        id: proximoIdDeEventoDeConversa,
+        conversa_id: Number(conversaId),
+        tipo,
+        payload: payload ?? {},
+        criado_em: agora().toISOString(),
+      };
+      proximoIdDeEventoDeConversa += 1;
+      conversasEventos.push(linha);
+      return { ...linha };
+    },
+
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500 } = {}) {
+      if (cursor === null) {
+        return conversasEventos.slice(-limite).map((linha) => ({ ...linha }));
+      }
+      return conversasEventos
+        .filter((linha) => linha.id > Number(cursor))
+        .slice(0, limite)
+        .map((linha) => ({ ...linha }));
+    },
+
+    async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
+      const bruto = crypto.randomBytes(32).toString('base64url');
+      conversasEventosTickets.set(bruto, {
+        usuarioId: Number(usuarioId),
+        papel,
+        expiraEm: new Date(agora().getTime() + ttlMs),
+        usadoEm: null,
+      });
+      return bruto;
+    },
+
+    async resgatarTicketDeEventos(bruto) {
+      const ticket = conversasEventosTickets.get(bruto);
+      if (!ticket) return null;
+      if (ticket.usadoEm) return null;
+      if (ticket.expiraEm.getTime() <= agora().getTime()) return null;
+      ticket.usadoEm = agora();
+      return { usuarioId: ticket.usuarioId, papel: ticket.papel };
     },
 
     // ---------------------------------------------------------------- agenda

@@ -55,6 +55,49 @@ const MAX_TENTATIVAS_PADRAO = 5;
 // por trabalho de verdade, e a conta de ~4x acima volta a valer.
 const LEASE_MS = 5 * 60 * 1000;
 
+// GARANTIA REAL DE ENTREGA (Pendência 3 do comando mestre — registrado aqui
+// porque é a pergunta que qualquer revisão de confiabilidade faz primeiro, e
+// porque "exatamente uma vez" é fácil de alegar e caro de errar).
+//
+// Este sistema NÃO garante "exatamente uma vez" (exactly-once). O que ele
+// garante, e por quê:
+//
+//   1. NUNCA DUAS RESPOSTAS PARA A MESMA MENSAGEM DE ENTRADA, por caminhos
+//      NORMAIS: `chave_idempotencia` (derivada de conversa+mensagem_entrada,
+//      ver `automacao-outbox-servico.js:enfileirar`) e a constraint UNIQUE do
+//      banco impedem dois trabalhos para o mesmo par. Cada trabalho só é
+//      REIVINDICADO por um worker de cada vez (`FOR UPDATE SKIP LOCKED`).
+//
+//   2. NUNCA REENVIO AUTOMÁTICO DE UMA ENTREGA INDETERMINADA: timeout ou
+//      queda de rede DEPOIS de a Evolution ter possivelmente aceitado a
+//      mensagem vira status `incerto` (`decidirDesfecho`, abaixo) — nunca
+//      volta para `pendente`, nunca é retentado por este sistema. Só um
+//      humano decide o que fazer (escalonado; ver
+//      `automacao-outbox-servico.js`).
+//
+//   3. POSSE (migration 033, `posse_token`) impede que um worker que perdeu
+//      o lease sobrescreva o desfecho (concluir/reagendar/matar) de quem já
+//      retomou o trabalho — mas isso protege a ESCRITA do resultado, não o
+//      ENVIO em si (ver o comentário no início de `processarUm`,
+//      `automacao-outbox-servico.js`).
+//
+//   4. O QUE PODE, EM TEORIA, AINDA DUPLICAR: se o lease de um worker vencer
+//      EXATAMENTE durante a janela entre `renovarReivindicacaoDeOutbox`
+//      (início de `processarUm`) e a chamada real a `canal.enviar`
+//      (Evolution), e um segundo worker reivindicar o mesmo trabalho
+//      liberado NESSE INTERVALO, os dois podem chamar `responderSePossivel`
+//      para a mesma mensagem — a Evolution não tem idempotência nativa no
+//      endpoint de envio (ver `evolution-envio.js`, cabeçalho). Esse risco
+//      é limitado pela margem de `LEASE_MS` sobre o pior caso documentado de
+//      IA+envio (~75s vs. 5min — ~4x de folga), não eliminado por
+//      construção. Não foi observado em produção; é um limite teórico
+//      registrado, não uma falha conhecida.
+//
+// Em uma frase: **entrega garantidamente única contra o caminho normal
+// (reivindicação, backoff, dead-letter, indeterminado) — não contra a janela
+// teórica de corrida entre lease e envio.** Qualquer alegação de
+// "exatamente uma vez" sem essa ressalva seria incorreta.
+
 // Cinco estados, no mesmo espírito de `lembretes.js`: uma falha que ainda pode
 // tentar de novo volta para 'pendente' (com `disponivel_em` no futuro) — não
 // existe um estado à parte para "falhando"; a contagem de tentativas > 0 já

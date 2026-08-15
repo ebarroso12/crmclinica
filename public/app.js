@@ -44,9 +44,16 @@ function abrirTela(tela) {
   if (tela === 'perfil') desenharPerfil();
 }
 
-for (const gatilho of document.querySelectorAll('nav [data-tela]')) {
-  gatilho.addEventListener('click', () => abrirTela(gatilho.dataset.tela));
-}
+// Delegado no `document`, não um listener por botão do menu: existem
+// gatilhos `[data-tela]` FORA do `<nav>` — "Ver todas" e "Agenda" no painel
+// inicial (public/index.html) — que a busca antiga, restrita ao menu,
+// nunca alcançava. Sem delegação, esses dois botões clicavam e não faziam
+// nada: sem erro no console, sem handler nenhum — o tipo de falha silenciosa
+// que só aparece quando alguém clica e nada muda de tela.
+document.addEventListener('click', (evento) => {
+  const gatilho = evento.target.closest('[data-tela]');
+  if (gatilho) abrirTela(gatilho.dataset.tela);
+});
 
 // Cidade exibida no relógio. Franca/SP fica no fuso America/Sao_Paulo, então o
 // fuso NÃO muda — muda só o rótulo. (No futuro dá para vir de admin_config,
@@ -1524,16 +1531,20 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
   }
 });
 
-// --- Conversas ao vivo (Server-Sent Events) ---
+// --- Conversas ao vivo (Server-Sent Events, log durável) ---
 //
-// `EventSource` não manda cabeçalho `Authorization` — não há como. O token vai
-// na querystring só para abrir esta conexão de leitura; nenhuma escrita passa
-// por aqui. A reconexão é manual, não a automática do navegador: a nativa
-// insiste na mesma URL, com o mesmo token — e ele vence a cada 15 minutos.
-// Reabrir com `accessToken` na hora da falha garante um token válido.
+// `EventSource` não manda cabeçalho `Authorization` — não há como. Por isso
+// a conexão troca em duas etapas: pede um BILHETE de uso único
+// (`POST /api/conversas/eventos/ticket`, autenticado normalmente) e só ELE
+// vai na URL do EventSource — nunca o token de sessão. `cursorDeEventos`
+// guarda o último `id` recebido; toda reconexão (manual, na queda, ou
+// abrindo a aba de novo) manda esse cursor, e o servidor reproduz (replay)
+// tudo que ficou perdido no intervalo antes de retomar ao vivo — não perde
+// eventos, não duplica (ver `src/servidor/eventos-conversas.js`).
 
 let fonteDeEventos = null;
 let reconexaoDeEventosAgendada = null;
+let cursorDeEventos = null;
 
 function encerrarEventosDeConversas() {
   clearTimeout(reconexaoDeEventosAgendada);
@@ -1542,11 +1553,36 @@ function encerrarEventosDeConversas() {
   fonteDeEventos = null;
 }
 
-function conectarEventosDeConversas() {
+function reagirAEventoDeConversa(dados) {
+  if (typeof dados.id === 'number') cursorDeEventos = dados.id;
+
+  const tiposDeMensagem = ['mensagem_recebida', 'mensagem_enviada'];
+  if (!tiposDeMensagem.includes(dados?.tipo)) return;
+
+  // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
+  if (!seletor('#conversas')?.hidden) carregarConversas();
+
+  // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
+  if (dados.conversa_id === conversaAberta) {
+    pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
+  }
+}
+
+async function conectarEventosDeConversas() {
   if (!accessToken || typeof EventSource === 'undefined') return;
   encerrarEventosDeConversas();
 
-  fonteDeEventos = new EventSource(`/api/conversas/eventos?token=${encodeURIComponent(accessToken)}`);
+  let ticket;
+  try {
+    ({ ticket } = await pedirJson('/api/conversas/eventos/ticket', { method: 'POST' }));
+  } catch {
+    // Sem bilhete, sem conexão — tenta de novo no mesmo ritmo do onerror.
+    reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
+    return;
+  }
+
+  const cursor = cursorDeEventos !== null ? `&cursor=${encodeURIComponent(cursorDeEventos)}` : '';
+  fonteDeEventos = new EventSource(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}${cursor}`);
 
   fonteDeEventos.onmessage = (evento) => {
     let dados;
@@ -1555,21 +1591,15 @@ function conectarEventosDeConversas() {
     } catch {
       return;
     }
-    if (dados?.tipo !== 'mensagem') return;
-
-    // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
-    if (!seletor('#conversas')?.hidden) carregarConversas();
-
-    // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
-    if (dados.conversa_id === conversaAberta) {
-      pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
-    }
+    reagirAEventoDeConversa(dados);
   };
 
   fonteDeEventos.onerror = () => {
     encerrarEventosDeConversas();
     // Um intervalo fixo evita martelar o servidor se ele estiver fora do ar;
     // 5s ainda é rápido o bastante para não se notar numa queda passageira.
+    // `cursorDeEventos` já guarda onde parou — a próxima chamada reproduz o
+    // que foi perdido nesses 5s, não parte do zero.
     reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
   };
 }
@@ -1676,6 +1706,12 @@ seletor('#form-recuperar')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   limparRetornoDoPortao();
 
+  // Duplo clique aqui não corrompe dado (cada pedido novo invalida o anterior
+  // — ver `pedirRecuperacao`/`invalidarRecuperacoesDoUsuario`), mas manda
+  // e-mail duplicado à toa. O guard evita o desperdício, no mesmo padrão já
+  // usado nos outros envios desta tela.
+  const botao = evento.target.querySelector('button[type="submit"]');
+  if (botao) botao.disabled = true;
   try {
     const resposta = await fetch('/api/auth/recuperar', {
       method: 'POST',
@@ -1689,6 +1725,8 @@ seletor('#form-recuperar')?.addEventListener('submit', async (evento) => {
     avisarNoPortao(dados.detalhe || 'Se houver uma conta com esse e-mail, o link foi enviado.', 'aviso');
   } catch {
     avisarNoPortao('Não foi possível enviar o link agora.');
+  } finally {
+    if (botao) botao.disabled = false;
   }
 });
 
@@ -1696,6 +1734,12 @@ seletor('#form-redefinir')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   limparRetornoDoPortao();
 
+  // O backend (`redefinirSenha`, src/seguranca/contas.js) já reivindica o
+  // token numa transação — só uma chamada concorrente pode vencer. Este
+  // guard evita a segunda chamada nem sair (e a mensagem de erro confusa que
+  // isso geraria), não é ele quem garante a atomicidade.
+  const botao = evento.target.querySelector('button[type="submit"]');
+  if (botao) botao.disabled = true;
   try {
     const resposta = await fetch('/api/auth/redefinir', {
       method: 'POST',
@@ -1713,6 +1757,8 @@ seletor('#form-redefinir')?.addEventListener('submit', async (evento) => {
     avisarNoPortao('Senha alterada. Entre com a senha nova.', 'aviso');
   } catch (erro) {
     avisarNoPortao(erro.message);
+  } finally {
+    if (botao) botao.disabled = false;
   }
 });
 

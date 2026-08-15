@@ -288,6 +288,44 @@ test('o link de recuperação redefine a senha e vale uma vez só', async (t) =>
   assert.equal(login.status, 200);
 });
 
+test('duas redefinições concorrentes com o MESMO token: só uma vence, a outra é recusada', async (t) => {
+  // Reproduz o defeito real: `marcarRecuperacaoUsada` tinha a guarda certa no
+  // SQL, mas `redefinirSenha` descartava o resultado — duas requisições com o
+  // mesmo token passavam pela checagem antes de qualquer uma marcá-lo usado,
+  // e a segunda sobrescrevia a senha da primeira sem que ninguém soubesse que
+  // perdeu a corrida. A correção reivindica o token como primeira escrita,
+  // dentro da mesma transação das outras — só uma chamada pode ganhar.
+  const { app, enviados } = await subirContas();
+  t.after(() => app.encerrar());
+
+  await postarSemAuth(app, '/api/auth/recuperar', { email: app.sessao.email });
+  const token = /recuperar=([\w-]+)/.exec(enviados[0].texto)[1];
+
+  const SENHA_A = 'senha-corrida-a-999';
+  const SENHA_B = 'senha-corrida-b-999';
+
+  const [respostaA, respostaB] = await Promise.all([
+    postarSemAuth(app, '/api/auth/redefinir', { token, senha_nova: SENHA_A }),
+    postarSemAuth(app, '/api/auth/redefinir', { token, senha_nova: SENHA_B }),
+  ]);
+
+  const statusEmOrdem = [respostaA.status, respostaB.status].sort();
+  assert.deepEqual(statusEmOrdem, [200, 400], 'exatamente uma reivindicação vence, a outra é recusada');
+
+  const senhaVencedora = respostaA.status === 200 ? SENHA_A : SENHA_B;
+  const senhaPerdedora = respostaA.status === 200 ? SENHA_B : SENHA_A;
+
+  const loginComVencedora = await postarSemAuth(app, '/api/auth/login', {
+    email: app.sessao.email, senha: senhaVencedora,
+  });
+  assert.equal(loginComVencedora.status, 200, 'a senha da chamada que venceu a corrida é a que vale');
+
+  const loginComPerdedora = await postarSemAuth(app, '/api/auth/login', {
+    email: app.sessao.email, senha: senhaPerdedora,
+  });
+  assert.equal(loginComPerdedora.status, 401, 'a senha da chamada que perdeu a corrida nunca chegou a valer');
+});
+
 test('um pedido novo invalida o link anterior', async (t) => {
   const { app, enviados } = await subirContas();
   t.after(() => app.encerrar());

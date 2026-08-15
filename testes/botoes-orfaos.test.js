@@ -73,3 +73,36 @@ test('os outros botões dos mesmos cabeçalhos (que têm handler de verdade) con
   // linha com os órfãos não foram arrastados junto.
   assert.match(HTML, /data-tela="conversas">Ver todas<\/button>/, 'painel: "Ver todas" continua');
 });
+
+// ------------------------------------------------------- delegação de [data-tela]
+
+test('"Ver todas" e "Agenda" no painel inicial têm data-tela, mas ficam FORA do <nav>', () => {
+  // Pré-condição do defeito: se algum dia esses dois botões entrarem para
+  // dentro do <nav>, o listener por-elemento antigo voltaria a alcançá-los
+  // e este teste (e o próximo) deixariam de significar o que dizem. Fixa
+  // aqui o fato que motiva a delegação, não só a delegação em si.
+  const nav = HTML.match(/<nav[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(nav, 'o <nav> do menu precisa existir para o teste fazer sentido');
+  assert.ok(!nav.includes('Ver todas'), '"Ver todas" precisa estar fora do <nav>');
+  assert.ok(!nav.includes('data-tela="agenda">Agenda'), 'o link "Agenda" do painel precisa estar fora do <nav>');
+
+  assert.match(HTML, /<button type="button" class="link" data-tela="conversas">Ver todas<\/button>/);
+  assert.match(HTML, /<button type="button" class="link" data-tela="agenda">Agenda<\/button>/);
+});
+
+test('o clique em [data-tela] é delegado no document, não amarrado só ao <nav>', () => {
+  // Defeito real (não hipotético): antes desta correção, app.js montava o
+  // listener assim — `document.querySelectorAll('nav [data-tela]')` — um
+  // handler por botão, só dentro do <nav>. "Ver todas" e "Agenda" (painel
+  // inicial, fora do <nav>) tinham data-tela, pareciam ligados, e não
+  // faziam nada ao clicar: sem erro, sem handler, silêncio total.
+  assert.ok(
+    !/querySelectorAll\(['"]nav \[data-tela\]['"]\)/.test(APP_JS),
+    'a busca antiga, restrita ao <nav>, não pode voltar',
+  );
+  assert.match(
+    APP_JS,
+    /document\.addEventListener\(['"]click['"],[\s\S]{0,200}closest\(['"]\[data-tela\]['"]\)/,
+    'precisa delegar no document e usar closest([data-tela]) para alcançar qualquer gatilho, dentro ou fora do <nav>',
+  );
+});

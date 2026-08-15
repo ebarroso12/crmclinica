@@ -104,7 +104,38 @@ function criarServicoDeOutbox({
    *     protege com try/catch). Backoff e nova tentativa; dead-letter com
    *     escalonamento humano ao esgotar.
    */
-  async function processarUm(trabalho) {
+  async function processarUm(trabalho, posse = {}) {
+    // A posse acompanha TODAS as escritas deste trabalho. Sem ela, um worker
+    // que perdeu o lease no meio da chamada de IA (que pode levar dezenas de
+    // segundos) voltaria e marcaria o desfecho por cima do dono atual —
+    // reagendando um trabalho que o dono atual está prestes a concluir, ou
+    // concluindo por cima de quem já assumiu.
+    //
+    // ESCOPO (achado da auditoria independente desta sessão, corrigindo a
+    // mensagem do commit que introduziu isto): a posse protege a ESCRITA de
+    // desfecho (concluir/reagendar/matar) — ela roda DEPOIS de
+    // `responderSePossivel`, abaixo, que é quem de fato ENVIA. Um worker cujo
+    // lease vence DURANTE a chamada de IA/Evolution (a linha `resultado =
+    // await atendimento.responderSePossivel(...)`, logo abaixo) ainda executa
+    // o envio — a posse não intercepta isso, só o que vem depois. A defesa
+    // primária contra dois workers enviando a MESMA resposta é a renovação do
+    // lease ANTES de chegar aqui (`renovarReivindicacaoDeOutbox`, em
+    // `processarLote`): se o lease já foi retomado por outro worker, o laço
+    // nunca chama esta função. A posse é a segunda camada — garante que,
+    // mesmo se as duas coisas colidirem no limite, o registro final (qual
+    // worker "venceu", o que a fila mostra) fica consistente, sem
+    // sobrescrita silenciosa.
+    const { worker = null, posseToken = null } = posse;
+    const comPosse = (campos) => ({ ...campos, worker, posseToken });
+
+    /** Registra a perda de posse e devolve o resultado que o laço espera. */
+    const perdeuPosse = async (etapa) => {
+      await auditar('outbox_posse_perdida', trabalho.id, {
+        conversa_id: trabalho.conversa_id, worker, etapa,
+      });
+      return { id: trabalho.id, status: 'posse_perdida', etapa, trabalho: null };
+    };
+
     let resultado = null;
     let erro = null;
     try {
@@ -118,7 +149,9 @@ function criarServicoDeOutbox({
     const desfecho = decidirDesfecho(resultado, erro);
 
     if (desfecho.desfecho === 'resolvido') {
-      const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, { status: 'concluido' });
+      const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, comPosse({ status: 'concluido' }));
+      if (marcado === null) return perdeuPosse('concluir');
+
       await auditar('outbox_concluido', trabalho.id, {
         conversa_id: trabalho.conversa_id, acao: desfecho.acao, motivo: desfecho.motivo,
       });
@@ -126,9 +159,11 @@ function criarServicoDeOutbox({
     }
 
     if (desfecho.desfecho === 'incerto') {
-      const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, {
+      const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, comPosse({
         status: 'incerto', ultimoErro: String(desfecho.motivo ?? '').slice(0, 500) || null,
-      });
+      }));
+      if (marcado === null) return perdeuPosse('marcar_incerto');
+
       await auditar('outbox_entrega_incerta', trabalho.id, { conversa_id: trabalho.conversa_id, motivo: desfecho.motivo });
       return { id: trabalho.id, status: 'incerto', motivo: desfecho.motivo, trabalho: marcado };
     }
@@ -138,12 +173,17 @@ function criarServicoDeOutbox({
     const limite = Number(trabalho.max_tentativas) || maxTentativas;
     const definitivo = esgotou(tentativas, limite);
 
-    const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, {
+    const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, comPosse({
       status: definitivo ? 'morto' : 'pendente',
       tentativas,
       disponivelEm: definitivo ? undefined : proximaTentativa(tentativas, { agora: agora() }).toISOString(),
       ultimoErro: String(desfecho.motivo ?? '').slice(0, 500) || null,
-    });
+    }));
+
+    // Posse perdida aqui é o caso mais delicado: sem esta guarda, o worker
+    // velho reagendaria (status 'pendente') um trabalho que o dono atual pode
+    // estar prestes a concluir — e a fila entregaria a mesma resposta de novo.
+    if (marcado === null) return perdeuPosse(definitivo ? 'marcar_morto' : 'reagendar');
 
     if (definitivo) {
       await atendimento.escalonar(trabalho.conversa_id, 'outbox_dead_letter').catch((erroDeEscalonamento) => {
@@ -198,9 +238,26 @@ function criarServicoDeOutbox({
 
     const resultados = [];
     for (const trabalho of reivindicados) {
+      // O número da posse conquistada nesta reivindicação. É ele que a
+      // conclusão terá de apresentar — `worker` sozinho não distingue "sou o
+      // dono agora" de "fui dono antes, perdi e reivindiquei de novo".
+      //
+      // CORREÇÃO (achado da auditoria independente desta sessão): o `?? null`
+      // aqui NÃO cobre "banco sem a coluna" — essa afirmação era falsa.
+      // `reivindicarTrabalhosDeOutbox` (repositorio.js) grava
+      // `posse_token = t.posse_token + 1` incondicionalmente no SQL; sem a
+      // migration 033 aplicada, essa consulta falha no PARSE ("column
+      // posse_token does not exist") e a reivindicação inteira — não só o
+      // fencing — para de funcionar. **A migration 033 é pré-requisito
+      // obrigatório de deploy deste código, não uma melhoria opcional.**
+      // O `?? null` aqui só cobre o repositório EM MEMÓRIA (que sempre tem o
+      // campo, mas pode não tê-lo inicializado em algum objeto montado à mão
+      // por um teste antigo) — nunca o caso de PostgreSQL sem a coluna.
+      const posseToken = trabalho.posse_token ?? null;
+
       if (repositorio.renovarReivindicacaoDeOutbox) {
         const renovado = await repositorio.renovarReivindicacaoDeOutbox(trabalho.id, {
-          worker, agora: agora().toISOString(),
+          worker, agora: agora().toISOString(), posseToken,
         });
         if (!renovado) {
           // Outro worker já retomou este trabalho — não é mais nosso.
@@ -208,7 +265,7 @@ function criarServicoDeOutbox({
           continue;
         }
       }
-      resultados.push(await processarUm(trabalho));
+      resultados.push(await processarUm(trabalho, { worker, posseToken }));
     }
 
     return {

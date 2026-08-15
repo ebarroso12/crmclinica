@@ -1,0 +1,20 @@
+-- Rollback de 035_reconstrucao_storage_privileges_009.sql
+--
+-- SEM ROLLBACK — decisão deliberada, mesmo espírito de db/017.
+--
+-- Reconceder GRANT em storage.objects/storage.buckets para anon/authenticated
+-- reabriria exatamente a vulnerabilidade que db/007_hardening.sql documentou:
+-- SELECT/INSERT/UPDATE/DELETE/TRUNCATE público em arquivos da clínica. Não
+-- existe cenário local de teste ou desenvolvimento em que isso seja a ação
+-- certa — mesmo um banco descartável não deveria reabrir esse privilégio,
+-- porque o objetivo de reconstruir 009 é justamente provar que a revogação
+-- é reproduzível, não criar um ambiente onde ela pode ser desfeita por engano.
+--
+-- Se algum dia for necessário reverter por um motivo legítimo (ex.: restaurar
+-- um comportamento antigo documentado, com autorização explícita do dono),
+-- o comando seria:
+--
+--   GRANT ALL ON storage.objects, storage.buckets TO anon, authenticated;
+--
+-- — mas isto NÃO deve ser executado sem decisão humana explícita e registrada,
+-- e por isso não faz parte deste arquivo como comando ativo.

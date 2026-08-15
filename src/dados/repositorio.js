@@ -6,6 +6,7 @@
 //
 // Consultas sempre parametrizadas ($1, $2…): nada de concatenar valor em SQL.
 
+const crypto = require('node:crypto');
 const contexto = require('./contexto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 
@@ -189,6 +190,11 @@ function montarTrabalhoDeOutbox(linha) {
     disponivel_em: linha.disponivel_em,
     reivindicado_por: linha.reivindicado_por,
     reivindicado_em: linha.reivindicado_em,
+    // Sem esta linha, `automacao-outbox-servico.js` (que lê
+    // `trabalho.posse_token` para levar a posse adiante) sempre recebia
+    // `undefined` — a guarda de fencing nunca tinha o dado que precisa.
+    posse_token: linha.posse_token !== undefined && linha.posse_token !== null
+      ? Number(linha.posse_token) : null,
     ultimo_erro: linha.ultimo_erro,
     criado_em: linha.criado_em,
     atualizado_em: linha.atualizado_em,
@@ -271,6 +277,49 @@ function criarRepositorio(pool) {
   // declarado; fora dela (semeadura, tarefas de manutenção, health check) o pool
   // atende direto. Nenhuma consulta abaixo precisa saber em qual dos dois está.
   const consultar = (texto, valores) => consultarNoCliente(contexto.atual()?.client ?? pool, texto, valores);
+
+  /**
+   * Roda um trecho de várias instruções que precisam ser atômicas entre si.
+   *
+   * Existe porque `consultar` resolve a consulta solta, mas não o caso de duas
+   * ou três escritas que só fazem sentido juntas. Quem precisava disso abria
+   * `pool.connect()` e emitia `BEGIN` — e aí estava o defeito: dentro de uma
+   * requisição já existe transação aberta (`comUsuario`), e uma conexão nova
+   * não enxerga o que a primeira ainda não commitou. Uma conversa criada
+   * segundos antes, na mesma requisição, simplesmente não existia para a
+   * segunda conexão, e o INSERT batia na chave estrangeira. Em produção isso
+   * foram centenas de HTTP 500 no webhook do WhatsApp, só para contato novo.
+   *
+   * Com transação ambiente: usa o mesmo client e **não** emite
+   * `BEGIN`/`COMMIT`/`ROLLBACK` nem devolve a conexão — quem abriu a transação
+   * é quem a fecha. Um `ROLLBACK` daqui desfaria escritas legítimas vizinhas;
+   * um `COMMIT` publicaria pela metade o que ainda estava em curso.
+   *
+   * Sem transação ambiente (semeadura, worker, manutenção): conexão e
+   * transação próprias, exatamente como antes.
+   */
+  async function executarNaTransacao(trabalho) {
+    const ambiente = contexto.atual();
+    if (ambiente?.client) return trabalho(ambiente.client);
+
+    const cliente = await pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      const resultado = await trabalho(cliente);
+      await cliente.query('COMMIT');
+      return resultado;
+    } catch (erro) {
+      try {
+        await cliente.query('ROLLBACK');
+      } catch {
+        // Conexão já perdida; o pool a descarta ao liberar. O erro original é
+        // o que importa e segue subindo.
+      }
+      throw erro;
+    } finally {
+      cliente.release();
+    }
+  }
 
   /**
    * Roda uma instrução como o **sistema**, não como o usuário da requisição.
@@ -543,10 +592,7 @@ function criarRepositorio(pool) {
      * some do topo da lista e a equipe não a vê.
      */
     async registrarMensagem(conversaId, mensagem) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
-
+      const gravar = async (cliente) => {
         const { rows } = await cliente.query(`
           INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -564,10 +610,13 @@ function criarRepositorio(pool) {
           mensagem.id_externo || null,
         ]);
 
-        // Sem linha devolvida, a mensagem já existia: reentrega do canal.
+        // Sem linha devolvida, a mensagem já existia: reentrega do canal. Isso
+        // não é erro e não pode desfazer nada — antes havia um `ROLLBACK` aqui,
+        // inofensivo numa conexão só desta função, mas desastroso quando o
+        // cliente é a transação da requisição: abortaria contato, conversa e o
+        // trabalho da outbox por causa de uma duplicata esperada.
         if (rows.length === 0) {
-          await cliente.query('ROLLBACK');
-          const existente = await consultar('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
+          const existente = await cliente.query('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
           return { mensagem: montarMensagem(existente.rows[0]), duplicada: true };
         }
 
@@ -591,14 +640,10 @@ function criarRepositorio(pool) {
           }
         }
 
-        await cliente.query('COMMIT');
         return { mensagem: montarMensagem(rows[0]), duplicada: false };
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      };
+
+      return executarNaTransacao(gravar);
     },
 
     /**
@@ -904,9 +949,7 @@ function criarRepositorio(pool) {
      * Nomes desconhecidos são ignorados — não se cria etiqueta por digitação errada.
      */
     async definirEtiquetasDaConversa(conversaId, nomes) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
+      await executarNaTransacao(async (cliente) => {
         await cliente.query('DELETE FROM conversa_etiquetas WHERE conversa_id = $1', [conversaId]);
 
         if (nomes.length > 0) {
@@ -916,14 +959,7 @@ function criarRepositorio(pool) {
             ON CONFLICT DO NOTHING
           `, [conversaId, nomes]);
         }
-
-        await cliente.query('COMMIT');
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      });
 
       return this.listarEtiquetasDaConversa(conversaId);
     },
@@ -1842,8 +1878,21 @@ function criarRepositorio(pool) {
       return rows[0] ? { ...rows[0], id: Number(rows[0].id), usuario_id: Number(rows[0].usuario_id) } : null;
     },
 
+    /**
+     * Reivindica o token de recuperação — devolve `true` só se ESTA chamada
+     * foi quem marcou `usado_em`. `WHERE usado_em IS NULL` já impede duas
+     * reivindicações no banco; o `RETURNING` é o que deixa o chamador SABER
+     * se ganhou a corrida, em vez de assumir que sim. Duas requisições
+     * concorrentes com o mesmo token válido: sem isto, ambas seguiam adiante
+     * e a segunda sobrescrevia a senha da primeira sem que ninguém soubesse
+     * que perdeu.
+     */
     async marcarRecuperacaoUsada(id) {
-      await consultar('UPDATE recuperacoes_senha SET usado_em = now() WHERE id = $1 AND usado_em IS NULL', [id]);
+      const { rows } = await consultar(
+        'UPDATE recuperacoes_senha SET usado_em = now() WHERE id = $1 AND usado_em IS NULL RETURNING id',
+        [id],
+      );
+      return rows.length > 0;
     },
 
     /** Um pedido novo invalida os anteriores: só o último link deve funcionar. */
@@ -1853,6 +1902,93 @@ function criarRepositorio(pool) {
         [usuarioId],
       );
       return rowCount;
+    },
+
+    // ------------------------------------------------- chat ao vivo durável
+
+    /**
+     * Grava um evento no log durável (migration 037). `id` (bigserial) é o
+     * cursor monotônico que o replay usa — nunca reaproveitado, sempre
+     * crescente, é o que permite "me dê tudo que aconteceu depois do X".
+     */
+    async registrarEventoDeConversa({ conversaId, tipo, payload = {} }) {
+      const { rows } = await consultar(
+        `INSERT INTO conversas_eventos (conversa_id, tipo, payload)
+         VALUES ($1, $2, $3::jsonb) RETURNING id, conversa_id, tipo, payload, criado_em`,
+        [conversaId, tipo, JSON.stringify(payload ?? {})],
+      );
+      const linha = rows[0];
+      return {
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      };
+    },
+
+    /**
+     * Eventos com `id > cursor` — o replay depois de reconectar. `cursor:
+     * null` devolve os últimos `limite` eventos (primeira conexão, sem
+     * histórico prévio para recuperar). `limite` existe para uma reconexão
+     * depois de horas offline não tentar devolver dezenas de milhares de
+     * linhas de uma vez.
+     */
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500 } = {}) {
+      const { rows } = await consultar(
+        cursor === null
+          ? `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
+             ORDER BY id DESC LIMIT $1`
+          : `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
+             WHERE id > $2 ORDER BY id ASC LIMIT $1`,
+        cursor === null ? [limite] : [limite, cursor],
+      );
+      const ordenados = cursor === null ? rows.slice().reverse() : rows;
+      return ordenados.map((linha) => ({
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      }));
+    },
+
+    /**
+     * Ticket de uso único para abrir a conexão SSE sem carregar o token de
+     * sessão na querystring. Validade curta de propósito: o tempo entre
+     * pedir o ticket e abrir o EventSource é de milissegundos no uso normal;
+     * 30s já é folga generosa.
+     */
+    async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
+      const bruto = crypto.randomBytes(32).toString('base64url');
+      const hash = crypto.createHash('sha256').update(bruto).digest('hex');
+      const expiraEm = new Date(Date.now() + ttlMs).toISOString();
+      await consultar(
+        `INSERT INTO conversas_eventos_tickets (hash_ticket, usuario_id, papel, expira_em)
+         VALUES ($1, $2, $3, $4)`,
+        [hash, usuarioId, papel, expiraEm],
+      );
+      return bruto;
+    },
+
+    /**
+     * Resgata o ticket — atômico, com `RETURNING` conferido (mesma correção
+     * que `marcarRecuperacaoUsada` recebeu nesta sessão: sem isto, duas
+     * conexões simultâneas com o MESMO ticket poderiam ambas passar). Token
+     * inexistente, já usado ou expirado devolve `null` — o chamador nunca
+     * distingue os três motivos, para não revelar qual dos três foi.
+     */
+    async resgatarTicketDeEventos(bruto) {
+      const hash = crypto.createHash('sha256').update(String(bruto ?? '')).digest('hex');
+      const { rows } = await consultar(
+        `UPDATE conversas_eventos_tickets
+            SET usado_em = now()
+          WHERE hash_ticket = $1 AND usado_em IS NULL AND expira_em > now()
+        RETURNING usuario_id, papel`,
+        [hash],
+      );
+      if (rows.length === 0) return null;
+      return { usuarioId: Number(rows[0].usuario_id), papel: rows[0].papel };
     },
 
     // ---------------------------------------------------------------- agenda
@@ -1885,9 +2021,11 @@ function criarRepositorio(pool) {
     },
 
     async definirDisponibilidades(profissionalId, janelas) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
+      await executarNaTransacao(async (cliente) => {
+        // Apagar e reinserir é a substituição do conjunto inteiro: o horário
+        // de um profissional é declarado por completo, não emendado. As duas
+        // instruções só fazem sentido juntas — no meio delas o profissional
+        // fica sem horário nenhum.
         await cliente.query('DELETE FROM disponibilidades WHERE profissional_id = $1', [profissionalId]);
 
         for (const janela of janelas) {
@@ -1896,13 +2034,7 @@ function criarRepositorio(pool) {
             [profissionalId, janela.dia_semana, janela.hora_inicio, janela.hora_fim],
           );
         }
-        await cliente.query('COMMIT');
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      });
 
       return this.listarDisponibilidades(profissionalId);
     },
@@ -2601,6 +2733,12 @@ function criarRepositorio(pool) {
      * disjuntos, e a marcação para 'processando' acontece na mesma instrução:
      * não há intervalo entre selecionar e reservar em que um terceiro
      * pudesse entrar. Mesmo mecanismo de `reivindicarLembretes`, acima.
+     *
+     * `posse_token` sobe a cada reivindicação (migration 033). É ele que quem
+     * conclui terá de apresentar: `reivindicado_por` sozinho não distingue
+     * "sou o dono agora" de "fui dono antes, este trabalho passou por outro
+     * worker e voltou para mim" — nos dois casos o nome bate, e no segundo a
+     * conclusão do worker antigo seria indevida.
      */
     async reivindicarTrabalhosDeOutbox({ agora, limite = 20, worker = 'worker' }) {
       const { rows } = await consultar(`
@@ -2615,7 +2753,8 @@ function criarRepositorio(pool) {
         UPDATE automacao_outbox t
            SET status = 'processando',
                reivindicado_por = $3,
-               reivindicado_em = $1::timestamptz
+               reivindicado_em = $1::timestamptz,
+               posse_token = t.posse_token + 1
           FROM candidatos c
          WHERE t.id = c.id
         RETURNING t.id
@@ -2648,22 +2787,30 @@ function criarRepositorio(pool) {
      * conseguir gravar), a instrução não afeta linha nenhuma e devolve
      * `null` — sinal para quem chamou parar de processar, porque o trabalho
      * já não é mais deste worker.
+     *
+     * `posseToken`, quando informado, entra na guarda e fecha o buraco que
+     * `reivindicado_por` sozinho deixava: o mesmo worker pode ter perdido e
+     * retomado o trabalho no intervalo, e aí o nome bate mas a posse é outra.
+     * A comparação `$4::bigint IS NULL OR ...` mantém compatível quem ainda
+     * não passa o token (repositório em memória, banco sem a migration 033).
      */
-    async renovarReivindicacaoDeOutbox(id, { worker, agora }) {
+    async renovarReivindicacaoDeOutbox(id, { worker, agora, posseToken = null }) {
       const { rows } = await consultar(`
         UPDATE automacao_outbox
            SET reivindicado_em = $3::timestamptz
          WHERE id = $1
            AND status = 'processando'
            AND reivindicado_por = $2
+           AND ($4::bigint IS NULL OR posse_token = $4::bigint)
         RETURNING *
-      `, [id, String(worker).slice(0, 100), agora]);
+      `, [id, String(worker).slice(0, 100), agora, posseToken]);
       return rows[0] ? montarTrabalhoDeOutbox(rows[0]) : null;
     },
 
     /** Grava o desfecho de um trabalho: concluído, de volta à fila, morto ou incerto. */
     async concluirTrabalhoDeOutbox(id, {
       status, ultimoErro = undefined, tentativas = undefined, disponivelEm = undefined,
+      worker = null, posseToken = null,
     }) {
       const partes = ['status = $2'];
       const valores = [id, status];
@@ -2682,8 +2829,52 @@ function criarRepositorio(pool) {
       if (status !== 'processando') partes.push('reivindicado_por = NULL, reivindicado_em = NULL');
       if (['concluido', 'morto', 'incerto'].includes(status)) partes.push('concluido_em = now()');
 
-      await consultar(`UPDATE automacao_outbox SET ${partes.join(', ')} WHERE id = $1`, valores);
-      return this.obterTrabalhoDeOutbox(id);
+      // Guardas de posse. Antes, este UPDATE filtrava só por `id`: um worker
+      // cujo lease havia vencido — e cujo trabalho já fora retomado por outro —
+      // conseguia marcar `concluido` por cima do dono atual, e ainda recebia de
+      // volta a linha lida depois, o que fazia o chamador acreditar que deu
+      // certo. Com paciente do outro lado, isso é mensagem duplicada ou
+      // resposta que nunca sai.
+      //
+      // As três condições são cumulativas e cada uma cobre um caso:
+      //   status = 'processando'  — o trabalho não foi fechado por outro antes;
+      //   reivindicado_por        — é este worker, não outro;
+      //   posse_token             — é ESTA posse, não uma anterior do mesmo
+      //                             worker (que pode ter perdido e retomado).
+      //
+      // `IS NULL OR` mantém compatível quem ainda chama sem informar posse:
+      // a guarda extra só entra quando o chamador tem a informação.
+      // As guardas só entram quando o chamador DECLARA posse. Quem não declara
+      // não está no fluxo concorrente do worker — é semeadura, teste ou ajuste
+      // administrativo, e nesses casos exigir `status = 'processando'` recusaria
+      // transições legítimas de um trabalho que nunca foi reivindicado.
+      const declarouPosse = worker !== null || posseToken !== null;
+      const guardas = ['id = $1'];
+      if (declarouPosse) guardas.push("status = 'processando'");
+      if (worker !== null) {
+        valores.push(String(worker).slice(0, 100));
+        guardas.push(`reivindicado_por = $${valores.length}`);
+      }
+      if (posseToken !== null) {
+        valores.push(posseToken);
+        guardas.push(`posse_token = $${valores.length}::bigint`);
+      }
+
+      const { rows } = await consultar(
+        `UPDATE automacao_outbox SET ${partes.join(', ')} WHERE ${guardas.join(' AND ')} RETURNING *`,
+        valores,
+      );
+
+      // Zero linhas = posse perdida. Devolve `null`, o mesmo sinal que
+      // `renovarReivindicacaoDeOutbox` já usa para a mesma situação — um
+      // vocabulário só para "este trabalho não é mais seu".
+      //
+      // Não é erro de infraestrutura e não vira exceção: perder a posse é
+      // desfecho normal numa fila com recuperação. O chamador precisa saber
+      // para PARAR — nunca para tentar de novo, reagendar ou sobrescrever.
+      if (rows.length === 0) return null;
+
+      return montarTrabalhoDeOutbox(rows[0]);
     },
 
     /**

@@ -513,6 +513,10 @@ function criarAtendimento({
       privada: true,
     });
     emissor?.publicarMensagem(conversaId, avisoDeAssumir);
+    // Evento distinto de "chegou mensagem": quem está com a tela de
+    // Conversas aberta precisa reagir a "assumida" (ex.: mover a conversa de
+    // seção) sem depender de sniffar o texto do aviso de sistema.
+    emissor?.publicarConversaAssumida?.(conversaId, { usuarioId });
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
@@ -532,6 +536,7 @@ function criarAtendimento({
       ia_pausada_ate: null,
     });
 
+    emissor?.publicar?.({ conversaId, tipo: 'conversa_devolvida', payload: {} });
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
@@ -665,6 +670,9 @@ function criarAtendimento({
             console.error(`[atendimento] falha ao marcar entrega não realizada: ${erro.message}`);
           });
         }
+        // Nunca o texto gerado nem o motivo em prosa livre — só o código
+        // técnico, mesma disciplina da auditoria acima.
+        emissor?.publicarErro?.(conversa.id, { motivo: controle.motivo, mensagemId });
 
         // Comando 7, achado A-3: motivo que não é uma decisão humana recente
         // (ver MOTIVOS_DE_DECISAO_HUMANA_RECENTE) precisa escalonar — sem

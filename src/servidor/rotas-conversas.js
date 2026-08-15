@@ -55,7 +55,7 @@ async function exigirConversa(repositorio, id) {
   return conversa;
 }
 
-function criarRotasDeConversas({ repositorio, atendimento }) {
+function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = null }) {
   return {
     /** GET /api/conversas/filas — vocabulário do inbox, para a interface montar os controles. */
     async listarFilas() {
@@ -276,6 +276,9 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
       const status = exigirEnum(corpo?.status, 'status', ESTADOS);
 
       const conversa = await repositorio.atualizarConversa(id, { status });
+      if (status === 'resolvida') {
+        emissorDeConversas?.publicarConversaResolvida?.(id);
+      }
       await repositorio.registrarAuditoria({
         entidade: 'conversa',
         entidadeId: id,
