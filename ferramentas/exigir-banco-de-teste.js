@@ -117,6 +117,7 @@ const TESTES_DE_POSTGRES = Object.freeze([
   'testes/contrato-repositorio.test.js',
   'testes/lembretes-concorrencia.test.js',
   'testes/conversas-eventos-pg.test.js',
+  'testes/mensagens-confirmacao-entrega-pg.test.js',
 ]);
 
 function existentes(arquivos) {
@@ -179,7 +180,14 @@ function main() {
   for (const arquivo of arquivos) console.log(`  - ${arquivo}`);
   console.log('');
 
-  const resultado = spawnSync(process.execPath, ['--test', ...arquivos], {
+  // Em série, um arquivo por vez. Os testes de PostgreSQL compartilham o MESMO
+  // banco e cada um começa com `TRUNCATE ... RESTART IDENTITY` para ter estado
+  // limpo. Rodando em paralelo, um apaga as linhas que o outro acabou de criar
+  // — e a falha aparece como asserção quebrada num teste que não tem nada a ver
+  // com o problema, o pior tipo de instabilidade. Isolar por transação não
+  // resolveria: o TRUNCATE é justamente o ponto. Um banco por arquivo também
+  // resolveria, e custa mais do que vale enquanto forem poucos arquivos.
+  const resultado = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...arquivos], {
     stdio: 'inherit',
     cwd: path.join(__dirname, '..'),
   });
