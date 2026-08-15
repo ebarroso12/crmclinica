@@ -6,6 +6,7 @@
 
 const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
+const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 
 const ETIQUETAS_INICIAIS = [
   { nome: 'lead_quente', descricao: 'Lead quente', cor: '#dc2626', do_sistema: true },
@@ -1691,14 +1692,39 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return { ...linha };
     },
 
-    async listarEventosDeConversasDesde({ cursor = null, limite = 500 } = {}) {
-      if (cursor === null) {
-        return conversasEventos.slice(-limite).map((linha) => ({ ...linha }));
+    // Mesmo escopo do repositorio.js (BLOQUEADOR 1, auditoria PR #34):
+    // `papel` é obrigatório (fail-closed) e o filtro usa a MESMA
+    // `podeAcessarConversaAoVivo` que o broadcast ao vivo usa. Sem SQL aqui,
+    // então não há "filtrar no WHERE" — só a passada em JS, que já é a
+    // única fonte de verdade nesta implementação.
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+      if (!papel) {
+        throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
       }
-      return conversasEventos
-        .filter((linha) => linha.id > Number(cursor))
-        .slice(0, limite)
-        .map((linha) => ({ ...linha }));
+      const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+      const visivel = (linha) => {
+        const conversa = conversas.get(linha.conversa_id);
+        const atribuidoA = conversa && conversa.atribuido_a !== null && conversa.atribuido_a !== undefined
+          ? Number(conversa.atribuido_a) : null;
+        return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA);
+      };
+
+      // Filtra ANTES de limitar — mesma ordem de operações do SQL em
+      // repositorio.js (o `WHERE` de autorização entra antes do `LIMIT`):
+      // "os últimos N que este papel pode ver", não "dos últimos N no log
+      // geral, os que este papel pode ver" (que devolveria menos que N
+      // quando a conversa alheia domina a cauda do log).
+      const autorizados = (cursor === null ? conversasEventos : conversasEventos.filter((linha) => linha.id > Number(cursor)))
+        .filter(visivel);
+      const pagina = cursor === null ? autorizados.slice(-limite) : autorizados.slice(0, limite);
+      return pagina.map((linha) => ({ ...linha }));
+    },
+
+    /** Paridade com repositorio.js — ver os comentários lá. */
+    async obterAtribuidoDaConversa(conversaId) {
+      const conversa = conversas.get(Number(conversaId));
+      if (!conversa) return null;
+      return conversa.atribuido_a === null || conversa.atribuido_a === undefined ? null : Number(conversa.atribuido_a);
     },
 
     // Bug B, item 2 ("chat completo") — paridade com repositorio.js. Ver os

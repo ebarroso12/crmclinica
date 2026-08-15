@@ -1,5 +1,7 @@
 'use strict';
 
+const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+
 // Barramento do chat ao vivo — Pendência 4 do comando mestre (reconstrução).
 //
 // ANTES: só em memória do processo (`Set` de conexões, `publicar` gravava
@@ -21,8 +23,52 @@
 // antes de qualquer chamada a publicar() acontecer; o chat ao vivo é um
 // espelho de conveniência, não onde o dado mora.
 
-function criarEmissorDeConversas({ repositorio } = {}) {
+function criarEmissorDeConversas({ repositorio, ttlCacheDeEscopoMs = 5000 } = {}) {
   const assinantes = new Set();
+
+  // Cache curto de `atribuido_a`, compartilhado entre TODAS as conexões
+  // deste processo — BLOQUEADOR 1 da auditoria do PR #34. Sem ele, uma
+  // conversa movimentada com várias abas de recepção abertas faria uma
+  // consulta ao banco POR ASSINANTE a CADA evento, só para decidir quem
+  // pode ver. TTL curto é a defesa contra "conversa reatribuída no meio do
+  // TTL continua visível para quem perdeu o acesso" — a pior janela de
+  // exposição é o TTL, nunca "para sempre" (padrão trade-off já usado pelo
+  // ticket de SSE, que também tem validade curta em vez de longa).
+  const cacheDeAtribuicao = new Map(); // conversaId -> { atribuidoA, expiraEm }
+
+  async function resolverAtribuidoA(conversaId) {
+    if (!repositorio?.obterAtribuidoDaConversa) {
+      throw new Error('repositório sem obterAtribuidoDaConversa — não há como confirmar o escopo de um atendente');
+    }
+    const agora = Date.now();
+    const emCache = cacheDeAtribuicao.get(conversaId);
+    if (emCache && emCache.expiraEm > agora) return emCache.atribuidoA;
+    const atribuidoA = await repositorio.obterAtribuidoDaConversa(conversaId);
+    cacheDeAtribuicao.set(conversaId, { atribuidoA, expiraEm: agora + ttlCacheDeEscopoMs });
+    return atribuidoA;
+  }
+
+  /**
+   * Decide se ESTA assinatura pode receber um evento desta conversa —
+   * MESMO predicado (`podeAcessarConversaAoVivo`) usado pelo replay em
+   * `repositorio.listarEventosDeConversasDesde`. admin/gestor nunca
+   * precisam de `atribuido_a`, então nunca tocam o banco/cache; só
+   * atendente paga o custo da consulta (cacheada).
+   *
+   * Fail-closed: qualquer falha ao resolver o responsável (banco fora do
+   * ar, por exemplo) NEGA o evento — nunca envia por não saber dizer não.
+   */
+  async function autorizada(assinatura, conversaId) {
+    if (assinatura.papel === 'admin' || assinatura.papel === 'gestor') return true;
+    if (assinatura.papel !== 'atendente') return false;
+    try {
+      const atribuidoA = await resolverAtribuidoA(conversaId);
+      return podeAcessarConversaAoVivo(assinatura.papel, assinatura.usuarioId, atribuidoA);
+    } catch (erro) {
+      console.error(`[eventos-conversas] falha ao resolver escopo ao vivo — negando por padrão: ${erro.message}`);
+      return false;
+    }
+  }
 
   /**
    * Registra uma resposta HTTP como assinante. Devolve a função que a
@@ -33,21 +79,26 @@ function criarEmissorDeConversas({ repositorio } = {}) {
    * "tudo desde X" que a rota HTTP faz ANTES de assinar) já entregou. Sem
    * isto, um evento gravado bem no meio de "terminei de responder o replay"
    * e "comecei a receber ao vivo" poderia sair duas vezes.
+   *
+   * `usuarioId`/`papel`: identidade resgatada do bilhete de uso único (ver
+   * http.js) — é o que `autorizada()` usa para decidir, evento a evento, se
+   * ESTA conexão pode ver ESTA conversa (BLOQUEADOR 1, auditoria PR #34).
    */
-  function inscrever(res, { depoisDeCursor = 0 } = {}) {
-    const assinatura = { res, depoisDeCursor };
+  function inscrever(res, { depoisDeCursor = 0, usuarioId = null, papel = null } = {}) {
+    const assinatura = { res, depoisDeCursor, usuarioId, papel };
     assinantes.add(assinatura);
     return () => assinantes.delete(assinatura);
   }
 
-  /** Empurra um evento JÁ GRAVADO para toda conexão aberta NESTE processo. */
-  function empurrar(evento) {
+  /** Empurra um evento JÁ GRAVADO para toda conexão aberta NESTE processo autorizada a vê-lo. */
+  async function empurrar(evento) {
     // `id:` no formato SSE é o que o navegador usa para preencher
     // `Last-Event-ID` sozinho numa reconexão automática — folga extra além
     // do cursor que a própria rota já devolve no replay inicial.
     const linha = `id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`;
     for (const assinatura of assinantes) {
       if (evento.id <= assinatura.depoisDeCursor) continue;
+      if (!(await autorizada(assinatura, evento.conversa_id))) continue;
       try {
         assinatura.res.write(linha);
       } catch {
@@ -65,7 +116,7 @@ function criarEmissorDeConversas({ repositorio } = {}) {
     if (!repositorio?.registrarEventoDeConversa) return null;
     try {
       const evento = await repositorio.registrarEventoDeConversa({ conversaId, tipo, payload });
-      empurrar(evento);
+      await empurrar(evento);
       return evento;
     } catch (erro) {
       console.error(`[eventos-conversas] falha ao registrar evento "${tipo}": ${erro.message}`);

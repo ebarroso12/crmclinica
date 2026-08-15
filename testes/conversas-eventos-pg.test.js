@@ -58,10 +58,15 @@ test('[pg] registrar evento devolve cursor monotônico crescente, e listar-desde
   assert.ok(e2.id > e1.id, 'o cursor precisa crescer a cada evento');
   assert.ok(e3.id > e2.id);
 
-  const desdeE1 = await repositorio.listarEventosDeConversasDesde({ cursor: e1.id });
+  // `papel: 'admin'`: este teste prova o CURSOR, não o escopo de autorização
+  // (ver testes/conversas-eventos-escopo.test.js para os testes de escopo em
+  // si; `listarEventosDeConversasDesde` exige `papel` desde o BLOQUEADOR 1,
+  // auditoria PR #34 — admin vê tudo, o que preserva a intenção original
+  // deste teste).
+  const desdeE1 = await repositorio.listarEventosDeConversasDesde({ cursor: e1.id, papel: 'admin' });
   assert.deepEqual(desdeE1.map((e) => e.id), [e2.id, e3.id], 'só os eventos DEPOIS do cursor, na ordem');
 
-  const desdeNulo = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 10 });
+  const desdeNulo = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 10, papel: 'admin' });
   assert.deepEqual(desdeNulo.map((e) => e.id), [e1.id, e2.id, e3.id], 'sem cursor, os últimos eventos (aqui, todos)');
 });
 

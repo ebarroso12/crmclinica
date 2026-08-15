@@ -1606,16 +1606,46 @@ function criarAplicacao(dependencias = {}) {
 
         let cursorAposReplay = cursorValido ?? 0;
         try {
-          const eventosPerdidos = await repositorio.listarEventosDeConversasDesde({ cursor: cursorValido });
+          // `usuarioId`/`papel` aqui é o que faz `listarEventosDeConversasDesde`
+          // filtrar por escopo (BLOQUEADOR 1) — nunca devolve linha que
+          // `usuarioDoEvento` não pode ver; a função em si não lança por
+          // motivo de autorização (é um WHERE + um filtro puro em JS), então
+          // este catch abaixo NUNCA precisa (nem pode) tratar "sem
+          // permissão" como um caso a mascarar.
+          const eventosPerdidos = await repositorio.listarEventosDeConversasDesde({
+            cursor: cursorValido, usuarioId: usuarioDoEvento.id, papel: usuarioDoEvento.papel,
+          });
           for (const evento of eventosPerdidos) {
             res.write(`id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`);
             if (evento.id > cursorAposReplay) cursorAposReplay = evento.id;
           }
         } catch (erro) {
-          console.error(`[eventos-conversas] falha no replay: ${erro.message}`);
+          // BLOQUEADOR 2 (auditoria PR #34): 42P01 = tabela ausente
+          // (`conversas_eventos`) — rollback da migration 037 sem rollback
+          // de código, ou deploy do código antes da migration rodar. É o
+          // ÚNICO erro esperado aqui: degrada para "sem histórico", mas
+          // segue ao vivo normalmente.
+          if (erro.code === '42P01') {
+            console.error(`[eventos-conversas] conversas_eventos ausente (42P01) — replay degradado, seguindo só ao vivo: ${erro.message}`);
+          } else {
+            // Qualquer outro erro (permissão — 42501 —, conexão, corrupção,
+            // ou uma futura falha de autorização) NÃO pode ser mascarado.
+            // Antes desta correção, este catch engolia TUDO e seguia para
+            // `inscrever` do mesmo jeito — uma conexão podia ficar
+            // "assinada" sem que a aplicação tivesse conseguido confirmar o
+            // que ela pode ver. Os headers SSE (200) já foram enviados —
+            // não dá para voltar um 403/500 — então a resposta possível é
+            // encerrar a conexão em vez de assinar sem essa confirmação
+            // (fail-closed): o cliente (EventSource) reconecta sozinho.
+            console.error(`[eventos-conversas] falha no replay, encerrando sem assinar: ${erro.message}`);
+            try { res.end(); } catch { /* conexão já pode ter caído. */ }
+            return;
+          }
         }
 
-        const cancelarInscricao = emissorDeConversas.inscrever(res, { depoisDeCursor: cursorAposReplay });
+        const cancelarInscricao = emissorDeConversas.inscrever(res, {
+          depoisDeCursor: cursorAposReplay, usuarioId: usuarioDoEvento.id, papel: usuarioDoEvento.papel,
+        });
         // Sem batimento, uma conexão ociosa é indistinguível de uma caída para
         // qualquer proxy no meio do caminho — ele derruba silenciosamente.
         const batimento = setInterval(() => {

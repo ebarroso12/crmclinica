@@ -9,6 +9,7 @@
 const crypto = require('node:crypto');
 const contexto = require('./contexto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
+const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 
 const SELECAO_CONVERSA = `
   c.id, c.contato_id, c.canal, c.status, c.prioridade, c.atribuido_a,
@@ -2003,24 +2004,75 @@ function criarRepositorio(pool) {
      * histórico prévio para recuperar). `limite` existe para uma reconexão
      * depois de horas offline não tentar devolver dezenas de milhares de
      * linhas de uma vez.
+     *
+     * `usuarioId`/`papel` são OBRIGATÓRIOS — BLOQUEADOR 1 da auditoria do PR
+     * #34: sem eles, esta consulta devolvia eventos de TODA conversa da
+     * clínica para qualquer assinante do SSE (a RLS não ajuda aqui: a rota
+     * de eventos ao vivo roda fora de `comIdentidade`, então a conexão nasce
+     * com `app_role=backend`, sob o qual `can_access_conversa` — db/034 —
+     * sempre devolve `true`; ver o comentário de `podeAcessarConversaAoVivo`
+     * em src/seguranca/rbac.js). `papel` ausente lança em vez de devolver
+     * tudo (fail-closed): um chamador que "esqueceu" de declarar o escopo é
+     * um bug, não uma consulta administrativa implícita.
+     *
+     * O filtro roda DUAS vezes, de propósito: no SQL (para nunca puxar linha
+     * alheia à memória do processo) e de novo em JS, com a MESMA função que
+     * decide o broadcast ao vivo (`podeAcessarConversaAoVivo`) — se um dia o
+     * `WHERE` abaixo divergir da função por um erro de edição, esta segunda
+     * passada garante que a resposta HTTP nunca vaza a linha mesmo assim.
      */
-    async listarEventosDeConversasDesde({ cursor = null, limite = 500 } = {}) {
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+      if (!papel) {
+        throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
+      }
+      const verTudo = papel === 'admin' || papel === 'gestor';
+      const verRestrito = papel === 'atendente';
+      const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+
       const { rows } = await consultar(
         cursor === null
-          ? `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
-             ORDER BY id DESC LIMIT $1`
-          : `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
-             WHERE id > $2 ORDER BY id ASC LIMIT $1`,
-        cursor === null ? [limite] : [limite, cursor],
+          ? `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a
+               FROM conversas_eventos ce
+               JOIN conversas c ON c.id = ce.conversa_id
+              WHERE ($2::boolean OR ($3::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $4)))
+              ORDER BY ce.id DESC LIMIT $1`
+          : `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a
+               FROM conversas_eventos ce
+               JOIN conversas c ON c.id = ce.conversa_id
+              WHERE ce.id > $2
+                AND ($3::boolean OR ($4::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $5)))
+              ORDER BY ce.id ASC LIMIT $1`,
+        cursor === null
+          ? [limite, verTudo, verRestrito, usuarioIdNumerico]
+          : [limite, cursor, verTudo, verRestrito, usuarioIdNumerico],
       );
       const ordenados = cursor === null ? rows.slice().reverse() : rows;
-      return ordenados.map((linha) => ({
-        id: Number(linha.id),
-        conversa_id: Number(linha.conversa_id),
-        tipo: linha.tipo,
-        payload: linha.payload,
-        criado_em: linha.criado_em,
-      }));
+      return ordenados
+        .filter((linha) => podeAcessarConversaAoVivo(
+          papel, usuarioIdNumerico, linha.atribuido_a === null ? null : Number(linha.atribuido_a),
+        ))
+        .map((linha) => ({
+          id: Number(linha.id),
+          conversa_id: Number(linha.conversa_id),
+          tipo: linha.tipo,
+          payload: linha.payload,
+          criado_em: linha.criado_em,
+        }));
+    },
+
+    /**
+     * Só o campo necessário para decidir, AO VIVO, se um evento desta
+     * conversa pode ir para uma conexão SSE de um atendente (ver
+     * `podeAcessarConversaAoVivo` em src/seguranca/rbac.js, usado por
+     * eventos-conversas.js). `null` tanto para "sem responsável" quanto
+     * para "conversa não existe mais" — os dois casos tratam-se como "não
+     * atribuída a ninguém em particular" pelo predicado, o que é seguro
+     * (nunca abre a conversa de outro atendente).
+     */
+    async obterAtribuidoDaConversa(conversaId) {
+      const { rows } = await consultar('SELECT atribuido_a FROM conversas WHERE id = $1', [conversaId]);
+      if (rows.length === 0) return null;
+      return rows[0].atribuido_a === null ? null : Number(rows[0].atribuido_a);
     },
 
     /**

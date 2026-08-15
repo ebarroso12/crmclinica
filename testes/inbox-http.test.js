@@ -406,7 +406,11 @@ test('resolver duas vezes não duplica evento nem auditoria', async (t) => {
   assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200,
     'o segundo clique não pode virar erro para quem está atendendo — só não pode repetir efeito');
 
-  const eventos = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100 });
+  // `papel: 'admin'` aqui não é sobre autorização — o teste só quer inspecionar
+  // o log durável inteiro (ver testes/conversas-eventos-escopo.test.js para os
+  // testes de escopo em si; `listarEventosDeConversasDesde` exige `papel` desde
+  // o BLOQUEADOR 1, auditoria PR #34).
+  const eventos = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100, papel: 'admin' });
   const resolvidas = eventos.filter((e) => e.tipo === 'conversa_resolvida' && e.conversa_id === conversa.id);
   assert.equal(resolvidas.length, 1, 'só pode existir UM evento de "conversa resolvida"');
 
@@ -417,7 +421,7 @@ test('resolver duas vezes não duplica evento nem auditoria', async (t) => {
   assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'aberta' })).status, 200);
   assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200);
 
-  const depois = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100 });
+  const depois = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100, papel: 'admin' });
   assert.equal(
     depois.filter((e) => e.tipo === 'conversa_resolvida' && e.conversa_id === conversa.id).length, 2,
     'resolver de novo depois de reabrir é uma transição real — essa precisa aparecer',
@@ -777,7 +781,9 @@ test('reconectar com cursor reproduz exatamente os eventos perdidos, sem duplica
     canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
     id_externo: 'wa:cursor:2', remetente: '5516900000002', nome: 'Beto', texto: 'segunda, perdida',
   });
-  const eventosNoBanco = await repositorio.listarEventosDeConversasDesde({ cursor: null });
+  // `papel: 'admin'`: inspeção direta do log durável, não teste de escopo
+  // (ver nota equivalente acima e testes/conversas-eventos-escopo.test.js).
+  const eventosNoBanco = await repositorio.listarEventosDeConversasDesde({ cursor: null, papel: 'admin' });
   const idsGravados = eventosNoBanco.map((e) => e.id);
   assert.equal(idsGravados.length, 2, 'as duas mensagens precisam ter gerado exatamente dois eventos');
 
