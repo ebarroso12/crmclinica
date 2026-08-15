@@ -153,11 +153,34 @@ function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = 
       };
     },
 
-    /** GET /api/conversas/:id/mensagens — a thread. */
+    /**
+     * GET /api/conversas/:id/mensagens — a thread completa.
+     *
+     * Bug B, item 2 ("chat completo"): antes só devolvia `mensagens` — quem
+     * assumiu, devolveu ou resolveu a conversa, e qualquer envio abortado
+     * pela barreira final, ficava invisível na tela mesmo depois de
+     * recarregar. Agora mescla `mensagens` com os eventos operacionais da
+     * mesma conversa (conversas_eventos, migration 037), ordenados por
+     * `criado_em` — as duas fontes têm sequências (`id`) INDEPENDENTES, não
+     * comparáveis entre si, então a ordem determinística possível aqui é por
+     * tempo; `Array.prototype.sort` é estável no Node, e mensagens entram
+     * primeiro na concatenação, então um empate exato de timestamp mantém a
+     * mensagem antes do evento — nunca o contrário, nunca aleatório.
+     */
     async listarMensagens(conversaId) {
       const id = exigirIdentificador(conversaId, 'conversa_id');
       await exigirConversa(repositorio, id);
-      return repositorio.listarMensagens(id);
+
+      const mensagens = (await repositorio.listarMensagens(id))
+        .map((mensagem) => ({ ...mensagem, tipo_item: 'mensagem' }));
+
+      if (!repositorio.listarEventosOperacionaisDaConversa) return mensagens;
+
+      const eventos = (await repositorio.listarEventosOperacionaisDaConversa(id))
+        .map((evento) => ({ ...evento, tipo_item: 'evento' }));
+
+      return [...mensagens, ...eventos]
+        .sort((a, b) => new Date(a.criado_em).getTime() - new Date(b.criado_em).getTime());
     },
 
     /** POST /api/conversas/:id/mensagens — resposta humana; assumir vem junto. */

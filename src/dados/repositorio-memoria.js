@@ -1690,6 +1690,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         .map((linha) => ({ ...linha }));
     },
 
+    // Bug B, item 2 ("chat completo") — paridade com repositorio.js. Ver os
+    // comentários lá para o raciocínio de por que só estes dois tipos.
+    async listarEventosOperacionaisDaConversa(conversaId) {
+      const TIPOS = new Set(['conversa_devolvida', 'conversa_resolvida']);
+      return conversasEventos
+        .filter((linha) => linha.conversa_id === Number(conversaId) && TIPOS.has(linha.tipo))
+        .map((linha) => ({ ...linha }));
+    },
+
     async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
       const bruto = crypto.randomBytes(32).toString('base64url');
       conversasEventosTickets.set(bruto, {
