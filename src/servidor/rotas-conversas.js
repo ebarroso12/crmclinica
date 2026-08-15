@@ -176,8 +176,25 @@ function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = 
 
       if (!repositorio.listarEventosOperacionaisDaConversa) return mensagens;
 
-      const eventos = (await repositorio.listarEventosOperacionaisDaConversa(id))
-        .map((evento) => ({ ...evento, tipo_item: 'evento' }));
+      // BLOQUEADOR 2 (auditoria PR #34): um rollback da migration 037 (ou um
+      // deploy deste código ANTES da migration rodar) faz `conversas_eventos`
+      // sumir. Antes desta correção, o erro do Postgres (42P01,
+      // `undefined_table`) subia sem tratamento e virava HTTP 500 — a
+      // recepção perdia a THREAD INTEIRA (`mensagens`, que sempre existiu),
+      // não só os eventos operacionais que esta consulta adiciona. Só
+      // `42P01` ativa o fallback (checado pelo CÓDIGO do erro, nunca pela
+      // mensagem de texto); qualquer outro (permissão — 42501 —, conexão,
+      // corrupção) propaga — nunca finge "sem eventos" quando o problema é
+      // outro.
+      let eventos;
+      try {
+        eventos = (await repositorio.listarEventosOperacionaisDaConversa(id))
+          .map((evento) => ({ ...evento, tipo_item: 'evento' }));
+      } catch (erro) {
+        if (erro.code !== '42P01') throw erro;
+        console.error(`[rotas-conversas] conversas_eventos ausente (42P01) — thread degradada para só mensagens (conversa ${id}): ${erro.message}`);
+        return mensagens;
+      }
 
       return [...mensagens, ...eventos]
         .sort((a, b) => new Date(a.criado_em).getTime() - new Date(b.criado_em).getTime());
