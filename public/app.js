@@ -609,6 +609,11 @@ function desenharThread(mensagens) {
     // nada. `entrega_falhou` só existe em mensagens que o backend marcou
     // assim (ver src/dominio/atendimento.js); nunca em mensagem de entrada.
     if (mensagem.entrega_falhou) item.classList.add('nao-entregue');
+    // Migration 038/Bug B: "indeterminada" é um terceiro estado, distinto de
+    // "falhou" — o canal pode ter entregue ou não, ninguém sabe. Confundir
+    // com "não entregue" seria afirmar algo que o sistema não sabe; deixar
+    // sem marca nenhuma seria esconder a incerteza da equipe.
+    if (mensagem.entrega_indeterminada) item.classList.add('entrega-incerta');
 
     const corpo = document.createElement('span');
     corpo.textContent = mensagem.conteudo || '';
@@ -625,6 +630,11 @@ function desenharThread(mensagens) {
       const aviso = document.createElement('small');
       aviso.className = 'aviso-nao-entregue';
       aviso.textContent = '⚠ não entregue ao paciente';
+      item.append(aviso);
+    } else if (mensagem.entrega_indeterminada) {
+      const aviso = document.createElement('small');
+      aviso.className = 'aviso-entrega-incerta';
+      aviso.textContent = '? entrega incerta — não sabemos se chegou ao paciente';
       item.append(aviso);
     }
 
