@@ -610,6 +610,25 @@ function criarRepositorio(pool) {
       return rows[0] ? montarConversa(rows[0]) : null;
     },
 
+    /**
+     * Mesmo raciocínio das duas acima, para a troca de estado da conversa
+     * (`POST /api/conversas/:id/estado`). Achado da auditoria adversarial
+     * deste lote: `resolver` era o único caminho que ainda publicava evento e
+     * auditava INCONDICIONALMENTE — dois cliques (ou um retry de rede)
+     * gravavam dois `conversa_resolvida`, e a thread passava a exibir
+     * "Conversa marcada como resolvida." duas vezes. `IS DISTINCT FROM`
+     * absorve a repetição sem ler antes de escrever (não há janela de corrida
+     * entre a leitura e a gravação).
+     */
+    async definirStatusSeNecessario(id, status) {
+      const { rows } = await consultar(`
+        UPDATE conversas SET status = $2
+         WHERE id = $1 AND status IS DISTINCT FROM $2
+        RETURNING *
+      `, [id, status]);
+      return rows[0] ? montarConversa(rows[0]) : null;
+    },
+
     // ---------------------------------------------------------------- mensagens
 
     async listarMensagens(conversaId, { incluirPrivadas = true } = {}) {

@@ -51,3 +51,37 @@ test('conversa aberta refaz a thread para qualquer evento reconhecido, não só 
   assert.ok(indiceGuarda >= 0 && indiceThread > indiceGuarda,
     'a atualização da thread aberta precisa vir depois do guard geral, para valer para todo tipo conhecido');
 });
+
+// Achado da auditoria adversarial deste lote: sem coalescência, CADA evento
+// vira uma chamada HTTP. O replay de reconexão entrega até 500 eventos de uma
+// vez (`listarEventosDeConversasDesde`), e a tela dispararia centenas de
+// requisições em rajada — por aba. Numa recepção com várias abas isso ataca o
+// próprio servidor que este lote veio consertar.
+test('as recargas disparadas por evento ao vivo são coalescidas numa janela', () => {
+  assert.match(APP_JS, /const JANELA_DE_COALESCENCIA_MS = \d+/,
+    'precisa existir uma janela de coalescência declarada e nomeada');
+
+  const corpo = APP_JS.match(/function reagirAEventoDeConversa\(dados\) \{[\s\S]*?\n\}/);
+  assert.ok(corpo, 'reagirAEventoDeConversa precisa existir');
+
+  assert.match(corpo[0], /if \(recargaDeEventosAgendada\) return;/,
+    'evento que chega com recarga já agendada precisa entrar nela, não criar outra');
+  assert.match(corpo[0], /setTimeout\([\s\S]*JANELA_DE_COALESCENCIA_MS\)/,
+    'a recarga precisa ser adiada pela janela, não disparada na hora');
+
+  // O que de fato impede a rajada: nenhuma chamada de rede solta ANTES do
+  // setTimeout. Se `carregarConversas()` voltar para fora da janela, a
+  // rajada volta junto — e este teste é quem pega isso.
+  const antesDoTimer = corpo[0].split('setTimeout')[0];
+  assert.doesNotMatch(antesDoTimer, /carregarConversas\(\)/,
+    'carregarConversas não pode ser chamada fora da janela de coalescência');
+  assert.doesNotMatch(antesDoTimer, /pedirJson\(/,
+    'nenhuma requisição pode sair fora da janela de coalescência');
+});
+
+test('o timer de recarga é cancelado ao encerrar os eventos (logout não dispara requisição órfã)', () => {
+  const corpo = APP_JS.match(/function encerrarEventosDeConversas\(\) \{[\s\S]*?\n\}/);
+  assert.ok(corpo, 'encerrarEventosDeConversas precisa existir');
+  assert.match(corpo[0], /clearTimeout\(recargaDeEventosAgendada\)/,
+    'sem isto, uma recarga agendada dispara depois do logout, já sem token');
+});

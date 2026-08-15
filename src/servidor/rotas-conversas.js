@@ -298,7 +298,18 @@ function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = 
       await exigirConversa(repositorio, id);
       const status = exigirEnum(corpo?.status, 'status', ESTADOS);
 
-      const conversa = await repositorio.atualizarConversa(id, { status });
+      // Achado da auditoria adversarial deste lote: este era o único caminho
+      // que ainda publicava evento e auditava INCONDICIONALMENTE — dois
+      // cliques em "Resolver" (ou um retry de rede) gravavam dois eventos
+      // `conversa_resolvida`, e a thread passava a mostrar "Conversa marcada
+      // como resolvida." duas vezes. Mesmo padrão que `assumir`/`liberar` já
+      // usam: `null` = não houve transição de verdade, nada a anunciar.
+      const transicao = repositorio.definirStatusSeNecessario
+        ? await repositorio.definirStatusSeNecessario(id, status)
+        : await repositorio.atualizarConversa(id, { status });
+
+      if (!transicao) return { conversa: await repositorio.obterConversa(id) };
+
       if (status === 'resolvida') {
         emissorDeConversas?.publicarConversaResolvida?.(id);
       }
@@ -308,7 +319,7 @@ function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = 
         acao: status === 'resolvida' ? 'resolvida' : 'reaberta',
       });
 
-      return { conversa };
+      return { conversa: transicao };
     },
 
     /** POST /api/conversas/:id/temperatura */

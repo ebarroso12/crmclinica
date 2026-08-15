@@ -375,6 +375,55 @@ test('prioridade e estado usam vocabulário fechado', async (t) => {
   assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'arquivada' })).status, 400);
 });
 
+// Achado da auditoria adversarial deste lote: `resolver` era o único caminho
+// que ainda publicava evento e auditava INCONDICIONALMENTE. Dois cliques em
+// "Resolver" (ou um retry de rede) gravavam dois `conversa_resolvida`, e a
+// thread passava a exibir "Conversa marcada como resolvida." duas vezes —
+// exatamente o bug que c42ea11 fechou para assumir/liberar, deixado aberto
+// aqui.
+test('resolver duas vezes não duplica evento nem auditoria', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:resolver-2x',
+    remetente: '5516955555555',
+    nome: 'Tereza Lima',
+    texto: 'Obrigada!',
+  });
+  const [conversa] = await repositorio.listarConversas({});
+
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200);
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200,
+    'o segundo clique não pode virar erro para quem está atendendo — só não pode repetir efeito');
+
+  const eventos = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100 });
+  const resolvidas = eventos.filter((e) => e.tipo === 'conversa_resolvida' && e.conversa_id === conversa.id);
+  assert.equal(resolvidas.length, 1, 'só pode existir UM evento de "conversa resolvida"');
+
+  const auditoria = repositorio._auditoria.filter((r) => r.acao === 'resolvida' && r.entidadeId === conversa.id);
+  assert.equal(auditoria.length, 1, 'a segunda chamada não é transição de verdade — não audita de novo');
+
+  // Reabrir e resolver de novo É transição de verdade, e precisa contar.
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'aberta' })).status, 200);
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200);
+
+  const depois = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100 });
+  assert.equal(
+    depois.filter((e) => e.tipo === 'conversa_resolvida' && e.conversa_id === conversa.id).length, 2,
+    'resolver de novo depois de reabrir é uma transição real — essa precisa aparecer',
+  );
+});
+
 test('nota vai para a ficha do contato', async (t) => {
   const { app, repositorio } = await subirInbox();
   t.after(() => app.encerrar());

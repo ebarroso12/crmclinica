@@ -1566,10 +1566,18 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
 let fonteDeEventos = null;
 let reconexaoDeEventosAgendada = null;
 let cursorDeEventos = null;
+let recargaDeEventosAgendada = null;
+let recargaPrecisaDaThread = false;
 
 function encerrarEventosDeConversas() {
   clearTimeout(reconexaoDeEventosAgendada);
   reconexaoDeEventosAgendada = null;
+  // A recarga coalescida também precisa morrer aqui: `limparSessao` chama esta
+  // função no logout, e um timer sobrevivente dispararia `pedirJson` já sem
+  // token — 401 e ruído logo depois de sair.
+  clearTimeout(recargaDeEventosAgendada);
+  recargaDeEventosAgendada = null;
+  recargaPrecisaDaThread = false;
   fonteDeEventos?.close();
   fonteDeEventos = null;
 }
@@ -1586,22 +1594,45 @@ const TIPOS_DE_EVENTO_CONHECIDOS = [
   'conversa_assumida', 'conversa_devolvida', 'conversa_resolvida', 'erro',
 ];
 
+// Janela de coalescência das recargas disparadas por evento ao vivo.
+//
+// Sem ela, CADA evento vira uma chamada HTTP. O replay de reconexão entrega
+// muitos eventos de uma vez (o servidor devolve até 500 — ver
+// `listarEventosDeConversasDesde` em src/dados/repositorio.js), e a tela
+// dispararia centenas de requisições em rajada, por aba. Numa recepção com
+// várias abas abertas isso vira ataque ao próprio servidor que este lote
+// acabou de consertar. 250ms é imperceptível para quem atende e transforma a
+// rajada em UMA recarga — o que importa é o ESTADO final, não quantos
+// eventos o produziram.
+const JANELA_DE_COALESCENCIA_MS = 250;
+
 function reagirAEventoDeConversa(dados) {
   if (typeof dados.id === 'number') cursorDeEventos = dados.id;
 
   if (!TIPOS_DE_EVENTO_CONHECIDOS.includes(dados?.tipo)) return;
 
-  // A lista sempre reflete o estado novo: prévia, "há X min", fila (assumida/
-  // devolvida/resolvida mudam quem vê a conversa em qual fila) e ordenação.
-  if (!seletor('#conversas')?.hidden) carregarConversas();
-
   // A conversa aberta ganha a atualização na hora — sem esperar o próximo
   // clique nem precisar recarregar a página. Cobre mensagem nova, status de
   // entrega (entregue/falhou/indeterminada), assumir/devolver/resolver e
   // aborto pela barreira — todos afetam o que a thread mostra.
-  if (dados.conversa_id === conversaAberta) {
-    pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
-  }
+  if (dados.conversa_id === conversaAberta) recargaPrecisaDaThread = true;
+
+  // Já existe recarga agendada: este evento entra nela em vez de criar outra.
+  if (recargaDeEventosAgendada) return;
+
+  recargaDeEventosAgendada = setTimeout(() => {
+    recargaDeEventosAgendada = null;
+    const precisaDaThread = recargaPrecisaDaThread;
+    recargaPrecisaDaThread = false;
+
+    // A lista sempre reflete o estado novo: prévia, "há X min", fila (assumida/
+    // devolvida/resolvida mudam quem vê a conversa em qual fila) e ordenação.
+    if (!seletor('#conversas')?.hidden) carregarConversas();
+
+    if (precisaDaThread && conversaAberta) {
+      pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
+    }
+  }, JANELA_DE_COALESCENCIA_MS);
 }
 
 async function conectarEventosDeConversas() {

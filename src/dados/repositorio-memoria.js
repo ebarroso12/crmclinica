@@ -392,6 +392,17 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return montarConversa(conversa);
     },
 
+    // Paridade com repositorio.js — ver os comentários lá.
+    async definirStatusSeNecessario(id, status) {
+      const conversa = conversas.get(Number(id));
+      if (!conversa) return null;
+      if (conversa.status === status) return null;
+
+      conversa.status = status;
+      conversa.atualizado_em = agora().toISOString();
+      return montarConversa(conversa);
+    },
+
     // ---------------------------------------------------------------- mensagens
 
     async listarMensagens(conversaId, { incluirPrivadas = true } = {}) {
