@@ -2190,6 +2190,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         tentar_em: agendarPara,
         processando_por: null,
         processando_desde: null,
+        posse_token: 0,
         modo_entrega: null,
         entrega_referencia: null,
         enviado_em: null,
@@ -2255,18 +2256,49 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         lembrete.estado = 'processando';
         lembrete.processando_por = String(worker).slice(0, 100);
         lembrete.processando_desde = instante;
+        // Migration 039 — espelha o mesmo raciocínio de posse_token em
+        // automacao_outbox (ver reivindicarTrabalhosDeOutbox acima): sem
+        // concorrência real de thread aqui, mas a paridade importa — um
+        // teste em memória com token errado não pode passar.
+        lembrete.posse_token = Number(lembrete.posse_token ?? 0) + 1;
         lembrete.atualizado_em = instante;
       }
 
       return candidatos.map(enriquecerLembrete);
     },
 
+    /**
+     * Renova o lease de UM lembrete específico — espelha
+     * `renovarReivindicacaoDeOutbox`/repositorio.js.
+     */
+    async renovarReivindicacaoDeLembrete(id, { worker, agora: instante, posseToken = null }) {
+      const lembrete = lembretes.find((item) => item.id === Number(id));
+      if (!lembrete) return null;
+      if (lembrete.estado !== 'processando' || lembrete.processando_por !== String(worker).slice(0, 100)) return null;
+      if (posseToken !== null && Number(lembrete.posse_token ?? 0) !== Number(posseToken)) return null;
+      lembrete.processando_desde = instante;
+      lembrete.atualizado_em = instante;
+      return enriquecerLembrete(lembrete);
+    },
+
+    /**
+     * Migration 039/Gate 4 — espelha `concluirTrabalhoDeOutbox`: quando o
+     * chamador declara `worker`/`posseToken`, eles entram na guarda e
+     * `null` significa posse perdida (o worker antigo não sobrescreve o
+     * dono atual).
+     */
     async concluirLembrete(id, {
       estado, modoEntrega = undefined, entregaReferencia = undefined, enviadoEm = undefined,
       ignoradoMotivo = undefined, ultimoErro = undefined, tentativas = undefined, tentarEm = undefined,
+      worker = null, posseToken = null,
     }) {
       const lembrete = lembretes.find((item) => item.id === Number(id));
       if (!lembrete) return null;
+
+      const declarouPosse = worker !== null || posseToken !== null;
+      if (declarouPosse && lembrete.estado !== 'processando') return null;
+      if (worker !== null && lembrete.processando_por !== String(worker).slice(0, 100)) return null;
+      if (posseToken !== null && Number(lembrete.posse_token ?? 0) !== Number(posseToken)) return null;
 
       lembrete.estado = estado;
       if (modoEntrega !== undefined) lembrete.modo_entrega = modoEntrega;

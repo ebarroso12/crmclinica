@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  TIPOS, MAX_TENTATIVAS_PADRAO, LEASE_MS,
+  TIPOS, ESTADOS, MAX_TENTATIVAS_PADRAO, LEASE_MS,
   planejarLembretes, decidirEnvio, proximaTentativa, esgotou,
   montarEnvelope, mascararTelefone, ErroDeLembrete,
 } = require('./lembretes');
@@ -185,7 +185,25 @@ function criarServicoDeLembretes({
     return atualizado;
   }
 
-  async function processarUm(lembrete) {
+  /**
+   * Migration 039/Gate 4 da auditoria: espelha `processarUm(trabalho, posse)`
+   * de automacao-outbox-servico.js — ver os comentários lá para o raciocínio
+   * completo sobre o que a posse protege (a ESCRITA do desfecho) e o que não
+   * protege sozinha (o ENVIO em si, coberto pela renovação de lease em
+   * `processarLote`, abaixo).
+   */
+  async function processarUm(lembrete, posse = {}) {
+    const { worker = null, posseToken = null } = posse;
+    const comPosse = (campos) => ({ ...campos, worker, posseToken });
+
+    /** Registra a perda de posse e devolve o resultado que o laço espera. */
+    const perdeuPosse = async (etapa) => {
+      await auditar('lembrete_posse_perdida', lembrete.id, {
+        agendamento_id: lembrete.agendamento_id, worker, etapa,
+      });
+      return { id: lembrete.id, estado: 'posse_perdida', etapa, lembrete: null };
+    };
+
     const momento = agora();
 
     const decisao = decidirEnvio({
@@ -199,19 +217,22 @@ function criarServicoDeLembretes({
       // "Ainda não é hora" não é motivo para ignorar: a linha volta à fila
       // intacta. Acontece quando o relógio do worker corre à frente do banco.
       if (decisao.motivo === 'ainda_nao_e_hora') {
-        await concluir(lembrete, {
+        const marcado = await concluir(lembrete, comPosse({
           estado: 'pendente',
           tentarEm: lembrete.agendar_para,
           // Não gastou tentativa: não houve falha.
           tentativas: lembrete.tentativas,
-        });
+        }));
+        if (marcado === null) return perdeuPosse('reagendar_ainda_nao_e_hora');
         return { id: lembrete.id, estado: 'pendente', motivo: decisao.motivo };
       }
 
-      const ignorado = await concluir(lembrete, {
+      const ignorado = await concluir(lembrete, comPosse({
         estado: 'ignorado',
         ignoradoMotivo: decisao.motivo,
-      });
+      }));
+      if (ignorado === null) return perdeuPosse('marcar_ignorado');
+
       await auditar('lembrete_ignorado', lembrete.id, {
         tipo: lembrete.tipo,
         motivo: decisao.motivo,
@@ -231,13 +252,14 @@ function criarServicoDeLembretes({
     try {
       const saida = await entrega.enviar(envelope);
 
-      const enviado = await concluir(lembrete, {
+      const enviado = await concluir(lembrete, comPosse({
         estado: 'enviado',
         modoEntrega: saida.modo,
         entregaReferencia: saida.referencia ?? null,
         enviadoEm: momento.toISOString(),
         ultimoErro: null,
-      });
+      }));
+      if (enviado === null) return perdeuPosse('marcar_enviado');
 
       // Ação distinta de propósito: `lembrete_simulado` nunca vira
       // `lembrete_enviado` num relatório. Em dry-run, nada saiu.
@@ -250,16 +272,40 @@ function criarServicoDeLembretes({
 
       return { id: lembrete.id, estado: 'enviado', modo: saida.modo, entregue: saida.entregue, lembrete: enviado };
     } catch (erro) {
+      // Migration 039/Gate 4: timeout do gateway (nenhuma resposta — a
+      // mensagem pode ter saído) vira 'incerto', NUNCA retentado
+      // automaticamente — mesma regra que decidirDesfecho já aplica à
+      // outbox da automação (automacao-outbox.js). Antes, esta ramificação
+      // não existia: todo erro (inclusive timeout) virava 'pendente' com
+      // backoff, e a única defesa contra reenvio era a idempotencyKey do
+      // gateway externo — sem garantia documentada de dedup durável através
+      // de toda a janela de recuperação.
+      if (erro.indeterminado === true) {
+        const marcado = await concluir(lembrete, comPosse({
+          estado: 'incerto',
+          ultimoErro: `${erro.codigo ? `${erro.codigo}: ` : ''}${erro.message}`.slice(0, 500),
+        }));
+        if (marcado === null) return perdeuPosse('marcar_incerto');
+
+        await auditar('lembrete_entrega_incerta', lembrete.id, {
+          tipo: lembrete.tipo,
+          agendamento_id: lembrete.agendamento_id,
+          codigo: erro.codigo ?? null,
+        });
+        return { id: lembrete.id, estado: 'incerto', erro: erro.codigo ?? erro.message, lembrete: marcado };
+      }
+
       const tentativas = Number(lembrete.tentativas) + 1;
       // Erro permanente não melhora com repetição: vai direto para 'falhou'.
       const definitivo = erro.permanente === true || esgotou(tentativas, lembrete.max_tentativas ?? maxTentativas);
 
-      const marcado = await concluir(lembrete, {
+      const marcado = await concluir(lembrete, comPosse({
         estado: definitivo ? 'falhou' : 'pendente',
         tentativas,
         tentarEm: definitivo ? null : proximaTentativa(tentativas, { agora: momento }).toISOString(),
         ultimoErro: `${erro.codigo ? `${erro.codigo}: ` : ''}${erro.message}`.slice(0, 500),
-      });
+      }));
+      if (marcado === null) return perdeuPosse(definitivo ? 'marcar_falhou' : 'reagendar');
 
       await auditar(definitivo ? 'lembrete_falhou' : 'lembrete_retry', lembrete.id, {
         tipo: lembrete.tipo,
@@ -283,6 +329,13 @@ function criarServicoDeLembretes({
    * `reivindicarLembretes` é a operação que impede duplicidade entre workers:
    * ela seleciona com `FOR UPDATE SKIP LOCKED` e já marca 'processando' na mesma
    * transação. Quem chega depois não enxerga o que o primeiro pegou.
+   *
+   * Migration 039/Gate 4: renova o lease de CADA lembrete antes de processá-lo
+   * (mesmo raciocínio do achado N-9 em automacao-outbox-servico.js) — um lote
+   * grande processado serialmente pode ter o carimbo do lote inteiro vencido
+   * antes do N-ésimo lembrete começar, e `liberarLembretesPresos` devolveria
+   * essa linha à fila enquanto ainda está em voo. Se a renovação falha (outro
+   * worker já retomou), o lembrete é pulado — não processado por este worker.
    */
   async function processarLote({ limite = 20, worker = 'worker' } = {}) {
     const momento = agora();
@@ -297,7 +350,23 @@ function criarServicoDeLembretes({
 
     const resultados = [];
     for (const lembrete of reivindicados) {
-      resultados.push(await processarUm(lembrete));
+      // CORREÇÃO (mesmo padrão de automacao-outbox-servico.js): `?? null`
+      // cobre só o repositório em memória. Contra PostgreSQL sem a migration
+      // 039 aplicada, `reivindicarLembretes` já falha no parse SQL antes de
+      // chegar aqui — a migration é pré-requisito de deploy, não opcional.
+      const posseToken = lembrete.posse_token ?? null;
+
+      if (repositorio.renovarReivindicacaoDeLembrete) {
+        const renovado = await repositorio.renovarReivindicacaoDeLembrete(lembrete.id, {
+          worker, agora: agora().toISOString(), posseToken,
+        });
+        if (!renovado) {
+          // Outro worker já retomou este lembrete — não é mais nosso.
+          await auditar('lembrete_lease_perdido', lembrete.id, { agendamento_id: lembrete.agendamento_id, worker });
+          continue;
+        }
+      }
+      resultados.push(await processarUm(lembrete, { worker, posseToken }));
     }
 
     return {
@@ -307,6 +376,7 @@ function criarServicoDeLembretes({
       enviados: resultados.filter((item) => item.estado === 'enviado').length,
       ignorados: resultados.filter((item) => item.estado === 'ignorado').length,
       falhados: resultados.filter((item) => item.estado === 'falhou').length,
+      incertos: resultados.filter((item) => item.estado === 'incerto').length,
       reagendados: resultados.filter((item) => item.estado === 'pendente').length,
       modo: entrega.modo,
       resultados,
@@ -353,7 +423,7 @@ function criarServicoDeLembretes({
   // ---------------------------------------------------------------- consulta
 
   async function listar({ estado = null, tipo = null, agendamentoId = null, contatoId = null, limite = 50 } = {}) {
-    if (estado && !['pendente', 'processando', 'enviado', 'ignorado', 'falhou'].includes(estado)) {
+    if (estado && !ESTADOS.includes(estado)) {
       throw new ErroDeLembrete(`estado desconhecido: ${estado}`, 'estado_invalido');
     }
     if (tipo && !TIPOS.includes(tipo)) throw new ErroDeLembrete(`tipo desconhecido: ${tipo}`, 'tipo_invalido');
@@ -373,13 +443,17 @@ function criarServicoDeLembretes({
     };
   }
 
-  /** Devolve um lembrete falhado para a fila. É a correção manual depois do conserto. */
+  /**
+   * Devolve um lembrete falhado (ou incerto) para a fila. É a correção manual
+   * depois do conserto — ou, para 'incerto', a decisão humana explícita que
+   * este estado exige (nunca automática; ver processarUm).
+   */
   async function reenfileirar(id, { usuarioId = null } = {}) {
     const lembrete = await repositorio.obterLembrete(id);
     if (!lembrete) throw new ErroDeLembrete('lembrete não encontrado', 'lembrete_ausente', 404);
-    if (!['falhou', 'ignorado'].includes(lembrete.estado)) {
+    if (!['falhou', 'ignorado', 'incerto'].includes(lembrete.estado)) {
       throw new ErroDeLembrete(
-        `só lembrete em "falhou" ou "ignorado" pode voltar à fila; este está em "${lembrete.estado}"`,
+        `só lembrete em "falhou", "ignorado" ou "incerto" pode voltar à fila; este está em "${lembrete.estado}"`,
         'estado_invalido',
       );
     }

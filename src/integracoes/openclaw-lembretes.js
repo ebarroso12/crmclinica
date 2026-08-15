@@ -51,12 +51,21 @@ const {
 const CANAIS_SUPORTADOS = Object.freeze(['whatsapp']);
 
 class ErroDeEntrega extends Error {
-  constructor(mensagem, codigo, { permanente = false } = {}) {
+  constructor(mensagem, codigo, { permanente = false, indeterminado = false } = {}) {
     super(mensagem);
     this.name = 'ErroDeEntrega';
     this.codigo = codigo;
     // Erro permanente não adianta repetir: retry só gasta tentativa.
     this.permanente = permanente;
+    // Gate 4 da auditoria: timeout/queda de conexão (nenhuma resposta do
+    // gateway) é INCERTEZA — a mensagem pode ter saído — não fracasso
+    // conhecido. Antes disto só existia o comentário dizendo isso; nada no
+    // código impedia retentativa automática além da idempotencyKey do
+    // próprio gateway, que não é garantia documentada de dedup durável.
+    // `indeterminado` é o mesmo conceito de `erro.indeterminado` em
+    // src/integracoes/evolution-envio.js e da migration 038 — aqui fecha a
+    // mesma lacuna para lembretes.
+    this.indeterminado = indeterminado;
   }
 }
 
@@ -224,11 +233,15 @@ function criarAdaptadorDeLembretes(configuracao = {}, dependencias = {}) {
             idempotencyKey,
           });
         } catch (erro) {
-          // Timeout e queda de conexão são incerteza, não fracasso conhecido: a
-          // mensagem pode ter saído. Vira falha com retry, e a `idempotencyKey`
-          // impede que a próxima tentativa duplique.
+          // Timeout ('gateway_timeout', ver openclaw-gateway.js) é a única
+          // situação em que NENHUMA resposta chegou — a mensagem pode ter
+          // saído sem confirmação. Qualquer outro erro do gateway é uma
+          // resposta DEFINITIVA (rejeição, não pareado, etc.): a mensagem
+          // não saiu por este caminho, e retry é uma tentativa nova legítima,
+          // não uma repetição arriscada.
           const permanente = erro instanceof ErroDeGateway ? erro.permanente === true : false;
-          throw new ErroDeEntrega(erro.message, erro.codigo ?? 'gateway_erro', { permanente });
+          const indeterminado = erro instanceof ErroDeGateway && erro.codigo === 'gateway_timeout';
+          throw new ErroDeEntrega(erro.message, erro.codigo ?? 'gateway_erro', { permanente, indeterminado });
         }
 
         const identificador = extrairIdentificador(resposta);

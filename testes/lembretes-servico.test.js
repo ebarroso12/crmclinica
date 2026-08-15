@@ -512,6 +512,83 @@ test('lembrete preso em processando volta à fila depois do lease', async () => 
   assert.equal(lote.enviados, 1);
 });
 
+// Gate 4 da auditoria (2026-08-15): "não aceite como prova apenas o
+// comentário do código ou idempotencyKey". Migration 039 fecha em lembretes
+// o mesmo defeito que a migration 033 já fechou em automacao_outbox — sem
+// isto, `concluirLembrete` filtrava só por `id`, e um worker cujo lease
+// venceu (mas que ainda estava esperando resposta do gateway, alheio a
+// tudo) conseguia sobrescrever o desfecho de quem já retomou o lembrete.
+test('worker que perdeu a posse: processarUm devolve posse_perdida e não sobrescreve quem venceu', async () => {
+  const tempo = relogio(new Date(CONSULTA.getTime() - 25 * HORA));
+  const cenario = await montarCenario({ tempo });
+  await marcar(cenario);
+  tempo.avancarPara(new Date(CONSULTA.getTime() - 24 * HORA));
+
+  const [paraA] = await cenario.repositorio.reivindicarLembretes({
+    agora: tempo.agora().toISOString(), limite: 1, worker: 'worker-A',
+  });
+  const tokenDeA = paraA.posse_token;
+  assert.equal(tokenDeA, 1, 'primeira reivindicação leva a posse ao token 1');
+
+  // O lease de A vence.
+  tempo.avancar(6 * 60_000);
+  const liberados = await cenario.lembretes.recuperarPresos();
+  assert.equal(liberados.length, 1, 'o lembrete preso precisa ter voltado à fila');
+
+  const [paraB] = await cenario.repositorio.reivindicarLembretes({
+    agora: tempo.agora().toISOString(), limite: 1, worker: 'worker-B',
+  });
+  assert.ok(paraB, 'B precisa ter reivindicado o lembrete liberado');
+  assert.ok(paraB.posse_token > tokenDeA, 'a nova posse precisa ter token maior que a de A');
+
+  // A volta com o token velho, alheio a tudo. A guarda de posse protege a
+  // ESCRITA do desfecho — não pode sobrescrever o que B já registrou.
+  const resultado = await cenario.lembretes.processarUm(paraA, { worker: 'worker-A', posseToken: tokenDeA });
+  assert.equal(resultado.estado, 'posse_perdida');
+  assert.equal(resultado.lembrete, null);
+
+  assert.ok(
+    cenario.repositorio._auditoria.some((r) => r.acao === 'lembrete_posse_perdida' && r.entidadeId === paraA.id),
+    'a perda de posse precisa ficar auditada — é como a equipe descobre, sem log manual',
+  );
+
+  // O registro real continua com B, intocado pela tentativa de A.
+  const registro = await cenario.repositorio.obterLembrete(paraA.id);
+  assert.equal(registro.processando_por, 'worker-B');
+  assert.equal(registro.posse_token, paraB.posse_token);
+});
+
+test('entrega indeterminada (timeout do gateway) nunca é retentada automaticamente', async () => {
+  const tempo = relogio(new Date(CONSULTA.getTime() - 25 * HORA));
+  let chamadas = 0;
+  const entrega = entregaDeTeste();
+  entrega.enviar = async () => {
+    chamadas += 1;
+    throw new ErroDeEntrega('sem resposta do gateway para "send"', 'gateway_timeout', { indeterminado: true });
+  };
+
+  const cenario = await montarCenario({ tempo, entrega });
+  await marcar(cenario);
+  tempo.avancarPara(new Date(CONSULTA.getTime() - 24 * HORA));
+
+  const primeiro = await cenario.lembretes.processarLote({});
+  assert.equal(primeiro.enviados, 0);
+  assert.equal(primeiro.falhados, 0);
+  assert.equal(primeiro.reagendados, 0, 'entrega incerta não pode voltar para pendente — isso permitiria retry automático');
+  assert.equal(primeiro.incertos, 1);
+  assert.equal(chamadas, 1);
+
+  const [incerto] = await cenario.lembretes.listar({ estado: 'incerto' });
+  assert.ok(incerto, 'o lembrete precisa ficar visível em estado incerto, não desaparecer nem virar falhou');
+  assert.match(incerto.ultimo_erro, /gateway_timeout/);
+
+  // O worker roda de novo (próximo ciclo do scheduler) — sem reivindicar
+  // nada, porque 'incerto' não é 'pendente'.
+  const segundo = await cenario.lembretes.processarLote({});
+  assert.equal(segundo.reivindicados, 0, 'incerto não pode ser reivindicado de novo automaticamente');
+  assert.equal(chamadas, 1, 'nenhuma segunda tentativa de envio aconteceu');
+});
+
 // ---------------------------------------------------------------- sincronização
 
 test('sincronizar a agenda enfileira o que ficou para trás, sem duplicar', async () => {

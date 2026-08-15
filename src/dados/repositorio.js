@@ -138,6 +138,12 @@ function montarLembrete(linha) {
     tentar_em: linha.tentar_em,
     processando_por: linha.processando_por,
     processando_desde: linha.processando_desde,
+    // Migration 039 — mesmo desenho de automacao_outbox.posse_token: `?? null`
+    // graceful-fallback para antes da migration estar aplicada (SELECT * não
+    // traz a coluna ainda), mesmo padrão já usado nesta função para os outros
+    // campos condicionais.
+    posse_token: linha.posse_token !== undefined && linha.posse_token !== null
+      ? Number(linha.posse_token) : null,
     modo_entrega: linha.modo_entrega,
     entrega_referencia: linha.entrega_referencia,
     enviado_em: linha.enviado_em,
@@ -2680,7 +2686,8 @@ function criarRepositorio(pool) {
         UPDATE lembretes l
            SET estado = 'processando',
                processando_por = $3,
-               processando_desde = $1::timestamptz
+               processando_desde = $1::timestamptz,
+               posse_token = l.posse_token + 1
           FROM candidatos c
          WHERE l.id = c.id
         RETURNING l.id
@@ -2697,10 +2704,24 @@ function criarRepositorio(pool) {
       return completos.map(montarLembrete);
     },
 
-    /** Grava o desfecho de um lembrete: enviado, ignorado, falhou ou de volta à fila. */
+    /**
+     * Grava o desfecho de um lembrete: enviado, ignorado, falhou, incerto ou
+     * de volta à fila.
+     *
+     * Migration 039/Gate 4: antes este UPDATE filtrava só por `id` — o mesmo
+     * defeito que a migration 033 corrigiu em `concluirTrabalhoDeOutbox`
+     * (ver os comentários lá para o raciocínio completo). Um worker cujo
+     * lease venceu, cujo lembrete já foi retomado por outro, conseguia
+     * marcar o desfecho por cima do dono atual. `worker`/`posseToken`, quando
+     * informados, viram guarda na cláusula WHERE: zero linhas afetadas =
+     * posse perdida, devolve `null` em vez de fingir que concluiu.
+     * `IS NULL OR`-equivalente (guardas condicionais) mantém compatível
+     * quem ainda chama sem declarar posse (semeadura, teste, ajuste manual).
+     */
     async concluirLembrete(id, {
       estado, modoEntrega = undefined, entregaReferencia = undefined, enviadoEm = undefined,
       ignoradoMotivo = undefined, ultimoErro = undefined, tentativas = undefined, tentarEm = undefined,
+      worker = null, posseToken = null,
     }) {
       const partes = ['estado = $2'];
       const valores = [id, estado];
@@ -2722,7 +2743,48 @@ function criarRepositorio(pool) {
       // faria a recuperação achar que ainda há alguém trabalhando nela.
       if (estado !== 'processando') partes.push('processando_por = NULL, processando_desde = NULL');
 
-      await consultar(`UPDATE lembretes SET ${partes.join(', ')} WHERE id = $1`, valores);
+      const declarouPosse = worker !== null || posseToken !== null;
+      const guardas = ['id = $1'];
+      if (declarouPosse) guardas.push("estado = 'processando'");
+      if (worker !== null) {
+        valores.push(String(worker).slice(0, 100));
+        guardas.push(`processando_por = $${valores.length}`);
+      }
+      if (posseToken !== null) {
+        valores.push(posseToken);
+        guardas.push(`posse_token = $${valores.length}::bigint`);
+      }
+
+      const { rows } = await consultar(
+        `UPDATE lembretes SET ${partes.join(', ')} WHERE ${guardas.join(' AND ')} RETURNING id`,
+        valores,
+      );
+      // Zero linhas = posse perdida (só possível quando o chamador declarou
+      // posse) — mesmo vocabulário de `concluirTrabalhoDeOutbox`/
+      // `renovarReivindicacaoDeOutbox`: `null` diz "isto não é mais seu".
+      if (rows.length === 0 && declarouPosse) return null;
+      return this.obterLembrete(id);
+    },
+
+    /**
+     * Renova o lease de UM lembrete específico — mesmo raciocínio do achado
+     * N-9 em `renovarReivindicacaoDeOutbox` (ver os comentários lá): um lote
+     * grande processado serialmente pode ter o carimbo de reivindicação do
+     * lote inteiro vencido antes do N-ésimo lembrete começar, e
+     * `liberarLembretesPresos` devolveria a linha à fila enquanto ela ainda
+     * está em voo.
+     */
+    async renovarReivindicacaoDeLembrete(id, { worker, agora, posseToken = null }) {
+      const { rows } = await consultar(`
+        UPDATE lembretes
+           SET processando_desde = $3::timestamptz
+         WHERE id = $1
+           AND estado = 'processando'
+           AND processando_por = $2
+           AND ($4::bigint IS NULL OR posse_token = $4::bigint)
+        RETURNING id
+      `, [id, String(worker).slice(0, 100), agora, posseToken]);
+      if (rows.length === 0) return null;
       return this.obterLembrete(id);
     },
 

@@ -295,5 +295,7 @@ test('vocabulário publica os tipos e estados que a interface precisa conhecer',
 
   const corpo = await (await ambiente.pedir('/api/lembretes/vocabulario')).json();
   assert.deepEqual(corpo.tipos, ['confirmacao_24h', 'confirmacao_2h']);
-  assert.deepEqual(corpo.estados, ['pendente', 'processando', 'enviado', 'ignorado', 'falhou']);
+  // Migration 039/Gate 4: 'incerto' entra no vocabulário — timeout do
+  // gateway sem confirmação, nunca retentado automaticamente.
+  assert.deepEqual(corpo.estados, ['pendente', 'processando', 'enviado', 'ignorado', 'falhou', 'incerto']);
 });

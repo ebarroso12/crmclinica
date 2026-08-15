@@ -20,7 +20,11 @@ const FUSO = 'America/Sao_Paulo';
 
 const TIPOS = Object.freeze(['confirmacao_24h', 'confirmacao_2h']);
 
-const ESTADOS = Object.freeze(['pendente', 'processando', 'enviado', 'ignorado', 'falhou']);
+// Migration 039/Gate 4: 'incerto' — o gateway não respondeu a tempo, a
+// mensagem pode ter saído, ninguém sabe. Nunca retentado automaticamente
+// (ver processarUm, lembretes-servico.js); mesmo conceito de 'incerto' em
+// automacao-outbox.js.
+const ESTADOS = Object.freeze(['pendente', 'processando', 'enviado', 'ignorado', 'falhou', 'incerto']);
 
 /**
  * Antecedência de cada tipo e por quanto tempo o lembrete ainda vale depois da
