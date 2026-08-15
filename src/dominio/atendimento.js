@@ -714,6 +714,12 @@ function criarAtendimento({
             console.error(`[atendimento] falha ao marcar entrega não realizada: ${erro.message}`);
           });
         }
+        // Gate 2 da auditoria ("chat realmente ao vivo"): sem isto, quem
+        // está com a conversa aberta só via o "não entregue" ao recarregar
+        // a tela — `entrega_falhou` já era gravado na mensagem, mas nada
+        // avisava ao vivo. `publicarStatusDeEntrega` existia desde a
+        // Pendência 4 (eventos-conversas.js) mas nunca era chamado.
+        emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'falhou' });
         // Nunca o texto gerado nem o motivo em prosa livre — só o código
         // técnico, mesma disciplina da auditoria acima.
         emissor?.publicarErro?.(conversa.id, { motivo: controle.motivo, mensagemId });
@@ -768,6 +774,9 @@ function criarAtendimento({
           console.error(`[atendimento] falha ao marcar entrega confirmada: ${erroDeMarca.message}`);
         });
       }
+      // Gate 2 da auditoria: mesma razão do publicarStatusDeEntrega acima —
+      // quem está com a conversa aberta vê "entregue" na hora, sem recarregar.
+      emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'entregue' });
       return { enviada: true, identificador: resultado?.identificador ?? null };
     } catch (erro) {
       // `indeterminado`: a chamada estourou o tempo sem resposta — não dá para
@@ -778,6 +787,8 @@ function criarAtendimento({
         await repositorio.marcarEntregaIndeterminada(mensagemId, erro.message).catch((erroDeMarca) => {
           console.error(`[atendimento] falha ao marcar entrega indeterminada: ${erroDeMarca.message}`);
         });
+        // Gate 2 da auditoria: mesma razão dos dois acima.
+        emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'indeterminado' });
       }
       return { enviada: false, motivo: erro.message, indeterminado };
     }
