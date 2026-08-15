@@ -101,7 +101,16 @@ export function normalizarEvento(evento = {}, contexto = {}) {
   return {
     tipo: 'mensagem.recebida',
     canal: 'whatsapp',
-    id_externo: `openclaw:${idNativo || idFallback}`.slice(0, 200),
+    // Prefixo neutro quando há `messageId` nativo — a MESMA regra do webhook
+    // da Evolution (ver src/integracoes/evolution-webhook.js). As duas portas
+    // recebem o mesmo identificador do WhatsApp para a mesma mensagem; com o
+    // nome da porta no prefixo, o mesmo evento virava duas linhas e duas
+    // respostas ao paciente. O fallback por hash continua marcado como
+    // `openclaw:` porque ele é local desta ponte e não tem como coincidir com
+    // o da outra porta.
+    id_externo: (idNativo
+      ? `whatsapp:${idNativo}`
+      : `openclaw:${idFallback}`).slice(0, 200),
     remetente,
     nome: primeiroTexto(evento.senderName, evento.metadata?.senderName, evento.metadata?.pushName).slice(0, 160) || null,
     texto: corpo.slice(0, LIMITE_TEXTO),

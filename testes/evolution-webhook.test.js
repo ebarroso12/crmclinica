@@ -25,7 +25,7 @@ test('traduz uma mensagem de texto da Evolution para o contrato do CRM', () => {
   assert.equal(normalizado.nome, 'Paciente Teste');
   assert.equal(normalizado.texto, 'Olá, gostaria de informações');
   assert.equal(normalizado.origem, 'evolution_webhook');
-  assert.equal(normalizado.id_externo, 'evolution:3EB0AAAA');
+  assert.equal(normalizado.id_externo, 'whatsapp:3EB0AAAA');
   assert.equal(normalizado.ocorrido_em, new Date(1723500000 * 1000).toISOString());
 });
 
