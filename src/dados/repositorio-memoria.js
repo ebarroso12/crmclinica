@@ -365,6 +365,33 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return montarConversa(conversa);
     },
 
+    // Migration 038/Bug B — paridade com repositorio.js. Ver os comentários lá.
+    async assumirConversaSeNecessario(id, { usuarioId = null, pausaAte = null } = {}) {
+      const conversa = conversas.get(Number(id));
+      if (!conversa) return null;
+      const jaEraDestaPessoa = conversa.assumida_por_humano === true && conversa.atribuido_a === usuarioId;
+      if (jaEraDestaPessoa) return null;
+
+      conversa.assumida_por_humano = true;
+      conversa.atribuido_a = usuarioId;
+      conversa.ia_pausada_ate = pausaAte;
+      conversa.status = 'aberta';
+      conversa.atualizado_em = agora().toISOString();
+      return montarConversa(conversa);
+    },
+
+    async liberarConversaSeNecessario(id) {
+      const conversa = conversas.get(Number(id));
+      if (!conversa) return null;
+      if (conversa.assumida_por_humano !== true) return null;
+
+      conversa.assumida_por_humano = false;
+      conversa.atribuido_a = null;
+      conversa.ia_pausada_ate = null;
+      conversa.atualizado_em = agora().toISOString();
+      return montarConversa(conversa);
+    },
+
     // ---------------------------------------------------------------- mensagens
 
     async listarMensagens(conversaId, { incluirPrivadas = true } = {}) {
