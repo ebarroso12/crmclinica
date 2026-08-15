@@ -166,11 +166,23 @@ test('queda entre gravar e entregar: a retentativa entrega sem despachar a IA de
     .find((mensagem) => mensagem.direcao === 'entrada');
 
   const despachosAntes = orquestrador.despachos.length;
+  const enviosAntes = canal.envios.length;
   const retentativa = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: entrada.id });
 
   assert.equal(orquestrador.despachos.length, despachosAntes, 'a IA não é consultada de novo');
   assert.equal(retentativa.duplicada, true);
-  assert.equal(canal.envios.at(-1).deduplicado, true, 'o gateway deduplica pela chave repetida');
+  assert.equal(retentativa.entregue, true, 'precisa reportar que já está entregue, sem fingir que não sabe');
+
+  // Migration 038 (achado real desta sessão): a chave de idempotência do
+  // `canal.enviar` só protege de verdade na via 2 (gateway OpenClaw) — a
+  // via 1, Evolution API (primária em produção), não tem idempotência
+  // nativa nesse endpoint (ver o aviso em canal-conversas.js/evolution-
+  // -envio.js). Depender só do canal para não duplicar seria arriscado
+  // demais na via primária. Por isso a retentativa nem chega a chamar
+  // `canal.enviar` de novo quando a mensagem já está marcada como entregue
+  // — a barreira fica no nível da mensagem (`entregue_em`), não só no
+  // nível do transporte.
+  assert.equal(canal.envios.length, enviosAntes, 'a retentativa não reenvia pelo canal — a mensagem já foi confirmada entregue');
 });
 
 // ---------------------------------------------------------------- retry

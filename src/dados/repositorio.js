@@ -224,6 +224,11 @@ function montarMensagem(linha) {
     // comportamento de hoje), nunca quebra.
     entrega_falhou: linha.entrega_falhou ?? false,
     entrega_falhou_motivo: linha.entrega_falhou_motivo ?? null,
+    // Migration 038. Mesmo raciocínio do `?? false`/`?? null` acima: antes da
+    // migration aplicada, o SELECT * não traz a coluna, e o fallback aqui
+    // evita que o código que lê `entregue_em` explodisse por `undefined`.
+    entregue_em: linha.entregue_em ?? null,
+    entrega_indeterminada: linha.entrega_indeterminada ?? false,
   };
 }
 
@@ -649,6 +654,34 @@ function criarRepositorio(pool) {
     async marcarEntregaFalhou(mensagemId, motivo) {
       const { rows } = await consultar(
         'UPDATE mensagens SET entrega_falhou = true, entrega_falhou_motivo = $2 WHERE id = $1 RETURNING *',
+        [mensagemId, motivo ?? null],
+      );
+      return rows[0] ? montarMensagem(rows[0]) : null;
+    },
+
+    /**
+     * Marca que o canal CONFIRMOU o envio — migration 038. É o que falta para
+     * `respostaAnterior` (atendimento.js) saber que uma retentativa não pode
+     * reenviar: sem isto, só existia a marca de FALHA, nunca a de SUCESSO, e
+     * "não sei se já enviei" virava sempre "envio de novo".
+     */
+    async marcarEntregaConfirmada(mensagemId) {
+      const { rows } = await consultar(
+        'UPDATE mensagens SET entregue_em = now() WHERE id = $1 RETURNING *',
+        [mensagemId],
+      );
+      return rows[0] ? montarMensagem(rows[0]) : null;
+    },
+
+    /**
+     * Marca entrega indeterminada (timeout/queda depois de possivelmente
+     * aceita) — mesmo conceito de `entregaIncerta` na outbox
+     * (automacao-outbox.js), agora também na MENSAGEM em si, para o retry em
+     * `respostaAnterior` recusar reenviar mesmo sem um job de outbox por perto.
+     */
+    async marcarEntregaIndeterminada(mensagemId, motivo) {
+      const { rows } = await consultar(
+        'UPDATE mensagens SET entrega_indeterminada = true, entrega_falhou_motivo = $2 WHERE id = $1 RETURNING *',
         [mensagemId, motivo ?? null],
       );
       return rows[0] ? montarMensagem(rows[0]) : null;

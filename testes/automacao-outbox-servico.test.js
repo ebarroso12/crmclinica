@@ -24,9 +24,17 @@ const EVENTO = Object.freeze({
 
 function canalFalso({ comportamento = 'sucesso' } = {}) {
   const envios = [];
+  let chamadas = 0;
   return {
     envios,
+    // Chamadas != envios: `indeterminado` e `falha_definitiva` NUNCA empurram
+    // para `envios` (representam uma tentativa que não sabemos se saiu, ou
+    // que sabemos que não saiu) — mas ainda assim CHAMARAM `canal.enviar`.
+    // Testes que provam "não tentou de novo" precisam do contador de
+    // chamadas, não do array de sucesso.
+    get chamadas() { return chamadas; },
     async enviar(carga) {
+      chamadas += 1;
       if (comportamento === 'sucesso') {
         envios.push(carga);
         return { identificador: 'wa-saida-1' };
@@ -259,6 +267,77 @@ test('entrega com desfecho incerto (timeout) nunca é retentada automaticamente'
   // A conversa já foi escalonada pelo próprio atendimento (ver atendimento.js).
   const conversaDepois = await repositorio.obterConversa(conversa.id);
   assert.equal(conversaDepois.assumida_por_humano, true);
+});
+
+// ---------------------------------------------- reenvio de resposta já entregue
+//
+// Migration 038, achado real desta sessão (não hipótese): o trabalho que já
+// entregou a resposta pode voltar para "processando de novo" — o banco pisca
+// entre enviar e concluir, ou o processo morre sem desligamento gracioso — e
+// o próximo ciclo relia (`respostaAnterior`, atendimento.js) sem checar se já
+// tinha sido entregue. Estes dois testes reproduzem exatamente isso, sem
+// mexer no worker nem no lease: chamam `responderSePossivel` uma SEGUNDA vez
+// para o mesmo par (conversa, mensagem de entrada) — é o que a fila faz
+// sozinha quando reivindica de novo um trabalho "abandonado".
+
+test('resposta já entregue não é reenviada quando responderSePossivel roda de novo para o mesmo inbound', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const canal = canalFalso({ comportamento: 'sucesso' });
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'Olá! Temos horários esta semana.' }) },
+  });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+
+  const primeira = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: mensagemEntrada.id });
+  assert.equal(primeira.acao, 'respondida_pela_automacao');
+  assert.equal(canal.envios.length, 1, 'a primeira chamada precisa ter enviado');
+
+  // "O trabalho voltou à fila depois de já ter entregado" — simulado chamando
+  // de novo, exatamente como um worker que reivindicou o trabalho "abandonado"
+  // faria ao processá-lo mais uma vez.
+  const segunda = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: mensagemEntrada.id });
+
+  assert.equal(canal.envios.length, 1, 'a segunda chamada NÃO pode ter enviado de novo — o paciente já recebeu');
+  assert.equal(segunda.acao, 'respondida_pela_automacao');
+  assert.equal(segunda.duplicada, true);
+  assert.equal(segunda.entregue, true, 'precisa reportar que já está entregue, sem fingir que não sabe');
+});
+
+test('resposta com entrega indeterminada não é reenviada na segunda chamada', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const canal = canalFalso({ comportamento: 'indeterminado' });
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'Olá!' }) },
+  });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+
+  const primeira = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: mensagemEntrada.id });
+  assert.equal(primeira.acao, 'escalonada_por_falha_entrega');
+  assert.equal(primeira.entregaIncerta, true);
+  assert.equal(canal.chamadas, 1, 'a única tentativa é a que ficou indeterminada');
+
+  // A própria escalação da primeira chamada já marca a conversa como
+  // `assumida_por_humano` (achado A-2, ver teste "entrega com desfecho
+  // incerto" acima) — isso, sozinho, já barra uma automação de responder de
+  // novo. Para provar que o *migration 038* (marcar a entrega indeterminada
+  // na própria mensagem) é quem protege depois que a equipe devolve a
+  // conversa — cenário real: humano viu o aviso, devolveu para a fila
+  // automática sem responder — simulamos exatamente essa devolução aqui.
+  // Sem a checagem de `entrega_indeterminada` em `respostaAnterior`
+  // (atendimento.js), este segundo `responderSePossivel` tentaria reenviar.
+  await repositorio.atualizarConversa(conversa.id, { assumida_por_humano: false });
+
+  const segunda = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: mensagemEntrada.id });
+
+  assert.equal(canal.chamadas, 1, 'entrega indeterminada nunca é retentada automaticamente — nem depois que a equipe devolve a conversa');
+  assert.equal(segunda.acao, 'escalonada_por_falha_entrega');
+  assert.equal(segunda.motivo, 'entrega_indeterminada');
+  assert.equal(segunda.entregaIncerta, true);
+  assert.equal(segunda.entregue, false);
 });
 
 // ----------------------------------------------------- Comando 7, achado A-2
