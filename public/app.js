@@ -591,8 +591,26 @@ function desenharThread(mensagens) {
   const thread = seletor('#thread-mensagens');
   thread.innerHTML = '';
 
+  const ROTULOS_DE_EVENTO = {
+    conversa_devolvida: 'Conversa devolvida à automação.',
+    conversa_resolvida: 'Conversa marcada como resolvida.',
+  };
+
   for (const mensagem of mensagens) {
     const item = document.createElement('li');
+
+    // Bug B, item 2 ("chat completo"): GET /mensagens agora mescla eventos
+    // operacionais (conversa_devolvida/resolvida) com as mensagens — são a
+    // única transição que hoje não tem aviso de sistema próprio (ver
+    // src/dominio/atendimento.js: `assumir` grava um; `liberar`/resolver
+    // não gravam). Mesmo balão visual do aviso de sistema, texto conforme o
+    // tipo do evento.
+    if (mensagem.tipo_item === 'evento') {
+      item.className = 'balao-sistema';
+      item.textContent = ROTULOS_DE_EVENTO[mensagem.tipo] || mensagem.tipo;
+      thread.append(item);
+      continue;
+    }
 
     if (mensagem.tipo === 'sistema') {
       item.className = 'balao-sistema';

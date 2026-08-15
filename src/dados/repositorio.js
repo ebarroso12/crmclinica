@@ -2023,6 +2023,41 @@ function criarRepositorio(pool) {
     },
 
     /**
+     * Eventos operacionais de UMA conversa que ainda não têm NENHUMA
+     * representação visível na thread: devolver e resolver. Propositalmente
+     * NÃO inclui:
+     *   - mensagem_recebida/enviada: já vêm de `mensagens`;
+     *   - conversa_assumida: `assumir()` já grava um aviso de sistema
+     *     (`mensagens`, tipo='sistema') — incluir o evento aqui duplicaria
+     *     visualmente a MESMA transição;
+     *   - erro/status_entrega: a mensagem já fica marcada
+     *     (`entrega_falhou`/`entrega_indeterminada`) e a tela já lê essas
+     *     colunas — um evento solto ao lado seria a mesma informação duas
+     *     vezes, de formas diferentes.
+     * Bug B, item 2 ("chat completo"): sem isto, "conversa devolvida à
+     * automação" e "conversa resolvida" não apareciam em lugar nenhum da
+     * tela, nem depois de recarregar a página — não por serem filtradas por
+     * direção/origem (não são mensagem), mas por nunca terem sido incluídas
+     * no que a thread lê.
+     */
+    async listarEventosOperacionaisDaConversa(conversaId) {
+      const { rows } = await consultar(
+        `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
+          WHERE conversa_id = $1
+            AND tipo IN ('conversa_devolvida', 'conversa_resolvida')
+          ORDER BY id ASC`,
+        [conversaId],
+      );
+      return rows.map((linha) => ({
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      }));
+    },
+
+    /**
      * Ticket de uso único para abrir a conexão SSE sem carregar o token de
      * sessão na querystring. Validade curta de propósito: o tempo entre
      * pedir o ticket e abrir o EventSource é de milissegundos no uso normal;

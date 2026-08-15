@@ -164,6 +164,58 @@ test('GET /api/conversas/:id/mensagens devolve a thread em ordem', async (t) => 
   assert.equal(mensagens[1].autor_tipo, 'automacao');
 });
 
+// Bug B, item 2 ("chat completo"): "conversa devolvida à automação" e
+// "conversa resolvida" não tinham NENHUMA representação na thread — nem
+// aviso de sistema, nem evento incluído no que a rota devolvia. Este teste
+// prova que GET /mensagens agora mescla esses dois eventos operacionais,
+// em ordem cronológica junto das mensagens.
+test('GET /api/conversas/:id/mensagens inclui "devolvida" e "resolvida", sem duplicar "assumida"', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  // Mesma razão do teste de SSE acima: emissor e atendimento precisam ser a
+  // MESMA instância que a rota usa, senão nada é gravado no log durável.
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:chat-completo-1',
+    remetente: '5516988888888',
+    nome: 'Rita Alves',
+    texto: 'Olá',
+  });
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, 7);
+  await atendimento.liberar(conversa.id);
+  await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' });
+
+  const itens = await (await app.pedir(`/api/conversas/${conversa.id}/mensagens`)).json();
+
+  const eventos = itens.filter((item) => item.tipo_item === 'evento');
+  assert.deepEqual(eventos.map((evento) => evento.tipo), ['conversa_devolvida', 'conversa_resolvida'],
+    'os dois eventos sem aviso de sistema próprio precisam aparecer, em ordem');
+
+  // "assumida" JÁ tem um aviso de sistema (`mensagens`, tipo='sistema') —
+  // incluir o evento também duplicaria a MESMA transição visualmente.
+  assert.equal(eventos.some((evento) => evento.tipo === 'conversa_assumida'), false,
+    'conversa_assumida não pode aparecer duas vezes (aviso de sistema + evento)');
+  const avisosDeSistema = itens.filter((item) => item.tipo_item === 'mensagem' && item.tipo === 'sistema');
+  assert.equal(avisosDeSistema.length, 1, 'só o aviso de "assumida" gravado por atendimento.assumir()');
+
+  // Ordem cronológica entre as duas fontes independentes (mensagens x eventos).
+  const indices = itens.map((item, indice) => ({ indice, criado_em: new Date(item.criado_em).getTime() }));
+  for (let i = 1; i < indices.length; i += 1) {
+    assert.ok(indices[i].criado_em >= indices[i - 1].criado_em, 'a thread mesclada precisa estar em ordem cronológica');
+  }
+});
+
 test('conversa inexistente responde 404 e identificador inválido responde 400', async (t) => {
   const { app } = await subirInbox();
   t.after(() => app.encerrar());
