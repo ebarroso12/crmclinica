@@ -204,6 +204,62 @@ test('liberar devolve a conversa à automação', async () => {
   assert.equal(liberada.ia_pausada_ate, null);
 });
 
+// -------------------------------------------- Bug B, item 5: duplicidade de
+// eventos operacionais. Achado real desta sessão: `assumir`/`liberar` não
+// checavam se a conversa JÁ estava no estado alvo antes de gravar aviso de
+// sistema + auditoria de novo — um duplo clique no botão "Assumir" (ou um
+// retry de rede sem confirmação) duplicava os dois. Estes testes chamam
+// `assumir`/`liberar` duas vezes seguidas para a MESMA conversa, exatamente
+// como o duplo clique faria.
+
+test('assumir duas vezes pela mesma pessoa não duplica aviso de sistema nem auditoria', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, 42);
+  await atendimento.assumir(conversa.id, 42); // duplo clique / retry sem confirmação
+
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  const avisos = mensagens.filter((mensagem) => mensagem.tipo === 'sistema');
+  assert.equal(avisos.length, 1, 'só pode existir UM aviso de "conversa assumida"');
+
+  const auditoria = repositorio._auditoria.filter((registro) => registro.acao === 'assumida_por_humano');
+  assert.equal(auditoria.length, 1, 'a segunda chamada não é uma transição de verdade — não audita de novo');
+
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.assumida_por_humano, true);
+  assert.equal(depois.atribuido_a, 42);
+});
+
+test('assumir por uma pessoa DIFERENTE depois de já assumida é uma transição de verdade e audita', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, 42);
+  await atendimento.assumir(conversa.id, 99); // outra pessoa assume — transferência real
+
+  const auditoria = repositorio._auditoria.filter((registro) => registro.acao === 'assumida_por_humano');
+  assert.equal(auditoria.length, 2, 'transferência entre pessoas diferentes é uma transição real, não duplicata');
+
+  const depois = await repositorio.obterConversa(conversa.id);
+  assert.equal(depois.atribuido_a, 99, 'a última pessoa a assumir é quem está com a conversa');
+});
+
+test('liberar duas vezes seguidas não duplica auditoria', async () => {
+  const { repositorio, atendimento } = montar();
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, null);
+  await atendimento.liberar(conversa.id);
+  await atendimento.liberar(conversa.id); // duplo clique / retry sem confirmação
+
+  const auditoria = repositorio._auditoria.filter((registro) => registro.acao === 'liberada_para_automacao');
+  assert.equal(auditoria.length, 1, 'a segunda chamada não é uma transição de verdade — não audita de novo');
+});
+
 test('falha do orquestrador escalona para a equipe em vez de travar', async () => {
   const falha = Object.assign(new Error('fora do ar'), { codigo: 'openclaw_resposta_invalida' });
   const { repositorio, atendimento } = montar(falha);

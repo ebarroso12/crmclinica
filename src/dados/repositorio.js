@@ -574,6 +574,42 @@ function criarRepositorio(pool) {
       return this.obterConversa(id);
     },
 
+    /**
+     * Marca a conversa como assumida por um humano, SÓ SE isto for uma
+     * transição de verdade — condição na própria cláusula WHERE, não numa
+     * leitura prévia. Migration 038/Bug B, mesma família de achado: dois
+     * `POST /assumir` para a mesma conversa e o mesmo usuário (duplo clique,
+     * retry sem confirmação de rede) competiam numa corrida clássica de
+     * "ler depois escrever" — cada um lia `assumida_por_humano: false` antes
+     * do outro terminar de gravar, e os dois geravam aviso de sistema,
+     * evento `conversa_assumida` e linha de auditoria duplicados. Aqui só
+     * UMA das duas chamadas concorrentes enxerga `RETURNING` não vazio; a
+     * outra recebe `null` e sabe que não há nada novo a anunciar. Uma
+     * transferência de verdade (outra pessoa assumindo de quem já estava)
+     * sempre conta como transição — só o retry idêntico é absorvido.
+     */
+    async assumirConversaSeNecessario(id, { usuarioId = null, pausaAte = null } = {}) {
+      const { rows } = await consultar(`
+        UPDATE conversas
+           SET assumida_por_humano = true, atribuido_a = $2, ia_pausada_ate = $3, status = 'aberta'
+         WHERE id = $1
+           AND (assumida_por_humano IS DISTINCT FROM true OR atribuido_a IS DISTINCT FROM $2)
+        RETURNING *
+      `, [id, usuarioId, pausaAte]);
+      return rows[0] ? montarConversa(rows[0]) : null;
+    },
+
+    /** Mesmo raciocínio de `assumirConversaSeNecessario`, para devolver à automação. */
+    async liberarConversaSeNecessario(id) {
+      const { rows } = await consultar(`
+        UPDATE conversas
+           SET assumida_por_humano = false, atribuido_a = null, ia_pausada_ate = null
+         WHERE id = $1 AND assumida_por_humano IS DISTINCT FROM false
+        RETURNING *
+      `, [id]);
+      return rows[0] ? montarConversa(rows[0]) : null;
+    },
+
     // ---------------------------------------------------------------- mensagens
 
     async listarMensagens(conversaId, { incluirPrivadas = true } = {}) {

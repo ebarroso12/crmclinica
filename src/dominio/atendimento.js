@@ -531,12 +531,19 @@ function criarAtendimento({
       ? new Date(Date.now() + pausarMinutos * 60_000).toISOString()
       : null;
 
-    const conversa = await repositorio.atualizarConversa(conversaId, {
-      assumida_por_humano: true,
-      atribuido_a: usuarioId,
-      ia_pausada_ate: pausaAte,
-      status: 'aberta',
-    });
+    // Migration 038/Bug B, achado real: sem a checagem atômica, dois
+    // POST /assumir para a mesma conversa e o mesmo usuário (duplo clique,
+    // retry de rede sem confirmação) duplicavam o aviso de sistema, o evento
+    // `conversa_assumida` e a linha de auditoria. `assumirConversaSeNecessario`
+    // devolve `null` quando não há transição de verdade (já era desta mesma
+    // pessoa) — e é aí que paramos, sem repetir nenhum efeito colateral.
+    const transicao = repositorio.assumirConversaSeNecessario
+      ? await repositorio.assumirConversaSeNecessario(conversaId, { usuarioId, pausaAte })
+      : await repositorio.atualizarConversa(conversaId, {
+        assumida_por_humano: true, atribuido_a: usuarioId, ia_pausada_ate: pausaAte, status: 'aberta',
+      });
+    if (!transicao) return repositorio.obterConversa(conversaId);
+    const conversa = transicao;
 
     const { mensagem: avisoDeAssumir } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
@@ -563,11 +570,15 @@ function criarAtendimento({
 
   /** Devolve a conversa à automação. */
   async function liberar(conversaId) {
-    const conversa = await repositorio.atualizarConversa(conversaId, {
-      assumida_por_humano: false,
-      atribuido_a: null,
-      ia_pausada_ate: null,
-    });
+    // Mesmo raciocínio de `assumir`: só publica/audita quando é uma
+    // transição de verdade, não um retry do mesmo "devolver".
+    const transicao = repositorio.liberarConversaSeNecessario
+      ? await repositorio.liberarConversaSeNecessario(conversaId)
+      : await repositorio.atualizarConversa(conversaId, {
+        assumida_por_humano: false, atribuido_a: null, ia_pausada_ate: null,
+      });
+    if (!transicao) return repositorio.obterConversa(conversaId);
+    const conversa = transicao;
 
     emissor?.publicar?.({ conversaId, tipo: 'conversa_devolvida', payload: {} });
     await repositorio.registrarAuditoria({
