@@ -80,7 +80,27 @@ function normalizarEventoEvolution(payload = {}) {
   return {
     tipo: 'mensagem.recebida',
     canal: 'whatsapp',
-    id_externo: `evolution:${idNativo || `${remetente}|${ocorridoEm}`}`.slice(0, 200),
+    // PREFIXO NEUTRO, NÃO O NOME DA PORTA (correção da duplicação confirmada
+    // em produção). A mesma mensagem do paciente pode chegar pelas DUAS portas
+    // de ingresso — o webhook da Evolution e a ponte do OpenClaw — e as duas
+    // recebem o MESMO `id` nativo do WhatsApp. Enquanto cada porta carimbava o
+    // próprio nome (`evolution:` aqui, `openclaw:` na ponte), a chave de
+    // idempotência (derivada do `id_externo` inteiro, ver
+    // src/contratos/evento.js) era diferente para o mesmo evento: duas linhas
+    // de entrada, dois trabalhos na outbox e, com a automação ligada, DUAS
+    // respostas ao mesmo paciente.
+    //
+    // Com `whatsapp:<id nativo>` nas duas portas, o índice único de
+    // `mensagens` reconhece a segunda cópia e a descarta, não importa por onde
+    // ela entrou.
+    //
+    // O fallback (sem `id` nativo) continua carregando a origem: sem
+    // identificador do canal não há como as duas portas concordarem, e fingir
+    // que concordam faria mensagens DIFERENTES colidirem — perder mensagem de
+    // paciente é pior que gravar duas.
+    id_externo: (idNativo
+      ? `whatsapp:${idNativo}`
+      : `evolution:${remetente}|${ocorridoEm}`).slice(0, 200),
     remetente,
     nome: texto(dado.pushName).slice(0, 160) || null,
     texto: conteudo.slice(0, LIMITE_TEXTO),
