@@ -3,6 +3,9 @@
 const crypto = require('node:crypto');
 const { extrairQueixa, ofereceuFormulario } = require('./resumo-atendimento');
 const { proximaAcao } = require('./qualificacao');
+const {
+  URL_FORMULARIO_PRE_CONSULTA, mensagemDeFormularioPreConsulta,
+} = require('./formulario-pre-consulta');
 
 // Fluxo comercial do CRM: o sino de acompanhamento, o encerramento com resumo
 // interno e o formulário de pré-consulta.
@@ -192,10 +195,14 @@ function criarServicoDeFluxo({ repositorio, canal = null, agora = () => new Date
         try {
           const contato = await repositorio.obterContato(agendamento.contato_id);
           if (contato?.telefone) {
+            // O texto e o LINK vêm do módulo canônico. Antes, esta mensagem
+            // prometia um formulário "que a equipe vai te enviar" e não
+            // mandava link nenhum — o que empurrava o envio do link para fora
+            // do CRM (a Serena, ou alguém no WhatsApp na mão), que é
+            // exatamente onde o questionário errado tinha como entrar.
             await canal.enviar({
               telefone: contato.telefone,
-              texto: 'Sua consulta está confirmada! Para agilizar seu atendimento, '
-                + 'preencha o formulário de pré-consulta que a equipe vai te enviar.',
+              texto: mensagemDeFormularioPreConsulta({ nome: contato.nome ?? null }),
               chave: `formulario:${agendamento.id}`,
             });
             entrega = { enviada: true };
@@ -212,7 +219,16 @@ function criarServicoDeFluxo({ repositorio, canal = null, agora = () => new Date
         entidade: 'agendamento',
         entidadeId: agendamento.id,
         acao: 'formulario_pre_consulta_enviado',
-        detalhe: { formulario_id: formulario.id, duplicado, entregue: entrega.enviada },
+        // `url` entra no livro de propósito: é o que permite provar, depois,
+        // QUAL link foi para o paciente — sem guardar telefone, nome, texto
+        // da mensagem nem qualquer resposta do formulário (essas ficam em
+        // `formularios_pre_consulta.respostas`, de leitura humana apenas).
+        detalhe: {
+          formulario_id: formulario.id,
+          duplicado,
+          entregue: entrega.enviada,
+          url: URL_FORMULARIO_PRE_CONSULTA,
+        },
         usuarioId,
       });
 

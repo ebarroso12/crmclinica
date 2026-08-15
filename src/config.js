@@ -8,6 +8,15 @@ const path = require('node:path');
 
 const NIVEIS_VALIDOS = new Set(['development', 'test', 'production']);
 
+// Única URL de formulário de pré-consulta permitida — ver `configuracao.preConsulta`
+// mais abaixo. O literal NÃO mora aqui: mora em
+// `src/dominio/formulario-pre-consulta.js`, que é a fonte única de verdade.
+// Duas declarações do mesmo endereço são duas chances de divergirem, e o modo
+// de falhar dessa divergência é mandar ao paciente o formulário errado.
+const { URL_FORMULARIO_PRE_CONSULTA } = require('./dominio/formulario-pre-consulta');
+
+const URL_FORMULARIO_PRE_CONSULTA_PADRAO = URL_FORMULARIO_PRE_CONSULTA;
+
 // Segredo de assinatura para desenvolvimento: aleatório a cada processo, para que
 // nunca exista um valor "padrão" que alguém acabe levando para produção.
 function segredoEfemero() {
@@ -175,6 +184,26 @@ function carregarConfiguracao(ambiente = process.env) {
       intervaloMs: inteiro(ambiente.LEMBRETES_INTERVALO_MS, 60 * 1000),
       lote: inteiro(ambiente.LEMBRETES_LOTE, 20),
       maxTentativas: inteiro(ambiente.LEMBRETES_MAX_TENTATIVAS, 5),
+    },
+    // Formulário de pré-consulta — REGRA INEGOCIÁVEL (comando mestre desta
+    // sessão): existe UMA ÚNICA URL de formulário de pré-consulta, para
+    // qualquer situação (adulto, criança, adolescente, primeira consulta,
+    // retorno). Nenhum código deste repositório decide entre variantes por
+    // idade ou tipo de consulta — buscado e confirmado: essa ramificação não
+    // existe em lugar nenhum. Fonte única de verdade: aqui. Quem manda o
+    // formulário (crm-fluxo.js, o prompt da Serena em
+    // configuracao/openclaw/workspace-serena/AGENTS.md) lê daqui, nunca
+    // hardcoda a URL de novo. `testes/formulario-pre-consulta-seguranca.test.js`
+    // falha se qualquer outra URL de pré-consulta aparecer no repositório.
+    //
+    // SEM SOBRESCRITA POR AMBIENTE (decisão desta correção): havia aqui um
+    // `CRMCLINICA_FORMULARIO_PRE_CONSULTA_URL` que trocava o link por variável
+    // de ambiente. Isso é exatamente o buraco que o incidente do questionário
+    // infantil expôs — um link que muda no servidor, sem diff, sem revisão e
+    // sem teste, e ninguém descobre até um paciente receber o formulário
+    // errado. O endereço agora só muda por commit.
+    preConsulta: {
+      formularioUrl: URL_FORMULARIO_PRE_CONSULTA,
     },
     // Extração de qualificação (interesse, primeira consulta, pagamento,
     // urgência, disponibilidade) a partir da própria conversa, via IA — em vez
@@ -488,4 +517,5 @@ module.exports = {
   validarTransporteWhatsapp,
   avisosDeConfiguracao,
   descreverConfiguracao,
+  URL_FORMULARIO_PRE_CONSULTA_PADRAO,
 };
