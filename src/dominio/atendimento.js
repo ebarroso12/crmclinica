@@ -271,6 +271,39 @@ function criarAtendimento({
     // novo um trabalho que só está demorando (ver automacao-outbox.js).
     const respostaAnterior = mensagens.find((mensagem) => mensagem.id_externo === chaveDaResposta);
     if (respostaAnterior) {
+      // Migration 038 — achado real desta sessão, não hipótese: sem esta
+      // checagem, um trabalho que volta à fila DEPOIS de a resposta já ter
+      // sido entregue (banco pisca entre enviar e concluir; processo morre
+      // sem desligamento gracioso) reenviava a MESMA resposta ao paciente —
+      // porque antes só existia marca de FALHA (`entrega_falhou`), nunca de
+      // SUCESSO. `entregue_em` é essa marca; ela nasce dentro do próprio
+      // `entregarAoPaciente`, no sucesso, e é consultada aqui ANTES de tentar
+      // enviar de novo — não depois.
+      if (respostaAnterior.entregue_em) {
+        return {
+          acao: 'respondida_pela_automacao',
+          conversa_id: conversaId,
+          duplicada: true,
+          entregue: true,
+        };
+      }
+
+      // Mesma regra que já vale para o job da outbox (decidirDesfecho, em
+      // automacao-outbox.js): entrega indeterminada nunca é retentada
+      // automaticamente. Sem isto, uma resposta que talvez já tenha saído
+      // (timeout da Evolution) seria reenviada na próxima retentativa —
+      // exatamente o duplo envio que a regra da outbox já evita no nível do
+      // job, agora fechado também no nível da mensagem.
+      if (respostaAnterior.entrega_indeterminada) {
+        return {
+          acao: 'escalonada_por_falha_entrega',
+          conversa_id: conversaId,
+          motivo: 'entrega_indeterminada',
+          entregue: false,
+          entregaIncerta: true,
+        };
+      }
+
       const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
         origem: 'serena',
       });
@@ -715,12 +748,27 @@ function criarAtendimento({
         chave: `${origem}:${conversa.id}:${mensagemId}`,
       });
 
+      // Migration 038: marca a confirmação ANTES de devolver — é o que
+      // `respostaAnterior`, mais acima nesta função, consulta para nunca
+      // reenviar o que já saiu. Best-effort de propósito: uma falha em
+      // marcar isto não pode desfazer um envio que já aconteceu de verdade.
+      if (repositorio.marcarEntregaConfirmada) {
+        await repositorio.marcarEntregaConfirmada(mensagemId).catch((erroDeMarca) => {
+          console.error(`[atendimento] falha ao marcar entrega confirmada: ${erroDeMarca.message}`);
+        });
+      }
       return { enviada: true, identificador: resultado?.identificador ?? null };
     } catch (erro) {
       // `indeterminado`: a chamada estourou o tempo sem resposta — não dá para
       // dizer se a mensagem saiu ou não. Quem chama (a outbox) precisa saber
       // disso para NUNCA reenviar automaticamente neste caso.
-      return { enviada: false, motivo: erro.message, indeterminado: erro.indeterminado === true };
+      const indeterminado = erro.indeterminado === true;
+      if (indeterminado && repositorio.marcarEntregaIndeterminada) {
+        await repositorio.marcarEntregaIndeterminada(mensagemId, erro.message).catch((erroDeMarca) => {
+          console.error(`[atendimento] falha ao marcar entrega indeterminada: ${erroDeMarca.message}`);
+        });
+      }
+      return { enviada: false, motivo: erro.message, indeterminado };
     }
   }
 

@@ -396,6 +396,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         // em contrário — a barreira final marca o oposto quando bloqueia.
         entrega_falhou: false,
         entrega_falhou_motivo: null,
+        // Migration 038 — paridade com repositorio.js.
+        entregue_em: null,
+        entrega_indeterminada: false,
       };
       mensagens.push(mensagem);
 
@@ -423,6 +426,22 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
       if (!mensagem) return null;
       mensagem.entrega_falhou = true;
+      mensagem.entrega_falhou_motivo = motivo ?? null;
+      return { ...mensagem };
+    },
+
+    // Migration 038 — paridade com repositorio.js. Ver os comentários lá.
+    async marcarEntregaConfirmada(mensagemId) {
+      const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
+      if (!mensagem) return null;
+      mensagem.entregue_em = agora().toISOString();
+      return { ...mensagem };
+    },
+
+    async marcarEntregaIndeterminada(mensagemId, motivo) {
+      const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
+      if (!mensagem) return null;
+      mensagem.entrega_indeterminada = true;
       mensagem.entrega_falhou_motivo = motivo ?? null;
       return { ...mensagem };
     },
