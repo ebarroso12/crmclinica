@@ -31,7 +31,7 @@ test('normaliza somente inbound do WhatsApp e preserva identidade nativa', async
 
   assert.equal(normalizado.canal, 'whatsapp');
   assert.equal(normalizado.remetente, '5511999990000');
-  assert.equal(normalizado.id_externo, 'whatsapp:mensagem-123');
+  assert.equal(normalizado.id_externo, 'whatsapp:5511999990000:mensagem-123');
   assert.equal(normalizado.texto, 'Preciso de uma avaliação');
 
   assert.equal(normalizarEvento({ ...normalizado, fromMe: true }, { channelId: 'whatsapp' }), null);
@@ -137,7 +137,7 @@ test('persiste antes de entregar, mantém a fila na falha e a remove após suces
   if (process.platform !== 'win32') {
     assert.equal((await stat(path.join(pasta, arquivo))).mode & 0o777, 0o600);
   }
-  assert.equal(JSON.parse(await readFile(path.join(pasta, arquivo), 'utf8')).id_externo, 'whatsapp:duravel-1');
+  assert.equal(JSON.parse(await readFile(path.join(pasta, arquivo), 'utf8')).id_externo, 'whatsapp:5511999990000:duravel-1');
 
   falhar = false;
   await ponte.tentarPendentes();

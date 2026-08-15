@@ -94,12 +94,27 @@ function normalizarEventoEvolution(payload = {}) {
     // `mensagens` reconhece a segunda cópia e a descarta, não importa por onde
     // ela entrou.
     //
+    // `<remetente>` no meio da chave (auditoria desta sessão, gate de
+    // unicidade): o `key.id` do protocolo do WhatsApp tem entropia alta e é
+    // gerado pelo dispositivo de quem manda, mas não existe garantia
+    // DOCUMENTAL de unicidade global entre contas/instâncias — só a convenção
+    // observada. Este sistema é single-tenant hoje (uma clínica, um número,
+    // uma instância Evolution — nenhuma tabela tem coluna de tenant/instância;
+    // ver db/001_inbox.sql), então não há hoje um caminho de código em que
+    // duas contas dividem esta mesma tabela `mensagens`. Escopar por
+    // `remetente` é a defesa disponível e SIMÉTRICA entre as duas portas
+    // (a ponte do OpenClaw não recebe nome de instância Evolution para casar
+    // com este) — impede colisão entre CONVERSAS mesmo no caso extremo de
+    // dois `key.id` iguais de pacientes diferentes. Não resolve, por si só,
+    // multi-tenant/múltiplas instâncias: isso exigiria uma coluna de escopo
+    // própria (tenant_id/instancia_id) nas tabelas, migration à parte.
+    //
     // O fallback (sem `id` nativo) continua carregando a origem: sem
     // identificador do canal não há como as duas portas concordarem, e fingir
     // que concordam faria mensagens DIFERENTES colidirem — perder mensagem de
     // paciente é pior que gravar duas.
     id_externo: (idNativo
-      ? `whatsapp:${idNativo}`
+      ? `whatsapp:${remetente}:${idNativo}`
       : `evolution:${remetente}|${ocorridoEm}`).slice(0, 200),
     remetente,
     nome: texto(dado.pushName).slice(0, 160) || null,
