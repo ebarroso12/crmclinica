@@ -52,7 +52,7 @@ function pelaPonteDoOpenClaw() {
   return {
     tipo: 'mensagem.recebida',
     canal: 'whatsapp',
-    id_externo: `whatsapp:${ID_NATIVO}`,
+    id_externo: `whatsapp:${TELEFONE}:${ID_NATIVO}`,
     remetente: TELEFONE,
     nome: 'Paciente Sintético',
     texto: 'Gostaria de marcar uma consulta',
@@ -67,7 +67,7 @@ test('as duas portas produzem o MESMO id_externo para a mesma mensagem', () => {
 
   assert.ok(evolution, 'o payload da Evolution é reconhecido');
   assert.equal(evolution.id_externo, ponte.id_externo);
-  assert.equal(evolution.id_externo, `whatsapp:${ID_NATIVO}`);
+  assert.equal(evolution.id_externo, `whatsapp:${TELEFONE}:${ID_NATIVO}`);
 });
 
 test('as duas portas produzem a MESMA chave de idempotência', () => {
@@ -104,6 +104,29 @@ test('mensagens diferentes continuam com chaves diferentes', () => {
   }));
 
   assert.notEqual(primeira.chave_idempotencia, segunda.chave_idempotencia);
+});
+
+// Gate de unicidade (auditoria desta sessão): o `key.id` do WhatsApp tem
+// entropia alta, mas nenhuma fonte documental garante unicidade GLOBAL entre
+// contas/instâncias — só o `remetente` (conversa) é o escopo simétrico
+// disponível nas duas portas. Este teste prova que, mesmo no caso extremo de
+// dois pacientes DIFERENTES produzindo o MESMO `key.id` (id_nativo repetido
+// não é impossível de descartar sem garantia documental), a chave final não
+// colide — porque o remetente entra na composição.
+test('id nativo igual, remetente diferente: chaves diferentes (defesa contra colisão entre conversas)', () => {
+  const primeira = validarEvento(peloWebhookDaEvolution());
+  const segunda = validarEvento(normalizarEventoEvolution({
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '5511988887777@s.whatsapp.net', fromMe: false, id: ID_NATIVO },
+      message: { conversation: 'Outra pessoa, mesmo id nativo' },
+      pushName: 'Outro Paciente',
+      messageTimestamp: INSTANTE,
+    },
+  }));
+
+  assert.notEqual(primeira.chave_idempotencia, segunda.chave_idempotencia,
+    'sem o remetente na chave, um id_nativo repetido entre pacientes diferentes colidiria e uma mensagem de paciente seria perdida');
 });
 
 test('sem id nativo, a Evolution mantém prefixo próprio — não finge convergir', () => {

@@ -105,11 +105,15 @@ export function normalizarEvento(evento = {}, contexto = {}) {
     // da Evolution (ver src/integracoes/evolution-webhook.js). As duas portas
     // recebem o mesmo identificador do WhatsApp para a mesma mensagem; com o
     // nome da porta no prefixo, o mesmo evento virava duas linhas e duas
-    // respostas ao paciente. O fallback por hash continua marcado como
-    // `openclaw:` porque ele é local desta ponte e não tem como coincidir com
-    // o da outra porta.
+    // respostas ao paciente. `<remetente>` no meio da chave, mesmo raciocínio
+    // do webhook: `messageId` nativo tem entropia alta mas nenhuma garantia
+    // documental de unicidade global entre contas/instâncias — escopar por
+    // remetente é a defesa SIMÉTRICA entre as duas portas (esta ponte não
+    // recebe nome de instância Evolution para casar com aquele lado). O
+    // fallback por hash continua marcado como `openclaw:` porque ele é local
+    // desta ponte e não tem como coincidir com o da outra porta.
     id_externo: (idNativo
-      ? `whatsapp:${idNativo}`
+      ? `whatsapp:${remetente}:${idNativo}`
       : `openclaw:${idFallback}`).slice(0, 200),
     remetente,
     nome: primeiroTexto(evento.senderName, evento.metadata?.senderName, evento.metadata?.pushName).slice(0, 160) || null,
