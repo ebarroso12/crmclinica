@@ -2064,15 +2064,31 @@ function criarRepositorio(pool) {
      * Só o campo necessário para decidir, AO VIVO, se um evento desta
      * conversa pode ir para uma conexão SSE de um atendente (ver
      * `podeAcessarConversaAoVivo` em src/seguranca/rbac.js, usado por
-     * eventos-conversas.js). `null` tanto para "sem responsável" quanto
-     * para "conversa não existe mais" — os dois casos tratam-se como "não
-     * atribuída a ninguém em particular" pelo predicado, o que é seguro
-     * (nunca abre a conversa de outro atendente).
+     * eventos-conversas.js).
+     *
+     * TRÊS ESTADOS DISTINTOS, de propósito — gate final do PR #34. A versão
+     * anterior (`obterAtribuidoDaConversa`) devolvia `null` tanto para
+     * "conversa existe e está livre" quanto para "conversa não existe", e
+     * `podeAcessarConversaAoVivo` lê `null` como "livre" e LIBERA. Resultado
+     * provado pela auditoria: evento de conversa inexistente concedia acesso
+     * a atendente. Agora:
+     *
+     *   { estado: 'existe', atribuidoA: number|null }  → o predicado decide
+     *   { estado: 'inexistente' }                      → quem chama NEGA
+     *   (exceção lançada)                              → quem chama NEGA
+     *
+     * O terceiro estado é uma exceção e não um valor de propósito: erro de
+     * conexão, de permissão (42501) ou de SQL nunca pode ser confundido com
+     * um resultado. Quem chama é quem decide o fail-closed, com o erro em
+     * mãos para registrar — nada é mascarado aqui dentro.
      */
-    async obterAtribuidoDaConversa(conversaId) {
+    async obterEscopoDaConversa(conversaId) {
       const { rows } = await consultar('SELECT atribuido_a FROM conversas WHERE id = $1', [conversaId]);
-      if (rows.length === 0) return null;
-      return rows[0].atribuido_a === null ? null : Number(rows[0].atribuido_a);
+      if (rows.length === 0) return { estado: 'inexistente' };
+      return {
+        estado: 'existe',
+        atribuidoA: rows[0].atribuido_a === null ? null : Number(rows[0].atribuido_a),
+      };
     },
 
     /**

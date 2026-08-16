@@ -1704,7 +1704,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
       const visivel = (linha) => {
         const conversa = conversas.get(linha.conversa_id);
-        const atribuidoA = conversa && conversa.atribuido_a !== null && conversa.atribuido_a !== undefined
+        // Conversa inexistente NEGA — paridade exata com o SQL de
+        // repositorio.js, que usa `JOIN conversas` e por construção nunca
+        // devolve evento órfão. Antes, o `null` de "não achei a conversa"
+        // caía no mesmo ramo de "conversa livre" e o evento passava: a
+        // mesma confusão de estados que o gate final do PR #34 provou no
+        // caminho ao vivo, aqui no replay.
+        if (!conversa) return false;
+        const atribuidoA = conversa.atribuido_a !== null && conversa.atribuido_a !== undefined
           ? Number(conversa.atribuido_a) : null;
         return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA);
       };
@@ -1720,11 +1727,19 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return pagina.map((linha) => ({ ...linha }));
     },
 
-    /** Paridade com repositorio.js — ver os comentários lá. */
-    async obterAtribuidoDaConversa(conversaId) {
+    /**
+     * Paridade com repositorio.js — ver os comentários lá para os três
+     * estados (existe / inexistente / erro) e por que `null` não podia mais
+     * significar as duas primeiras coisas ao mesmo tempo.
+     */
+    async obterEscopoDaConversa(conversaId) {
       const conversa = conversas.get(Number(conversaId));
-      if (!conversa) return null;
-      return conversa.atribuido_a === null || conversa.atribuido_a === undefined ? null : Number(conversa.atribuido_a);
+      if (!conversa) return { estado: 'inexistente' };
+      return {
+        estado: 'existe',
+        atribuidoA: conversa.atribuido_a === null || conversa.atribuido_a === undefined
+          ? null : Number(conversa.atribuido_a),
+      };
     },
 
     // Bug B, item 2 ("chat completo") — paridade com repositorio.js. Ver os

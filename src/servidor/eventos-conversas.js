@@ -23,51 +23,77 @@ const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 // antes de qualquer chamada a publicar() acontecer; o chat ao vivo é um
 // espelho de conveniência, não onde o dado mora.
 
-function criarEmissorDeConversas({ repositorio, ttlCacheDeEscopoMs = 5000 } = {}) {
+function criarEmissorDeConversas({ repositorio } = {}) {
   const assinantes = new Set();
 
-  // Cache curto de `atribuido_a`, compartilhado entre TODAS as conexões
-  // deste processo — BLOQUEADOR 1 da auditoria do PR #34. Sem ele, uma
-  // conversa movimentada com várias abas de recepção abertas faria uma
-  // consulta ao banco POR ASSINANTE a CADA evento, só para decidir quem
-  // pode ver. TTL curto é a defesa contra "conversa reatribuída no meio do
-  // TTL continua visível para quem perdeu o acesso" — a pior janela de
-  // exposição é o TTL, nunca "para sempre" (padrão trade-off já usado pelo
-  // ticket de SSE, que também tem validade curta em vez de longa).
-  const cacheDeAtribuicao = new Map(); // conversaId -> { atribuidoA, expiraEm }
+  // NÃO EXISTE CACHE DE AUTORIZAÇÃO AQUI — e isto é a correção, não uma
+  // omissão. Gate final do PR #34, provado contra PostgreSQL 18.4 real:
+  //
+  //   1) evento com conversa atribuida a A: A recebeu = true
+  //   2) reatribuicao confirmada no banco: atribuido_a = 2 (B = 2)
+  //   3) evento imediatamente apos a reatribuicao: A AINDA recebeu = true
+  //   4) evento >5s apos a reatribuicao: A recebeu = false
+  //
+  // A versão anterior guardava `atribuido_a` num Map com TTL de 5s. O
+  // raciocínio da época ("a pior janela de exposição é o TTL, nunca 'para
+  // sempre'") aceitava, como custo, até 5 segundos de conteúdo de paciente
+  // indo para um atendente que já tinha perdido o acesso. Numa clínica isso
+  // não é um trade-off: é o vazamento.
+  //
+  // E invalidar o cache localmente (por exemplo em `conversa_assumida`) NÃO
+  // resolveria: a produção roda em mais de um processo (VPS + Vercel). Uma
+  // reatribuição feita no processo X não invalida cache nenhum do processo
+  // Y, e o atendente antigo conectado em Y continuaria recebendo. Qualquer
+  // solução com estado de autorização em memória de processo tem esse furo
+  // por construção; a única que vale para N processos é consultar o estado
+  // ATUAL a cada evento.
+  //
+  // O custo que o cache existia para evitar era real, mas o diagnóstico
+  // estava errado: o problema não era "consultar a cada evento", era
+  // "consultar POR ASSINANTE" (uma ida ao banco por aba aberta, a cada
+  // evento). `empurrar` resolve isso consultando UMA vez por evento e
+  // reaproveitando o resultado para todas as assinaturas daquele evento —
+  // sem guardar nada entre eventos.
 
-  async function resolverAtribuidoA(conversaId) {
-    if (!repositorio?.obterAtribuidoDaConversa) {
-      throw new Error('repositório sem obterAtribuidoDaConversa — não há como confirmar o escopo de um atendente');
+  /**
+   * Resolve o escopo ATUAL de uma conversa. Devolve o resultado tri-estado
+   * do repositório (ver `obterEscopoDaConversa` em src/dados/repositorio.js):
+   * `{ estado: 'existe', atribuidoA }` ou `{ estado: 'inexistente' }`.
+   * Qualquer falha LANÇA — erro nunca vira um valor que pareça resultado.
+   */
+  async function resolverEscopo(conversaId) {
+    if (!repositorio?.obterEscopoDaConversa) {
+      throw new Error('repositório sem obterEscopoDaConversa — não há como confirmar o escopo de um atendente');
     }
-    const agora = Date.now();
-    const emCache = cacheDeAtribuicao.get(conversaId);
-    if (emCache && emCache.expiraEm > agora) return emCache.atribuidoA;
-    const atribuidoA = await repositorio.obterAtribuidoDaConversa(conversaId);
-    cacheDeAtribuicao.set(conversaId, { atribuidoA, expiraEm: agora + ttlCacheDeEscopoMs });
-    return atribuidoA;
+    return repositorio.obterEscopoDaConversa(conversaId);
   }
 
   /**
-   * Decide se ESTA assinatura pode receber um evento desta conversa —
-   * MESMO predicado (`podeAcessarConversaAoVivo`) usado pelo replay em
-   * `repositorio.listarEventosDeConversasDesde`. admin/gestor nunca
-   * precisam de `atribuido_a`, então nunca tocam o banco/cache; só
-   * atendente paga o custo da consulta (cacheada).
+   * Decide se ESTA assinatura pode receber um evento, dado o escopo JÁ
+   * resolvido do evento — MESMO predicado (`podeAcessarConversaAoVivo`)
+   * usado pelo replay em `repositorio.listarEventosDeConversasDesde`.
    *
-   * Fail-closed: qualquer falha ao resolver o responsável (banco fora do
-   * ar, por exemplo) NEGA o evento — nunca envia por não saber dizer não.
+   * Puro e síncrono de propósito: toda a I/O acontece uma única vez, antes,
+   * em `empurrar`. Enquanto esta decisão era `async` e consultava por
+   * assinante, ela também era o ponto onde duas publicações concorrentes se
+   * intercalavam (BLOQUEADOR 2).
+   *
+   * `escopo` chega em um de três formatos, e os três são distintos:
+   *   - { estado: 'existe', atribuidoA }  → o predicado decide;
+   *   - { estado: 'inexistente' }         → nega (conversa que não existe
+   *     não é "conversa livre": tratá-las igual concedia acesso, provado);
+   *   - { estado: 'erro' }                → nega (fail-closed: sem conseguir
+   *     confirmar, não envia).
    */
-  async function autorizada(assinatura, conversaId) {
+  function podeReceber(assinatura, escopo) {
+    // admin/gestor têm acesso global e a decisão deles NÃO depende de
+    // `atribuido_a` — por isso nunca tocam o banco (é a otimização legítima
+    // que sobrevive à remoção do cache) e por isso um erro numa consulta
+    // que a decisão deles nem usa não pode virar perda de acesso para eles.
     if (assinatura.papel === 'admin' || assinatura.papel === 'gestor') return true;
     if (assinatura.papel !== 'atendente') return false;
-    try {
-      const atribuidoA = await resolverAtribuidoA(conversaId);
-      return podeAcessarConversaAoVivo(assinatura.papel, assinatura.usuarioId, atribuidoA);
-    } catch (erro) {
-      console.error(`[eventos-conversas] falha ao resolver escopo ao vivo — negando por padrão: ${erro.message}`);
-      return false;
-    }
+    if (!escopo || escopo.estado !== 'existe') return false;
+    return podeAcessarConversaAoVivo(assinatura.papel, assinatura.usuarioId, escopo.atribuidoA);
   }
 
   /**
@@ -96,9 +122,36 @@ function criarEmissorDeConversas({ repositorio, ttlCacheDeEscopoMs = 5000 } = {}
     // `Last-Event-ID` sozinho numa reconexão automática — folga extra além
     // do cursor que a própria rota já devolve no replay inicial.
     const linha = `id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`;
+
+    // Candidatas primeiro: o cursor filtra ANTES de qualquer I/O, então uma
+    // conexão que já recebeu este evento pelo replay não faz o processo
+    // pagar consulta nenhuma por ele.
+    const candidatas = [];
     for (const assinatura of assinantes) {
       if (evento.id <= assinatura.depoisDeCursor) continue;
-      if (!(await autorizada(assinatura, evento.conversa_id))) continue;
+      candidatas.push(assinatura);
+    }
+    if (candidatas.length === 0) return;
+
+    // UMA consulta por EVENTO — não por assinante (era o custo real que o
+    // cache com TTL existia para evitar) e não reaproveitada entre eventos
+    // (era o TTL, a janela de exposição). Se nenhuma candidata é atendente,
+    // ninguém precisa de `atribuido_a` e não há consulta alguma.
+    let escopo = null;
+    if (candidatas.some((assinatura) => assinatura.papel === 'atendente')) {
+      try {
+        escopo = await resolverEscopo(evento.conversa_id);
+      } catch (erro) {
+        // Fail-closed, sem mascarar: o erro (conexão, permissão 42501, SQL)
+        // é registrado como erro e o estado vira explicitamente 'erro' —
+        // nunca `null`, que `podeAcessarConversaAoVivo` leria como "livre".
+        console.error(`[eventos-conversas] falha ao resolver escopo ao vivo (conversa ${evento.conversa_id}) — negando por padrão: ${erro.code ? `${erro.code} ` : ''}${erro.message}`);
+        escopo = { estado: 'erro' };
+      }
+    }
+
+    for (const assinatura of candidatas) {
+      if (!podeReceber(assinatura, escopo)) continue;
       try {
         assinatura.res.write(linha);
       } catch {
