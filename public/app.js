@@ -3351,7 +3351,7 @@ async function carregarContatos() {
       <li class="${contato.excluido ? 'desligada' : ''}">
         <div>
           <strong>${escapar(contato.nome ?? 'sem nome')}</strong>
-          <small>${contato.telefone} · ${contato.conversas ?? 0} conversa(s) ·
+          <small>${escapar(contato.telefone)} · ${contato.conversas ?? 0} conversa(s) ·
             ${contato.agendamentos ?? 0} agendamento(s)
             ${contato.recebe_lembretes ? '' : ' · não recebe lembretes'}
             ${contato.excluido ? ` · excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}` : ''}</small>
