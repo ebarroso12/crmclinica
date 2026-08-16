@@ -66,7 +66,7 @@ const MENSAGEM_CONTATO_BLOQUEADO = 'Olá! Para que você tenha o melhor '
  */
 function criarAtendimento({
   repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null, emissor = null,
-  qualificacaoIa = null,
+  qualificacaoIa = null, storage = null,
 }) {
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
@@ -636,10 +636,17 @@ function criarAtendimento({
   }
 
   /** Resposta escrita por uma pessoa. Assumir é consequência, não pré-requisito. */
-  async function responderComoEquipe(conversaId, texto, { usuarioId = null, autorNome = null, privada = false } = {}) {
+  async function responderComoEquipe(conversaId, texto, {
+    usuarioId = null, autorNome = null, privada = false, anexo = null,
+  } = {}) {
     const { mensagem } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
-      conteudo: texto,
+      // Anexo sem legenda ainda é uma mensagem — conteúdo vazio, não nulo,
+      // para o resto do sistema (auditoria, listagem) continuar tratando
+      // como texto ausente e não como erro de gravação.
+      conteudo: texto || null,
+      tipo: anexo?.tipo || 'texto',
+      media_url: anexo?.caminho || null,
       autor_tipo: privada ? 'sistema' : 'equipe',
       autor_nome: autorNome,
       privada,
@@ -657,7 +664,7 @@ function criarAtendimento({
       // A resposta precisa chegar ao paciente. Sem este envio, ela ficava
       // gravada no CRM e nunca saía — a equipe respondia, via a mensagem na
       // tela, e do outro lado ninguém recebia nada.
-      const entrega = await entregarAoPaciente(conversa, texto, mensagem.id);
+      const entrega = await entregarAoPaciente(conversa, texto, mensagem.id, { anexo });
 
       // Instalação sem canal não é falha de envio: é um sistema que nunca
       // prometeu entregar. Alarmar aqui faria a tela gritar em todo ambiente de
@@ -731,7 +738,7 @@ function criarAtendimento({
    * aconteceu, e apagá-la esconderia da própria equipe o que ela já escreveu.
    * O que muda é a marca — enviada ou não —, para a tela poder dizer a verdade.
    */
-  async function entregarAoPaciente(conversa, texto, mensagemId, { origem = 'equipe' } = {}) {
+  async function entregarAoPaciente(conversa, texto, mensagemId, { origem = 'equipe', anexo = null } = {}) {
     // Só a automação passa pela barreira final. Uma resposta escrita por um
     // humano não precisa reconferir "a Serena pode responder": quem decide
     // por um humano é o próprio humano, no instante em que ele clicou em
@@ -787,29 +794,47 @@ function criarAtendimento({
       }
     }
 
-    if (!canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
+    if (anexo && !canal?.enviarMidia) return { enviada: false, motivo: 'canal_nao_configurado' };
+    if (!anexo && !canal?.enviar) return { enviada: false, motivo: 'canal_nao_configurado' };
+    if (anexo && !storage?.gerarLeituraAssinada) return { enviada: false, motivo: 'storage_nao_configurado' };
 
     try {
       const contato = await repositorio.obterContato(conversa.contato_id);
       if (!contato?.telefone) return { enviada: false, motivo: 'contato_sem_telefone' };
 
-      const resultado = await canal.enviar({
-        telefone: contato.telefone,
-        texto,
-        // Comando 7, segunda auditoria, achado N-10: este comentário dizia
-        // que a chave, sozinha, impedia o paciente de receber a mesma
-        // resposta duas vezes — falso para a Evolution (canal primário
-        // hoje), que recebe a chave mas nunca a usa (documentado em
-        // evolution-envio.js:9-11: o endpoint de envio não tem idempotência
-        // nativa nenhuma). A chave protege contra DUPLO PROCESSAMENTO do
-        // MESMO trabalho pelo mecanismo de outbox/lease — cada trabalho só
-        // é reivindicado por um worker de cada vez, e o lease agora é
-        // renovado por trabalho individual (achado N-9, `processarLote`),
-        // não mais por lote inteiro. O transporte Evolution em si não
-        // deduplica no lado dele; só o gateway WebSocket do OpenClaw
-        // (reserva) usa a chave de verdade (`idempotencyKey`).
-        chave: `${origem}:${conversa.id}:${mensagemId}`,
-      });
+      // Mesma chave de idempotência nos dois casos — ver o comentário abaixo
+      // sobre o que ela realmente protege (não é dedupe nativo da Evolution).
+      const chave = `${origem}:${conversa.id}:${mensagemId}`;
+
+      const resultado = anexo
+        ? await canal.enviarMidia({
+          telefone: contato.telefone,
+          // O bucket é privado: media_url grava só o path interno
+          // (anexo.caminho), nunca uma URL pública. A Evolution precisa de
+          // uma URL alcançável de fato — gerada aqui, na hora do envio, de
+          // vida curta, nunca persistida em lugar nenhum.
+          mediaUrl: await storage.gerarLeituraAssinada(anexo.caminho),
+          tipo: anexo.tipo,
+          legenda: texto || null,
+          nomeArquivo: anexo.nome || null,
+        })
+        : await canal.enviar({
+          telefone: contato.telefone,
+          texto,
+          // Comando 7, segunda auditoria, achado N-10: este comentário dizia
+          // que a chave, sozinha, impedia o paciente de receber a mesma
+          // resposta duas vezes — falso para a Evolution (canal primário
+          // hoje), que recebe a chave mas nunca a usa (documentado em
+          // evolution-envio.js:9-11: o endpoint de envio não tem idempotência
+          // nativa nenhuma). A chave protege contra DUPLO PROCESSAMENTO do
+          // MESMO trabalho pelo mecanismo de outbox/lease — cada trabalho só
+          // é reivindicado por um worker de cada vez, e o lease agora é
+          // renovado por trabalho individual (achado N-9, `processarLote`),
+          // não mais por lote inteiro. O transporte Evolution em si não
+          // deduplica no lado dele; só o gateway WebSocket do OpenClaw
+          // (reserva) usa a chave de verdade (`idempotencyKey`).
+          chave,
+        });
 
       // Migration 038: marca a confirmação ANTES de devolver — é o que
       // `respostaAnterior`, mais acima nesta função, consulta para nunca

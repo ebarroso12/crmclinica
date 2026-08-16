@@ -12,6 +12,7 @@ const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
 const { normalizarEventoEvolution } = require('../integracoes/evolution-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
+const { criarClienteStorage } = require('../integracoes/supabase-storage');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
@@ -151,6 +152,12 @@ function criarAplicacao(dependencias = {}) {
   const clienteEvolucaoEnvio = dependencias.clienteEvolucaoEnvio
     || criarClienteEvolucaoEnvio(configuracao.evolution);
 
+  // Storage de anexos (foto/documento/áudio do chat) — independente do canal
+  // de envio: existe mesmo se só a Evolution estiver configurada, porque é
+  // ela quem manda a mídia; o Storage só guarda o arquivo e assina a URL.
+  const clienteStorage = dependencias.clienteStorage
+    || criarClienteStorage(configuracao.anexos);
+
   // O canal existe se houver PELO MENOS UMA via de envio configurada — antes
   // só o gateway do OpenClaw contava; agora a Evolution sozinha também basta,
   // e "canal_nao_configurado" só volta a aparecer se nenhuma das duas estiver.
@@ -187,6 +194,7 @@ function criarAplicacao(dependencias = {}) {
       canal: canalDeConversas,
       emissor: emissorDeConversas,
       qualificacaoIa,
+      storage: clienteStorage,
     });
 
   // Fluxo comercial: sino de acompanhamento, encerramento com resumo interno e
@@ -213,7 +221,9 @@ function criarAplicacao(dependencias = {}) {
   const autenticacao = dependencias.autenticacao
     || criarAutenticacao({ repositorio, configuracao, contas, limitador });
 
-  const conversas = criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas });
+  const conversas = criarRotasDeConversas({
+    repositorio, atendimento, emissorDeConversas, storage: clienteStorage, limiteAnexoBytes: configuracao.anexos.tamanhoMaximoBytes,
+  });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
 
@@ -348,6 +358,7 @@ function criarAplicacao(dependencias = {}) {
   // `exigirPermissao`, e rota sem permissão declarada não é roteada.
   const PERMISSAO_POR_ACAO = Object.freeze({
     mensagens: 'conversas:responder',
+    anexos: 'conversas:responder',
     assumir: 'conversas:assumir',
     etiquetas: 'conversas:etiquetar',
     estado: 'conversas:resolver',
@@ -1387,6 +1398,7 @@ function criarAplicacao(dependencias = {}) {
 
     const acoes = {
       mensagens: (corpo) => conversas.responder(conversaId, corpo),
+      anexos: (corpo) => conversas.prepararAnexo(conversaId, corpo),
       assumir: (corpo) => conversas.assumir(conversaId, corpo),
       etiquetas: (corpo) => conversas.definirEtiquetas(conversaId, corpo),
       prioridade: (corpo) => conversas.definirPrioridade(conversaId, corpo),

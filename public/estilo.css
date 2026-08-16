@@ -756,8 +756,16 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
    uma entrega normal. */
 .enviada.entrega-incerta { background: #fdf6e3; border: 1px dashed #9c7a12; }
 .aviso-entrega-incerta { color: #7a5e0e; font-weight: 600; }
+/* Anexo de arquivo: a mídia vem antes do texto/legenda dentro do mesmo balão. */
+.anexo-imagem { display: block; max-width: 100%; max-height: 260px; border-radius: 8px; margin-bottom: 6px; object-fit: contain; }
+.anexo-video { display: block; max-width: 100%; max-height: 260px; border-radius: 8px; margin-bottom: 6px; }
+.mensagens audio { display: block; max-width: 100%; margin-bottom: 6px; }
+.anexo-documento { display: inline-block; margin-bottom: 6px; color: inherit; text-decoration: underline; }
+.preview-anexo { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 8px 12px; background: #f3f8fa; border-radius: 8px; font-size: 13px; }
+.preview-anexo-nome, #preview-anexo-nome { font-weight: 600; overflow-wrap: anywhere; }
 .composer { display: flex; gap: 8px; margin-top: 14px; }
 .composer textarea { flex: 1; border: 1px solid var(--linha); border-radius: 8px; padding: 10px; font: inherit; resize: none; max-height: 120px; }
+#botao-anexar { font-size: 17px; line-height: 1; padding: 0 12px; }
 
 .ficha small { color: var(--apoio); font-size: 11px; letter-spacing: 0.07em; }
 .ficha h3 { margin: 10px 0 2px; }

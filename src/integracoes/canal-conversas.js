@@ -91,6 +91,22 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
       return enviarPeloGateway(destino, texto, chave);
     },
 
+    /**
+     * Entrega um anexo (imagem/documento/áudio/vídeo) ao paciente.
+     *
+     * Só a Evolution API: o protocolo `send` do gateway WebSocket do OpenClaw
+     * nunca teve suporte a mídia confirmado (é outro processo, no VPS, fora
+     * do que este projeto testa) — arriscar mandar um anexo por um canal sem
+     * contrato conhecido é pior do que recusar com um erro claro.
+     */
+    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+      const destino = normalizarTelefone(telefone);
+      if (!destino) throw new Error('telefone inválido para envio');
+      if (!evolucao?.disponivel) throw new Error('envio de anexo exige a Evolution API configurada');
+
+      return evolucao.enviarMidia({ telefone: destino, mediaUrl, tipo, legenda, nomeArquivo });
+    },
+
     async encerrar() {
       await cliente?.encerrar?.();
       cliente = dependencias.cliente ?? null;
