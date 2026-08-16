@@ -1569,6 +1569,50 @@ let cursorDeEventos = null;
 let recargaDeEventosAgendada = null;
 let recargaPrecisaDaThread = false;
 
+// Cursor MONOTÔNICO — BLOQUEADOR 2 do gate final do PR #34, camada do cliente.
+//
+// O defeito era `if (typeof dados.id === 'number') cursorDeEventos = dados.id;`:
+// gravava o id recebido SEM comparar com o que já havia. Um evento fora de
+// ordem (o servidor entregava [2,1] enquanto o empurrão não era serializado —
+// mas um proxy, uma reconexão ou outro processo também produzem isso) fazia o
+// cursor RETROCEDER. Na reconexão seguinte, o replay reenviava um evento já
+// processado e a MENSAGEM APARECIA DUAS VEZES no chat — o bug que este hotfix
+// existe para corrigir.
+//
+// Isto é defesa em profundidade, não substituto: a ordenação no servidor
+// continua sendo obrigatória (ver a fila em src/servidor/eventos-conversas.js).
+// O cursor é o que sobrevive à reconexão, então ele precisa ser monotônico por
+// construção, independentemente do que chegar pelo fio.
+//
+// Pura de propósito: recebe o cursor atual e devolve o próximo, sem tocar em
+// estado — é o que permite testá-la de verdade sem navegador
+// (testes/chat-ao-vivo-cursor-monotonico.test.js).
+function proximoCursorDeEventos(cursorAtual, idRecebido) {
+  // `Math.max(cursorAtual, Number(idRecebido))` seria a forma curta e é
+  // exatamente a armadilha: com `undefined`, `'abc'` ou `{}`, `Number` devolve
+  // NaN, `Math.max` propaga NaN, todo `>` seguinte vira false em silêncio e a
+  // reconexão passa a mandar `cursor=NaN` — o cursor morre e o replay volta a
+  // duplicar. Por isso a validação vem ANTES de qualquer comparação.
+  //
+  // Aceitar texto além de número não é frouxidão: o servidor entrega `id` como
+  // número (`Number(linha.id)` em src/dados/repositorio.js), mas `Last-Event-ID`
+  // e qualquer intermediário trafegam texto. Recusar "7" faria o cursor
+  // simplesmente PARAR DE AVANÇAR, que termina no mesmo replay duplicado.
+  let id;
+  if (typeof idRecebido === 'number') {
+    id = idRecebido;
+  } else if (typeof idRecebido === 'string' && idRecebido.trim() !== '') {
+    id = Number(idRecebido);
+  } else {
+    return cursorAtual;
+  }
+  // `id` é um bigserial do Postgres: inteiro e não negativo. Qualquer outra
+  // coisa (NaN, Infinity, fracionário, negativo) é ruído e não move o cursor.
+  if (!Number.isInteger(id) || id < 0) return cursorAtual;
+  if (cursorAtual === null || id > cursorAtual) return id;
+  return cursorAtual;
+}
+
 function encerrarEventosDeConversas() {
   clearTimeout(reconexaoDeEventosAgendada);
   reconexaoDeEventosAgendada = null;
@@ -1607,7 +1651,11 @@ const TIPOS_DE_EVENTO_CONHECIDOS = [
 const JANELA_DE_COALESCENCIA_MS = 250;
 
 function reagirAEventoDeConversa(dados) {
-  if (typeof dados.id === 'number') cursorDeEventos = dados.id;
+  // Nunca retrocede (ver `proximoCursorDeEventos`). Repare que o evento
+  // atrasado NÃO é descartado: ele carrega estado real (mensagem nova, status
+  // de entrega, conversa resolvida) e a tela precisa reagir a ele. O que não
+  // pode é ele mandar o cursor para trás.
+  cursorDeEventos = proximoCursorDeEventos(cursorDeEventos, dados?.id);
 
   if (!TIPOS_DE_EVENTO_CONHECIDOS.includes(dados?.tipo)) return;
 

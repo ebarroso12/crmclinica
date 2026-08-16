@@ -160,17 +160,58 @@ function criarEmissorDeConversas({ repositorio } = {}) {
     }
   }
 
+  // FILA DE PUBLICAÇÃO — BLOQUEADOR 2 do gate final do PR #34.
+  //
+  // Provado com repositório instrumentado:
+  //
+  //   ordem de entrega no stream SSE: [2,1]
+  //   entregue em ordem crescente de id: false
+  //
+  // Desde que `empurrar` virou `async` e passou a fazer I/O, duas publicações
+  // concorrentes intercalavam: quem resolvesse a consulta primeiro escrevia
+  // primeiro, mesmo tendo `id` maior. E o cursor do cliente era gravado sem
+  // comparação (`cursorDeEventos = dados.id`), então receber [2,1] fazia o
+  // cursor RETROCEDER para 1 — na reconexão seguinte o replay reenviava o
+  // evento 2, já mostrado, e a mensagem aparecia duas vezes no chat. É
+  // exatamente o bug de duplicidade que este hotfix existe para corrigir.
+  //
+  // A serialização cobre gravação E entrega juntas de propósito: só assim o
+  // `id` (bigserial, o cursor) é atribuído na mesma ordem em que é entregue.
+  // Serializar só o empurrão deixaria de fora o caso em que dois INSERTs
+  // concorrentes resolvem em JS na ordem inversa dos ids que receberam.
+  //
+  // Nada de array de pendências: a fila é o encadeamento de UMA promise, que
+  // não cresce. E `ultimaPublicacao` NUNCA fica rejeitada — o `then` de
+  // rejeição abaixo a devolve para o estado resolvido. Sem isso, uma única
+  // publicação que falhasse envenenaria a fila e todo evento posterior morreria
+  // em silêncio até o processo reiniciar.
+  let ultimaPublicacao = Promise.resolve();
+
+  function enfileirar(tarefa) {
+    const resultado = ultimaPublicacao.then(tarefa);
+    ultimaPublicacao = resultado.then(
+      () => undefined,
+      () => undefined,
+    );
+    return resultado;
+  }
+
   /**
    * Grava e publica um evento. Nunca lança — best-effort, como auditoria.
    * Devolve o evento gravado (com `id`/cursor) ou `null` se a escrita falhou
    * ou não há repositório configurado (uso em contexto sem persistência).
+   *
+   * A gravação e o empurrão acontecem dentro da fila (ver acima): duas
+   * chamadas concorrentes saem em ordem crescente de `id`, sempre.
    */
   async function publicar({ conversaId, tipo, payload = {} }) {
     if (!repositorio?.registrarEventoDeConversa) return null;
     try {
-      const evento = await repositorio.registrarEventoDeConversa({ conversaId, tipo, payload });
-      await empurrar(evento);
-      return evento;
+      return await enfileirar(async () => {
+        const evento = await repositorio.registrarEventoDeConversa({ conversaId, tipo, payload });
+        await empurrar(evento);
+        return evento;
+      });
     } catch (erro) {
       console.error(`[eventos-conversas] falha ao registrar evento "${tipo}": ${erro.message}`);
       return null;
