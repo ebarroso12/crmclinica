@@ -111,10 +111,23 @@ function criarEmissorDeConversas({ repositorio } = {}) {
    * ESTA conexão pode ver ESTA conversa (BLOQUEADOR 1, auditoria PR #34).
    */
   function inscrever(res, { depoisDeCursor = 0, usuarioId = null, papel = null } = {}) {
-    const assinatura = { res, depoisDeCursor, usuarioId, papel };
+    const assinatura = { res, depoisDeCursor, usuarioId, papel, escritasSemDrenar: 0 };
     assinantes.add(assinatura);
+    // Zera o contador de backpressure quando o socket alivia — ver `empurrar`.
+    res.on?.('drain', () => { assinatura.escritasSemDrenar = 0; });
     return () => assinantes.delete(assinatura);
   }
+
+  // Achado da auditoria adversarial (2026-08-16): `res.write()` devolve
+  // `false` quando o buffer interno do socket está cheio — sinal de que o
+  // cliente do outro lado está mais lento do que o servidor escreve. Sem
+  // checar isso, um cliente lento (rede ruim, aba parada por horas, ou
+  // deliberadamente lento) nunca dá "drain", e o processo acumula o que não
+  // foi entregue na memória, sem teto. Depois de escritas consecutivas sem
+  // drenar, trata como conexão morta/lenta e desconecta — protege o
+  // processo, não o cliente (a rede de segurança do cliente é a reconexão
+  // SSE de sempre).
+  const LIMITE_DE_ESCRITAS_SEM_DRENAR = 5;
 
   /** Empurra um evento JÁ GRAVADO para toda conexão aberta NESTE processo autorizada a vê-lo. */
   async function empurrar(evento) {
@@ -153,7 +166,17 @@ function criarEmissorDeConversas({ repositorio } = {}) {
     for (const assinatura of candidatas) {
       if (!podeReceber(assinatura, escopo)) continue;
       try {
-        assinatura.res.write(linha);
+        const drenou = assinatura.res.write(linha);
+        if (drenou) {
+          assinatura.escritasSemDrenar = 0;
+        } else {
+          assinatura.escritasSemDrenar += 1;
+          if (assinatura.escritasSemDrenar >= LIMITE_DE_ESCRITAS_SEM_DRENAR) {
+            console.error(`[eventos-conversas] assinante sem drenar por ${LIMITE_DE_ESCRITAS_SEM_DRENAR} escritas seguidas — desconectando (backpressure)`);
+            assinantes.delete(assinatura);
+            try { assinatura.res.end(); } catch { /* conexão já pode ter caído. */ }
+          }
+        }
       } catch {
         assinantes.delete(assinatura);
       }
