@@ -43,6 +43,11 @@ const PERMISSOES = Object.freeze({
   // conflito, forçar sync) mexe no vínculo com o calendário: só o admin.
   'sincronia:ler': ['admin', 'gestor'],
   'sincronia:operar': ['admin'],
+
+  // Bloqueio de contato: desvia o atendimento automático de um telefone
+  // para a secretária humana. Mesmo nível de contatos:editar — quem
+  // gerencia relacionamento com paciente, não só o admin.
+  'bloqueios:gerenciar': ['admin', 'gestor'],
 });
 
 const PERMISSOES_CONHECIDAS = Object.freeze(Object.keys(PERMISSOES));

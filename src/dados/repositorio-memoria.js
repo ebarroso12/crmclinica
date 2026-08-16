@@ -155,7 +155,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
     serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1, automacaoOutbox: 1,
+    // Nome distinto de `bloqueio` (que já é usado por bloqueios de agenda,
+    // outro conceito) — contato bloqueado é desvio de atendimento automático.
+    contatoBloqueado: 1,
   };
+  const contatosBloqueados = new Map();
 
   /** Espelha o que o PostgreSQL devolve nas junções da fila de lembretes. */
   function enriquecerLembrete(lembrete) {
@@ -643,6 +647,57 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       contato.excluido_por = null;
       contato.excluido_motivo = null;
       return contato;
+    },
+
+    // -------------------------------------------------- bloqueio de contato
+
+    async listarContatosBloqueados() {
+      return [...contatosBloqueados.values()].sort((a, b) => (a.criado_em < b.criado_em ? 1 : -1));
+    },
+
+    async obterBloqueioPorTelefone(telefone) {
+      if (!telefone) return null;
+      return [...contatosBloqueados.values()].find((item) => item.telefone === telefone) ?? null;
+    },
+
+    async obterContatoBloqueado(id) {
+      return contatosBloqueados.get(Number(id)) ?? null;
+    },
+
+    async criarContatoBloqueado({ telefone, nome, motivo, criadoPor = null }) {
+      if (telefone && [...contatosBloqueados.values()].some((item) => item.telefone === telefone)) {
+        const erro = new Error('duplicate key value violates unique constraint');
+        erro.code = '23505';
+        erro.constraint = 'contatos_bloqueados_telefone_key';
+        throw erro;
+      }
+
+      const registro = {
+        id: proximoId.contatoBloqueado++,
+        telefone,
+        nome,
+        motivo,
+        criado_por: criadoPor,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      contatosBloqueados.set(registro.id, registro);
+      return registro;
+    },
+
+    async atualizarContatoBloqueado(id, campos) {
+      const registro = contatosBloqueados.get(Number(id));
+      if (!registro) return null;
+
+      if (campos.nome !== undefined) registro.nome = campos.nome;
+      if (campos.motivo !== undefined) registro.motivo = campos.motivo;
+      if (campos.telefone !== undefined) registro.telefone = campos.telefone;
+      registro.atualizado_em = agora().toISOString();
+      return registro;
+    },
+
+    async removerContatoBloqueado(id) {
+      return contatosBloqueados.delete(Number(id));
     },
 
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {

@@ -42,6 +42,7 @@ const { criarConversaDeTeste, escolherConfiguracaoDoLaboratorio } = require('../
 const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
+const { criarRotasDeBloqueios } = require('./rotas-bloqueios');
 const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
 const { criarRotasDeAuditoria } = require('./rotas-auditoria');
 const { criarRotasDoAgente } = require('./rotas-agente');
@@ -314,6 +315,7 @@ function criarAplicacao(dependencias = {}) {
     politica: politicaDoCanal,
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
+  const rotasDeBloqueios = criarRotasDeBloqueios({ repositorio });
   const rotasDeAuditoria = criarRotasDeAuditoria({ repositorio });
 
   // Gestão de usuários, termos, deduplicação, qualidade e onboarding. O
@@ -969,6 +971,43 @@ function criarAplicacao(dependencias = {}) {
     return false;
   }
 
+  // Rotas da lista de bloqueio de contato (db/040_contatos_bloqueados.sql).
+  async function tratarRotasDeBloqueios(req, res, rota, metodo, url, usuario) {
+    if (!rota.startsWith('/api/bloqueios')) return false;
+    const semCache = { 'cache-control': 'no-store' };
+    const partes = rota.split('/').filter(Boolean);
+
+    // GET /api/bloqueios — lista. POST /api/bloqueios — cria.
+    if (partes.length === 2) {
+      if (metodo === 'GET') {
+        responderJson(res, 200, await rotasDeBloqueios.listar(usuario), semCache);
+        return true;
+      }
+      if (metodo === 'POST') {
+        responderJson(res, 201, await rotasDeBloqueios.criar(usuario, await lerJson(req)));
+        return true;
+      }
+      responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET, POST' });
+      return true;
+    }
+
+    // /api/bloqueios/:id — edição e remoção.
+    if (partes.length === 3 && /^\d+$/.test(partes[2])) {
+      if (metodo === 'PUT') {
+        responderJson(res, 200, await rotasDeBloqueios.editar(usuario, partes[2], await lerJson(req)), semCache);
+        return true;
+      }
+      if (metodo === 'DELETE') {
+        responderJson(res, 200, await rotasDeBloqueios.remover(usuario, partes[2]), semCache);
+        return true;
+      }
+      responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'PUT, DELETE' });
+      return true;
+    }
+
+    return false;
+  }
+
   // Rotas do painel e da operação da sincronia com o Google (P2-04).
   async function tratarRotasDeSincronia(req, res, rota, metodo, url, usuario) {
     if (!rota.startsWith('/api/sincronia')) return false;
@@ -1183,6 +1222,7 @@ function criarAplicacao(dependencias = {}) {
     if (await tratarRotasDeLembretes(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDaSerena(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeUsuarios(req, res, rota, metodo, url, usuario)) return true;
+    if (await tratarRotasDeBloqueios(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeSincronia(req, res, rota, metodo, url, usuario)) return true;
 
     const partes = rota.split('/').filter(Boolean);
