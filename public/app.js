@@ -584,8 +584,26 @@ function desenharThread(mensagens) {
   const thread = seletor('#thread-mensagens');
   thread.innerHTML = '';
 
+  const ROTULOS_DE_EVENTO = {
+    conversa_devolvida: 'Conversa devolvida à automação.',
+    conversa_resolvida: 'Conversa marcada como resolvida.',
+  };
+
   for (const mensagem of mensagens) {
     const item = document.createElement('li');
+
+    // Bug B, item 2 ("chat completo"): GET /mensagens agora mescla eventos
+    // operacionais (conversa_devolvida/resolvida) com as mensagens — são a
+    // única transição que hoje não tem aviso de sistema próprio (ver
+    // src/dominio/atendimento.js: `assumir` grava um; `liberar`/resolver
+    // não gravam). Mesmo balão visual do aviso de sistema, texto conforme o
+    // tipo do evento.
+    if (mensagem.tipo_item === 'evento') {
+      item.className = 'balao-sistema';
+      item.textContent = ROTULOS_DE_EVENTO[mensagem.tipo] || mensagem.tipo;
+      thread.append(item);
+      continue;
+    }
 
     if (mensagem.tipo === 'sistema') {
       item.className = 'balao-sistema';
@@ -602,6 +620,11 @@ function desenharThread(mensagens) {
     // nada. `entrega_falhou` só existe em mensagens que o backend marcou
     // assim (ver src/dominio/atendimento.js); nunca em mensagem de entrada.
     if (mensagem.entrega_falhou) item.classList.add('nao-entregue');
+    // Migration 038/Bug B: "indeterminada" é um terceiro estado, distinto de
+    // "falhou" — o canal pode ter entregue ou não, ninguém sabe. Confundir
+    // com "não entregue" seria afirmar algo que o sistema não sabe; deixar
+    // sem marca nenhuma seria esconder a incerteza da equipe.
+    if (mensagem.entrega_indeterminada) item.classList.add('entrega-incerta');
 
     const corpo = document.createElement('span');
     corpo.textContent = mensagem.conteudo || '';
@@ -618,6 +641,11 @@ function desenharThread(mensagens) {
       const aviso = document.createElement('small');
       aviso.className = 'aviso-nao-entregue';
       aviso.textContent = '⚠ não entregue ao paciente';
+      item.append(aviso);
+    } else if (mensagem.entrega_indeterminada) {
+      const aviso = document.createElement('small');
+      aviso.className = 'aviso-entrega-incerta';
+      aviso.textContent = '? entrega incerta — não sabemos se chegou ao paciente';
       item.append(aviso);
     }
 
@@ -1524,29 +1552,152 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
   }
 });
 
-// --- Conversas ao vivo (Server-Sent Events) ---
+// --- Conversas ao vivo (Server-Sent Events, log durável) ---
 //
-// `EventSource` não manda cabeçalho `Authorization` — não há como. O token vai
-// na querystring só para abrir esta conexão de leitura; nenhuma escrita passa
-// por aqui. A reconexão é manual, não a automática do navegador: a nativa
-// insiste na mesma URL, com o mesmo token — e ele vence a cada 15 minutos.
-// Reabrir com `accessToken` na hora da falha garante um token válido.
+// `EventSource` não manda cabeçalho `Authorization` — não há como. Por isso
+// a conexão troca em duas etapas: pede um BILHETE de uso único
+// (`POST /api/conversas/eventos/ticket`, autenticado normalmente) e só ELE
+// vai na URL do EventSource — nunca o token de sessão. `cursorDeEventos`
+// guarda o último `id` recebido; toda reconexão (manual, na queda, ou
+// abrindo a aba de novo) manda esse cursor, e o servidor reproduz (replay)
+// tudo que ficou perdido no intervalo antes de retomar ao vivo — não perde
+// eventos, não duplica (ver `src/servidor/eventos-conversas.js`).
 
 let fonteDeEventos = null;
 let reconexaoDeEventosAgendada = null;
+let cursorDeEventos = null;
+let recargaDeEventosAgendada = null;
+let recargaPrecisaDaThread = false;
+
+// Cursor MONOTÔNICO — BLOQUEADOR 2 do gate final do PR #34, camada do cliente.
+//
+// O defeito era `if (typeof dados.id === 'number') cursorDeEventos = dados.id;`:
+// gravava o id recebido SEM comparar com o que já havia. Um evento fora de
+// ordem (o servidor entregava [2,1] enquanto o empurrão não era serializado —
+// mas um proxy, uma reconexão ou outro processo também produzem isso) fazia o
+// cursor RETROCEDER. Na reconexão seguinte, o replay reenviava um evento já
+// processado e a MENSAGEM APARECIA DUAS VEZES no chat — o bug que este hotfix
+// existe para corrigir.
+//
+// Isto é defesa em profundidade, não substituto: a ordenação no servidor
+// continua sendo obrigatória (ver a fila em src/servidor/eventos-conversas.js).
+// O cursor é o que sobrevive à reconexão, então ele precisa ser monotônico por
+// construção, independentemente do que chegar pelo fio.
+//
+// Pura de propósito: recebe o cursor atual e devolve o próximo, sem tocar em
+// estado — é o que permite testá-la de verdade sem navegador
+// (testes/chat-ao-vivo-cursor-monotonico.test.js).
+function proximoCursorDeEventos(cursorAtual, idRecebido) {
+  // `Math.max(cursorAtual, Number(idRecebido))` seria a forma curta e é
+  // exatamente a armadilha: com `undefined`, `'abc'` ou `{}`, `Number` devolve
+  // NaN, `Math.max` propaga NaN, todo `>` seguinte vira false em silêncio e a
+  // reconexão passa a mandar `cursor=NaN` — o cursor morre e o replay volta a
+  // duplicar. Por isso a validação vem ANTES de qualquer comparação.
+  //
+  // Aceitar texto além de número não é frouxidão: o servidor entrega `id` como
+  // número (`Number(linha.id)` em src/dados/repositorio.js), mas `Last-Event-ID`
+  // e qualquer intermediário trafegam texto. Recusar "7" faria o cursor
+  // simplesmente PARAR DE AVANÇAR, que termina no mesmo replay duplicado.
+  let id;
+  if (typeof idRecebido === 'number') {
+    id = idRecebido;
+  } else if (typeof idRecebido === 'string' && idRecebido.trim() !== '') {
+    id = Number(idRecebido);
+  } else {
+    return cursorAtual;
+  }
+  // `id` é um bigserial do Postgres: inteiro e não negativo. Qualquer outra
+  // coisa (NaN, Infinity, fracionário, negativo) é ruído e não move o cursor.
+  if (!Number.isInteger(id) || id < 0) return cursorAtual;
+  if (cursorAtual === null || id > cursorAtual) return id;
+  return cursorAtual;
+}
 
 function encerrarEventosDeConversas() {
   clearTimeout(reconexaoDeEventosAgendada);
   reconexaoDeEventosAgendada = null;
+  // A recarga coalescida também precisa morrer aqui: `limparSessao` chama esta
+  // função no logout, e um timer sobrevivente dispararia `pedirJson` já sem
+  // token — 401 e ruído logo depois de sair.
+  clearTimeout(recargaDeEventosAgendada);
+  recargaDeEventosAgendada = null;
+  recargaPrecisaDaThread = false;
   fonteDeEventos?.close();
   fonteDeEventos = null;
 }
 
-function conectarEventosDeConversas() {
+// Gate 2 da auditoria ("chat realmente ao vivo", 2026-08-15): antes só
+// mensagem_recebida/mensagem_enviada reagiam aqui — conversa_assumida,
+// conversa_devolvida, conversa_resolvida, status_entrega e erro (envio
+// abortado pela barreira) eram publicados no log durável (Pendência 4) mas
+// IGNORADOS pela tela: só apareciam ao trocar de conversa ou recarregar a
+// página. Todos os tipos do CHECK de conversas_eventos (migration 037)
+// precisam reagir da mesma forma — não há tipo "silencioso" nesta lista.
+const TIPOS_DE_EVENTO_CONHECIDOS = [
+  'mensagem_recebida', 'mensagem_enviada', 'status_entrega',
+  'conversa_assumida', 'conversa_devolvida', 'conversa_resolvida', 'erro',
+];
+
+// Janela de coalescência das recargas disparadas por evento ao vivo.
+//
+// Sem ela, CADA evento vira uma chamada HTTP. O replay de reconexão entrega
+// muitos eventos de uma vez (o servidor devolve até 500 — ver
+// `listarEventosDeConversasDesde` em src/dados/repositorio.js), e a tela
+// dispararia centenas de requisições em rajada, por aba. Numa recepção com
+// várias abas abertas isso vira ataque ao próprio servidor que este lote
+// acabou de consertar. 250ms é imperceptível para quem atende e transforma a
+// rajada em UMA recarga — o que importa é o ESTADO final, não quantos
+// eventos o produziram.
+const JANELA_DE_COALESCENCIA_MS = 250;
+
+function reagirAEventoDeConversa(dados) {
+  // Nunca retrocede (ver `proximoCursorDeEventos`). Repare que o evento
+  // atrasado NÃO é descartado: ele carrega estado real (mensagem nova, status
+  // de entrega, conversa resolvida) e a tela precisa reagir a ele. O que não
+  // pode é ele mandar o cursor para trás.
+  cursorDeEventos = proximoCursorDeEventos(cursorDeEventos, dados?.id);
+
+  if (!TIPOS_DE_EVENTO_CONHECIDOS.includes(dados?.tipo)) return;
+
+  // A conversa aberta ganha a atualização na hora — sem esperar o próximo
+  // clique nem precisar recarregar a página. Cobre mensagem nova, status de
+  // entrega (entregue/falhou/indeterminada), assumir/devolver/resolver e
+  // aborto pela barreira — todos afetam o que a thread mostra.
+  if (dados.conversa_id === conversaAberta) recargaPrecisaDaThread = true;
+
+  // Já existe recarga agendada: este evento entra nela em vez de criar outra.
+  if (recargaDeEventosAgendada) return;
+
+  recargaDeEventosAgendada = setTimeout(() => {
+    recargaDeEventosAgendada = null;
+    const precisaDaThread = recargaPrecisaDaThread;
+    recargaPrecisaDaThread = false;
+
+    // A lista sempre reflete o estado novo: prévia, "há X min", fila (assumida/
+    // devolvida/resolvida mudam quem vê a conversa em qual fila) e ordenação.
+    if (!seletor('#conversas')?.hidden) carregarConversas();
+
+    if (precisaDaThread && conversaAberta) {
+      pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
+    }
+  }, JANELA_DE_COALESCENCIA_MS);
+}
+
+async function conectarEventosDeConversas() {
   if (!accessToken || typeof EventSource === 'undefined') return;
   encerrarEventosDeConversas();
 
-  fonteDeEventos = new EventSource(`/api/conversas/eventos?token=${encodeURIComponent(accessToken)}`);
+  let ticket;
+  try {
+    ({ ticket } = await pedirJson('/api/conversas/eventos/ticket', { method: 'POST' }));
+  } catch {
+    // Sem bilhete, sem conexão — tenta de novo no mesmo ritmo do onerror.
+    reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
+    return;
+  }
+
+  const cursor = cursorDeEventos !== null ? `&cursor=${encodeURIComponent(cursorDeEventos)}` : '';
+  fonteDeEventos = new EventSource(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}${cursor}`);
 
   fonteDeEventos.onmessage = (evento) => {
     let dados;
@@ -1555,21 +1706,15 @@ function conectarEventosDeConversas() {
     } catch {
       return;
     }
-    if (dados?.tipo !== 'mensagem') return;
-
-    // A lista sempre reflete a mensagem nova: prévia, "há X min" e ordenação.
-    if (!seletor('#conversas')?.hidden) carregarConversas();
-
-    // A conversa aberta ganha a mensagem na hora — sem esperar o próximo clique.
-    if (dados.conversa_id === conversaAberta) {
-      pedirJson(`/api/conversas/${conversaAberta}/mensagens`).then(desenharThread).catch(() => {});
-    }
+    reagirAEventoDeConversa(dados);
   };
 
   fonteDeEventos.onerror = () => {
     encerrarEventosDeConversas();
     // Um intervalo fixo evita martelar o servidor se ele estiver fora do ar;
     // 5s ainda é rápido o bastante para não se notar numa queda passageira.
+    // `cursorDeEventos` já guarda onde parou — a próxima chamada reproduz o
+    // que foi perdido nesses 5s, não parte do zero.
     reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
   };
 }

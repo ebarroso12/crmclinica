@@ -55,7 +55,7 @@ async function exigirConversa(repositorio, id) {
   return conversa;
 }
 
-function criarRotasDeConversas({ repositorio, atendimento }) {
+function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = null }) {
   return {
     /** GET /api/conversas/filas — vocabulário do inbox, para a interface montar os controles. */
     async listarFilas() {
@@ -153,11 +153,51 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
       };
     },
 
-    /** GET /api/conversas/:id/mensagens — a thread. */
+    /**
+     * GET /api/conversas/:id/mensagens — a thread completa.
+     *
+     * Bug B, item 2 ("chat completo"): antes só devolvia `mensagens` — quem
+     * assumiu, devolveu ou resolveu a conversa, e qualquer envio abortado
+     * pela barreira final, ficava invisível na tela mesmo depois de
+     * recarregar. Agora mescla `mensagens` com os eventos operacionais da
+     * mesma conversa (conversas_eventos, migration 037), ordenados por
+     * `criado_em` — as duas fontes têm sequências (`id`) INDEPENDENTES, não
+     * comparáveis entre si, então a ordem determinística possível aqui é por
+     * tempo; `Array.prototype.sort` é estável no Node, e mensagens entram
+     * primeiro na concatenação, então um empate exato de timestamp mantém a
+     * mensagem antes do evento — nunca o contrário, nunca aleatório.
+     */
     async listarMensagens(conversaId) {
       const id = exigirIdentificador(conversaId, 'conversa_id');
       await exigirConversa(repositorio, id);
-      return repositorio.listarMensagens(id);
+
+      const mensagens = (await repositorio.listarMensagens(id))
+        .map((mensagem) => ({ ...mensagem, tipo_item: 'mensagem' }));
+
+      if (!repositorio.listarEventosOperacionaisDaConversa) return mensagens;
+
+      // BLOQUEADOR 2 (auditoria PR #34): um rollback da migration 037 (ou um
+      // deploy deste código ANTES da migration rodar) faz `conversas_eventos`
+      // sumir. Antes desta correção, o erro do Postgres (42P01,
+      // `undefined_table`) subia sem tratamento e virava HTTP 500 — a
+      // recepção perdia a THREAD INTEIRA (`mensagens`, que sempre existiu),
+      // não só os eventos operacionais que esta consulta adiciona. Só
+      // `42P01` ativa o fallback (checado pelo CÓDIGO do erro, nunca pela
+      // mensagem de texto); qualquer outro (permissão — 42501 —, conexão,
+      // corrupção) propaga — nunca finge "sem eventos" quando o problema é
+      // outro.
+      let eventos;
+      try {
+        eventos = (await repositorio.listarEventosOperacionaisDaConversa(id))
+          .map((evento) => ({ ...evento, tipo_item: 'evento' }));
+      } catch (erro) {
+        if (erro.code !== '42P01') throw erro;
+        console.error(`[rotas-conversas] conversas_eventos ausente (42P01) — thread degradada para só mensagens (conversa ${id}): ${erro.message}`);
+        return mensagens;
+      }
+
+      return [...mensagens, ...eventos]
+        .sort((a, b) => new Date(a.criado_em).getTime() - new Date(b.criado_em).getTime());
     },
 
     /** POST /api/conversas/:id/mensagens — resposta humana; assumir vem junto. */
@@ -275,14 +315,28 @@ function criarRotasDeConversas({ repositorio, atendimento }) {
       await exigirConversa(repositorio, id);
       const status = exigirEnum(corpo?.status, 'status', ESTADOS);
 
-      const conversa = await repositorio.atualizarConversa(id, { status });
+      // Achado da auditoria adversarial deste lote: este era o único caminho
+      // que ainda publicava evento e auditava INCONDICIONALMENTE — dois
+      // cliques em "Resolver" (ou um retry de rede) gravavam dois eventos
+      // `conversa_resolvida`, e a thread passava a mostrar "Conversa marcada
+      // como resolvida." duas vezes. Mesmo padrão que `assumir`/`liberar` já
+      // usam: `null` = não houve transição de verdade, nada a anunciar.
+      const transicao = repositorio.definirStatusSeNecessario
+        ? await repositorio.definirStatusSeNecessario(id, status)
+        : await repositorio.atualizarConversa(id, { status });
+
+      if (!transicao) return { conversa: await repositorio.obterConversa(id) };
+
+      if (status === 'resolvida') {
+        emissorDeConversas?.publicarConversaResolvida?.(id);
+      }
       await repositorio.registrarAuditoria({
         entidade: 'conversa',
         entidadeId: id,
         acao: status === 'resolvida' ? 'resolvida' : 'reaberta',
       });
 
-      return { conversa };
+      return { conversa: transicao };
     },
 
     /** POST /api/conversas/:id/temperatura */

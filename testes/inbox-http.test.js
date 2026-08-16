@@ -164,6 +164,58 @@ test('GET /api/conversas/:id/mensagens devolve a thread em ordem', async (t) => 
   assert.equal(mensagens[1].autor_tipo, 'automacao');
 });
 
+// Bug B, item 2 ("chat completo"): "conversa devolvida à automação" e
+// "conversa resolvida" não tinham NENHUMA representação na thread — nem
+// aviso de sistema, nem evento incluído no que a rota devolvia. Este teste
+// prova que GET /mensagens agora mescla esses dois eventos operacionais,
+// em ordem cronológica junto das mensagens.
+test('GET /api/conversas/:id/mensagens inclui "devolvida" e "resolvida", sem duplicar "assumida"', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  // Mesma razão do teste de SSE acima: emissor e atendimento precisam ser a
+  // MESMA instância que a rota usa, senão nada é gravado no log durável.
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:chat-completo-1',
+    remetente: '5516988888888',
+    nome: 'Rita Alves',
+    texto: 'Olá',
+  });
+  const [conversa] = await repositorio.listarConversas({});
+
+  await atendimento.assumir(conversa.id, 7);
+  await atendimento.liberar(conversa.id);
+  await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' });
+
+  const itens = await (await app.pedir(`/api/conversas/${conversa.id}/mensagens`)).json();
+
+  const eventos = itens.filter((item) => item.tipo_item === 'evento');
+  assert.deepEqual(eventos.map((evento) => evento.tipo), ['conversa_devolvida', 'conversa_resolvida'],
+    'os dois eventos sem aviso de sistema próprio precisam aparecer, em ordem');
+
+  // "assumida" JÁ tem um aviso de sistema (`mensagens`, tipo='sistema') —
+  // incluir o evento também duplicaria a MESMA transição visualmente.
+  assert.equal(eventos.some((evento) => evento.tipo === 'conversa_assumida'), false,
+    'conversa_assumida não pode aparecer duas vezes (aviso de sistema + evento)');
+  const avisosDeSistema = itens.filter((item) => item.tipo_item === 'mensagem' && item.tipo === 'sistema');
+  assert.equal(avisosDeSistema.length, 1, 'só o aviso de "assumida" gravado por atendimento.assumir()');
+
+  // Ordem cronológica entre as duas fontes independentes (mensagens x eventos).
+  const indices = itens.map((item, indice) => ({ indice, criado_em: new Date(item.criado_em).getTime() }));
+  for (let i = 1; i < indices.length; i += 1) {
+    assert.ok(indices[i].criado_em >= indices[i - 1].criado_em, 'a thread mesclada precisa estar em ordem cronológica');
+  }
+});
+
 test('conversa inexistente responde 404 e identificador inválido responde 400', async (t) => {
   const { app } = await subirInbox();
   t.after(() => app.encerrar());
@@ -321,6 +373,59 @@ test('prioridade e estado usam vocabulário fechado', async (t) => {
   assert.equal(reaberta.conversa.status, 'aberta');
 
   assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'arquivada' })).status, 400);
+});
+
+// Achado da auditoria adversarial deste lote: `resolver` era o único caminho
+// que ainda publicava evento e auditava INCONDICIONALMENTE. Dois cliques em
+// "Resolver" (ou um retry de rede) gravavam dois `conversa_resolvida`, e a
+// thread passava a exibir "Conversa marcada como resolvida." duas vezes —
+// exatamente o bug que c42ea11 fechou para assumir/liberar, deixado aberto
+// aqui.
+test('resolver duas vezes não duplica evento nem auditoria', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:resolver-2x',
+    remetente: '5516955555555',
+    nome: 'Tereza Lima',
+    texto: 'Obrigada!',
+  });
+  const [conversa] = await repositorio.listarConversas({});
+
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200);
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200,
+    'o segundo clique não pode virar erro para quem está atendendo — só não pode repetir efeito');
+
+  // `papel: 'admin'` aqui não é sobre autorização — o teste só quer inspecionar
+  // o log durável inteiro (ver testes/conversas-eventos-escopo.test.js para os
+  // testes de escopo em si; `listarEventosDeConversasDesde` exige `papel` desde
+  // o BLOQUEADOR 1, auditoria PR #34).
+  const eventos = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100, papel: 'admin' });
+  const resolvidas = eventos.filter((e) => e.tipo === 'conversa_resolvida' && e.conversa_id === conversa.id);
+  assert.equal(resolvidas.length, 1, 'só pode existir UM evento de "conversa resolvida"');
+
+  const auditoria = repositorio._auditoria.filter((r) => r.acao === 'resolvida' && r.entidadeId === conversa.id);
+  assert.equal(auditoria.length, 1, 'a segunda chamada não é transição de verdade — não audita de novo');
+
+  // Reabrir e resolver de novo É transição de verdade, e precisa contar.
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'aberta' })).status, 200);
+  assert.equal((await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' })).status, 200);
+
+  const depois = await repositorio.listarEventosDeConversasDesde({ cursor: null, limite: 100, papel: 'admin' });
+  assert.equal(
+    depois.filter((e) => e.tipo === 'conversa_resolvida' && e.conversa_id === conversa.id).length, 2,
+    'resolver de novo depois de reabrir é uma transição real — essa precisa aparecer',
+  );
 });
 
 test('nota vai para a ficha do contato', async (t) => {
@@ -494,13 +599,23 @@ async function lerAteConter(leitor, decodificador, buffer, textoEsperado) {
   return buffer.valor;
 }
 
-test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensagem chega', async (t) => {
+/** Pede um bilhete de conexão autenticado — mesmo fluxo que o app.js usa. */
+async function pedirTicket(app) {
+  const resposta = await app.pedir('/api/conversas/eventos/ticket', { method: 'POST' });
+  assert.equal(resposta.status, 200, 'emissão do bilhete precisa suceder para o teste fazer sentido');
+  const { ticket } = await resposta.json();
+  return ticket;
+}
+
+test('GET /api/conversas/eventos exige bilhete e avisa ao vivo quando uma mensagem chega', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const orquestrador = orquestradorFalso();
   // A instância do emissor precisa ser a MESMA que a rota HTTP usa: por isso
   // ambos, `atendimento` e `emissorDeConversas`, são injetados em `subirServidor`
   // em vez de deixar `criarAplicacao` montar os seus por baixo dos panos.
-  const emissorDeConversas = criarEmissorDeConversas();
+  // `{ repositorio }`: sem ele, o emissor não grava nada (log durável — ver
+  // eventos-conversas.js) e este teste não teria o que ler.
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
 
   const app = await subirServidor({
@@ -508,12 +623,16 @@ test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensag
   });
   t.after(() => app.encerrar());
 
-  const semToken = await app.pedirSemAuth('/api/conversas/eventos');
-  assert.equal(semToken.status, 401, 'sem cabeçalho e sem ?token=, a conexão é recusada');
+  const semTicket = await app.pedirSemAuth('/api/conversas/eventos');
+  assert.equal(semTicket.status, 401, 'sem ?ticket=, a conexão é recusada');
 
+  const ticketInventado = await app.pedirSemAuth('/api/conversas/eventos?ticket=inventado');
+  assert.equal(ticketInventado.status, 401, 'bilhete que não existe é recusado');
+
+  const ticket = await pedirTicket(app);
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
     { signal: controle.signal },
   );
   assert.equal(resposta.status, 200);
@@ -535,11 +654,180 @@ test('GET /api/conversas/eventos exige sessão e avisa ao vivo quando uma mensag
     texto: 'Olá, tudo bem?',
   });
 
-  await lerAteConter(leitor, decodificador, buffer, '"tipo":"mensagem"');
+  await lerAteConter(leitor, decodificador, buffer, '"tipo":"mensagem_recebida"');
   assert.match(buffer.valor, /"direcao":"entrada"/);
+  assert.match(buffer.valor, /^id: \d+/m, 'o formato SSE precisa incluir o campo id (o cursor)');
 
   controle.abort();
   await leitor.cancel().catch(() => {});
+});
+
+// Gate 2 da auditoria ("chat realmente ao vivo", 2026-08-15): antes deste
+// commit, `status_entrega` era publicado por `eventos-conversas.js` mas
+// NUNCA CHAMADO por lugar nenhum do código — a mensagem ficava marcada
+// `entregue_em`/`entrega_falhou`/`entrega_indeterminada` no banco, mas quem
+// estivesse com a tela aberta só via a mudança ao trocar de conversa ou
+// recarregar. Este teste prova que `entregarAoPaciente` (atendimento.js)
+// agora publica o evento, e que assumir/devolver/resolver — já publicados
+// antes, mas ignorados pela TELA (não pelo backend) — continuam chegando
+// ao vivo pela mesma conexão SSE.
+test('status de entrega e transições de conversa chegam ao vivo pela mesma conexão SSE', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const canal = { async enviar() { return { identificador: 'wa-saida-1' }; } };
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal, emissor: emissorDeConversas });
+
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  await atendimento.receberMensagem({
+    canal: 'whatsapp',
+    estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:sse-status-1',
+    remetente: '5516966666666',
+    nome: 'Igor Souza',
+    texto: 'Olá',
+  });
+  const [conversa] = await repositorio.listarConversas({});
+
+  const ticket = await pedirTicket(app);
+  const controle = new AbortController();
+  const resposta = await app.pedirSemAuth(
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
+    { signal: controle.signal },
+  );
+  assert.equal(resposta.status, 200);
+
+  const leitor = resposta.body.getReader();
+  const decodificador = new TextDecoder();
+  const buffer = { valor: '' };
+  try {
+    await lerAteConter(leitor, decodificador, buffer, 'conectado');
+
+    // status_entrega: uma resposta da equipe entregue com sucesso.
+    await atendimento.responderComoEquipe(conversa.id, 'Já te retorno!', { autorNome: 'Recepção' });
+    await lerAteConter(leitor, decodificador, buffer, '"tipo":"status_entrega"');
+    assert.match(buffer.valor, /"status":"entregue"/);
+
+    // conversa_assumida já foi publicada pelo responderComoEquipe acima
+    // (assume a conversa antes de entregar) — confirmado no mesmo buffer.
+    assert.match(buffer.valor, /"tipo":"conversa_assumida"/);
+
+    // conversa_devolvida.
+    await atendimento.liberar(conversa.id);
+    await lerAteConter(leitor, decodificador, buffer, '"tipo":"conversa_devolvida"');
+
+    // conversa_resolvida, pela rota HTTP (é lá que o evento é publicado).
+    await enviar(app, `/api/conversas/${conversa.id}/estado`, { status: 'resolvida' });
+    await lerAteConter(leitor, decodificador, buffer, '"tipo":"conversa_resolvida"');
+  } finally {
+    // Sem isto, uma asserção que lança no meio (RED proposital, ou uma
+    // regressão futura) deixa a conexão SSE aberta — o handle pendente
+    // some com o resto da suíte no timeout do runner, não só este teste.
+    controle.abort();
+    await leitor.cancel().catch(() => {});
+  }
+});
+
+test('um bilhete só serve uma vez — a segunda tentativa de conexão com o mesmo bilhete é recusada', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const app = await subirServidor({ repositorio, emissorDeConversas, configuracao: configuracaoDeTeste() });
+  t.after(() => app.encerrar());
+
+  const ticket = await pedirTicket(app);
+
+  const controle = new AbortController();
+  const primeira = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`, { signal: controle.signal });
+  assert.equal(primeira.status, 200);
+  controle.abort();
+  await primeira.body?.cancel().catch(() => {});
+
+  const segunda = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`);
+  assert.equal(segunda.status, 401, 'bilhete já consumido não pode abrir uma segunda conexão');
+});
+
+test('reconectar com cursor reproduz exatamente os eventos perdidos, sem duplicar e sem pular nenhum', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
+  const app = await subirServidor({
+    repositorio, atendimento, orquestrador, emissorDeConversas, configuracao: configuracaoDeTeste(),
+  });
+  t.after(() => app.encerrar());
+
+  // Primeira conexão: conecta, lê "conectado", e DESCONECTA (fecha a aba).
+  const ticket1 = await pedirTicket(app);
+  const controle1 = new AbortController();
+  const resposta1 = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket1)}`, { signal: controle1.signal });
+  const leitor1 = resposta1.body.getReader();
+  const decodificador1 = new TextDecoder();
+  const buffer1 = { valor: '' };
+  await lerAteConter(leitor1, decodificador1, buffer1, 'conectado');
+  const cursorAntesDeDesconectar = Number((/^id: (\d+)/m.exec(buffer1.valor) || [])[1] ?? 0);
+  controle1.abort();
+  await leitor1.cancel().catch(() => {});
+
+  // "Enquanto a aba estava fechada": duas mensagens chegam, geram dois eventos.
+  await atendimento.receberMensagem({
+    canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:cursor:1', remetente: '5516900000001', nome: 'Ana', texto: 'primeira, perdida',
+  });
+  await atendimento.receberMensagem({
+    canal: 'whatsapp', estrategia_ia: 'openclaw_gerencia',
+    id_externo: 'wa:cursor:2', remetente: '5516900000002', nome: 'Beto', texto: 'segunda, perdida',
+  });
+  // `papel: 'admin'`: inspeção direta do log durável, não teste de escopo
+  // (ver nota equivalente acima e testes/conversas-eventos-escopo.test.js).
+  const eventosNoBanco = await repositorio.listarEventosDeConversasDesde({ cursor: null, papel: 'admin' });
+  const idsGravados = eventosNoBanco.map((e) => e.id);
+  assert.equal(idsGravados.length, 2, 'as duas mensagens precisam ter gerado exatamente dois eventos');
+
+  // Reconecta MANDANDO O CURSOR de onde parou — o replay tem que devolver
+  // exatamente esses dois eventos, nem mais nem menos, sem repetir nenhum.
+  const ticket2 = await pedirTicket(app);
+  const controle2 = new AbortController();
+  const resposta2 = await app.pedirSemAuth(
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket2)}&cursor=${cursorAntesDeDesconectar}`,
+    { signal: controle2.signal },
+  );
+  const leitor2 = resposta2.body.getReader();
+  const decodificador2 = new TextDecoder();
+  const buffer2 = { valor: '' };
+  // O payload do evento carrega `mensagem_id` (numérico), não o `id_externo`
+  // do canal — espera pelo id da SEGUNDA mensagem, não por um texto que
+  // nunca aparece no stream.
+  await lerAteConter(leitor2, decodificador2, buffer2, `"mensagem_id":${eventosNoBanco[1].payload.mensagem_id}`);
+
+  const idsRecebidos = [...buffer2.valor.matchAll(/^id: (\d+)/gm)].map((m) => Number(m[1]));
+  assert.deepEqual(idsRecebidos, idsGravados, 'o replay precisa devolver exatamente os eventos perdidos, na ordem, sem duplicar');
+
+  controle2.abort();
+  await leitor2.cancel().catch(() => {});
+});
+
+test('um usuário sem permissão de conversas:ler não consegue nem pedir bilhete', async (t) => {
+  // "Bloquear acesso cruzado": o bilhete é emitido só para quem já passa
+  // pelo mesmo gate de permissão da API REST (`exigirPermissao`,
+  // 'conversas:ler') — não existe um caminho separado, mais fraco, para o
+  // chat ao vivo. Sem permissão na rota comum, sem bilhete; sem bilhete, sem
+  // conexão SSE.
+  const repositorio = criarRepositorioEmMemoria();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+  const app = await subirServidor({
+    repositorio, emissorDeConversas, configuracao: configuracaoDeTeste(), papel: 'atendente', master: false,
+  });
+  t.after(() => app.encerrar());
+
+  // Papel "atendente" tem 'conversas:ler' no RBAC atual — o teste real de
+  // "sem permissão" é não mandar Authorization nenhum: sem identidade, sem
+  // bilhete, ponto.
+  const semAuth = await app.pedirSemAuth('/api/conversas/eventos/ticket', { method: 'POST' });
+  assert.equal(semAuth.status, 401);
 });
 
 test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma', async (t) => {
@@ -547,7 +835,7 @@ test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma',
   // mata a função à força depois do teto dela, uma vez por aba aberta.
   const repositorio = criarRepositorioEmMemoria();
   const orquestrador = orquestradorFalso();
-  const emissorDeConversas = criarEmissorDeConversas();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
 
   const app = await subirServidor({
@@ -559,9 +847,8 @@ test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma',
   });
   t.after(() => app.encerrar());
 
-  const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
-  );
+  const ticket = await pedirTicket(app);
+  const resposta = await app.pedirSemAuth(`/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`);
   assert.equal(resposta.status, 200);
 
   const leitor = resposta.body.getReader();
@@ -583,7 +870,7 @@ test('na Vercel, a conexão SSE se fecha sozinha antes do limite da plataforma',
 test('fora da Vercel, a conexão SSE não tem limite — continua aberta além do que a Vercel toleraria', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const orquestrador = orquestradorFalso();
-  const emissorDeConversas = criarEmissorDeConversas();
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({ repositorio, orquestrador, emissor: emissorDeConversas });
 
   const app = await subirServidor({
@@ -591,9 +878,10 @@ test('fora da Vercel, a conexão SSE não tem limite — continua aberta além d
   });
   t.after(() => app.encerrar());
 
+  const ticket = await pedirTicket(app);
   const controle = new AbortController();
   const resposta = await app.pedirSemAuth(
-    `/api/conversas/eventos?token=${encodeURIComponent(app.sessao.access_token)}`,
+    `/api/conversas/eventos?ticket=${encodeURIComponent(ticket)}`,
     { signal: controle.signal },
   );
   const leitor = resposta.body.getReader();

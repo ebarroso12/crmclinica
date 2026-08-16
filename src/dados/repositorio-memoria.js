@@ -4,7 +4,9 @@
 // Serve aos testes e ao desenvolvimento local sem banco: o resto do sistema
 // não distingue um do outro. Não persiste nada entre reinícios, de propósito.
 
+const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
+const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 
 const ETIQUETAS_INICIAIS = [
   { nome: 'lead_quente', descricao: 'Lead quente', cor: '#dc2626', do_sistema: true },
@@ -29,6 +31,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const notas = [];
   const leads = new Map();
   const eventos = new Map();
+  // Log durável do chat ao vivo (migration 037) — array append-only, `id`
+  // (1-based, contador próprio) faz o papel do `bigserial` do Postgres.
+  const conversasEventos = [];
+  let proximoIdDeEventoDeConversa = 1;
+  const conversasEventosTickets = new Map();
   const auditoria = [];
   // Espelha `system_heartbeats` do Postgres: componente → { status, atualizadoEm }.
   // Sem escritor próprio (quem grava, no banco real, é um worker externo ao
@@ -359,6 +366,44 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return montarConversa(conversa);
     },
 
+    // Migration 038/Bug B — paridade com repositorio.js. Ver os comentários lá.
+    async assumirConversaSeNecessario(id, { usuarioId = null, pausaAte = null } = {}) {
+      const conversa = conversas.get(Number(id));
+      if (!conversa) return null;
+      const jaEraDestaPessoa = conversa.assumida_por_humano === true && conversa.atribuido_a === usuarioId;
+      if (jaEraDestaPessoa) return null;
+
+      conversa.assumida_por_humano = true;
+      conversa.atribuido_a = usuarioId;
+      conversa.ia_pausada_ate = pausaAte;
+      conversa.status = 'aberta';
+      conversa.atualizado_em = agora().toISOString();
+      return montarConversa(conversa);
+    },
+
+    async liberarConversaSeNecessario(id) {
+      const conversa = conversas.get(Number(id));
+      if (!conversa) return null;
+      if (conversa.assumida_por_humano !== true) return null;
+
+      conversa.assumida_por_humano = false;
+      conversa.atribuido_a = null;
+      conversa.ia_pausada_ate = null;
+      conversa.atualizado_em = agora().toISOString();
+      return montarConversa(conversa);
+    },
+
+    // Paridade com repositorio.js — ver os comentários lá.
+    async definirStatusSeNecessario(id, status) {
+      const conversa = conversas.get(Number(id));
+      if (!conversa) return null;
+      if (conversa.status === status) return null;
+
+      conversa.status = status;
+      conversa.atualizado_em = agora().toISOString();
+      return montarConversa(conversa);
+    },
+
     // ---------------------------------------------------------------- mensagens
 
     async listarMensagens(conversaId, { incluirPrivadas = true } = {}) {
@@ -390,6 +435,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         // em contrário — a barreira final marca o oposto quando bloqueia.
         entrega_falhou: false,
         entrega_falhou_motivo: null,
+        // Migration 038 — paridade com repositorio.js.
+        entregue_em: null,
+        entrega_indeterminada: false,
       };
       mensagens.push(mensagem);
 
@@ -417,6 +465,22 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
       if (!mensagem) return null;
       mensagem.entrega_falhou = true;
+      mensagem.entrega_falhou_motivo = motivo ?? null;
+      return { ...mensagem };
+    },
+
+    // Migration 038 — paridade com repositorio.js. Ver os comentários lá.
+    async marcarEntregaConfirmada(mensagemId) {
+      const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
+      if (!mensagem) return null;
+      mensagem.entregue_em = agora().toISOString();
+      return { ...mensagem };
+    },
+
+    async marcarEntregaIndeterminada(mensagemId, motivo) {
+      const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
+      if (!mensagem) return null;
+      mensagem.entrega_indeterminada = true;
       mensagem.entrega_falhou_motivo = motivo ?? null;
       return { ...mensagem };
     },
@@ -1610,6 +1674,101 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         }
       }
       return total;
+    },
+
+    // ------------------------------------------------- chat ao vivo durável
+    // Paridade com repositorio.js — ver os comentários lá para o raciocínio.
+
+    async registrarEventoDeConversa({ conversaId, tipo, payload = {} }) {
+      const linha = {
+        id: proximoIdDeEventoDeConversa,
+        conversa_id: Number(conversaId),
+        tipo,
+        payload: payload ?? {},
+        criado_em: agora().toISOString(),
+      };
+      proximoIdDeEventoDeConversa += 1;
+      conversasEventos.push(linha);
+      return { ...linha };
+    },
+
+    // Mesmo escopo do repositorio.js (BLOQUEADOR 1, auditoria PR #34):
+    // `papel` é obrigatório (fail-closed) e o filtro usa a MESMA
+    // `podeAcessarConversaAoVivo` que o broadcast ao vivo usa. Sem SQL aqui,
+    // então não há "filtrar no WHERE" — só a passada em JS, que já é a
+    // única fonte de verdade nesta implementação.
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+      if (!papel) {
+        throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
+      }
+      const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+      const visivel = (linha) => {
+        const conversa = conversas.get(linha.conversa_id);
+        // Conversa inexistente NEGA — paridade exata com o SQL de
+        // repositorio.js, que usa `JOIN conversas` e por construção nunca
+        // devolve evento órfão. Antes, o `null` de "não achei a conversa"
+        // caía no mesmo ramo de "conversa livre" e o evento passava: a
+        // mesma confusão de estados que o gate final do PR #34 provou no
+        // caminho ao vivo, aqui no replay.
+        if (!conversa) return false;
+        const atribuidoA = conversa.atribuido_a !== null && conversa.atribuido_a !== undefined
+          ? Number(conversa.atribuido_a) : null;
+        return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA);
+      };
+
+      // Filtra ANTES de limitar — mesma ordem de operações do SQL em
+      // repositorio.js (o `WHERE` de autorização entra antes do `LIMIT`):
+      // "os últimos N que este papel pode ver", não "dos últimos N no log
+      // geral, os que este papel pode ver" (que devolveria menos que N
+      // quando a conversa alheia domina a cauda do log).
+      const autorizados = (cursor === null ? conversasEventos : conversasEventos.filter((linha) => linha.id > Number(cursor)))
+        .filter(visivel);
+      const pagina = cursor === null ? autorizados.slice(-limite) : autorizados.slice(0, limite);
+      return pagina.map((linha) => ({ ...linha }));
+    },
+
+    /**
+     * Paridade com repositorio.js — ver os comentários lá para os três
+     * estados (existe / inexistente / erro) e por que `null` não podia mais
+     * significar as duas primeiras coisas ao mesmo tempo.
+     */
+    async obterEscopoDaConversa(conversaId) {
+      const conversa = conversas.get(Number(conversaId));
+      if (!conversa) return { estado: 'inexistente' };
+      return {
+        estado: 'existe',
+        atribuidoA: conversa.atribuido_a === null || conversa.atribuido_a === undefined
+          ? null : Number(conversa.atribuido_a),
+      };
+    },
+
+    // Bug B, item 2 ("chat completo") — paridade com repositorio.js. Ver os
+    // comentários lá para o raciocínio de por que só estes dois tipos.
+    async listarEventosOperacionaisDaConversa(conversaId) {
+      const TIPOS = new Set(['conversa_devolvida', 'conversa_resolvida']);
+      return conversasEventos
+        .filter((linha) => linha.conversa_id === Number(conversaId) && TIPOS.has(linha.tipo))
+        .map((linha) => ({ ...linha }));
+    },
+
+    async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
+      const bruto = crypto.randomBytes(32).toString('base64url');
+      conversasEventosTickets.set(bruto, {
+        usuarioId: Number(usuarioId),
+        papel,
+        expiraEm: new Date(agora().getTime() + ttlMs),
+        usadoEm: null,
+      });
+      return bruto;
+    },
+
+    async resgatarTicketDeEventos(bruto) {
+      const ticket = conversasEventosTickets.get(bruto);
+      if (!ticket) return null;
+      if (ticket.usadoEm) return null;
+      if (ticket.expiraEm.getTime() <= agora().getTime()) return null;
+      ticket.usadoEm = agora();
+      return { usuarioId: ticket.usuarioId, papel: ticket.papel };
     },
 
     // ---------------------------------------------------------------- agenda

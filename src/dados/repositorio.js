@@ -6,8 +6,10 @@
 //
 // Consultas sempre parametrizadas ($1, $2…): nada de concatenar valor em SQL.
 
+const crypto = require('node:crypto');
 const contexto = require('./contexto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
+const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 
 const SELECAO_CONVERSA = `
   c.id, c.contato_id, c.canal, c.status, c.prioridade, c.atribuido_a,
@@ -223,6 +225,11 @@ function montarMensagem(linha) {
     // comportamento de hoje), nunca quebra.
     entrega_falhou: linha.entrega_falhou ?? false,
     entrega_falhou_motivo: linha.entrega_falhou_motivo ?? null,
+    // Migration 038. Mesmo raciocínio do `?? false`/`?? null` acima: antes da
+    // migration aplicada, o SELECT * não traz a coluna, e o fallback aqui
+    // evita que o código que lê `entregue_em` explodisse por `undefined`.
+    entregue_em: linha.entregue_em ?? null,
+    entrega_indeterminada: linha.entrega_indeterminada ?? false,
   };
 }
 
@@ -271,6 +278,49 @@ function criarRepositorio(pool) {
   // declarado; fora dela (semeadura, tarefas de manutenção, health check) o pool
   // atende direto. Nenhuma consulta abaixo precisa saber em qual dos dois está.
   const consultar = (texto, valores) => consultarNoCliente(contexto.atual()?.client ?? pool, texto, valores);
+
+  /**
+   * Roda um trecho de várias instruções que precisam ser atômicas entre si.
+   *
+   * Existe porque `consultar` resolve a consulta solta, mas não o caso de duas
+   * ou três escritas que só fazem sentido juntas. Quem precisava disso abria
+   * `pool.connect()` e emitia `BEGIN` — e aí estava o defeito: dentro de uma
+   * requisição já existe transação aberta (`comUsuario`), e uma conexão nova
+   * não enxerga o que a primeira ainda não commitou. Uma conversa criada
+   * segundos antes, na mesma requisição, simplesmente não existia para a
+   * segunda conexão, e o INSERT batia na chave estrangeira. Em produção isso
+   * foram centenas de HTTP 500 no webhook do WhatsApp, só para contato novo.
+   *
+   * Com transação ambiente: usa o mesmo client e **não** emite
+   * `BEGIN`/`COMMIT`/`ROLLBACK` nem devolve a conexão — quem abriu a transação
+   * é quem a fecha. Um `ROLLBACK` daqui desfaria escritas legítimas vizinhas;
+   * um `COMMIT` publicaria pela metade o que ainda estava em curso.
+   *
+   * Sem transação ambiente (semeadura, worker, manutenção): conexão e
+   * transação próprias, exatamente como antes.
+   */
+  async function executarNaTransacao(trabalho) {
+    const ambiente = contexto.atual();
+    if (ambiente?.client) return trabalho(ambiente.client);
+
+    const cliente = await pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      const resultado = await trabalho(cliente);
+      await cliente.query('COMMIT');
+      return resultado;
+    } catch (erro) {
+      try {
+        await cliente.query('ROLLBACK');
+      } catch {
+        // Conexão já perdida; o pool a descarta ao liberar. O erro original é
+        // o que importa e segue subindo.
+      }
+      throw erro;
+    } finally {
+      cliente.release();
+    }
+  }
 
   /**
    * Roda uma instrução como o **sistema**, não como o usuário da requisição.
@@ -525,6 +575,61 @@ function criarRepositorio(pool) {
       return this.obterConversa(id);
     },
 
+    /**
+     * Marca a conversa como assumida por um humano, SÓ SE isto for uma
+     * transição de verdade — condição na própria cláusula WHERE, não numa
+     * leitura prévia. Migration 038/Bug B, mesma família de achado: dois
+     * `POST /assumir` para a mesma conversa e o mesmo usuário (duplo clique,
+     * retry sem confirmação de rede) competiam numa corrida clássica de
+     * "ler depois escrever" — cada um lia `assumida_por_humano: false` antes
+     * do outro terminar de gravar, e os dois geravam aviso de sistema,
+     * evento `conversa_assumida` e linha de auditoria duplicados. Aqui só
+     * UMA das duas chamadas concorrentes enxerga `RETURNING` não vazio; a
+     * outra recebe `null` e sabe que não há nada novo a anunciar. Uma
+     * transferência de verdade (outra pessoa assumindo de quem já estava)
+     * sempre conta como transição — só o retry idêntico é absorvido.
+     */
+    async assumirConversaSeNecessario(id, { usuarioId = null, pausaAte = null } = {}) {
+      const { rows } = await consultar(`
+        UPDATE conversas
+           SET assumida_por_humano = true, atribuido_a = $2, ia_pausada_ate = $3, status = 'aberta'
+         WHERE id = $1
+           AND (assumida_por_humano IS DISTINCT FROM true OR atribuido_a IS DISTINCT FROM $2)
+        RETURNING *
+      `, [id, usuarioId, pausaAte]);
+      return rows[0] ? montarConversa(rows[0]) : null;
+    },
+
+    /** Mesmo raciocínio de `assumirConversaSeNecessario`, para devolver à automação. */
+    async liberarConversaSeNecessario(id) {
+      const { rows } = await consultar(`
+        UPDATE conversas
+           SET assumida_por_humano = false, atribuido_a = null, ia_pausada_ate = null
+         WHERE id = $1 AND assumida_por_humano IS DISTINCT FROM false
+        RETURNING *
+      `, [id]);
+      return rows[0] ? montarConversa(rows[0]) : null;
+    },
+
+    /**
+     * Mesmo raciocínio das duas acima, para a troca de estado da conversa
+     * (`POST /api/conversas/:id/estado`). Achado da auditoria adversarial
+     * deste lote: `resolver` era o único caminho que ainda publicava evento e
+     * auditava INCONDICIONALMENTE — dois cliques (ou um retry de rede)
+     * gravavam dois `conversa_resolvida`, e a thread passava a exibir
+     * "Conversa marcada como resolvida." duas vezes. `IS DISTINCT FROM`
+     * absorve a repetição sem ler antes de escrever (não há janela de corrida
+     * entre a leitura e a gravação).
+     */
+    async definirStatusSeNecessario(id, status) {
+      const { rows } = await consultar(`
+        UPDATE conversas SET status = $2
+         WHERE id = $1 AND status IS DISTINCT FROM $2
+        RETURNING *
+      `, [id, status]);
+      return rows[0] ? montarConversa(rows[0]) : null;
+    },
+
     // ---------------------------------------------------------------- mensagens
 
     async listarMensagens(conversaId, { incluirPrivadas = true } = {}) {
@@ -543,10 +648,7 @@ function criarRepositorio(pool) {
      * some do topo da lista e a equipe não a vê.
      */
     async registrarMensagem(conversaId, mensagem) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
-
+      const gravar = async (cliente) => {
         const { rows } = await cliente.query(`
           INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -564,10 +666,13 @@ function criarRepositorio(pool) {
           mensagem.id_externo || null,
         ]);
 
-        // Sem linha devolvida, a mensagem já existia: reentrega do canal.
+        // Sem linha devolvida, a mensagem já existia: reentrega do canal. Isso
+        // não é erro e não pode desfazer nada — antes havia um `ROLLBACK` aqui,
+        // inofensivo numa conexão só desta função, mas desastroso quando o
+        // cliente é a transação da requisição: abortaria contato, conversa e o
+        // trabalho da outbox por causa de uma duplicata esperada.
         if (rows.length === 0) {
-          await cliente.query('ROLLBACK');
-          const existente = await consultar('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
+          const existente = await cliente.query('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
           return { mensagem: montarMensagem(existente.rows[0]), duplicada: true };
         }
 
@@ -591,14 +696,10 @@ function criarRepositorio(pool) {
           }
         }
 
-        await cliente.query('COMMIT');
         return { mensagem: montarMensagem(rows[0]), duplicada: false };
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      };
+
+      return executarNaTransacao(gravar);
     },
 
     /**
@@ -609,6 +710,34 @@ function criarRepositorio(pool) {
     async marcarEntregaFalhou(mensagemId, motivo) {
       const { rows } = await consultar(
         'UPDATE mensagens SET entrega_falhou = true, entrega_falhou_motivo = $2 WHERE id = $1 RETURNING *',
+        [mensagemId, motivo ?? null],
+      );
+      return rows[0] ? montarMensagem(rows[0]) : null;
+    },
+
+    /**
+     * Marca que o canal CONFIRMOU o envio — migration 038. É o que falta para
+     * `respostaAnterior` (atendimento.js) saber que uma retentativa não pode
+     * reenviar: sem isto, só existia a marca de FALHA, nunca a de SUCESSO, e
+     * "não sei se já enviei" virava sempre "envio de novo".
+     */
+    async marcarEntregaConfirmada(mensagemId) {
+      const { rows } = await consultar(
+        'UPDATE mensagens SET entregue_em = now() WHERE id = $1 RETURNING *',
+        [mensagemId],
+      );
+      return rows[0] ? montarMensagem(rows[0]) : null;
+    },
+
+    /**
+     * Marca entrega indeterminada (timeout/queda depois de possivelmente
+     * aceita) — mesmo conceito de `entregaIncerta` na outbox
+     * (automacao-outbox.js), agora também na MENSAGEM em si, para o retry em
+     * `respostaAnterior` recusar reenviar mesmo sem um job de outbox por perto.
+     */
+    async marcarEntregaIndeterminada(mensagemId, motivo) {
+      const { rows } = await consultar(
+        'UPDATE mensagens SET entrega_indeterminada = true, entrega_falhou_motivo = $2 WHERE id = $1 RETURNING *',
         [mensagemId, motivo ?? null],
       );
       return rows[0] ? montarMensagem(rows[0]) : null;
@@ -904,9 +1033,7 @@ function criarRepositorio(pool) {
      * Nomes desconhecidos são ignorados — não se cria etiqueta por digitação errada.
      */
     async definirEtiquetasDaConversa(conversaId, nomes) {
-      const cliente = await pool.connect();
-      try {
-        await cliente.query('BEGIN');
+      await executarNaTransacao(async (cliente) => {
         await cliente.query('DELETE FROM conversa_etiquetas WHERE conversa_id = $1', [conversaId]);
 
         if (nomes.length > 0) {
@@ -916,14 +1043,7 @@ function criarRepositorio(pool) {
             ON CONFLICT DO NOTHING
           `, [conversaId, nomes]);
         }
-
-        await cliente.query('COMMIT');
-      } catch (erro) {
-        await cliente.query('ROLLBACK');
-        throw erro;
-      } finally {
-        cliente.release();
-      }
+      });
 
       return this.listarEtiquetasDaConversa(conversaId);
     },
@@ -1853,6 +1973,195 @@ function criarRepositorio(pool) {
         [usuarioId],
       );
       return rowCount;
+    },
+
+    // ------------------------------------------------- chat ao vivo durável
+
+    /**
+     * Grava um evento no log durável (migration 037). `id` (bigserial) é o
+     * cursor monotônico que o replay usa — nunca reaproveitado, sempre
+     * crescente, é o que permite "me dê tudo que aconteceu depois do X".
+     */
+    async registrarEventoDeConversa({ conversaId, tipo, payload = {} }) {
+      const { rows } = await consultar(
+        `INSERT INTO conversas_eventos (conversa_id, tipo, payload)
+         VALUES ($1, $2, $3::jsonb) RETURNING id, conversa_id, tipo, payload, criado_em`,
+        [conversaId, tipo, JSON.stringify(payload ?? {})],
+      );
+      const linha = rows[0];
+      return {
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      };
+    },
+
+    /**
+     * Eventos com `id > cursor` — o replay depois de reconectar. `cursor:
+     * null` devolve os últimos `limite` eventos (primeira conexão, sem
+     * histórico prévio para recuperar). `limite` existe para uma reconexão
+     * depois de horas offline não tentar devolver dezenas de milhares de
+     * linhas de uma vez.
+     *
+     * `usuarioId`/`papel` são OBRIGATÓRIOS — BLOQUEADOR 1 da auditoria do PR
+     * #34: sem eles, esta consulta devolvia eventos de TODA conversa da
+     * clínica para qualquer assinante do SSE (a RLS não ajuda aqui: a rota
+     * de eventos ao vivo roda fora de `comIdentidade`, então a conexão nasce
+     * com `app_role=backend`, sob o qual `can_access_conversa` — db/034 —
+     * sempre devolve `true`; ver o comentário de `podeAcessarConversaAoVivo`
+     * em src/seguranca/rbac.js). `papel` ausente lança em vez de devolver
+     * tudo (fail-closed): um chamador que "esqueceu" de declarar o escopo é
+     * um bug, não uma consulta administrativa implícita.
+     *
+     * O filtro roda DUAS vezes, de propósito: no SQL (para nunca puxar linha
+     * alheia à memória do processo) e de novo em JS, com a MESMA função que
+     * decide o broadcast ao vivo (`podeAcessarConversaAoVivo`) — se um dia o
+     * `WHERE` abaixo divergir da função por um erro de edição, esta segunda
+     * passada garante que a resposta HTTP nunca vaza a linha mesmo assim.
+     */
+    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+      if (!papel) {
+        throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
+      }
+      const verTudo = papel === 'admin' || papel === 'gestor';
+      const verRestrito = papel === 'atendente';
+      const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+
+      const { rows } = await consultar(
+        cursor === null
+          ? `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a
+               FROM conversas_eventos ce
+               JOIN conversas c ON c.id = ce.conversa_id
+              WHERE ($2::boolean OR ($3::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $4)))
+              ORDER BY ce.id DESC LIMIT $1`
+          : `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a
+               FROM conversas_eventos ce
+               JOIN conversas c ON c.id = ce.conversa_id
+              WHERE ce.id > $2
+                AND ($3::boolean OR ($4::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $5)))
+              ORDER BY ce.id ASC LIMIT $1`,
+        cursor === null
+          ? [limite, verTudo, verRestrito, usuarioIdNumerico]
+          : [limite, cursor, verTudo, verRestrito, usuarioIdNumerico],
+      );
+      const ordenados = cursor === null ? rows.slice().reverse() : rows;
+      return ordenados
+        .filter((linha) => podeAcessarConversaAoVivo(
+          papel, usuarioIdNumerico, linha.atribuido_a === null ? null : Number(linha.atribuido_a),
+        ))
+        .map((linha) => ({
+          id: Number(linha.id),
+          conversa_id: Number(linha.conversa_id),
+          tipo: linha.tipo,
+          payload: linha.payload,
+          criado_em: linha.criado_em,
+        }));
+    },
+
+    /**
+     * Só o campo necessário para decidir, AO VIVO, se um evento desta
+     * conversa pode ir para uma conexão SSE de um atendente (ver
+     * `podeAcessarConversaAoVivo` em src/seguranca/rbac.js, usado por
+     * eventos-conversas.js).
+     *
+     * TRÊS ESTADOS DISTINTOS, de propósito — gate final do PR #34. A versão
+     * anterior (`obterAtribuidoDaConversa`) devolvia `null` tanto para
+     * "conversa existe e está livre" quanto para "conversa não existe", e
+     * `podeAcessarConversaAoVivo` lê `null` como "livre" e LIBERA. Resultado
+     * provado pela auditoria: evento de conversa inexistente concedia acesso
+     * a atendente. Agora:
+     *
+     *   { estado: 'existe', atribuidoA: number|null }  → o predicado decide
+     *   { estado: 'inexistente' }                      → quem chama NEGA
+     *   (exceção lançada)                              → quem chama NEGA
+     *
+     * O terceiro estado é uma exceção e não um valor de propósito: erro de
+     * conexão, de permissão (42501) ou de SQL nunca pode ser confundido com
+     * um resultado. Quem chama é quem decide o fail-closed, com o erro em
+     * mãos para registrar — nada é mascarado aqui dentro.
+     */
+    async obterEscopoDaConversa(conversaId) {
+      const { rows } = await consultar('SELECT atribuido_a FROM conversas WHERE id = $1', [conversaId]);
+      if (rows.length === 0) return { estado: 'inexistente' };
+      return {
+        estado: 'existe',
+        atribuidoA: rows[0].atribuido_a === null ? null : Number(rows[0].atribuido_a),
+      };
+    },
+
+    /**
+     * Eventos operacionais de UMA conversa que ainda não têm NENHUMA
+     * representação visível na thread: devolver e resolver. Propositalmente
+     * NÃO inclui:
+     *   - mensagem_recebida/enviada: já vêm de `mensagens`;
+     *   - conversa_assumida: `assumir()` já grava um aviso de sistema
+     *     (`mensagens`, tipo='sistema') — incluir o evento aqui duplicaria
+     *     visualmente a MESMA transição;
+     *   - erro/status_entrega: a mensagem já fica marcada
+     *     (`entrega_falhou`/`entrega_indeterminada`) e a tela já lê essas
+     *     colunas — um evento solto ao lado seria a mesma informação duas
+     *     vezes, de formas diferentes.
+     * Bug B, item 2 ("chat completo"): sem isto, "conversa devolvida à
+     * automação" e "conversa resolvida" não apareciam em lugar nenhum da
+     * tela, nem depois de recarregar a página — não por serem filtradas por
+     * direção/origem (não são mensagem), mas por nunca terem sido incluídas
+     * no que a thread lê.
+     */
+    async listarEventosOperacionaisDaConversa(conversaId) {
+      const { rows } = await consultar(
+        `SELECT id, conversa_id, tipo, payload, criado_em FROM conversas_eventos
+          WHERE conversa_id = $1
+            AND tipo IN ('conversa_devolvida', 'conversa_resolvida')
+          ORDER BY id ASC`,
+        [conversaId],
+      );
+      return rows.map((linha) => ({
+        id: Number(linha.id),
+        conversa_id: Number(linha.conversa_id),
+        tipo: linha.tipo,
+        payload: linha.payload,
+        criado_em: linha.criado_em,
+      }));
+    },
+
+    /**
+     * Ticket de uso único para abrir a conexão SSE sem carregar o token de
+     * sessão na querystring. Validade curta de propósito: o tempo entre
+     * pedir o ticket e abrir o EventSource é de milissegundos no uso normal;
+     * 30s já é folga generosa.
+     */
+    async criarTicketDeEventos({ usuarioId, papel, ttlMs = 30_000 }) {
+      const bruto = crypto.randomBytes(32).toString('base64url');
+      const hash = crypto.createHash('sha256').update(bruto).digest('hex');
+      const expiraEm = new Date(Date.now() + ttlMs).toISOString();
+      await consultar(
+        `INSERT INTO conversas_eventos_tickets (hash_ticket, usuario_id, papel, expira_em)
+         VALUES ($1, $2, $3, $4)`,
+        [hash, usuarioId, papel, expiraEm],
+      );
+      return bruto;
+    },
+
+    /**
+     * Resgata o ticket — atômico, com `RETURNING` conferido (mesma correção
+     * que `marcarRecuperacaoUsada` recebeu nesta sessão: sem isto, duas
+     * conexões simultâneas com o MESMO ticket poderiam ambas passar). Token
+     * inexistente, já usado ou expirado devolve `null` — o chamador nunca
+     * distingue os três motivos, para não revelar qual dos três foi.
+     */
+    async resgatarTicketDeEventos(bruto) {
+      const hash = crypto.createHash('sha256').update(String(bruto ?? '')).digest('hex');
+      const { rows } = await consultar(
+        `UPDATE conversas_eventos_tickets
+            SET usado_em = now()
+          WHERE hash_ticket = $1 AND usado_em IS NULL AND expira_em > now()
+        RETURNING usuario_id, papel`,
+        [hash],
+      );
+      if (rows.length === 0) return null;
+      return { usuarioId: Number(rows[0].usuario_id), papel: rows[0].papel };
     },
 
     // ---------------------------------------------------------------- agenda

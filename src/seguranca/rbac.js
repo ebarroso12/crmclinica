@@ -80,4 +80,38 @@ function exigirPermissao(usuario, permissao) {
   if (!podeFazer(usuario.papel, permissao)) throw new ErroDeAutorizacao(permissao);
 }
 
-module.exports = { PAPEIS, PERMISSOES, PERMISSOES_CONHECIDAS, podeFazer, permissoesDoPapel, exigirPermissao, ErroDeAutorizacao };
+/**
+ * Escopo de UMA conversa para o chat ao vivo (SSE, `/api/conversas/eventos`)
+ * — BLOQUEADOR 1 da auditoria independente do PR #34.
+ *
+ * `conversas:ler` (acima) diz "este papel pode ler conversas", mas a rota de
+ * eventos ao vivo faz *broadcast*: sem um filtro por conversa, qualquer
+ * atendente autenticado recebia todo evento de toda conversa da clínica —
+ * inclusive as atribuídas a outro atendente. Este predicado é quem falta.
+ *
+ * Espelha a semântica de `can_access_conversa` (db/034_reconstrucao_funcoes_e_policies_008.sql)
+ * SEM o ramo `is_backend()`: a rota de eventos ao vivo fica deliberadamente
+ * fora de `comIdentidade` (conexão de horas travaria o pool — ver comentário
+ * em http.js), então toda consulta que ela faz nasce com `app_role=backend`
+ * (src/dados/pool.js) — nessa conexão, `is_backend()` é sempre `true`, e uma
+ * policy escrita em cima de `can_access_conversa` seria idêntica a
+ * `USING (true)`. A decisão por isso vive aqui, na aplicação, não no banco.
+ *
+ * Nunca lança — é um predicado puro, chamado tanto no replay
+ * (`repositorio.listarEventosDeConversasDesde`) quanto no broadcast ao vivo
+ * (`eventos-conversas.js`), sempre com o MESMO resultado para a mesma
+ * entrada. Um papel desconhecido não recebe nada — a falta de regra nega.
+ */
+function podeAcessarConversaAoVivo(papel, usuarioId, atribuidoA) {
+  if (papel === 'admin' || papel === 'gestor') return true;
+  if (papel === 'atendente') {
+    if (atribuidoA === null || atribuidoA === undefined) return true;
+    return usuarioId !== null && usuarioId !== undefined && Number(atribuidoA) === Number(usuarioId);
+  }
+  return false;
+}
+
+module.exports = {
+  PAPEIS, PERMISSOES, PERMISSOES_CONHECIDAS, podeFazer, permissoesDoPapel,
+  exigirPermissao, ErroDeAutorizacao, podeAcessarConversaAoVivo,
+};

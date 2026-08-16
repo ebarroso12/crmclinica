@@ -271,6 +271,39 @@ function criarAtendimento({
     // novo um trabalho que só está demorando (ver automacao-outbox.js).
     const respostaAnterior = mensagens.find((mensagem) => mensagem.id_externo === chaveDaResposta);
     if (respostaAnterior) {
+      // Migration 038 — achado real desta sessão, não hipótese: sem esta
+      // checagem, um trabalho que volta à fila DEPOIS de a resposta já ter
+      // sido entregue (banco pisca entre enviar e concluir; processo morre
+      // sem desligamento gracioso) reenviava a MESMA resposta ao paciente —
+      // porque antes só existia marca de FALHA (`entrega_falhou`), nunca de
+      // SUCESSO. `entregue_em` é essa marca; ela nasce dentro do próprio
+      // `entregarAoPaciente`, no sucesso, e é consultada aqui ANTES de tentar
+      // enviar de novo — não depois.
+      if (respostaAnterior.entregue_em) {
+        return {
+          acao: 'respondida_pela_automacao',
+          conversa_id: conversaId,
+          duplicada: true,
+          entregue: true,
+        };
+      }
+
+      // Mesma regra que já vale para o job da outbox (decidirDesfecho, em
+      // automacao-outbox.js): entrega indeterminada nunca é retentada
+      // automaticamente. Sem isto, uma resposta que talvez já tenha saído
+      // (timeout da Evolution) seria reenviada na próxima retentativa —
+      // exatamente o duplo envio que a regra da outbox já evita no nível do
+      // job, agora fechado também no nível da mensagem.
+      if (respostaAnterior.entrega_indeterminada) {
+        return {
+          acao: 'escalonada_por_falha_entrega',
+          conversa_id: conversaId,
+          motivo: 'entrega_indeterminada',
+          entregue: false,
+          entregaIncerta: true,
+        };
+      }
+
       const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
         origem: 'serena',
       });
@@ -498,12 +531,19 @@ function criarAtendimento({
       ? new Date(Date.now() + pausarMinutos * 60_000).toISOString()
       : null;
 
-    const conversa = await repositorio.atualizarConversa(conversaId, {
-      assumida_por_humano: true,
-      atribuido_a: usuarioId,
-      ia_pausada_ate: pausaAte,
-      status: 'aberta',
-    });
+    // Migration 038/Bug B, achado real: sem a checagem atômica, dois
+    // POST /assumir para a mesma conversa e o mesmo usuário (duplo clique,
+    // retry de rede sem confirmação) duplicavam o aviso de sistema, o evento
+    // `conversa_assumida` e a linha de auditoria. `assumirConversaSeNecessario`
+    // devolve `null` quando não há transição de verdade (já era desta mesma
+    // pessoa) — e é aí que paramos, sem repetir nenhum efeito colateral.
+    const transicao = repositorio.assumirConversaSeNecessario
+      ? await repositorio.assumirConversaSeNecessario(conversaId, { usuarioId, pausaAte })
+      : await repositorio.atualizarConversa(conversaId, {
+        assumida_por_humano: true, atribuido_a: usuarioId, ia_pausada_ate: pausaAte, status: 'aberta',
+      });
+    if (!transicao) return repositorio.obterConversa(conversaId);
+    const conversa = transicao;
 
     const { mensagem: avisoDeAssumir } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
@@ -513,6 +553,10 @@ function criarAtendimento({
       privada: true,
     });
     emissor?.publicarMensagem(conversaId, avisoDeAssumir);
+    // Evento distinto de "chegou mensagem": quem está com a tela de
+    // Conversas aberta precisa reagir a "assumida" (ex.: mover a conversa de
+    // seção) sem depender de sniffar o texto do aviso de sistema.
+    emissor?.publicarConversaAssumida?.(conversaId, { usuarioId });
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
@@ -526,12 +570,17 @@ function criarAtendimento({
 
   /** Devolve a conversa à automação. */
   async function liberar(conversaId) {
-    const conversa = await repositorio.atualizarConversa(conversaId, {
-      assumida_por_humano: false,
-      atribuido_a: null,
-      ia_pausada_ate: null,
-    });
+    // Mesmo raciocínio de `assumir`: só publica/audita quando é uma
+    // transição de verdade, não um retry do mesmo "devolver".
+    const transicao = repositorio.liberarConversaSeNecessario
+      ? await repositorio.liberarConversaSeNecessario(conversaId)
+      : await repositorio.atualizarConversa(conversaId, {
+        assumida_por_humano: false, atribuido_a: null, ia_pausada_ate: null,
+      });
+    if (!transicao) return repositorio.obterConversa(conversaId);
+    const conversa = transicao;
 
+    emissor?.publicar?.({ conversaId, tipo: 'conversa_devolvida', payload: {} });
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
@@ -665,6 +714,15 @@ function criarAtendimento({
             console.error(`[atendimento] falha ao marcar entrega não realizada: ${erro.message}`);
           });
         }
+        // Gate 2 da auditoria ("chat realmente ao vivo"): sem isto, quem
+        // está com a conversa aberta só via o "não entregue" ao recarregar
+        // a tela — `entrega_falhou` já era gravado na mensagem, mas nada
+        // avisava ao vivo. `publicarStatusDeEntrega` existia desde a
+        // Pendência 4 (eventos-conversas.js) mas nunca era chamado.
+        emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'falhou' });
+        // Nunca o texto gerado nem o motivo em prosa livre — só o código
+        // técnico, mesma disciplina da auditoria acima.
+        emissor?.publicarErro?.(conversa.id, { motivo: controle.motivo, mensagemId });
 
         // Comando 7, achado A-3: motivo que não é uma decisão humana recente
         // (ver MOTIVOS_DE_DECISAO_HUMANA_RECENTE) precisa escalonar — sem
@@ -707,12 +765,32 @@ function criarAtendimento({
         chave: `${origem}:${conversa.id}:${mensagemId}`,
       });
 
+      // Migration 038: marca a confirmação ANTES de devolver — é o que
+      // `respostaAnterior`, mais acima nesta função, consulta para nunca
+      // reenviar o que já saiu. Best-effort de propósito: uma falha em
+      // marcar isto não pode desfazer um envio que já aconteceu de verdade.
+      if (repositorio.marcarEntregaConfirmada) {
+        await repositorio.marcarEntregaConfirmada(mensagemId).catch((erroDeMarca) => {
+          console.error(`[atendimento] falha ao marcar entrega confirmada: ${erroDeMarca.message}`);
+        });
+      }
+      // Gate 2 da auditoria: mesma razão do publicarStatusDeEntrega acima —
+      // quem está com a conversa aberta vê "entregue" na hora, sem recarregar.
+      emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'entregue' });
       return { enviada: true, identificador: resultado?.identificador ?? null };
     } catch (erro) {
       // `indeterminado`: a chamada estourou o tempo sem resposta — não dá para
       // dizer se a mensagem saiu ou não. Quem chama (a outbox) precisa saber
       // disso para NUNCA reenviar automaticamente neste caso.
-      return { enviada: false, motivo: erro.message, indeterminado: erro.indeterminado === true };
+      const indeterminado = erro.indeterminado === true;
+      if (indeterminado && repositorio.marcarEntregaIndeterminada) {
+        await repositorio.marcarEntregaIndeterminada(mensagemId, erro.message).catch((erroDeMarca) => {
+          console.error(`[atendimento] falha ao marcar entrega indeterminada: ${erroDeMarca.message}`);
+        });
+        // Gate 2 da auditoria: mesma razão dos dois acima.
+        emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'indeterminado' });
+      }
+      return { enviada: false, motivo: erro.message, indeterminado };
     }
   }
 
