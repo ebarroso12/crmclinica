@@ -88,6 +88,12 @@ const CABECALHOS_SEGURANCA = Object.freeze({
     "connect-src 'self' ws: wss:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 });
 
+// Teto de bilhetes de SSE por usuário, por minuto (janela deslizante) — ver
+// o comentário na rota `/api/conversas/eventos/ticket`. 60/min = folga
+// generosa pra reconexão legítima de múltiplas abas, barra só loop
+// indefinido ou abuso deliberado.
+const LIMITE_DE_TICKETS_POR_MINUTO = 60;
+
 function responder(res, status, corpo, tipo = 'application/json; charset=utf-8', extras = {}) {
   res.writeHead(status, { ...CABECALHOS_SEGURANCA, ...extras, 'content-type': tipo });
   res.end(corpo);
@@ -1536,6 +1542,21 @@ function criarAplicacao(dependencias = {}) {
           return;
         }
         exigirPermissao(usuario, 'conversas:ler');
+
+        // Achado P2 da auditoria adversarial (2026-08-16): sem limite, um
+        // usuário autenticado pode gerar bilhetes em loop, sem custo além
+        // de manter a sessão viva — foi exatamente o sintoma do bug
+        // corrigido em 20cfeba (405 em loop a cada 5s, para sempre). Janela
+        // deslizante de 1 minuto, generosa de propósito: várias abas
+        // reconectando de verdade durante uma queda de rede real não pode
+        // esbarrar aqui — só um loop indefinido ou abuso deliberado.
+        const desde = new Date(Date.now() - 60_000);
+        const recentes = await repositorio.contarTicketsRecentesDoUsuario(usuario.id, desde);
+        if (recentes >= LIMITE_DE_TICKETS_POR_MINUTO) {
+          responderJson(res, 429, { erro: 'bilhetes demais em pouco tempo; tente novamente em instantes' }, { 'retry-after': '60' });
+          return;
+        }
+
         const ticket = await repositorio.criarTicketDeEventos({
           usuarioId: usuario.id, papel: usuario.papel,
         });
