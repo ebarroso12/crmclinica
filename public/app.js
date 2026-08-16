@@ -1689,7 +1689,7 @@ async function conectarEventosDeConversas() {
 
   let ticket;
   try {
-    ({ ticket } = await pedirJson('/api/conversas/eventos/ticket', { method: 'POST' }));
+    ({ ticket } = await pedirJson('/api/conversas/eventos/ticket', { metodo: 'POST' }));
   } catch {
     // Sem bilhete, sem conexão — tenta de novo no mesmo ritmo do onerror.
     reconexaoDeEventosAgendada = setTimeout(conectarEventosDeConversas, 5000);
