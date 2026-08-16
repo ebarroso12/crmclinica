@@ -12,6 +12,7 @@ const TITULOS = {
   serena: 'Serena',
   contatos: 'Contatos',
   auditoria: 'Auditoria',
+  bloqueios: 'Bloqueio de Contato',
   usuarios: 'Usuários',
   perfil: 'Meu perfil',
 };
@@ -40,6 +41,7 @@ function abrirTela(tela) {
   if (tela === 'serena') carregarSerena();
   if (tela === 'contatos') carregarContatos();
   if (tela === 'auditoria') carregarAuditoria();
+  if (tela === 'bloqueios') carregarBloqueios();
   if (tela === 'usuarios') carregarUsuarios();
   if (tela === 'perfil') desenharPerfil();
 }
@@ -1459,6 +1461,10 @@ function mostrarAplicacao() {
   // A aba de usuários é do administrador master.
   const itemUsuarios = seletor('#item-usuarios');
   if (itemUsuarios) itemUsuarios.hidden = !usuarioAtual?.master;
+
+  // Bloqueio de contato: admin/gestor, mesma regra de contatos:editar.
+  const itemBloqueios = seletor('#item-bloqueios');
+  if (itemBloqueios) itemBloqueios.hidden = !podeFazer('bloqueios:gerenciar');
 
   // O inbox começa a carregar de qualquer forma: a faixa de saúde não pode ficar
   // em "verificando…" só porque a pessoa foi levada ao perfil.
@@ -3411,6 +3417,55 @@ async function verHistoricoDoContato(id) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Bloqueio de contato: telefones desviados do atendimento automático.
+// ---------------------------------------------------------------------------
+
+let bloqueioEmEdicao = null;
+
+async function carregarBloqueios() {
+  try {
+    const dados = await pedirJson('/api/bloqueios');
+    const lista = seletor('#lista-bloqueios');
+    const total = seletor('#bloqueios-total');
+
+    if (total) total.textContent = `${dados.total} bloqueio(s)`;
+    if (!lista) return;
+
+    if (dados.bloqueios.length === 0) {
+      lista.innerHTML = '<li class="vazio">Nenhum bloqueio cadastrado.</li>';
+      return;
+    }
+
+    lista.innerHTML = dados.bloqueios.map((bloqueio) => `
+      <li>
+        <div>
+          <strong>${escapar(bloqueio.nome ?? 'sem nome')}</strong>
+          <small>${escapar(bloqueio.telefone)} — ${escapar(bloqueio.motivo ?? '')}</small>
+        </div>
+        <div class="linha-acoes">
+          <button type="button" class="secundario" data-editar-bloqueio="${bloqueio.id}">Editar</button>
+          <button type="button" class="perigo" data-remover-bloqueio="${bloqueio.id}">Remover</button>
+        </div>
+      </li>`).join('');
+  } catch (erro) {
+    informar(`Não foi possível carregar os bloqueios: ${erro.message}`);
+  }
+}
+
+function abrirEditorDeBloqueio(bloqueio = null) {
+  bloqueioEmEdicao = bloqueio;
+  const editor = seletor('#bloqueio-editor');
+  if (!editor) return;
+
+  editor.hidden = false;
+  seletor('#bloqueio-editor-titulo').textContent = bloqueio ? 'Editar bloqueio' : 'Novo bloqueio';
+  seletor('#bloqueio-nome').value = bloqueio?.nome ?? '';
+  seletor('#bloqueio-telefone').value = bloqueio?.telefone ?? '';
+  seletor('#bloqueio-motivo').value = bloqueio?.motivo ?? '';
+  editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 // ---------------------------------------------------------------- eventos
 
 document.addEventListener('click', async (evento) => {
@@ -3468,6 +3523,20 @@ document.addEventListener('click', async (evento) => {
       await pedirJson(`/api/contatos/${alvo.dataset.restaurarContato}/restaurar`, { metodo: 'POST' });
       informar('Contato restaurado.');
       await carregarContatos();
+    }
+
+    if (alvo.id === 'bloqueio-novo') abrirEditorDeBloqueio(null);
+    if (alvo.id === 'bloqueio-cancelar') seletor('#bloqueio-editor').hidden = true;
+    if (alvo.dataset.editarBloqueio) {
+      const dados = await pedirJson('/api/bloqueios');
+      const alvoBloqueio = (dados.bloqueios ?? []).find((b) => String(b.id) === alvo.dataset.editarBloqueio);
+      abrirEditorDeBloqueio(alvoBloqueio ?? null);
+    }
+    if (alvo.dataset.removerBloqueio) {
+      if (!confirm('Remover este bloqueio? O contato volta a receber resposta automática normal.')) return;
+      await pedirJson(`/api/bloqueios/${alvo.dataset.removerBloqueio}`, { metodo: 'DELETE' });
+      informar('Bloqueio removido.');
+      await carregarBloqueios();
     }
   } catch (erro) {
     informar(erro.message);
@@ -3549,6 +3618,27 @@ document.addEventListener('submit', async (evento) => {
       seletor('#contato-editor').hidden = true;
       informar('Contato salvo.');
       await carregarContatos();
+    } catch (erro) {
+      informar(erro.message);
+    }
+  }
+
+  if (form.id === 'form-bloqueio') {
+    evento.preventDefault();
+    const corpo = {
+      nome: seletor('#bloqueio-nome').value,
+      telefone: seletor('#bloqueio-telefone').value,
+      motivo: seletor('#bloqueio-motivo').value,
+    };
+    try {
+      if (bloqueioEmEdicao) {
+        await pedirJson(`/api/bloqueios/${bloqueioEmEdicao.id}`, { metodo: 'PUT', corpo: corpo });
+      } else {
+        await pedirJson('/api/bloqueios', { metodo: 'POST', corpo: corpo });
+      }
+      seletor('#bloqueio-editor').hidden = true;
+      informar('Bloqueio salvo.');
+      await carregarBloqueios();
     } catch (erro) {
       informar(erro.message);
     }

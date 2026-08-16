@@ -919,6 +919,77 @@ function criarRepositorio(pool) {
       return this.obterContato(id);
     },
 
+    // -------------------------------------------------- bloqueio de contato
+    //
+    // Lista gerenciável de telefones desviados do atendimento automático
+    // (db/040_contatos_bloqueados.sql). Diferente de `contatos`: hard delete
+    // de verdade quando removido — não há histórico clínico para preservar
+    // aqui, só a lista de quem está bloqueado agora.
+
+    async listarContatosBloqueados() {
+      const { rows } = await consultar(`
+        SELECT id, telefone, nome, motivo, criado_por, criado_em, atualizado_em
+          FROM contatos_bloqueados
+         ORDER BY criado_em DESC
+      `);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id), criado_por: linha.criado_por ? Number(linha.criado_por) : null }));
+    },
+
+    /** Chamado no caminho quente do atendimento — precisa ser rápido (índice único em telefone). */
+    async obterBloqueioPorTelefone(telefone) {
+      if (!telefone) return null;
+      const { rows } = await consultar(`
+        SELECT id, telefone, nome, motivo, criado_por, criado_em, atualizado_em
+          FROM contatos_bloqueados
+         WHERE telefone = $1
+      `, [telefone]);
+      if (!rows[0]) return null;
+      return { ...rows[0], id: Number(rows[0].id), criado_por: rows[0].criado_por ? Number(rows[0].criado_por) : null };
+    },
+
+    async obterContatoBloqueado(id) {
+      const { rows } = await consultar(`
+        SELECT id, telefone, nome, motivo, criado_por, criado_em, atualizado_em
+          FROM contatos_bloqueados
+         WHERE id = $1
+      `, [id]);
+      if (!rows[0]) return null;
+      return { ...rows[0], id: Number(rows[0].id), criado_por: rows[0].criado_por ? Number(rows[0].criado_por) : null };
+    },
+
+    async criarContatoBloqueado({ telefone, nome, motivo, criadoPor = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO contatos_bloqueados (telefone, nome, motivo, criado_por)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+      `, [telefone, nome, motivo, criadoPor]);
+      return this.obterContatoBloqueado(rows[0].id);
+    },
+
+    async atualizarContatoBloqueado(id, campos) {
+      const conjuntos = [];
+      const valores = [];
+      if (campos.nome !== undefined) { valores.push(campos.nome); conjuntos.push(`nome = $${valores.length}`); }
+      if (campos.motivo !== undefined) { valores.push(campos.motivo); conjuntos.push(`motivo = $${valores.length}`); }
+      if (campos.telefone !== undefined) { valores.push(campos.telefone); conjuntos.push(`telefone = $${valores.length}`); }
+      if (conjuntos.length === 0) return this.obterContatoBloqueado(id);
+
+      conjuntos.push('atualizado_em = now()');
+      valores.push(id);
+      const { rowCount } = await consultar(`
+        UPDATE contatos_bloqueados SET ${conjuntos.join(', ')} WHERE id = $${valores.length}
+      `, valores);
+
+      if (rowCount === 0) return null;
+      return this.obterContatoBloqueado(id);
+    },
+
+    /** Hard delete real — ao contrário de `excluirContato`, não há histórico a preservar aqui. */
+    async removerContatoBloqueado(id) {
+      const { rowCount } = await consultar('DELETE FROM contatos_bloqueados WHERE id = $1', [id]);
+      return rowCount > 0;
+    },
+
     /**
      * Liga ou desliga os lembretes para o contato.
      *

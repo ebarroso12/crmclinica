@@ -29,6 +29,16 @@ function bloqueioDaBarreiraPrecisaEscalar(motivo) {
   return !MOTIVOS_DE_DECISAO_HUMANA_RECENTE.has(motivo);
 }
 
+// Pedido explícito do Edson (2026-08-16): telefone na lista de bloqueio
+// (db/040_contatos_bloqueados.sql) nunca recebe resposta da automação —
+// em vez disso, cada mensagem que chega dele é respondida com este texto
+// fixo, direcionando para a secretária humana. Gentil e sem revelar que o
+// contato está bloqueado, por instrução direta dele.
+const MENSAGEM_CONTATO_BLOQUEADO = 'Olá! Para que você tenha o melhor '
+  + 'atendimento possível, peço que entre em contato diretamente com nossa '
+  + 'secretária pelo WhatsApp (16) 99312-0938 — ela vai te ajudar com todo '
+  + 'cuidado. Agradecemos a compreensão!';
+
 // O ciclo de atendimento do crmclinica.
 //
 // Mensagem chega → grava no banco → decide se a automação pode responder →
@@ -212,6 +222,42 @@ function criarAtendimento({
    */
   async function responderSePossivel(conversaId, { mensagemEntradaId = null } = {}) {
     const conversa = await repositorio.obterConversa(conversaId);
+
+    // Contato bloqueado: intercepta ANTES de qualquer decisão de automação
+    // normal, sempre — cada mensagem que chega dele recebe a mensagem fixa,
+    // nunca a automação. `repositorio.obterBloqueioPorTelefone` é uma
+    // consulta indexada (telefone é único na tabela); roda em todo ciclo de
+    // resposta, então precisa ser barata — é.
+    if (conversa?.contato?.telefone && repositorio.obterBloqueioPorTelefone) {
+      const bloqueio = await repositorio.obterBloqueioPorTelefone(conversa.contato.telefone);
+      if (bloqueio) {
+        const { mensagem } = await repositorio.registrarMensagem(conversaId, {
+          direcao: 'saida',
+          conteudo: MENSAGEM_CONTATO_BLOQUEADO,
+          autor_tipo: 'sistema',
+          autor_nome: 'Sistema',
+        });
+        emissor?.publicarMensagem(conversaId, mensagem);
+
+        // Nunca o motivo do bloqueio (pode carregar relato sensível do
+        // paciente) nem o texto enviado — só o fato técnico e o id.
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversaId,
+          acao: 'contato_bloqueado_direcionado',
+          detalhe: { bloqueio_id: bloqueio.id, mensagem_id: mensagem.id },
+        }).catch(() => {});
+
+        const entrega = await entregarAoPaciente(conversa, MENSAGEM_CONTATO_BLOQUEADO, mensagem.id, { origem: 'sistema' });
+
+        return {
+          acao: 'contato_bloqueado_direcionado',
+          conversa_id: conversaId,
+          mensagem_id: mensagem.id,
+          enviada: entrega.enviada === true,
+        };
+      }
+    }
 
     // Com o serviço da Serena montado, a decisão passa por ele: o interruptor
     // global vem antes da regra por conversa. Note que a mensagem do paciente
