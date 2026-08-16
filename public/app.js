@@ -1270,6 +1270,15 @@ seletor('#form-resposta')?.addEventListener('submit', async (evento) => {
   await agir('mensagens', { texto });
 });
 
+// Campo virou <textarea> multi-linha (Shift+Enter quebra linha, Enter envia)
+// — sem isso, Enter sozinho só quebraria linha e nunca enviaria, porque
+// textarea, ao contrário de input, não dispara submit no Enter sozinho.
+seletor('#resposta')?.addEventListener('keydown', (evento) => {
+  if (evento.key !== 'Enter' || evento.shiftKey) return;
+  evento.preventDefault();
+  seletor('#form-resposta')?.requestSubmit();
+});
+
 seletor('#botao-nota')?.addEventListener('click', async () => {
   const campo = seletor('#resposta');
   const texto = campo.value.trim();

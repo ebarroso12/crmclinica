@@ -745,7 +745,7 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 .enviada.entrega-incerta { background: #fdf6e3; border: 1px dashed #9c7a12; }
 .aviso-entrega-incerta { color: #7a5e0e; font-weight: 600; }
 .composer { display: flex; gap: 8px; margin-top: 14px; }
-.composer input { flex: 1; border: 1px solid var(--linha); border-radius: 8px; padding: 10px; font: inherit; }
+.composer textarea { flex: 1; border: 1px solid var(--linha); border-radius: 8px; padding: 10px; font: inherit; resize: none; max-height: 120px; }
 
 .ficha small { color: var(--apoio); font-size: 11px; letter-spacing: 0.07em; }
 .ficha h3 { margin: 10px 0 2px; }
