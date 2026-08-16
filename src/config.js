@@ -165,6 +165,21 @@ function carregarConfiguracao(ambiente = process.env) {
       instancia: texto(ambiente.EVOLUTION_INSTANCE) || 'clinica',
       timeoutMs: inteiro(ambiente.EVOLUTION_API_TIMEOUT_MS, 15000),
     },
+    // Storage para anexo de arquivo no chat (foto, documento, áudio). Usa a
+    // API REST do Supabase Storage diretamente — sem SDK, mesmo padrão sem
+    // dependência de terceiros do resto do projeto (ver
+    // integracoes/supabase-storage.js). Fica desligado enquanto a chave não
+    // existir: o composer some o botão de anexo, sem quebrar o resto do chat.
+    anexos: {
+      supabaseUrl: urlValida(ambiente.SUPABASE_URL),
+      chaveServico: texto(ambiente.SUPABASE_SERVICE_ROLE_KEY),
+      bucket: texto(ambiente.SUPABASE_STORAGE_BUCKET) || 'anexos-conversas',
+      timeoutMs: inteiro(ambiente.SUPABASE_STORAGE_TIMEOUT_MS, 15000),
+      // Teto de tamanho aceito para upload — arquivo de paciente não é
+      // documento gigante, e mantém a function longe de qualquer limite de
+      // payload da plataforma serverless.
+      tamanhoMaximoBytes: inteiro(ambiente.ANEXO_TAMANHO_MAXIMO_BYTES, 10 * 1024 * 1024),
+    },
     // Lembretes de agendamento. O modo de entrega é a variável que decide se
     // alguma mensagem sai de fato — e ela é conservadora por padrão: `dry_run`
     // roda a fila inteira sem enviar nada. Ver docs/LEMBRETES.md.

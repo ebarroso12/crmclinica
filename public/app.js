@@ -582,6 +582,39 @@ async function abrirConversa(conversaId) {
   }
 }
 
+/** O elemento de mídia certo para o tipo da mensagem — sempre via propriedade DOM, nunca innerHTML. */
+function desenharAnexo(mensagem) {
+  if (mensagem.tipo === 'imagem') {
+    const img = document.createElement('img');
+    img.className = 'anexo-imagem';
+    img.src = mensagem.media_url;
+    img.alt = 'Imagem enviada';
+    img.loading = 'lazy';
+    return img;
+  }
+  if (mensagem.tipo === 'video') {
+    const video = document.createElement('video');
+    video.className = 'anexo-video';
+    video.src = mensagem.media_url;
+    video.controls = true;
+    return video;
+  }
+  if (mensagem.tipo === 'audio') {
+    const audio = document.createElement('audio');
+    audio.src = mensagem.media_url;
+    audio.controls = true;
+    return audio;
+  }
+  // Documento (ou qualquer tipo futuro sem visualização própria): link direto.
+  const link = document.createElement('a');
+  link.className = 'anexo-documento';
+  link.href = mensagem.media_url;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = '📄 Abrir documento';
+  return link;
+}
+
 function desenharThread(mensagens) {
   const thread = seletor('#thread-mensagens');
   thread.innerHTML = '';
@@ -627,6 +660,12 @@ function desenharThread(mensagens) {
     // com "não entregue" seria afirmar algo que o sistema não sabe; deixar
     // sem marca nenhuma seria esconder a incerteza da equipe.
     if (mensagem.entrega_indeterminada) item.classList.add('entrega-incerta');
+
+    // Anexo: media_url já chega como URL de leitura assinada, resolvida no
+    // backend (o bucket é privado — ver rotas-conversas.js listarMensagens).
+    // `src`/`href` via propriedade DOM direta, nunca innerHTML — mesmo
+    // padrão de segurança do resto desta função.
+    if (mensagem.media_url) item.append(desenharAnexo(mensagem));
 
     const corpo = document.createElement('span');
     corpo.textContent = mensagem.conteudo || '';
@@ -1262,11 +1301,96 @@ botaoLimparData?.addEventListener('click', () => {
   carregarConversas();
 });
 
+// --- Anexo de arquivo no composer ---
+//
+// Fluxo: o navegador do atendente pede uma URL de upload de uso único
+// (POST /anexos, corpo só com metadado — poucos bytes), sobe o ARQUIVO
+// direto ao Storage com essa URL (nunca passa pelo nosso servidor: um
+// endpoint de JSON não aguenta foto/documento real), e só então manda
+// POST /mensagens com o caminho recebido. Allowlist e teto de tamanho
+// espelham src/servidor/rotas-conversas.js e src/config.js — checar aqui
+// primeiro é só feedback imediato; quem barra de verdade é o backend.
+const MIME_ANEXO_PERMITIDO = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'application/pdf',
+  'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/webm', 'video/mp4',
+]);
+const TAMANHO_MAXIMO_ANEXO_BYTES = 10 * 1024 * 1024;
+
+let anexoSelecionado = null;
+
+function limparAnexoSelecionado() {
+  anexoSelecionado = null;
+  const campoArquivo = seletor('#anexo-arquivo');
+  if (campoArquivo) campoArquivo.value = '';
+  const preview = seletor('#preview-anexo');
+  if (preview) preview.hidden = true;
+  const nome = seletor('#preview-anexo-nome');
+  if (nome) nome.textContent = '';
+}
+
+seletor('#botao-anexar')?.addEventListener('click', () => {
+  seletor('#anexo-arquivo')?.click();
+});
+
+seletor('#anexo-arquivo')?.addEventListener('change', () => {
+  const arquivo = seletor('#anexo-arquivo').files?.[0];
+  if (!arquivo) return;
+
+  if (!MIME_ANEXO_PERMITIDO.has(arquivo.type)) {
+    definirTexto('#thread-detalhe', 'Tipo de arquivo não suportado.');
+    seletor('#anexo-arquivo').value = '';
+    return;
+  }
+  if (arquivo.size > TAMANHO_MAXIMO_ANEXO_BYTES) {
+    definirTexto('#thread-detalhe', 'Arquivo muito grande (máximo 10MB).');
+    seletor('#anexo-arquivo').value = '';
+    return;
+  }
+
+  anexoSelecionado = arquivo;
+  seletor('#preview-anexo-nome').textContent = arquivo.name;
+  seletor('#preview-anexo').hidden = false;
+});
+
+seletor('#preview-anexo-cancelar')?.addEventListener('click', limparAnexoSelecionado);
+
+/** Sobe o arquivo ao Storage e devolve o que `responder` espera em `anexo`. */
+async function prepararEEnviarAnexo(arquivo, conversaId) {
+  const preparo = await pedirJson(`/api/conversas/${conversaId}/anexos`, {
+    metodo: 'POST',
+    corpo: { nome_arquivo: arquivo.name, tipo_mime: arquivo.type, tamanho_bytes: arquivo.size },
+  });
+
+  const resposta = await fetch(preparo.upload_url, {
+    method: 'PUT',
+    headers: { 'content-type': preparo.tipo_mime || arquivo.type },
+    body: arquivo,
+  });
+  if (!resposta.ok) throw new Error(`upload ao Storage falhou: HTTP ${resposta.status}`);
+
+  return { caminho: preparo.caminho, tipo: preparo.tipo, nome: preparo.nome };
+}
+
 seletor('#form-resposta')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   const campo = seletor('#resposta');
   const texto = campo.value.trim();
-  if (!texto) return;
+
+  if (!texto && !anexoSelecionado) return;
+
+  if (anexoSelecionado) {
+    const arquivo = anexoSelecionado;
+    const conversaId = conversaAberta;
+    limparAnexoSelecionado();
+    campo.value = '';
+    try {
+      const anexo = await prepararEEnviarAnexo(arquivo, conversaId);
+      await agir('mensagens', { texto, anexo });
+    } catch {
+      definirTexto('#thread-detalhe', 'Não foi possível enviar o anexo. Tente novamente.');
+    }
+    return;
+  }
 
   campo.value = '';
   await agir('mensagens', { texto });

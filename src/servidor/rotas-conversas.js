@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { ErroDeContrato } = require('../contratos/erros');
 const { FILAS, ESTADOS, PRIORIDADES, TEMPERATURAS, lerTemperatura } = require('../dominio/conversas');
 const { agruparPorColuna, sugerirTemperatura } = require('../dominio/leads');
@@ -7,6 +8,41 @@ const { proximaAcao } = require('../dominio/qualificacao');
 
 // API do inbox local. O banco do crmclinica é a fonte de dados; não há
 // serviço externo de conversas por trás destas rotas.
+
+// Anexo de arquivo no chat: MIME aceito → tipo do schema (mensagens.tipo já
+// suporta os quatro desde a migration 001). Fechado por allowlist — um MIME
+// fora desta lista nunca vira upload, então nunca vira envio ao paciente.
+const MIME_PARA_TIPO = Object.freeze({
+  'image/jpeg': 'imagem',
+  'image/png': 'imagem',
+  'image/webp': 'imagem',
+  'application/pdf': 'documento',
+  'audio/ogg': 'audio',
+  'audio/mpeg': 'audio',
+  'audio/mp4': 'audio',
+  'audio/webm': 'audio',
+  'video/mp4': 'video',
+});
+
+/**
+ * Nome de arquivo sanitizado para virar parte de um path de Storage: sem
+ * separador de diretório (path traversal), sem caractere de controle, sem
+ * nome vazio. Trunca para não estourar o limite de path do bucket.
+ */
+function sanitizarNomeDeArquivo(valor) {
+  const semSeparadorDeDiretorio = String(valor == null ? '' : valor)
+    .replace(/[/\\]/g, '_')
+    .replace(/\.\.+/g, '.')
+    .replace(/\s+/g, '_')
+    .trim();
+  const semPontoInicial = semSeparadorDeDiretorio.replace(/^\.+/, '');
+  // Caractere de controle fora por código, não por classe de regex de range
+  // — um range mal escrito nesse ponto já corrompeu este arquivo com um byte
+  // nulo literal uma vez nesta mesma tarefa; filtrar por charCodeAt não tem
+  // essa armadilha de escaping.
+  const semControle = Array.from(semPontoInicial).filter((c) => c.charCodeAt(0) >= 32).join('');
+  return (semControle || 'arquivo').slice(0, 120);
+}
 
 const LIMITE_TEXTO = 4000;
 const ORDENACOES = ['asc', 'desc'];
@@ -55,7 +91,40 @@ async function exigirConversa(repositorio, id) {
   return conversa;
 }
 
-function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = null }) {
+const TIPOS_DE_MIDIA = Object.freeze(['imagem', 'documento', 'audio', 'video']);
+
+/**
+ * Confere um anexo já enviado ao Storage antes de deixá-lo virar mensagem.
+ *
+ * A checagem que importa de verdade é o prefixo do caminho: `prepararAnexo`
+ * sempre devolve um path começando com `conversas/{id}/`, então um caminho
+ * que não bate com a conversa atual só pode vir de alguém reaproveitando (ou
+ * adivinhando) o path de OUTRA conversa — a mensagem final ficaria apontando
+ * para um anexo que não é dela.
+ */
+function validarAnexoRecebido(anexoBruto, conversaId) {
+  if (anexoBruto === undefined || anexoBruto === null) return null;
+  if (typeof anexoBruto !== 'object' || Array.isArray(anexoBruto)) {
+    throw new ErroDeContrato('campo "anexo" deve ser um objeto', 'anexo');
+  }
+
+  const caminho = typeof anexoBruto.caminho === 'string' ? anexoBruto.caminho.trim() : '';
+  if (!caminho) throw new ErroDeContrato('campo "anexo.caminho" é obrigatório', 'anexo.caminho');
+
+  const prefixoEsperado = `conversas/${conversaId}/`;
+  if (!caminho.startsWith(prefixoEsperado)) {
+    throw new ErroDeContrato('anexo não pertence a esta conversa', 'anexo.caminho');
+  }
+
+  const tipo = exigirEnum(anexoBruto.tipo, 'anexo.tipo', TIPOS_DE_MIDIA);
+  const nome = typeof anexoBruto.nome === 'string' ? anexoBruto.nome.trim().slice(0, 200) : null;
+
+  return { caminho, tipo, nome };
+}
+
+function criarRotasDeConversas({
+  repositorio, atendimento, emissorDeConversas = null, storage = null, limiteAnexoBytes = 10 * 1024 * 1024,
+}) {
   return {
     /** GET /api/conversas/filas — vocabulário do inbox, para a interface montar os controles. */
     async listarFilas() {
@@ -171,8 +240,24 @@ function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = 
       const id = exigirIdentificador(conversaId, 'conversa_id');
       await exigirConversa(repositorio, id);
 
-      const mensagens = (await repositorio.listarMensagens(id))
+      const brutas = (await repositorio.listarMensagens(id))
         .map((mensagem) => ({ ...mensagem, tipo_item: 'mensagem' }));
+
+      // O bucket é privado — `media_url` no banco guarda só o path interno,
+      // nunca uma URL utilizável pelo navegador direto. Resolve para uma
+      // leitura assinada de vida curta aqui, em paralelo, uma vez por
+      // mensagem com anexo. Falha ao assinar UMA mensagem (arquivo sumiu,
+      // rede) não pode derrubar a THREAD INTEIRA — vira null nessa mensagem
+      // só, o resto da conversa continua de pé.
+      const mensagens = await Promise.all(brutas.map(async (mensagem) => {
+        if (!mensagem.media_url || !storage?.disponivel) return mensagem;
+        try {
+          return { ...mensagem, media_url: await storage.gerarLeituraAssinada(mensagem.media_url) };
+        } catch (erro) {
+          console.error(`[rotas-conversas] falha ao assinar leitura de anexo (mensagem ${mensagem.id}): ${erro.message}`);
+          return { ...mensagem, media_url: null };
+        }
+      }));
 
       if (!repositorio.listarEventosOperacionaisDaConversa) return mensagens;
 
@@ -200,18 +285,79 @@ function criarRotasDeConversas({ repositorio, atendimento, emissorDeConversas = 
         .sort((a, b) => new Date(a.criado_em).getTime() - new Date(b.criado_em).getTime());
     },
 
-    /** POST /api/conversas/:id/mensagens — resposta humana; assumir vem junto. */
+    /**
+     * POST /api/conversas/:id/anexos — passo 1 do envio de arquivo: devolve
+     * uma URL de upload de uso único. O ARQUIVO em si nunca passa por este
+     * servidor (o corpo aqui é só metadado, poucos bytes) — o navegador do
+     * atendente sobe direto ao Storage com a URL devolvida, e só DEPOIS
+     * chama POST /mensagens com o caminho recebido aqui (ver `responder`).
+     */
+    async prepararAnexo(conversaId, corpo) {
+      const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
+
+      if (!storage?.disponivel) {
+        const erro = new Error('envio de anexo não está configurado');
+        erro.status = 503;
+        throw erro;
+      }
+
+      const nomeOriginal = exigirTexto(corpo?.nome_arquivo, 'nome_arquivo', 200);
+      const tipoMime = exigirTexto(corpo?.tipo_mime, 'tipo_mime', 100);
+      const tipo = MIME_PARA_TIPO[tipoMime];
+      if (!tipo) throw new ErroDeContrato(`tipo de arquivo não permitido: ${tipoMime}`, 'tipo_mime');
+
+      const tamanhoBytes = Number(corpo?.tamanho_bytes);
+      if (!Number.isInteger(tamanhoBytes) || tamanhoBytes <= 0) {
+        throw new ErroDeContrato('campo "tamanho_bytes" deve ser um inteiro positivo', 'tamanho_bytes');
+      }
+      if (tamanhoBytes > limiteAnexoBytes) {
+        throw new ErroDeContrato(
+          `arquivo excede o tamanho máximo (${Math.floor(limiteAnexoBytes / (1024 * 1024))}MB)`,
+          'tamanho_bytes',
+        );
+      }
+
+      const nomeSanitizado = sanitizarNomeDeArquivo(nomeOriginal);
+      // Prefixo por conversa: é o que `validarAnexoRecebido` confere depois,
+      // em `responder`, para um anexo nunca virar mensagem de uma conversa
+      // que não é a dele.
+      const caminho = `conversas/${id}/${crypto.randomUUID()}-${nomeSanitizado}`;
+
+      const { urlDeUpload } = await storage.gerarUploadAssinado(caminho);
+      return {
+        caminho,
+        tipo,
+        nome: nomeOriginal,
+        upload_url: urlDeUpload,
+        tipo_mime: tipoMime,
+      };
+    },
+
+    /**
+     * POST /api/conversas/:id/mensagens — resposta humana; assumir vem
+     * junto. Texto normal, ou um anexo já enviado ao Storage (ver
+     * `prepararAnexo`, acima) com legenda opcional — nunca os dois campos
+     * vazios: "responder" sem texto e sem anexo não é uma ação de verdade.
+     */
     async responder(conversaId, corpo) {
       const id = exigirIdentificador(conversaId, 'conversa_id');
       await exigirConversa(repositorio, id);
 
-      const texto = exigirTexto(corpo?.texto, 'texto');
       const privada = Boolean(corpo?.privada);
+      const anexo = validarAnexoRecebido(corpo?.anexo, id);
+      // Com anexo, o texto vira legenda — pode faltar. Sem anexo, é
+      // obrigatório como sempre foi.
+      const texto = anexo
+        ? (typeof corpo?.texto === 'string' ? corpo.texto.trim().slice(0, LIMITE_TEXTO) : '')
+        : exigirTexto(corpo?.texto, 'texto');
+      if (privada && anexo) throw new ErroDeContrato('nota interna não aceita anexo', 'anexo');
 
       const mensagem = await atendimento.responderComoEquipe(id, texto, {
         usuarioId: corpo?.usuario_id ?? null,
         autorNome: corpo?.autor ?? null,
         privada,
+        anexo,
       });
 
       // Dizer "enviada" quando o envio falhou é o pior desfecho possível: quem

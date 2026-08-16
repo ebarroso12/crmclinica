@@ -355,9 +355,18 @@
 
             <ol class="mensagens" id="thread-mensagens" aria-live="polite"></ol>
 
+            <p class="preview-anexo" id="preview-anexo" hidden>
+              📎 <span id="preview-anexo-nome"></span>
+              <button type="button" class="link" id="preview-anexo-cancelar">remover</button>
+            </p>
+
             <form class="composer" id="form-resposta">
               <label class="oculto-visual" for="resposta">Escrever resposta</label>
               <textarea id="resposta" rows="1" placeholder="Escreva uma resposta… (Shift+Enter para quebrar linha)" disabled></textarea>
+              <label class="oculto-visual" for="anexo-arquivo">Anexar arquivo</label>
+              <input type="file" id="anexo-arquivo" hidden
+                     accept="image/jpeg,image/png,image/webp,application/pdf,audio/ogg,audio/mpeg,audio/mp4,audio/webm,video/mp4">
+              <button type="button" class="acao" id="botao-anexar" disabled title="Anexar arquivo">📎</button>
               <button type="submit" class="primario" disabled>Enviar</button>
               <button type="button" class="acao" id="botao-nota" disabled>Nota</button>
             </form>

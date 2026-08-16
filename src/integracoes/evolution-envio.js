@@ -73,6 +73,60 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
       const identificador = dados?.key?.id ?? dados?.id ?? null;
       return { identificador };
     },
+
+    /**
+     * Manda um anexo (imagem/documento/áudio/vídeo) pro número indicado.
+     * `mediaUrl` é uma URL http(s) alcançável pela Evolution API (a leitura
+     * assinada do Storage, de vida curta — ver supabase-storage.js). Mesmo
+     * contrato de erro/timeout/indeterminado de `enviar`, acima.
+     */
+    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+      if (!disponivel) throw new Error('Evolution API não configurada (EVOLUTION_API_URL/EVOLUTION_API_KEY)');
+      if (typeof fetchImpl !== 'function') throw new Error('fetch indisponível');
+
+      const numero = String(telefone ?? '').replace(/\D/g, '');
+      if (!numero) throw new Error('telefone inválido para envio pela Evolution');
+      if (!mediaUrl) throw new Error('mediaUrl é obrigatório para envio de anexo');
+
+      // O schema (mensagens.tipo) já distingue imagem/audio/documento/video;
+      // a Evolution usa o mesmo vocabulário para `mediatype`, exceto que ela
+      // não tem tipo "sistema"/"texto" — só chega aqui quem já é mídia.
+      const mediatype = { imagem: 'image', documento: 'document', audio: 'audio', video: 'video' }[tipo];
+      if (!mediatype) throw new Error(`tipo de mídia não suportado pela Evolution: ${tipo}`);
+
+      const base = configuracao.apiUrl.replace(/\/+$/, '');
+      const url = `${base}/message/sendMedia/${encodeURIComponent(configuracao.instancia)}`;
+
+      let resposta;
+      try {
+        resposta = await fetchImpl(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', apikey: configuracao.apiKey },
+          body: JSON.stringify({
+            number: numero,
+            mediatype,
+            media: mediaUrl,
+            ...(legenda ? { caption: String(legenda) } : {}),
+            ...(nomeArquivo ? { fileName: String(nomeArquivo) } : {}),
+            options: { delay: 1200, presence: 'composing' },
+          }),
+          signal: AbortSignal.timeout(configuracao.timeoutMs ?? 15000),
+        });
+      } catch (erro) {
+        const falha = new Error(`falha de rede ao chamar a Evolution API (mídia): ${erro.message}`);
+        falha.indeterminado = erro.name === 'TimeoutError' || erro.name === 'AbortError';
+        throw falha;
+      }
+
+      if (!resposta.ok) {
+        const corpo = await resposta.text().catch(() => '');
+        throw new Error(`Evolution API respondeu HTTP ${resposta.status}${corpo ? `: ${corpo.slice(0, 300)}` : ''}`);
+      }
+
+      const dados = await resposta.json().catch(() => null);
+      const identificador = dados?.key?.id ?? dados?.id ?? null;
+      return { identificador };
+    },
   };
 }
 
