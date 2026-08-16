@@ -453,13 +453,20 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 .inbox {
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr) 230px;
-  min-height: 520px;
+  /* Teto real, não só piso: sem isto, a thread de mensagens empurra o grid
+     inteiro para baixo conforme a conversa cresce — a página fica cada vez
+     mais comprida em vez de rolar só a lista de mensagens internamente.
+     `min-height` sozinho não travava altura máxima nenhuma. */
+  height: calc(100vh - 230px);
+  min-height: 480px;
+  max-height: 860px;
   background: var(--superficie);
   border: 1px solid var(--linha);
   border-radius: var(--raio);
   overflow: hidden;
 }
 .lista, .thread, .ficha { padding: 18px; border-right: 1px solid var(--linha); }
+.lista, .ficha { overflow-y: auto; }
 .ficha { border-right: 0; }
 .lista input {
   width: 100%;
@@ -725,12 +732,17 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   .usuario-acoes { justify-content: flex-start; }
 }
 
-.thread { display: flex; flex-direction: column; }
+/* min-height:0 é o que permite o filho flex (.mensagens) encolher e rolar
+   por conta própria em vez de estourar o container — sem isto o flex item
+   assume a altura do conteúdo, ignorando o teto do .inbox. overflow:hidden
+   garante que cabeçalho (.thread-topo) e composer fiquem sempre visíveis,
+   com só a lista de mensagens rolando. */
+.thread { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .fila li[role="button"] { cursor: pointer; border-radius: 8px; padding-left: 6px; padding-right: 6px; }
 .fila li[role="button"]:hover { background: #f3f8fa; }
 .thread-topo { display: grid; gap: 3px; padding-bottom: 14px; border-bottom: 1px solid var(--linha); }
 .thread-topo small { color: var(--apoio); font-size: 12px; }
-.mensagens { list-style: none; flex: 1; margin: 0; padding: 22px 0 0; display: grid; gap: 10px; align-content: start; }
+.mensagens { list-style: none; flex: 1; margin: 0; padding: 22px 0 0; display: grid; gap: 10px; align-content: start; overflow-y: auto; min-height: 0; }
 .mensagens li { max-width: 78%; padding: 11px 14px; border-radius: 12px; }
 .recebida { background: #f0f3f8; }
 .enviada { margin-left: auto; background: #ddf3f5; }
