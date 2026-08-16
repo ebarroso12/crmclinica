@@ -1756,10 +1756,26 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       conversasEventosTickets.set(bruto, {
         usuarioId: Number(usuarioId),
         papel,
+        criadoEm: agora(),
         expiraEm: new Date(agora().getTime() + ttlMs),
         usadoEm: null,
       });
       return bruto;
+    },
+
+    // Achado P2 da auditoria adversarial (2026-08-16): sem limite, um
+    // usuário autenticado pode gerar bilhetes em loop (foi exatamente o
+    // sintoma do bug corrigido em 20cfeba — 405 em loop a cada 5s, para
+    // sempre). `desde` é o início da janela deslizante; quem chama decide o
+    // teto (ver LIMITE_DE_TICKETS_POR_MINUTO em src/servidor/http.js).
+    async contarTicketsRecentesDoUsuario(usuarioId, desde) {
+      const alvo = Number(usuarioId);
+      const limite = desde instanceof Date ? desde.getTime() : new Date(desde).getTime();
+      let total = 0;
+      for (const ticket of conversasEventosTickets.values()) {
+        if (ticket.usuarioId === alvo && ticket.criadoEm.getTime() >= limite) total += 1;
+      }
+      return total;
     },
 
     async resgatarTicketDeEventos(bruto) {

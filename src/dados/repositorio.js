@@ -2164,6 +2164,22 @@ function criarRepositorio(pool) {
       return { usuarioId: Number(rows[0].usuario_id), papel: rows[0].papel };
     },
 
+    /**
+     * Achado P2 da auditoria adversarial (2026-08-16): sem limite, um
+     * usuário autenticado pode gerar bilhetes em loop (foi exatamente o
+     * sintoma do bug corrigido em 20cfeba — 405 em loop a cada 5s, para
+     * sempre). `desde` é o início da janela deslizante; quem chama decide o
+     * teto (ver LIMITE_DE_TICKETS_POR_MINUTO em src/servidor/http.js).
+     * Índice de suporte: db/039_indice_tickets_usuario.sql.
+     */
+    async contarTicketsRecentesDoUsuario(usuarioId, desde) {
+      const { rows } = await consultar(
+        'SELECT count(*)::int AS total FROM conversas_eventos_tickets WHERE usuario_id = $1 AND criado_em >= $2',
+        [usuarioId, desde instanceof Date ? desde.toISOString() : desde],
+      );
+      return rows[0].total;
+    },
+
     // ---------------------------------------------------------------- agenda
 
     async listarProfissionais({ apenasAtivos = true } = {}) {
