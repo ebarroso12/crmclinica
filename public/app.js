@@ -3409,8 +3409,16 @@ seletor('#serena-voz-parar')?.addEventListener('click', pararVoz);
  * honesto entre "cliquei" e "o servidor confirmou".
  */
 async function alternarSerena(ativa, botao = null) {
-  const motivo = ativa ? null : prompt('Motivo do desligamento (obrigatório):');
-  if (!ativa && !motivo) return;
+  // O motivo é só para auditoria (o backend aceita `null` sem reclamar — ver
+  // definirAtiva em src/dominio/serena-servico.js). Antes disto, cancelar ou
+  // deixar o popup em branco fazia a função `return` aqui, sem chamar a API,
+  // sem mensagem de erro nenhuma: quem clicava em "Desligar" via o botão
+  // "aplicar" e nada acontecer, com a Serena continuando ligada — reportado
+  // por Edson em produção. Desligar é a ação que existe para parar a
+  // automação na frente de um paciente; ela não pode depender de o popup
+  // nativo do navegador ter sido preenchido do jeito certo.
+  const motivoDigitado = ativa ? null : prompt('Motivo do desligamento (opcional — ajuda a auditoria depois):');
+  const motivo = motivoDigitado?.trim() ? motivoDigitado.trim() : null;
 
   const textoOriginal = botao?.textContent;
   if (botao) {
