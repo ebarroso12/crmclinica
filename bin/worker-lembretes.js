@@ -115,6 +115,25 @@ async function main() {
   const servicoDaSerena = criarServicoDaSerena({ repositorio });
   const crmDespachaWhatsapp = configuracao.serena.transporteWhatsapp === 'crm_despacha';
 
+  // Achado do incidente de 2026-08-17: SERENA_TRANSPORTE_WHATSAPP vazia caía,
+  // sem barulho nenhum, no padrão 'openclaw_gerencia' — e esse padrão é o
+  // ramo que ATIVAMENTE empurra política de "pode atender" para o gateway do
+  // OpenClaw (`sincronizador` abaixo). Uma variável nunca configurada não é a
+  // mesma coisa que alguém ter escolhido Arquitetura A, e o worker não pode
+  // tratar as duas como se fossem. Enquanto a escolha não for explícita, o
+  // mais seguro é não empurrar política nenhuma — nem "atender", nem
+  // "calado" — e deixar isso visível no log em vez de decidir por conta
+  // própria (mesmo princípio de src/dominio/sincronia-serena.js: "diante de
+  // dúvida, não mexe").
+  if (!configuracao.serena.transporteWhatsappExplicito) {
+    console.error(
+      '[serena] SERENA_TRANSPORTE_WHATSAPP não foi definida (ausente ou vazia). '
+      + 'Por segurança, este worker NÃO vai sincronizar política de atendimento '
+      + 'com o gateway do OpenClaw enquanto isso não for uma escolha explícita — '
+      + 'defina "crm_despacha" ou "openclaw_gerencia" para restaurar a sincronia.',
+    );
+  }
+
   // Sem gateway do canal configurado não há o que sincronizar — e é melhor o
   // worker rodar a fila sem a sincronia do que não rodar de jeito nenhum.
   const sincronia = configuracao.openclaw.canalClinica?.url
@@ -157,11 +176,16 @@ async function main() {
   //
   // Fica no worker porque a decisão muda sozinha com a hora: às 18h a grade
   // abre, e ninguém vai estar no painel naquele minuto para aplicar.
-  const sincronizador = sincronia && !crmDespachaWhatsapp
+  const sincronizador = sincronia && configuracao.serena.transporteWhatsappExplicito && !crmDespachaWhatsapp
     ? criarSincronizadorDaSerena({ serena: servicoDaSerena, politica: sincronia })
     : null;
 
   async function sincronizarSerena() {
+    // Configuração ambígua (ver aviso logado na subida): não decide nada.
+    if (!configuracao.serena.transporteWhatsappExplicito) {
+      return false;
+    }
+
     // Arquitetura B: o silêncio não é mais `allowFrom=[]` — essa política
     // descarta a mensagem antes de ela chegar ao plugin. O hook
     // `before_agent_reply` bloqueia a chamada ao modelo, enquanto o hook

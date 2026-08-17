@@ -72,15 +72,26 @@ function carregarConfiguracao(ambiente = process.env) {
   const producao = nodeEnv === 'production';
   // Comando 4: o padrão continua 'openclaw_gerencia' de propósito — ver o
   // comentário de SERENA_TRANSPORTE_WHATSAPP em .env.exemplo. Este valor não
-  // decide mais o canal de entrega (isso é EVOLUTION_API_URL/KEY/INSTANCE) e
-  // não é consultado por nenhum caminho de atendimento; só
-  // bin/worker-lembretes.js o lê, para a sincronia de conversas por leitura
-  // (Arquitetura A). Trocar o padrão para 'crm_despacha' ativaria exigências
-  // extras em validarTransporteWhatsapp/validarConfiguracao (dois gateways
-  // WebSocket do OpenClaw + OPENCLAW_SESSION_ID) que este comando não
-  // confirmou estarem presentes em todo ambiente que roda `node
-  // src/index.js` com NODE_ENV=production.
-  const transporteWhatsapp = texto(ambiente.SERENA_TRANSPORTE_WHATSAPP) || 'openclaw_gerencia';
+  // decide o canal de entrega (isso é EVOLUTION_API_URL/KEY/INSTANCE) e não é
+  // consultado por nenhum caminho de atendimento (`http.js`, `atendimento.js`,
+  // `worker-outbox.js`, `canal-conversas.js`, `evolution-envio.js` — ver
+  // testes/transporte-whatsapp-atendimento.test.js, que trava essa garantia);
+  // só bin/worker-lembretes.js o lê, para decidir se empurra a política do
+  // canal (Arquitetura A) para o gateway do OpenClaw.
+  //
+  // Achado do incidente de 2026-08-17 (disparo indevido via agente nativo do
+  // OpenClaw): a Vercel de produção tinha SERENA_TRANSPORTE_WHATSAPP="" —
+  // string vazia, não ausente — e o `||` abaixo mascarava isso como se fosse
+  // a escolha deliberada 'openclaw_gerencia'. `validarTransporteWhatsapp` só
+  // vê o valor JÁ mascarado, então nunca tinha como acusar o problema.
+  // `transporteWhatsappExplicito` existe para quem PRECISA saber a diferença
+  // entre "ninguém decidiu" e "decidiram openclaw_gerencia" — hoje, só
+  // bin/worker-lembretes.js, na decisão de empurrar ou não a política ao
+  // OpenClaw. Não removo o default aqui: ele é seguro e testado para todo o
+  // resto do sistema, que nunca lê este campo.
+  const transporteWhatsappBruto = texto(ambiente.SERENA_TRANSPORTE_WHATSAPP);
+  const transporteWhatsapp = transporteWhatsappBruto || 'openclaw_gerencia';
+  const transporteWhatsappExplicito = Boolean(transporteWhatsappBruto);
 
   return {
     nodeEnv,
@@ -253,6 +264,10 @@ function carregarConfiguracao(ambiente = process.env) {
       // anterior; `crm_despacha` só entra por configuração explícita e mantém
       // o agente direto do canal calado para o CRM aplicar handoff e horário.
       transporteWhatsapp,
+      // `false` quando SERENA_TRANSPORTE_WHATSAPP está ausente/vazia — ou
+      // seja, quando `transporteWhatsapp` acima é só o valor-padrão, não uma
+      // escolha de alguém. Ver o comentário do achado do incidente acima.
+      transporteWhatsappExplicito,
     },
     // Voz roda em processo separado do CRM. A flag nasce desligada e a
     // configuração é tudo-ou-nada: nunca cai para um serviço pago em silêncio.
@@ -449,6 +464,17 @@ function avisosDeConfiguracao(configuracao) {
   if (configuracao.producao && configuracao.lembretes.modoEntrega !== 'real') {
     avisos.push('LEMBRETES_MODO_ENTREGA não está em "real": a fila processa e nenhuma mensagem sai');
   }
+  if (configuracao.producao && !configuracao.serena.transporteWhatsappExplicito) {
+    // Não gate nenhum envio (nenhum caminho de atendimento lê este campo —
+    // ver testes/transporte-whatsapp-atendimento.test.js) — mas achado do
+    // incidente de 2026-08-17: um valor nunca decidido virando um padrão
+    // silencioso é exatamente o tipo de coisa que passa despercebida por
+    // semanas. Visível aqui, em todo ambiente, é melhor que descoberto só
+    // quando bin/worker-lembretes.js precisar dele.
+    avisos.push('SERENA_TRANSPORTE_WHATSAPP não foi definida (vazia/ausente) — '
+      + 'assumindo "openclaw_gerencia" por padrão, mas ninguém escolheu isso; '
+      + 'defina explicitamente "crm_despacha" ou "openclaw_gerencia"');
+  }
 
   return avisos;
 }
@@ -467,6 +493,7 @@ function descreverConfiguracao(configuracao) {
       nome: 'Serena',
       integracao: configuracao.serena.baseUrl ? 'configurada' : 'ausente',
       transporteWhatsapp: configuracao.serena.transporteWhatsapp,
+      transporteWhatsappExplicito: configuracao.serena.transporteWhatsappExplicito,
     },
     entrada: {
       // O que a tela de login deve oferecer. Nenhum segredo sai daqui — só se a
