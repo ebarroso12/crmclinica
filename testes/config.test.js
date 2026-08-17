@@ -101,9 +101,47 @@ test('o aviso some quando o SMTP é configurado', () => {
     OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
     SMTP_HOST: 'smtp.exemplo.com',
     LEMBRETES_MODO_ENTREGA: 'real',
+    SERENA_TRANSPORTE_WHATSAPP: 'openclaw_gerencia',
   });
 
   assert.deepEqual(avisosDeConfiguracao(comSmtp), []);
+});
+
+test('incidente 2026-08-17: SERENA_TRANSPORTE_WHATSAPP vazia não vira escolha silenciosa', () => {
+  // O bug real: o `||` de carregarConfiguracao mascarava "" como se fosse a
+  // decisão deliberada 'openclaw_gerencia' — inclusive para bin/worker-lembretes.js,
+  // que usa esse valor para decidir se empurra política de atendimento ao
+  // gateway do OpenClaw. transporteWhatsappExplicito é o que permite ao
+  // worker distinguir "ninguém escolheu" de "escolheram openclaw_gerencia".
+  const semEscolha = carregarConfiguracao({});
+  assert.equal(semEscolha.serena.transporteWhatsapp, 'openclaw_gerencia', 'o padrão em si continua o mesmo');
+  assert.equal(semEscolha.serena.transporteWhatsappExplicito, false, 'mas fica marcado como não-escolhido');
+
+  const explicitoA = carregarConfiguracao({ SERENA_TRANSPORTE_WHATSAPP: 'openclaw_gerencia' });
+  assert.equal(explicitoA.serena.transporteWhatsappExplicito, true);
+
+  const explicitoB = carregarConfiguracao({ SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha' });
+  assert.equal(explicitoB.serena.transporteWhatsappExplicito, true);
+
+  // Em produção, a ausência de escolha agora é visível — não silenciosa.
+  const producaoSemEscolha = carregarConfiguracao({
+    NODE_ENV: 'production',
+    CRMCLINICA_DATABASE_URL: `postgre${'sql'}://usuario:senha@host/banco`,
+    CRMCLINICA_JWT_SECRET: 'x'.repeat(48),
+    OPENCLAW_WEBHOOK_SECRET: 'x'.repeat(48),
+    SMTP_HOST: 'smtp.exemplo.com',
+    LEMBRETES_MODO_ENTREGA: 'real',
+  });
+  assert.ok(
+    avisosDeConfiguracao(producaoSemEscolha).some((aviso) => /SERENA_TRANSPORTE_WHATSAPP/.test(aviso)),
+    'produção sem escolha explícita precisa acusar isso em avisosDeConfiguracao',
+  );
+
+  // Fora de produção, o aviso não é forçado — o mesmo padrão do resto do arquivo.
+  const desenvolvimentoSemEscolha = carregarConfiguracao({});
+  assert.ok(
+    !avisosDeConfiguracao(desenvolvimentoSemEscolha).some((aviso) => /SERENA_TRANSPORTE_WHATSAPP/.test(aviso)),
+  );
 });
 
 test('login com Google pela metade é recusado', () => {
