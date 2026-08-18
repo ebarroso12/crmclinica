@@ -21,6 +21,11 @@ const {
 function criarServicoDeOutbox({
   repositorio, atendimento, agora = () => new Date(),
   maxTentativas = MAX_TENTATIVAS_PADRAO, leaseMs = LEASE_MS,
+  // Achado do incidente de 2026-08-17: `null`/`0` desliga o limite (nunca
+  // expira) — default seguro é o próprio `criarServicoDeOutbox` decidir,
+  // não um valor mágico espalhado pelos chamadores. `bin/worker-outbox.js`
+  // passa `configuracao.serena.idadeMaximaRespostaMs`.
+  idadeMaximaRespostaMs = 30 * 60 * 1000,
 } = {}) {
   if (!repositorio) throw new Error('serviço da outbox exige um repositório');
   if (!atendimento) throw new Error('serviço da outbox exige o atendimento');
@@ -104,7 +109,37 @@ function criarServicoDeOutbox({
    *     protege com try/catch). Backoff e nova tentativa; dead-letter com
    *     escalonamento humano ao esgotar.
    */
+  /**
+   * Achado do incidente de 2026-08-17: um trabalho pode esperar na fila por
+   * horas (STOP prolongado, worker parado, fila represada) e ainda assim
+   * ficar `pendente` — nada nele muda sozinho. Sem este limite, quando a
+   * automação volta a responder, ela despacharia uma resposta gerada agora
+   * para uma pergunta feita horas atrás, sem contexto nenhum de que o tempo
+   * passou. Idade conta a partir de `criado_em` do TRABALHO — que nasce
+   * junto com a mensagem de entrada, na mesma transação (ver
+   * db/031_automacao_outbox.sql) — não de quando foi reivindicado.
+   */
+  function trabalhoExpirado(trabalho) {
+    if (!idadeMaximaRespostaMs || !trabalho.criado_em) return false;
+    const idadeMs = agora().getTime() - new Date(trabalho.criado_em).getTime();
+    return idadeMs > idadeMaximaRespostaMs;
+  }
+
   async function processarUm(trabalho) {
+    if (trabalhoExpirado(trabalho)) {
+      await atendimento.escalonar(trabalho.conversa_id, 'outbox_expirado_sem_resposta_automatica').catch((erroDeEscalonamento) => {
+        console.error(`[outbox] falha ao escalonar trabalho expirado (${trabalho.id}): ${erroDeEscalonamento.message}`);
+      });
+      const marcado = await repositorio.concluirTrabalhoDeOutbox(trabalho.id, {
+        status: 'concluido',
+        ultimoErro: 'expirado_sem_resposta_automatica',
+      });
+      await auditar('outbox_expirado', trabalho.id, {
+        conversa_id: trabalho.conversa_id, criado_em: trabalho.criado_em, limite_ms: idadeMaximaRespostaMs,
+      });
+      return { id: trabalho.id, status: 'concluido', acao: 'expirado_sem_resposta_automatica', trabalho: marcado };
+    }
+
     let resultado = null;
     let erro = null;
     try {

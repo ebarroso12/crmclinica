@@ -268,6 +268,15 @@ function carregarConfiguracao(ambiente = process.env) {
       // seja, quando `transporteWhatsapp` acima é só o valor-padrão, não uma
       // escolha de alguém. Ver o comentário do achado do incidente acima.
       transporteWhatsappExplicito,
+      // Achado do incidente de 2026-08-17: durante o STOP, mensagem de
+      // paciente continuou entrando e enfileirando trabalho na outbox — só o
+      // ENVIO ficava bloqueado (`ativa=false`), a fila crescia. Sem este
+      // limite, religar a automação faria a fila despachar respostas para
+      // perguntas de horas atrás, como se o tempo não tivesse passado — pior
+      // que não responder, é responder tarde e fora de contexto. Acima deste
+      // limite, o trabalho não gera resposta automática; escalona para a
+      // equipe em vez disso (ver automacao-outbox-servico.js `processarUm`).
+      idadeMaximaRespostaMs: inteiro(ambiente.SERENA_IDADE_MAXIMA_RESPOSTA_MIN, 30) * 60 * 1000,
     },
     // Voz roda em processo separado do CRM. A flag nasce desligada e a
     // configuração é tudo-ou-nada: nunca cai para um serviço pago em silêncio.
