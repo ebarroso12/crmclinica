@@ -279,6 +279,23 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 /* Sem o botão (papel sem permissão), o rodapé volta a se ancorar no pé sozinho. */
 .parada-emergencia[hidden] ~ .rodape-lateral { margin-top: auto; }
 
+/* Aviso de versão nova: achado do incidente de 2026-08-17 — quem fica com a
+   aba aberta por horas nunca sabia que subiu um deploy. Azul/informativo de
+   propósito — não é alarme, é "quando puder, atualize". */
+.banner-atualizar {
+  margin: 10px 10px 0;
+  padding: 10px;
+  width: calc(100% - 20px);
+  border: 1px solid #2f6fed;
+  border-radius: 10px;
+  background: #eaf1ff;
+  color: #1a4fc4;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.banner-atualizar:hover { background: #dbe7ff; }
+
 /* ---------- Área principal ---------- */
 
 .area { min-width: 0; }

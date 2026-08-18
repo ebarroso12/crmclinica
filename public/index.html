@@ -185,7 +185,20 @@
         ⛔ PARAR SERENA
       </button>
 
-      <p class="rodape-lateral">crmclinica v0.1 · orquestrado pelo OpenClaw</p>
+      <!-- Achado do incidente de 2026-08-17: "v0.1 · orquestrado pelo OpenClaw"
+           era texto fixo — nunca mudava, e desde a correção do Single Writer
+           também ficou errado (o CRM decide o envio, não o OpenClaw).
+           `id="rodape-versao"` é preenchido por app.js a partir de /health. -->
+      <p class="rodape-lateral" id="rodape-versao">crmclinica</p>
+
+      <!-- Mesmo achado: sem isto, quem está com a aba aberta de um deploy
+           antigo nunca sabe que existe uma versão nova — só descobre
+           recarregando por acaso. app.js compara a cada alguns minutos com
+           o que /health relata como versão atual e mostra este botão só
+           quando diferem. -->
+      <button type="button" class="banner-atualizar" id="banner-atualizar" hidden>
+        🔄 Nova versão disponível — Atualizar
+      </button>
     </header>
 
     <main class="area" id="conteudo">

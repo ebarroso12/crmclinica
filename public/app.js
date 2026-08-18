@@ -1858,10 +1858,58 @@ async function conectarEventosDeConversas() {
   };
 }
 
+// --- Versão no ar e aviso de atualização ---
+//
+// Achado do incidente de 2026-08-17: o rodapé mostrava "v0.1" fixo, sempre —
+// nunca refletiu nenhum deploy real, e depois da correção do Single Writer
+// também ficou factualmente errado ("orquestrado pelo OpenClaw": não é mais
+// o OpenClaw quem decide o envio). Além disso, quem fica com a aba aberta
+// por horas nunca sabia que subiu uma versão nova.
+//
+// `commit` (de /health) é o identificador que muda a cada deploy de verdade
+// — `versao` (package.json) só muda quando alguém lembra de dar bump.
+let commitCarregadoNestaAba = null;
+
+async function verificarNovaVersao() {
+  let saude;
+  try {
+    saude = await pedirJson('/health');
+  } catch {
+    // /health falhar não pode quebrar a tela — só não avisamos desta vez.
+    return;
+  }
+
+  const rodape = seletor('#rodape-versao');
+  if (rodape) {
+    rodape.textContent = `crmclinica v${saude.versao}${saude.commit ? ` · ${saude.commit.slice(0, 7)}` : ''}`;
+  }
+
+  if (commitCarregadoNestaAba === null) {
+    // Primeira leitura desta aba: só registra a baseline, não compara ainda
+    // — senão toda aba recém-aberta "descobriria" uma versão nova na hora.
+    commitCarregadoNestaAba = saude.commit;
+    return;
+  }
+
+  // Sem `commit` (rodando fora da Vercel — VPS, local) não há como comparar
+  // com segurança: o botão simplesmente nunca aparece, o que é seguro.
+  if (saude.commit && saude.commit !== commitCarregadoNestaAba) {
+    const botao = seletor('#banner-atualizar');
+    if (botao) botao.hidden = false;
+  }
+}
+
+seletor('#banner-atualizar')?.addEventListener('click', () => window.location.reload());
+
 let inboxIniciado = false;
 function iniciarInbox() {
   if (inboxIniciado) return;
   inboxIniciado = true;
+
+  verificarNovaVersao();
+  // 5 minutos: rápido o bastante para quem passa o dia com a aba aberta
+  // saber logo depois de um deploy, sem martelar o servidor com polling.
+  setInterval(verificarNovaVersao, 5 * 60 * 1000);
 
   carregarResumo();
   setInterval(carregarResumo, 60000);

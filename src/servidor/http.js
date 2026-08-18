@@ -1515,6 +1515,16 @@ function criarAplicacao(dependencias = {}) {
           produto: 'crmclinica',
           status: 'ok',
           versao: require('../../package.json').version,
+          // Achado do incidente de 2026-08-17: `versao` (package.json) só
+          // muda quando alguém lembra de bump — na prática, quase nunca. Sem
+          // um identificador que troca a CADA deploy, uma aba aberta num
+          // deploy antigo nunca tem como saber que existe um novo (ver o
+          // botão "Atualizar" em app.js). A Vercel injeta
+          // VERCEL_GIT_COMMIT_SHA automaticamente em toda função serverless;
+          // fora dela (VPS, local) fica `null` — a aba simplesmente nunca
+          // oferece o botão, o que é seguro (nada pior que um botão que não
+          // aparece quando poderia).
+          commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
           instante: new Date().toISOString(),
           banco,
         });
