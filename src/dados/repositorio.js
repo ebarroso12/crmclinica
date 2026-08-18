@@ -657,23 +657,55 @@ function criarRepositorio(pool) {
         // nativo de saída, ver marcarIdProvedorDaMensagem e
         // evolution-webhook.js `normalizarEcoDeEnvioEvolution`) — as duas
         // são reentrega/eco do MESMO evento, nunca dado novo.
-        const { rows } = await cliente.query(`
-          INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo, id_provedor)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-          ON CONFLICT DO NOTHING
-          RETURNING *
-        `, [
-          conversaId,
-          mensagem.direcao,
-          mensagem.tipo || 'texto',
-          mensagem.conteudo || null,
-          mensagem.media_url || null,
-          mensagem.autor_tipo || 'contato',
-          mensagem.autor_nome || null,
-          Boolean(mensagem.privada),
-          mensagem.id_externo || null,
-          mensagem.id_provedor || null,
-        ]);
+        //
+        // Deploy e migração não são atômicos (mesmo princípio de
+        // `obterConfiguracaoDaSerena`, `definirHorarioDaSerena` acima): o
+        // código pode subir ANTES de a migration 042 rodar no SQL Editor —
+        // sem este catch, TODA mensagem (entrada e saída) falharia ao
+        // gravar nesse intervalo, não só o dedupe por id_provedor. `42703` =
+        // undefined_column; qualquer outro erro propaga normalmente.
+        let rows;
+        try {
+          ({ rows } = await cliente.query(`
+            INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo, id_provedor)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT DO NOTHING
+            RETURNING *
+          `, [
+            conversaId,
+            mensagem.direcao,
+            mensagem.tipo || 'texto',
+            mensagem.conteudo || null,
+            mensagem.media_url || null,
+            mensagem.autor_tipo || 'contato',
+            mensagem.autor_nome || null,
+            Boolean(mensagem.privada),
+            mensagem.id_externo || null,
+            mensagem.id_provedor || null,
+          ]));
+        } catch (erro) {
+          if (erro.code !== '42703') throw erro;
+          // Sem a coluna ainda: grava do jeito de antes da migration 042.
+          // `id_provedor` simplesmente não tem onde ir — a mensagem grava
+          // igual, só sem a marca (dedupe de eco fica inerte até a migration
+          // rodar, nunca quebra o registro em si).
+          ({ rows } = await cliente.query(`
+            INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id_externo) WHERE id_externo IS NOT NULL DO NOTHING
+            RETURNING *
+          `, [
+            conversaId,
+            mensagem.direcao,
+            mensagem.tipo || 'texto',
+            mensagem.conteudo || null,
+            mensagem.media_url || null,
+            mensagem.autor_tipo || 'contato',
+            mensagem.autor_nome || null,
+            Boolean(mensagem.privada),
+            mensagem.id_externo || null,
+          ]));
+        }
 
         // Sem linha devolvida, a mensagem já existia: reentrega do canal. Isso
         // não é erro e não pode desfazer nada — antes havia um `ROLLBACK` aqui,
