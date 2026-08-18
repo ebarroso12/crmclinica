@@ -235,7 +235,7 @@ test('sem EVOLUTION_WEBHOOK_TOKEN configurado, a segunda porta não existe — s
   assert.equal((await enviarSemAssinatura(app, MENSAGEM_EVOLUTION, `?token=${TOKEN_EVOLUTION}`)).status, 401);
 });
 
-test('evento da Evolution que não é mensagem de paciente é aceito e ignorado (200), não vira conversa', async (t) => {
+test('evento da Evolution que genuinamente não é mensagem (CONNECTION_UPDATE) é aceito e ignorado (200), não vira conversa', async (t) => {
   const repositorio = criarRepositorioEmMemoria();
   const atendimento = criarAtendimento({ repositorio, orquestrador: null });
   const configuracao = configuracaoDeTeste({
@@ -248,15 +248,77 @@ test('evento da Evolution que não é mensagem de paciente é aceito e ignorado 
   const conexao = await enviarSemAssinatura(app, { event: 'connection.update', data: { state: 'open' } }, `?token=${TOKEN_EVOLUTION}`);
   assert.equal(conexao.status, 200);
   assert.equal((await conexao.json()).ignorado, true);
+  assert.equal((await repositorio.listarConversas({})).length, 0);
+});
+
+// Migration 042 / pedido do Dr. Edson (2026-08-17): este teste tinha o
+// comportamento ANTIGO (fromMe:true = sempre eco, sempre descartado) como
+// esperado — e era exatamente o bug: uma resposta que a equipe manda direto
+// no WhatsApp Web/app (mesmo número, outro dispositivo) chega como
+// fromMe:true e nunca aparecia no CRM. Agora o wire continua respondendo
+// {ignorado:true} (a Evolution não precisa saber o que aconteceu por
+// dentro), mas a mensagem passa a existir — visível na conversa.
+test('eco fromMe:true de um envio que NÃO passou pelo CRM vira mensagem de saída visível', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({ repositorio, orquestrador: null });
+  const configuracao = configuracaoDeTeste({
+    WHATSAPP_WEBHOOK_SECRET: SEGREDO,
+    EVOLUTION_WEBHOOK_TOKEN: TOKEN_EVOLUTION,
+  });
+  const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+  t.after(() => app.encerrar());
+
+  const eco = await enviarSemAssinatura(app, {
+    ...MENSAGEM_EVOLUTION,
+    data: {
+      ...MENSAGEM_EVOLUTION.data,
+      key: { ...MENSAGEM_EVOLUTION.data.key, fromMe: true },
+      message: { conversation: 'Respondido direto no WhatsApp Web' },
+    },
+  }, `?token=${TOKEN_EVOLUTION}`);
+  assert.equal(eco.status, 200);
+  assert.equal((await eco.json()).ignorado, true, 'o wire com a Evolution não muda — ela não precisa saber');
+
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 1, 'a conversa foi criada a partir do envio externo');
+  const mensagens = await repositorio.listarMensagens(conversas[0].id);
+  assert.equal(mensagens.length, 1);
+  assert.equal(mensagens[0].direcao, 'saida');
+  assert.equal(mensagens[0].autor_tipo, 'equipe');
+  assert.equal(mensagens[0].conteudo, 'Respondido direto no WhatsApp Web');
+});
+
+test('eco fromMe:true de um envio que JÁ SAIU pelo CRM não duplica a mensagem', async (t) => {
+  const repositorio = criarRepositorioEmMemoria();
+  const atendimento = criarAtendimento({ repositorio, orquestrador: null });
+  const configuracao = configuracaoDeTeste({
+    WHATSAPP_WEBHOOK_SECRET: SEGREDO,
+    EVOLUTION_WEBHOOK_TOKEN: TOKEN_EVOLUTION,
+  });
+  const app = await subirServidor({ repositorio, atendimento, configuracao, autenticar: false });
+  t.after(() => app.encerrar());
+
+  // O próprio CRM já registrou esta mensagem, com o id_provedor que o eco
+  // vai carregar — como `entregarAoPaciente`/`marcarIdProvedorDaMensagem`
+  // fazem depois de um envio bem-sucedido pela Evolution.
+  const contato = await repositorio.encontrarOuCriarContato({ telefone: '5511999990000', nome: 'Paciente' });
+  const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+  const { mensagem: jaGravada } = await repositorio.registrarMensagem(conversa.id, {
+    direcao: 'saida',
+    conteudo: 'Mensagem vinda direto da Evolution',
+    autor_tipo: 'equipe',
+    autor_nome: 'Tatiana',
+  });
+  await repositorio.marcarIdProvedorDaMensagem(jaGravada.id, 'whatsapp:5511999990000:3EB0EVO1');
 
   const eco = await enviarSemAssinatura(app, {
     ...MENSAGEM_EVOLUTION,
     data: { ...MENSAGEM_EVOLUTION.data, key: { ...MENSAGEM_EVOLUTION.data.key, fromMe: true } },
   }, `?token=${TOKEN_EVOLUTION}`);
   assert.equal(eco.status, 200);
-  assert.equal((await eco.json()).ignorado, true);
 
-  assert.equal((await repositorio.listarConversas({})).length, 0);
+  const mensagens = await repositorio.listarMensagens(conversa.id);
+  assert.equal(mensagens.length, 1, 'o eco do próprio envio não vira uma segunda linha');
 });
 
 test('a assinatura HMAC do OpenClaw continua valendo normalmente com EVOLUTION_WEBHOOK_TOKEN configurado', async (t) => {

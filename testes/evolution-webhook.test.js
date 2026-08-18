@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizarEventoEvolution } = require('../src/integracoes/evolution-webhook');
+const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('../src/integracoes/evolution-webhook');
 
 const MENSAGEM_TEXTO = Object.freeze({
   event: 'messages.upsert',
@@ -76,4 +76,77 @@ test('não derruba com payload vazio, nulo ou malformado', () => {
 test('remetente inválido (não numérico) é ignorado', () => {
   const evento = { ...MENSAGEM_TEXTO, data: { ...MENSAGEM_TEXTO.data, key: { ...MENSAGEM_TEXTO.data.key, remoteJid: 'nao-e-telefone' } } };
   assert.equal(normalizarEventoEvolution(evento), null);
+});
+
+// ---------------------------------------------------------------------------
+// normalizarEcoDeEnvioEvolution — migration 042 / pedido do Dr. Edson
+// (2026-08-17): mensagem enviada pela equipe direto no WhatsApp Web/app
+// (mesmo número, outro dispositivo — não pelo CRM) precisa aparecer na
+// tela. É o OUTRO LADO do que `normalizarEventoEvolution` ignora com
+// `fromMe:true`.
+// ---------------------------------------------------------------------------
+
+const ECO_DE_ENVIO = Object.freeze({
+  event: 'messages.upsert',
+  instance: 'clinica',
+  data: {
+    key: { remoteJid: '5511999990000@s.whatsapp.net', fromMe: true, id: '3EB0BBBB' },
+    message: { conversation: 'Pode vir amanhã às 14h' },
+    messageType: 'conversation',
+    messageTimestamp: 1723500100,
+  },
+});
+
+test('traduz um envio da equipe direto no WhatsApp (fromMe:true) para registro', () => {
+  const normalizado = normalizarEcoDeEnvioEvolution(ECO_DE_ENVIO);
+  assert.ok(normalizado);
+  assert.equal(normalizado.telefone, '5511999990000');
+  assert.equal(normalizado.texto, 'Pode vir amanhã às 14h');
+  assert.equal(normalizado.id_provedor, 'whatsapp:5511999990000:3EB0BBBB');
+});
+
+test('normalizarEcoDeEnvioEvolution ignora mensagem de ENTRADA (fromMe:false) — não é o caso dela', () => {
+  const evento = { ...ECO_DE_ENVIO, data: { ...ECO_DE_ENVIO.data, key: { ...ECO_DE_ENVIO.data.key, fromMe: false } } };
+  assert.equal(normalizarEcoDeEnvioEvolution(evento), null);
+});
+
+test('normalizarEcoDeEnvioEvolution: o id_provedor usa o MESMO formato whatsapp:<telefone>:<id> que id_externo de entrada', () => {
+  // Esta igualdade de formato é o que faz o índice único de id_provedor
+  // reconhecer, do lado do banco, que um envio do próprio CRM (marcado por
+  // marcarIdProvedorDaMensagem com esta MESMA string) e o eco que a Evolution
+  // manda de volta são o MESMO evento — ver db/042_mensagens_id_provedor.sql.
+  const entrada = normalizarEventoEvolution({
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '5511999990000@s.whatsapp.net', fromMe: false, id: 'IGUAL1' },
+      message: { conversation: 'oi' },
+      messageTimestamp: 1723500000,
+    },
+  });
+  const eco = normalizarEcoDeEnvioEvolution({
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '5511999990000@s.whatsapp.net', fromMe: true, id: 'IGUAL1' },
+      message: { conversation: 'oi de volta' },
+      messageTimestamp: 1723500000,
+    },
+  });
+  assert.equal(entrada.id_externo, 'whatsapp:5511999990000:IGUAL1');
+  assert.equal(eco.id_provedor, 'whatsapp:5511999990000:IGUAL1');
+});
+
+test('normalizarEcoDeEnvioEvolution ignora grupo, sem texto, sem id nativo, e payload malformado', () => {
+  assert.equal(normalizarEcoDeEnvioEvolution({
+    ...ECO_DE_ENVIO, data: { ...ECO_DE_ENVIO.data, key: { ...ECO_DE_ENVIO.data.key, remoteJid: '123-456@g.us' } },
+  }), null, 'grupo');
+  assert.equal(normalizarEcoDeEnvioEvolution({
+    ...ECO_DE_ENVIO, data: { ...ECO_DE_ENVIO.data, message: { imageMessage: {} } },
+  }), null, 'sem texto reconhecível');
+  assert.equal(normalizarEcoDeEnvioEvolution({
+    ...ECO_DE_ENVIO, data: { ...ECO_DE_ENVIO.data, key: { ...ECO_DE_ENVIO.data.key, id: '' } },
+  }), null, 'sem id nativo — sem chave de dedupe possível');
+  assert.equal(normalizarEcoDeEnvioEvolution(), null);
+  assert.equal(normalizarEcoDeEnvioEvolution(null), null);
+  assert.equal(normalizarEcoDeEnvioEvolution({}), null);
+  assert.equal(normalizarEcoDeEnvioEvolution({ event: 'connection.update', data: {} }), null);
 });
