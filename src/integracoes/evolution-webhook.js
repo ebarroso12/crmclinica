@@ -124,4 +124,47 @@ function normalizarEventoEvolution(payload = {}) {
   };
 }
 
-module.exports = { normalizarEventoEvolution };
+/**
+ * Migration 042 / pedido do Dr. Edson (2026-08-17): traduz o eco `fromMe:true`
+ * — a equipe respondeu direto no WhatsApp Web/app, mesmo número da clínica,
+ * outro dispositivo (o WhatsApp sincroniza entre os dois). Até esta mudança,
+ * `normalizarEventoEvolution` descartava TODO `fromMe:true` como "eco do
+ * próprio envio do CRM" — verdade só quando o envio saiu PELO CRM. Quando saiu
+ * por fora, essa era exatamente a mensagem que a tela nunca mostrava.
+ *
+ * Devolve `null` nos mesmos casos que a função de entrada (não é
+ * MESSAGES_UPSERT, é grupo, sem texto reconhecível) — só que aqui filtrando
+ * o INVERSO: só processa quando `fromMe === true`.
+ *
+ * O `id_provedor` usa o MESMO formato (`whatsapp:<telefone>:<id nativo>`) que
+ * `marcarIdProvedorDaMensagem` grava depois de um envio bem-sucedido pelo
+ * CRM — é essa igualdade de string que faz `registrarMensagem` reconhecer o
+ * eco de uma mensagem que o próprio CRM mandou e não duplicá-la (índice único
+ * de `id_provedor`, migration 042). Sem correspondência: mensagem nova,
+ * enviada por fora, registrada como tal.
+ */
+function normalizarEcoDeEnvioEvolution(payload = {}) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (!ehEventoDeMensagem(payload)) return null;
+
+  const dado = payload.data;
+  if (!dado || typeof dado !== 'object' || Array.isArray(dado)) return null;
+  if (dado.key?.fromMe !== true) return null; // não é o caso que esta função trata
+
+  const paraQuem = normalizarTelefone(dado.key?.remoteJid);
+  if (!paraQuem) return null; // grupo, ou remoteJid sem forma reconhecível
+
+  const conteudo = textoDaMensagem(dado.message);
+  if (!conteudo) return null; // mídia sem legenda, ou outro tipo não suportado ainda
+
+  const idNativo = texto(dado.key?.id);
+  if (!idNativo) return null; // sem ID nativo não há como formar a chave de dedupe
+
+  return {
+    telefone: paraQuem,
+    texto: conteudo.slice(0, LIMITE_TEXTO),
+    id_provedor: `whatsapp:${paraQuem}:${idNativo}`.slice(0, 200),
+  };
+}
+
+module.exports = { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution };

@@ -18,6 +18,22 @@ test('GET /health identifica o produto e responde ok', async (t) => {
   assert.match(corpo.instante, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+// Achado do incidente de 2026-08-17: o rodapé da tela ("v0.1" fixo) nunca
+// refletia deploy nenhum, e ninguém com a aba aberta sabia quando uma versão
+// nova subia. `commit` é o que public/app.js compara para mostrar o botão
+// "Atualizar" — fora da Vercel (aqui, nos testes) não tem como saber o
+// commit, e o campo precisa existir mesmo assim, como `null` — nunca
+// ausente, para o front não precisar de um caso especial "campo pode nem
+// existir".
+test('GET /health traz "commit" — null fora da Vercel, nunca ausente', async (t) => {
+  const app = await subirServidor();
+  t.after(() => app.encerrar());
+
+  const corpo = await (await app.pedir('/health')).json();
+  assert.ok('commit' in corpo);
+  assert.equal(corpo.commit, null);
+});
+
 test('respostas trazem os cabeçalhos de segurança', async (t) => {
   const app = await subirServidor();
   t.after(() => app.encerrar());

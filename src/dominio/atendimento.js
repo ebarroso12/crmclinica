@@ -845,6 +845,18 @@ function criarAtendimento({
           console.error(`[atendimento] falha ao marcar entrega confirmada: ${erroDeMarca.message}`);
         });
       }
+      // Migration 042: grava o ID nativo do WhatsApp nesta mensagem — é o que
+      // permite reconhecer o eco `fromMe:true` desta MESMA mensagem quando o
+      // webhook o devolver, e não gravá-la de novo como se fosse uma resposta
+      // enviada por fora (ver normalizarEcoDeEnvioEvolution /
+      // registrarEnvioExternoDoWhatsapp). Best-effort: uma falha aqui não
+      // desfaz um envio que já aconteceu de verdade.
+      if (resultado?.identificador && repositorio.marcarIdProvedorDaMensagem) {
+        await repositorio.marcarIdProvedorDaMensagem(mensagemId, `whatsapp:${contato.telefone}:${resultado.identificador}`)
+          .catch((erroDeMarca) => {
+            console.error(`[atendimento] falha ao marcar id do provedor: ${erroDeMarca.message}`);
+          });
+      }
       // Gate 2 da auditoria: mesma razão do publicarStatusDeEntrega acima —
       // quem está com a conversa aberta vê "entregue" na hora, sem recarregar.
       emissor?.publicarStatusDeEntrega?.(conversa.id, { mensagemId, status: 'entregue' });
@@ -914,12 +926,61 @@ function criarAtendimento({
     return sugestao;
   }
 
+  /**
+   * Migration 042 / pedido do Dr. Edson (2026-08-17): a tela precisa
+   * mostrar toda mensagem de saída — da Serena, da equipe pelo painel, e da
+   * equipe respondendo direto pelo WhatsApp. Registra uma mensagem de
+   * SAÍDA que saiu por FORA do CRM — a equipe respondendo direto no
+   * WhatsApp Web/app,
+   * mesmo número da clínica, outro dispositivo. O WhatsApp sincroniza entre
+   * os dispositivos ligados na mesma conta, e a Evolution entrega isso como
+   * um evento `fromMe:true` — ver `normalizarEcoDeEnvioEvolution` em
+   * evolution-webhook.js.
+   *
+   * Diferente de `responderComoEquipe`: aqui a mensagem JÁ SAIU — a equipe
+   * já mandou, por fora. Este método só REGISTRA o fato (não envia nada de
+   * novo, não passa pela barreira final — não é decisão de automação — e
+   * não assume a conversa sozinho) para tornar visível o que já aconteceu.
+   *
+   * Dedup contra o próprio eco do CRM: quando é o próprio `entregarAoPaciente`
+   * que mandou, a mensagem já existe com este `idProvedor` (marcado por
+   * `marcarIdProvedorDaMensagem`) — `registrarMensagem` reconhece pelo
+   * índice único e devolve `duplicada: true`, sem criar linha nova.
+   */
+  async function registrarEnvioExternoDoWhatsapp({
+    telefone, nome = null, texto, idProvedor,
+  }) {
+    const contato = await repositorio.encontrarOuCriarContato({
+      telefone, nome, canal: 'whatsapp', identificador: null,
+    });
+    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+
+    const { mensagem, duplicada } = await repositorio.registrarMensagem(conversa.id, {
+      direcao: 'saida',
+      tipo: 'texto',
+      conteudo: texto,
+      autor_tipo: 'equipe',
+      autor_nome: 'Equipe (WhatsApp)',
+      id_provedor: idProvedor,
+    });
+
+    if (duplicada) {
+      return { acao: 'eco_ja_registrado', conversa_id: conversa.id, mensagem_id: mensagem.id };
+    }
+
+    // Mesma razão de `receberMensagem`/`responderComoEquipe`: quem está com a
+    // tela aberta precisa ver a mensagem na hora, não só ao recarregar.
+    emissor?.publicarMensagem(conversa.id, mensagem);
+    return { acao: 'mensagem_externa_registrada', conversa_id: conversa.id, mensagem_id: mensagem.id };
+  }
+
   return {
     receberMensagem,
     responderSePossivel,
     assumir,
     liberar,
     responderComoEquipe,
+    registrarEnvioExternoDoWhatsapp,
     escalonar,
     definirTemperatura,
     sincronizarTemperatura,

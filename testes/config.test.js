@@ -16,6 +16,14 @@ test('valores padrão são seguros quando o ambiente está vazio', () => {
   assert.equal(configuracao.banco.configurado, false);
   assert.equal(configuracao.kimi.habilitado, false, 'o provedor de modelo é opcional');
   assert.equal(configuracao.serena.transporteWhatsapp, 'openclaw_gerencia');
+  assert.equal(configuracao.serena.idadeMaximaRespostaMs, 30 * 60 * 1000, 'padrão de 30 minutos');
+});
+
+test('SERENA_IDADE_MAXIMA_RESPOSTA_MIN é configurável em minutos', () => {
+  assert.equal(
+    carregarConfiguracao({ SERENA_IDADE_MAXIMA_RESPOSTA_MIN: '90' }).serena.idadeMaximaRespostaMs,
+    90 * 60 * 1000,
+  );
 });
 
 test('URLs inválidas ou com protocolo estranho são descartadas', () => {

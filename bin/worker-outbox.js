@@ -146,7 +146,9 @@ async function main() {
     // conversas do worker de lembretes.
   });
 
-  const outbox = criarServicoDeOutbox({ repositorio, atendimento });
+  const outbox = criarServicoDeOutbox({
+    repositorio, atendimento, idadeMaximaRespostaMs: configuracao.serena.idadeMaximaRespostaMs,
+  });
 
   const worker = identificarWorker();
   const lote = Number(lerArgumento('lote', 20));

@@ -218,6 +218,9 @@ function montarMensagem(linha) {
     // O id externo viaja junto: é ele que permite ao ciclo de atendimento
     // reconhecer, num retry, que a resposta deste inbound já foi gravada.
     id_externo: linha.id_externo ?? null,
+    // Migration 042 — mesmo fallback pré-migration que id_externo: sem a
+    // coluna, o SELECT * não a traz, e vira null aqui, nunca erro.
+    id_provedor: linha.id_provedor ?? null,
     criado_em: linha.criado_em,
     // Comando 7, achado A-3: marca de entrega da barreira final. `?? false`
     // é o fallback antes de a migration 032 estar aplicada — sem a coluna, o
@@ -649,10 +652,15 @@ function criarRepositorio(pool) {
      */
     async registrarMensagem(conversaId, mensagem) {
       const gravar = async (cliente) => {
+        // Migration 042: ON CONFLICT sem alvo — pega tanto id_externo (chave
+        // de entrada / determinística da Serena) quanto id_provedor (ID
+        // nativo de saída, ver marcarIdProvedorDaMensagem e
+        // evolution-webhook.js `normalizarEcoDeEnvioEvolution`) — as duas
+        // são reentrega/eco do MESMO evento, nunca dado novo.
         const { rows } = await cliente.query(`
-          INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          ON CONFLICT (id_externo) WHERE id_externo IS NOT NULL DO NOTHING
+          INSERT INTO mensagens (conversa_id, direcao, tipo, conteudo, media_url, autor_tipo, autor_nome, privada, id_externo, id_provedor)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT DO NOTHING
           RETURNING *
         `, [
           conversaId,
@@ -664,6 +672,7 @@ function criarRepositorio(pool) {
           mensagem.autor_nome || null,
           Boolean(mensagem.privada),
           mensagem.id_externo || null,
+          mensagem.id_provedor || null,
         ]);
 
         // Sem linha devolvida, a mensagem já existia: reentrega do canal. Isso
@@ -672,7 +681,10 @@ function criarRepositorio(pool) {
         // cliente é a transação da requisição: abortaria contato, conversa e o
         // trabalho da outbox por causa de uma duplicata esperada.
         if (rows.length === 0) {
-          const existente = await cliente.query('SELECT * FROM mensagens WHERE id_externo = $1', [mensagem.id_externo]);
+          const chave = mensagem.id_externo
+            ? { coluna: 'id_externo', valor: mensagem.id_externo }
+            : { coluna: 'id_provedor', valor: mensagem.id_provedor };
+          const existente = await cliente.query(`SELECT * FROM mensagens WHERE ${chave.coluna} = $1`, [chave.valor]);
           return { mensagem: montarMensagem(existente.rows[0]), duplicada: true };
         }
 
@@ -739,6 +751,21 @@ function criarRepositorio(pool) {
       const { rows } = await consultar(
         'UPDATE mensagens SET entrega_indeterminada = true, entrega_falhou_motivo = $2 WHERE id = $1 RETURNING *',
         [mensagemId, motivo ?? null],
+      );
+      return rows[0] ? montarMensagem(rows[0]) : null;
+    },
+
+    /**
+     * Migration 042 — grava o ID nativo do WhatsApp numa mensagem de SAÍDA já
+     * existente, depois que o envio (Evolution) confirma sucesso e devolve o
+     * identificador. `WHERE id_provedor IS NULL` no lugar de um upsert: uma
+     * vez marcado, não sobrescreve — só a primeira confirmação vale, e um
+     * retry de rede que chame isto duas vezes não pode trocar o valor gravado.
+     */
+    async marcarIdProvedorDaMensagem(mensagemId, idProvedor) {
+      const { rows } = await consultar(
+        'UPDATE mensagens SET id_provedor = $2 WHERE id = $1 AND id_provedor IS NULL RETURNING *',
+        [mensagemId, idProvedor],
       );
       return rows[0] ? montarMensagem(rows[0]) : null;
     },

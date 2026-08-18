@@ -624,3 +624,105 @@ test('nada do texto da conversa aparece nos registros técnicos da outbox', asyn
   assert.ok(!serializadoDaAuditoria.includes(TEXTO_CLINICO));
   assert.ok(!serializadoDaAuditoria.includes('psiqui'));
 });
+
+// ----------------------------------------------- trabalho expirado (idade máxima)
+//
+// Achado do incidente de 2026-08-17: durante um STOP prolongado, mensagem de
+// paciente continua entrando e enfileirando trabalho — só o ENVIO fica
+// bloqueado. Sem limite de idade, religar a automação despacharia respostas
+// geradas AGORA para perguntas de horas atrás, sem contexto nenhum de que o
+// tempo passou.
+
+test('trabalho mais velho que o limite não gera resposta automática — escalona para a equipe', async () => {
+  const agoraDoEnfileiramento = new Date('2026-08-17T08:00:00.000Z');
+  let agoraSimulado = agoraDoEnfileiramento;
+  const repositorio = criarRepositorioEmMemoria({ agora: () => agoraSimulado });
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'Olá! Posso ajudar?' }) },
+  });
+  // 30 minutos de limite — o padrão de config.js.
+  const outbox = criarServicoDeOutbox({
+    repositorio, atendimento, agora: () => agoraSimulado, idadeMaximaRespostaMs: 30 * 60 * 1000,
+  });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+  await outbox.enfileirar({ conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id });
+
+  // O trabalho fica pendente por 2 HORAS (STOP prolongado) antes de alguém
+  // religar o worker e ele finalmente ser reivindicado.
+  agoraSimulado = new Date(agoraDoEnfileiramento.getTime() + 2 * 60 * 60 * 1000);
+
+  const [trabalho] = await repositorio.reivindicarTrabalhosDeOutbox({
+    agora: agoraSimulado.toISOString(), limite: 1, worker: 'w',
+  });
+  const resultado = await outbox.processarUm(trabalho);
+
+  assert.equal(resultado.status, 'concluido');
+  assert.equal(resultado.acao, 'expirado_sem_resposta_automatica');
+  assert.equal(canal.envios.length, 0, 'nenhuma resposta automática foi enviada — o trabalho nem chegou a gerar uma');
+
+  const conversaDepois = await repositorio.obterConversa(conversa.id);
+  assert.equal(conversaDepois.assumida_por_humano, true, 'escalonado para a equipe, não descartado em silêncio');
+
+  const fila = await repositorio.contarTrabalhosDeOutboxPorEstado();
+  assert.equal(fila.concluido, 1);
+  assert.equal(fila.pendente, 0);
+});
+
+test('trabalho dentro do limite de idade processa normalmente (guarda de regressão)', async () => {
+  const agoraDoEnfileiramento = new Date('2026-08-17T08:00:00.000Z');
+  let agoraSimulado = agoraDoEnfileiramento;
+  const repositorio = criarRepositorioEmMemoria({ agora: () => agoraSimulado });
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'Olá! Posso ajudar?' }) },
+  });
+  const outbox = criarServicoDeOutbox({
+    repositorio, atendimento, agora: () => agoraSimulado, idadeMaximaRespostaMs: 30 * 60 * 1000,
+  });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+  await outbox.enfileirar({ conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id });
+
+  // Só 5 minutos depois — bem dentro do limite de 30.
+  agoraSimulado = new Date(agoraDoEnfileiramento.getTime() + 5 * 60 * 1000);
+
+  const [trabalho] = await repositorio.reivindicarTrabalhosDeOutbox({
+    agora: agoraSimulado.toISOString(), limite: 1, worker: 'w',
+  });
+  const resultado = await outbox.processarUm(trabalho);
+
+  assert.equal(resultado.status, 'concluido');
+  assert.notEqual(resultado.acao, 'expirado_sem_resposta_automatica');
+  assert.equal(canal.envios.length, 1, 'a resposta automática foi enviada normalmente');
+});
+
+test('idadeMaximaRespostaMs=null (ou 0) desliga o limite — nunca expira', async () => {
+  const agoraDoEnfileiramento = new Date('2026-08-17T08:00:00.000Z');
+  let agoraSimulado = agoraDoEnfileiramento;
+  const repositorio = criarRepositorioEmMemoria({ agora: () => agoraSimulado });
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({
+    repositorio, canal,
+    orquestrador: { disponivel: true, despacharEvento: async () => ({ resposta: 'Olá! Posso ajudar?' }) },
+  });
+  const outbox = criarServicoDeOutbox({
+    repositorio, atendimento, agora: () => agoraSimulado, idadeMaximaRespostaMs: null,
+  });
+
+  const { conversa, mensagemEntrada } = await prepararConversa(repositorio);
+  await outbox.enfileirar({ conversaId: conversa.id, mensagemEntradaId: mensagemEntrada.id });
+
+  agoraSimulado = new Date(agoraDoEnfileiramento.getTime() + 10 * 60 * 60 * 1000); // 10 horas depois
+
+  const [trabalho] = await repositorio.reivindicarTrabalhosDeOutbox({
+    agora: agoraSimulado.toISOString(), limite: 1, worker: 'w',
+  });
+  const resultado = await outbox.processarUm(trabalho);
+
+  assert.notEqual(resultado.acao, 'expirado_sem_resposta_automatica');
+  assert.equal(canal.envios.length, 1);
+});

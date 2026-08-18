@@ -422,6 +422,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         const existente = mensagens.find((mensagem) => mensagem.id_externo === dados.id_externo);
         if (existente) return { mensagem: existente, duplicada: true };
       }
+      // Migration 042 — mesma dedupe do id_externo, para o eco fromMe:true.
+      if (dados.id_provedor) {
+        const existente = mensagens.find((mensagem) => mensagem.id_provedor === dados.id_provedor);
+        if (existente) return { mensagem: existente, duplicada: true };
+      }
 
       const mensagem = {
         id: proximoId.mensagem++,
@@ -434,6 +439,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         autor_nome: dados.autor_nome ?? null,
         privada: Boolean(dados.privada),
         id_externo: dados.id_externo ?? null,
+        id_provedor: dados.id_provedor ?? null,
         criado_em: agora().toISOString(),
         // Comando 7, achado A-3: toda mensagem nasce como entregue até prova
         // em contrário — a barreira final marca o oposto quando bloqueia.
@@ -486,6 +492,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       if (!mensagem) return null;
       mensagem.entrega_indeterminada = true;
       mensagem.entrega_falhou_motivo = motivo ?? null;
+      return { ...mensagem };
+    },
+
+    // Migration 042 — paridade com repositorio.js.
+    async marcarIdProvedorDaMensagem(mensagemId, idProvedor) {
+      const mensagem = mensagens.find((item) => item.id === Number(mensagemId));
+      if (!mensagem || mensagem.id_provedor) return null;
+      mensagem.id_provedor = idProvedor;
       return { ...mensagem };
     },
 

@@ -10,7 +10,7 @@ const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/eve
 const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
-const { normalizarEventoEvolution } = require('../integracoes/evolution-webhook');
+const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('../integracoes/evolution-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarClienteStorage } = require('../integracoes/supabase-storage');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
@@ -410,6 +410,31 @@ function criarAplicacao(dependencias = {}) {
       // ignorado, não é erro — recusar com 4xx faria a Evolution reter e
       // martelar retry num evento que nunca vai virar conversa.
       if (!traduzido) {
+        // Migration 042 / pedido do Dr. Edson: antes de desistir, confere se
+        // isto é `fromMe:true` — a equipe respondendo direto no WhatsApp
+        // Web/app, mesmo número, outro dispositivo (o WhatsApp sincroniza
+        // entre os dois). `normalizarEventoEvolution` já devolveu null para
+        // este caso (não é mensagem de PACIENTE); esta é a checagem
+        // complementar, que trata do outro lado da mesma moeda: mensagem de
+        // SAÍDA que não passou pelo CRM. Só existe quando quem chamou esta
+        // porta é a Evolution (`tokenAlternativo` só é montado ali) — a porta
+        // do orquestrador (OpenClaw) nunca cai aqui.
+        const eco = tokenAlternativo.adaptarEco?.(corpoInterpretado) ?? null;
+        if (eco && atendimento.registrarEnvioExternoDoWhatsapp) {
+          try {
+            await atendimento.registrarEnvioExternoDoWhatsapp({
+              telefone: eco.telefone,
+              texto: eco.texto,
+              idProvedor: eco.id_provedor,
+            });
+          } catch (erro) {
+            // Falha aqui é best-effort por natureza — a mensagem já saiu de
+            // verdade, pelo WhatsApp; não gravar no CRM é uma tela desatualizada,
+            // não uma entrega perdida. Não pode virar 5xx e fazer a Evolution
+            // martelar retry de um evento que não tem como ficar diferente.
+            console.error(`[http] falha ao registrar envio externo do WhatsApp: ${erro.message}`);
+          }
+        }
         responderJson(res, 200, { aceito: true, ignorado: true });
         return;
       }
@@ -548,6 +573,10 @@ function criarAplicacao(dependencias = {}) {
         // O payload nativo da Evolution não é o contrato do CRM — precisa de
         // tradução antes de `validarEvento` (ver integracoes/evolution-webhook.js).
         adaptar: normalizarEventoEvolution,
+        // Migration 042: o outro lado do mesmo payload — mensagem de SAÍDA
+        // (`fromMe:true`) que `adaptar` acima devolveu null para. Só chamada
+        // quando `adaptar` não reconheceu nada.
+        adaptarEco: normalizarEcoDeEnvioEvolution,
       } : null,
     });
   }
@@ -1486,6 +1515,16 @@ function criarAplicacao(dependencias = {}) {
           produto: 'crmclinica',
           status: 'ok',
           versao: require('../../package.json').version,
+          // Achado do incidente de 2026-08-17: `versao` (package.json) só
+          // muda quando alguém lembra de bump — na prática, quase nunca. Sem
+          // um identificador que troca a CADA deploy, uma aba aberta num
+          // deploy antigo nunca tem como saber que existe um novo (ver o
+          // botão "Atualizar" em app.js). A Vercel injeta
+          // VERCEL_GIT_COMMIT_SHA automaticamente em toda função serverless;
+          // fora dela (VPS, local) fica `null` — a aba simplesmente nunca
+          // oferece o botão, o que é seguro (nada pior que um botão que não
+          // aparece quando poderia).
+          commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
           instante: new Date().toISOString(),
           banco,
         });
