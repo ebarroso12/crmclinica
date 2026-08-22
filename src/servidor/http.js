@@ -65,7 +65,7 @@ const { criarRotasDeUsuarios } = require('./rotas-usuarios');
 const { criarRotasDeSincronia } = require('./rotas-sincronia');
 const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
-const { criarEmissorDeConversas } = require('./eventos-conversas');
+const { criarEmissorDeConversas, criarReleituraDeEventos } = require('./eventos-conversas');
 
 const PASTA_PUBLICA = path.join(__dirname, '..', '..', 'public');
 
@@ -1758,6 +1758,23 @@ function criarAplicacao(dependencias = {}) {
         const cancelarInscricao = emissorDeConversas.inscrever(res, {
           depoisDeCursor: cursorAposReplay, usuarioId: usuarioDoEvento.id, papel: usuarioDoEvento.papel,
         });
+
+        // RELEITURA CROSS-PROCESSO: a resposta da Serena (worker na VPS) grava
+        // no banco, mas o push ao vivo só alcança quem está no MESMO processo.
+        // Na Vercel, a instância do SSE quase nunca é a que gravou. A releitura
+        // busca no Postgres a cada tick os eventos que outro processo gravou.
+        const releitura = criarReleituraDeEventos({
+          res,
+          repositorio,
+          usuarioId: usuarioDoEvento.id,
+          papel: usuarioDoEvento.papel,
+          cursorAtual: () => cursorAposReplay,
+          avancarCursor: (id) => { if (id > cursorAposReplay) cursorAposReplay = id; },
+          intervaloMs: configuracao.eventos?.releituraMs ?? 5000,
+        });
+        const timerReleitura = releitura ? setInterval(() => releitura.tick(), configuracao.eventos?.releituraMs ?? 5000) : null;
+        if (timerReleitura) timerReleitura.unref?.();
+
         // Sem batimento, uma conexão ociosa é indistinguível de uma caída para
         // qualquer proxy no meio do caminho — ele derruba silenciosamente.
         const batimento = setInterval(() => {
@@ -1775,6 +1792,8 @@ function criarAplicacao(dependencias = {}) {
         function encerrarConexaoDeEventos() {
           if (encerrada) return;
           encerrada = true;
+          if (timerReleitura) clearInterval(timerReleitura);
+          if (releitura) releitura.parar();
           clearInterval(batimento);
           clearTimeout(limiteDeSessao);
           cancelarInscricao();

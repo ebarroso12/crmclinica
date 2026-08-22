@@ -104,6 +104,32 @@ test('configuração incompleta falha fechada: mantém o hook de silêncio regis
   assert.match(erros[0], /permanece silencioso/);
 });
 
+test('senderId @lid usa senderPn para extrair o telefone real', async () => {
+  const { normalizarEvento } = await modulo();
+  const normalizado = normalizarEvento({
+    content: 'Oi, preciso de ajuda',
+    messageId: 'lid-ponte-1',
+    senderId: '123456789012345@lid',
+    senderPn: '5511999990000',
+    senderName: 'Paciente LID',
+    timestamp: 1786028400000,
+  }, { channelId: 'whatsapp', sessionKey: 'agent:serena:whatsapp:direct:teste' });
+
+  assert.ok(normalizado);
+  assert.equal(normalizado.remetente, '5511999990000');
+  assert.equal(normalizado.id_externo, 'whatsapp:5511999990000:lid-ponte-1');
+});
+
+test('senderId @lid sem senderPn é recusado — não cria contato fantasma', async () => {
+  const { normalizarEvento } = await modulo();
+  assert.equal(normalizarEvento({
+    content: 'Oi',
+    messageId: 'lid-ponte-2',
+    senderId: '123456789012345@lid',
+    timestamp: 1786028400000,
+  }, { channelId: 'whatsapp' }), null);
+});
+
 test('persiste antes de entregar, mantém a fila na falha e a remove após sucesso', async (t) => {
   const { criarPonte } = await modulo();
   const pasta = await mkdtemp(path.join(os.tmpdir(), 'crmclinica-ingresso-'));

@@ -252,7 +252,10 @@ async function carregarResumo() {
       const serena = resumo.atendimento?.serena;
       if (serena && serena.ativa === false) {
         avisoSerena.hidden = false;
-        avisoSerena.textContent = 'Serena desligada — o atendimento automático está pausado.';
+        const ha = serena.desde ? haQuanto(serena.desde) : '';
+        avisoSerena.textContent = ha
+          ? `Serena desligada ${ha} — o atendimento automático está pausado.`
+          : 'Serena desligada — o atendimento automático está pausado.';
       } else {
         avisoSerena.hidden = true;
         avisoSerena.textContent = '';

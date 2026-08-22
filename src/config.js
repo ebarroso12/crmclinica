@@ -225,6 +225,11 @@ function carregarConfiguracao(ambiente = process.env) {
     sse: {
       limiteMs: texto(ambiente.VERCEL) ? inteiro(ambiente.SSE_LIMITE_MS, 270_000) : null,
     },
+    // Chat ao vivo: intervalo de releitura cross-processo (worker na VPS grava,
+    // Vercel lê). 0 desliga — só replay inicial, sem tick periódico.
+    eventos: {
+      releituraMs: inteiro(ambiente.EVENTOS_RELEITURA_MS, 5000),
+    },
     // Espelho da agenda no Google Calendar do médico. A agenda do crmclinica
     // continua sendo a fonte de verdade — é ela que impede dois pacientes no
     // mesmo horário. O Google é para o dia aparecer no celular, sem abrir o
