@@ -625,6 +625,18 @@ function criarAplicacao(dependencias = {}) {
     const acao = mapa[`${metodo} ${rota}`];
     if (acao) {
       const resultado = await acao();
+      // Retorno do Google OAuth: o navegador acessa esta rota diretamente (nao
+      // via AJAX), entao precisamos redirecionar para o frontend com os tokens
+      // na URL, em vez de devolver JSON cru na tela.
+      if (rota === '/api/auth/google/retorno' && resultado?.access_token) {
+        const redirectUrl = new URL(configuracao?.autenticacao?.urlPublica || '/');
+        redirectUrl.searchParams.set('access_token', resultado.access_token);
+        redirectUrl.searchParams.set('refresh_token', resultado.refresh_token);
+        redirectUrl.searchParams.set('expira_em', String(resultado.expira_em || 900));
+        res.writeHead(302, { location: redirectUrl.toString(), 'cache-control': 'no-store' });
+        res.end();
+        return true;
+      }
       responderJson(res, metodo === 'POST' && rota === '/api/usuarios' ? 201 : 200, resultado, semCache);
       return true;
     }

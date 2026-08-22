@@ -2449,6 +2449,19 @@ setInterval(atualizarRelogio, 30000);
     return;
   }
 
+  // Login com Google: o backend redireciona de volta com tokens na URL.
+  const accessTokenGoogle = parametros.get('access_token');
+  const refreshTokenGoogle = parametros.get('refresh_token');
+  if (accessTokenGoogle && refreshTokenGoogle) {
+    accessToken = accessTokenGoogle;
+    try {
+      sessionStorage.setItem(CHAVE_REFRESH, refreshTokenGoogle);
+    } catch {}
+    window.history.replaceState({}, '', window.location.pathname);
+    mostrarAplicacao();
+    return;
+  }
+
   // Um F5 no meio do plantão não deve pedir senha de novo.
   if (lerRefresh() && await renovarSessao()) mostrarAplicacao();
   else mostrarPortao();
