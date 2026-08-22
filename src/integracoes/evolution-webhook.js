@@ -27,10 +27,18 @@ function ehEventoDeMensagem(payload) {
   return evento === 'messages.upsert' || evento === 'messages_upsert';
 }
 
-function normalizarTelefone(remoteJid) {
+function normalizarTelefone(remoteJid, remoteJidAlt) {
   const bruto = texto(remoteJid);
   if (!bruto || /@g\.us/i.test(bruto)) return null; // grupo, não é conversa de paciente
-  const antesDoJid = bruto.split('@')[0];
+  // `@lid` é a identidade opaca do WhatsApp (Linked ID), que vem substituindo
+  // o JID de telefone nas mensagens. Os dígitos de um `@lid` NÃO são um
+  // número: tratá-los como telefone criava contato fantasma no CRM, e a
+  // resposta da Serena saía para um endereço que não existe. O telefone real
+  // chega no JID alternativo (`remoteJidAlt`). Sem ele, melhor recusar a
+  // mensagem aqui — quem chama registra a perda — do que inventar um número.
+  const candidato = /@lid$/i.test(bruto) ? texto(remoteJidAlt) : bruto;
+  if (!candidato || /@g\.us/i.test(candidato) || /@lid$/i.test(candidato)) return null;
+  const antesDoJid = candidato.split('@')[0];
   const digitos = antesDoJid.replace(/\D/g, '');
   return /^\d{10,15}$/.test(digitos) ? digitos : null;
 }
@@ -68,7 +76,7 @@ function normalizarEventoEvolution(payload = {}) {
   if (!dado || typeof dado !== 'object' || Array.isArray(dado)) return null;
   if (dado.key?.fromMe === true) return null; // a própria Serena/equipe mandou — eco, não entrada
 
-  const remetente = normalizarTelefone(dado.key?.remoteJid);
+  const remetente = normalizarTelefone(dado.key?.remoteJid, dado.key?.remoteJidAlt);
   if (!remetente) return null;
 
   const conteudo = textoDaMensagem(dado.message);
@@ -151,8 +159,8 @@ function normalizarEcoDeEnvioEvolution(payload = {}) {
   if (!dado || typeof dado !== 'object' || Array.isArray(dado)) return null;
   if (dado.key?.fromMe !== true) return null; // não é o caso que esta função trata
 
-  const paraQuem = normalizarTelefone(dado.key?.remoteJid);
-  if (!paraQuem) return null; // grupo, ou remoteJid sem forma reconhecível
+  const paraQuem = normalizarTelefone(dado.key?.remoteJid, dado.key?.remoteJidAlt);
+  if (!paraQuem) return null; // grupo, @lid sem JID alternativo, ou remoteJid sem forma reconhecível
 
   const conteudo = textoDaMensagem(dado.message);
   if (!conteudo) return null; // mídia sem legenda, ou outro tipo não suportado ainda

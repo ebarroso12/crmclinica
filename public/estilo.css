@@ -340,6 +340,16 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   font-size: 13px;
 }
 
+/* Serena desligada: aviso mais urgente que o de ambiente, mas não tão grave
+   quanto um erro de login. Aparece no topo do painel. */
+.aviso-alerta {
+  background: #fdeaea;
+  border: 1px solid #f5caca;
+  border-left: 4px solid #b02a2a;
+  color: #8a1f1f;
+  font-weight: 600;
+}
+
 .tela { padding: 26px 36px 40px; }
 .tela[hidden] { display: none; }
 

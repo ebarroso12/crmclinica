@@ -57,6 +57,25 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
     }
   }
 
+  /**
+   * De qual profissional o agente consulta e marca.
+   *
+   * Sem configuração, vale o primeiro ativo — o comportamento de sempre. Mas
+   * com a agenda real do médico acoplada via Google (TribeMD → Google →
+   * `ocupados` da oferta), "primeiro ativo" pode não ser o médico cuja agenda
+   * está espelhada, e a Serena voltaria a oferecer horário que não existe.
+   * `configuracao.agente.profissionalId` amarra a consulta ao médico certo.
+   */
+  async function profissionalDoAgente() {
+    const profissionais = await repositorio.listarProfissionais?.({ apenasAtivos: true }) ?? [];
+    const fixo = configuracao?.agente?.profissionalId;
+    if (fixo == null) return profissionais[0] ?? null;
+    // Um id configurado que não existe entre os ativos é erro de operação, e
+    // o seguro é não oferecer nada — oferecer a agenda de outro profissional
+    // em silêncio recria o problema que a configuração veio resolver.
+    return profissionais.find((p) => p.id === fixo) ?? null;
+  }
+
   return {
     ACOES,
 
@@ -85,8 +104,7 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
           throw erro;
         }
 
-        const profissionais = await repositorio.listarProfissionais?.({ apenasAtivos: true }) ?? [];
-        const profissional = profissionais[0];
+        const profissional = await profissionalDoAgente();
         if (!profissional) return { horarios: [], motivo: 'nenhum profissional ativo' };
 
         // Uma semana à frente. Mais que isso devolveria uma lista que ninguém
@@ -173,8 +191,22 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
           throw erro;
         }
 
-        const profissionais = await repositorio.listarProfissionais?.({ apenasAtivos: true }) ?? [];
-        const profissional = profissionais[0];
+        // Barreira física da decisão "a Serena só propõe; quem confirma é a
+        // recepção". O prompt dela já orienta isso, mas prompt é conselho —
+        // isto aqui é a porta fechada: sem CRMCLINICA_AGENTE_PODE_AGENDAR=true
+        // nenhuma resposta automática grava consulta, nem por engano do modelo.
+        // A resposta é 200 com `agendado: false` — e não um erro — para o
+        // agente entender a recusa como regra do negócio e explicar ao
+        // paciente, em vez de retentar como se fosse falha.
+        if (configuracao?.agente?.podeAgendar !== true) {
+          return {
+            agendado: false,
+            motivo: 'agendamento_pela_recepcao',
+            mensagem: 'A confirmação de horários é feita pela recepção. Registre o interesse do paciente e informe que a equipe confirmará o horário.',
+          };
+        }
+
+        const profissional = await profissionalDoAgente();
         if (!profissional) throw new ErroDeContrato('nenhum profissional ativo', 'profissional');
 
         const proposta = await agenda.propor({

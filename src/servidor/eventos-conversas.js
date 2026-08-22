@@ -2,6 +2,21 @@
 
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 
+/**
+ * Decide se uma assinatura (ao vivo ou replay) pode receber um evento, dado o
+ * escopo JÁ resolvido da conversa. Mesmo predicado usado pelo replay em
+ * `repositorio.listarEventosDeConversasDesde` e pelo push ao vivo em
+ * `empurrar`. Puro e síncrono: toda a I/O acontece antes, na resolução do escopo.
+ */
+function podeReceberEvento(assinatura, escopo) {
+  // admin/gestor têm acesso global e a decisão deles NÃO depende de
+  // `atribuido_a` — por isso nunca tocam o banco.
+  if (assinatura.papel === 'admin' || assinatura.papel === 'gestor') return true;
+  if (assinatura.papel !== 'atendente') return false;
+  if (!escopo || escopo.estado !== 'existe') return false;
+  return podeAcessarConversaAoVivo(assinatura.papel, assinatura.usuarioId, escopo.atribuidoA);
+}
+
 // Barramento do chat ao vivo — Pendência 4 do comando mestre (reconstrução).
 //
 // ANTES: só em memória do processo (`Set` de conexões, `publicar` gravava
@@ -68,33 +83,7 @@ function criarEmissorDeConversas({ repositorio } = {}) {
     return repositorio.obterEscopoDaConversa(conversaId);
   }
 
-  /**
-   * Decide se ESTA assinatura pode receber um evento, dado o escopo JÁ
-   * resolvido do evento — MESMO predicado (`podeAcessarConversaAoVivo`)
-   * usado pelo replay em `repositorio.listarEventosDeConversasDesde`.
-   *
-   * Puro e síncrono de propósito: toda a I/O acontece uma única vez, antes,
-   * em `empurrar`. Enquanto esta decisão era `async` e consultava por
-   * assinante, ela também era o ponto onde duas publicações concorrentes se
-   * intercalavam (BLOQUEADOR 2).
-   *
-   * `escopo` chega em um de três formatos, e os três são distintos:
-   *   - { estado: 'existe', atribuidoA }  → o predicado decide;
-   *   - { estado: 'inexistente' }         → nega (conversa que não existe
-   *     não é "conversa livre": tratá-las igual concedia acesso, provado);
-   *   - { estado: 'erro' }                → nega (fail-closed: sem conseguir
-   *     confirmar, não envia).
-   */
-  function podeReceber(assinatura, escopo) {
-    // admin/gestor têm acesso global e a decisão deles NÃO depende de
-    // `atribuido_a` — por isso nunca tocam o banco (é a otimização legítima
-    // que sobrevive à remoção do cache) e por isso um erro numa consulta
-    // que a decisão deles nem usa não pode virar perda de acesso para eles.
-    if (assinatura.papel === 'admin' || assinatura.papel === 'gestor') return true;
-    if (assinatura.papel !== 'atendente') return false;
-    if (!escopo || escopo.estado !== 'existe') return false;
-    return podeAcessarConversaAoVivo(assinatura.papel, assinatura.usuarioId, escopo.atribuidoA);
-  }
+
 
   /**
    * Registra uma resposta HTTP como assinante. Devolve a função que a
@@ -164,7 +153,7 @@ function criarEmissorDeConversas({ repositorio } = {}) {
     }
 
     for (const assinatura of candidatas) {
-      if (!podeReceber(assinatura, escopo)) continue;
+      if (!podeReceberEvento(assinatura, escopo)) continue;
       try {
         const drenou = assinatura.res.write(linha);
         if (drenou) {
@@ -298,4 +287,63 @@ function criarEmissorDeConversas({ repositorio } = {}) {
   };
 }
 
-module.exports = { criarEmissorDeConversas };
+/**
+ * Releitura cross-processo: de tempos em tempos, busca no banco os eventos que
+ * outro processo gravou (ex.: o worker da outbox na VPS) e empurra para a aba
+ * que está conectada neste processo.
+ *
+ * Sem ela, o push por-processo só alcança quem está na mesma instância — e na
+ * Vercel a instância que recebe o SSE quase nunca é a que gravou a resposta.
+ *
+ * Devolve `null` quando desligada (intervalo 0) ou quando não há repositório.
+ */
+function criarReleituraDeEventos({
+  res,
+  repositorio,
+  usuarioId,
+  papel,
+  cursorAtual,
+  avancarCursor,
+  intervaloMs = 5000,
+  log = console,
+} = {}) {
+  if (intervaloMs === 0) return null;
+  if (!repositorio?.listarEventosDeConversasDesde) return null;
+
+  let ativa = true;
+  let emTick = false;
+  let desligadaPermanentemente = false;
+
+  async function tick() {
+    if (!ativa || desligadaPermanentemente || emTick) return;
+    emTick = true;
+    try {
+      const cursor = cursorAtual();
+      const eventos = await repositorio.listarEventosDeConversasDesde({ cursor, usuarioId, papel });
+
+      for (const evento of eventos) {
+        if (evento.id <= cursor) continue;
+        if (!podeReceberEvento({ usuarioId, papel }, { estado: 'existe', atribuidoA: evento.atribuido_a ?? null })) continue;
+        res.write(`id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`);
+        avancarCursor(evento.id);
+      }
+    } catch (erro) {
+      if (erro.code === '42P01') {
+        desligadaPermanentemente = true;
+        log.error(`[eventos-conversas] tabela conversas_eventos ausente (42P01) — releitura desligada: ${erro.message}`);
+      } else {
+        log.error(`[eventos-conversas] erro na releitura: ${erro.message}`);
+      }
+    } finally {
+      emTick = false;
+    }
+  }
+
+  function parar() {
+    ativa = false;
+  }
+
+  return { tick, parar };
+}
+
+module.exports = { criarEmissorDeConversas, criarReleituraDeEventos };

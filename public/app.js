@@ -247,6 +247,18 @@ async function carregarResumo() {
       aviso.textContent = 'Inbox rodando em memória: nada é persistido e tudo se perde no reinício.';
     }
 
+    const avisoSerena = seletor('#aviso-serena');
+    if (avisoSerena) {
+      const serena = resumo.atendimento?.serena;
+      if (serena && serena.ativa === false) {
+        avisoSerena.hidden = false;
+        avisoSerena.textContent = 'Serena desligada — o atendimento automático está pausado.';
+      } else {
+        avisoSerena.hidden = true;
+        avisoSerena.textContent = '';
+      }
+    }
+
     const { orquestrador, atendimento, inbox, fonteDeVerdade } = resumo.plataforma;
     aplicarEstado('#saude-orquestrador', orquestrador.saude);
     aplicarEstado('#saude-atendimento', atendimento.integracao);
