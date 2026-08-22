@@ -44,6 +44,7 @@ const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
 const { criarClienteEvolucaoEnvio } = require('../src/integracoes/evolution-envio');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
+const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
 
 function lerArgumento(nome, padrao = null) {
   const prefixo = `--${nome}=`;
@@ -132,6 +133,11 @@ async function main() {
   // nenhum: todo trabalho reivindicado caía em `sem_orquestrador`. Mesma
   // composição incondicional que `criarAplicacao` já usa em
   // src/servidor/http.js.
+  // Bug 2.2 da auditoria (Claude): sem emissor, nenhuma resposta deste worker
+  // entra em `conversas_eventos` — e a releitura cross-processo do PR #50
+  // fica sem o que reler. O emissor grava no banco mesmo sem conexões SSE
+  // (o empurrão local simplesmente não alcança ninguém).
+  const emissorDeConversas = criarEmissorDeConversas({ repositorio });
   const atendimento = criarAtendimento({
     repositorio,
     orquestrador: criarClienteOpenClaw(configuracao.openclaw),
@@ -139,11 +145,7 @@ async function main() {
     lembretes: servicoDeLembretes,
     serena: servicoDaSerena,
     canal: canalDeConversas,
-    // Sem `emissor`: este processo não tem as conexões SSE dos navegadores
-    // com a tela aberta (elas vivem no processo HTTP). A resposta ainda
-    // aparece na tela normalmente — só não em tempo real quando é este
-    // worker que a grava, mesma limitação que já existe para a sincronia de
-    // conversas do worker de lembretes.
+    emissor: emissorDeConversas,
   });
 
   const outbox = criarServicoDeOutbox({

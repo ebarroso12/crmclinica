@@ -23,6 +23,12 @@ function inteiro(valor, padrao) {
   return Number.isInteger(numero) && numero > 0 ? numero : padrao;
 }
 
+/** Igual a `inteiro`, mas aceita 0 explicitamente (ex.: kill switch de releitura). */
+function inteiroOuZero(valor, padrao) {
+  const numero = Number.parseInt(texto(valor), 10);
+  return Number.isInteger(numero) && numero >= 0 ? numero : padrao;
+}
+
 function urlValida(valor) {
   const bruto = texto(valor);
   if (!bruto) return '';
@@ -228,7 +234,7 @@ function carregarConfiguracao(ambiente = process.env) {
     // Chat ao vivo: intervalo de releitura cross-processo (worker na VPS grava,
     // Vercel lê). 0 desliga — só replay inicial, sem tick periódico.
     eventos: {
-      releituraMs: inteiro(ambiente.EVENTOS_RELEITURA_MS, 5000),
+      releituraMs: inteiroOuZero(ambiente.EVENTOS_RELEITURA_MS, 5000),
     },
     // Espelho da agenda no Google Calendar do médico. A agenda do crmclinica
     // continua sendo a fonte de verdade — é ela que impede dois pacientes no

@@ -1612,13 +1612,17 @@ function criarAplicacao(dependencias = {}) {
         // batimento no mesmo mapa (`automacao_outbox_worker`); só faltava
         // expor a chave que já estava sendo lida acima.
         const saudeOutbox = { estado: batimentos.automacao_outbox_worker ?? 'indisponivel' };
+        // A configuração da Serena alimenta o banner "desligada há X horas" do
+        // painel — sem ela, o 6º argumento de montarResumo é null e o banner
+        // nunca dispara (bug 2.1 da auditoria).
+        const serenaConfig = await servicoDaSerena.obterConfiguracao().catch(() => null);
         responderJson(
           res,
           200,
           montarResumo(configuracao, saudeOrquestrador, saudeInboxFinal, {
             conversas: conversasDoResumo,
             leads: leadsDoResumo,
-          }, saudeOutbox),
+          }, saudeOutbox, serenaConfig),
           { 'cache-control': 'no-store' },
         );
         return;
