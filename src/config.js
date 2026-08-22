@@ -240,6 +240,8 @@ function carregarConfiguracao(ambiente = process.env) {
     // credencial da aplicação teria, na prática, todo o poder dela.
     agente: {
       token: texto(ambiente.CRMCLINICA_AGENTE_TOKEN),
+      podeAgendar: texto(ambiente.CRMCLINICA_AGENTE_PODE_AGENDAR).toLowerCase() === 'true',
+      profissionalId: Number.parseInt(texto(ambiente.CRMCLINICA_AGENTE_PROFISSIONAL_ID), 10) || null,
     },
     // Resumo do atendimento, enviado à equipe quando a conversa esfria. Os
     // telefones vêm do ambiente: número de pessoa não se escreve em código, e a

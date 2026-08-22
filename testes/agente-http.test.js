@@ -46,7 +46,10 @@ async function subirAgente() {
     atendimento,
     orquestrador,
     autenticar: false,
-    configuracao: configuracaoDeTeste({ CRMCLINICA_AGENTE_TOKEN: TOKEN }),
+    configuracao: configuracaoDeTeste({
+      CRMCLINICA_AGENTE_TOKEN: TOKEN,
+      CRMCLINICA_AGENTE_PODE_AGENDAR: 'true',
+    }),
   });
 
   const agir = (corpo, token = TOKEN) => app.pedirSemAuth('/api/agente/acao', {

@@ -17,6 +17,7 @@ const RAIZ = path.join(__dirname, '..');
 const PASTA_REFERENCIA = 'documentos';
 const PASTAS_IGNORADAS = new Set([
   'node_modules', '.git', '.vercel', 'dist', 'coverage', '.claude', PASTA_REFERENCIA,
+  'crmkimi',
 ]);
 const EXTENSOES = new Set(['.js', '.json', '.md', '.html', '.css', '.sql', '.yml', '.yaml', '.exemplo']);
 
