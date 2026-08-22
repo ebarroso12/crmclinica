@@ -42,6 +42,11 @@ export function decisaoDeSilencio(contexto = {}) {
 function normalizarTelefone(valor) {
   const bruto = texto(valor);
   if (!bruto || /@g\.us|-\d{6,}/i.test(bruto)) return null;
+  // `@lid` é a identidade opaca do WhatsApp, não um telefone: extrair os
+  // dígitos dela criava contato fantasma, e a resposta ia para um número que
+  // não existe. O telefone real, quando o remetente vem como `@lid`, chega
+  // nos campos alternativos (senderPn / remoteJidAlt) — ver normalizarEvento.
+  if (/@lid$/i.test(bruto)) return null;
   const antesDoJid = bruto.replace(/^whatsapp:/i, '').split('@')[0];
   const digitos = antesDoJid.replace(/\D/g, '');
   return /^\d{10,15}$/.test(digitos) ? digitos : null;
@@ -73,6 +78,15 @@ export function normalizarEvento(evento = {}, contexto = {}) {
     evento.metadata?.senderId,
     evento.metadata?.from,
     evento.from,
+  )) ?? normalizarTelefone(primeiroTexto(
+    // Quando o remetente chega como `@lid`, os campos principais carregam a
+    // identidade opaca — e normalizarTelefone os recusa de propósito. O
+    // telefone de verdade vem nestes alternativos (nomenclatura do Baileys,
+    // que a Evolution e o OpenClaw repassam).
+    evento.senderPn,
+    contexto.senderPn,
+    evento.metadata?.senderPn,
+    evento.metadata?.remoteJidAlt,
   ));
   if (!remetente) return null;
 
