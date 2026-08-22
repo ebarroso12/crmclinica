@@ -150,3 +150,67 @@ test('normalizarEcoDeEnvioEvolution ignora grupo, sem texto, sem id nativo, e pa
   assert.equal(normalizarEcoDeEnvioEvolution({}), null);
   assert.equal(normalizarEcoDeEnvioEvolution({ event: 'connection.update', data: {} }), null);
 });
+
+// ---------------------------------------------------------------------------
+// Tratamento de JID @lid (Linked ID) — Anexo B.5 da auditoria.
+//
+// O WhatsApp pode entregar mensagens com `remoteJid` terminado em `@lid`
+// (identidade opaca) em vez de `@s.whatsapp.net`. Os dígitos de um `@lid`
+// NÃO são um telefone: tratá-los como número criava contato fantasma no CRM.
+// O telefone real chega no campo alternativo (`remoteJidAlt`).
+// ---------------------------------------------------------------------------
+
+test('mensagem com remoteJid @lid usa remoteJidAlt para extrair o telefone', () => {
+  const evento = {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '123456789012345@lid', remoteJidAlt: '5511999990000@s.whatsapp.net', fromMe: false, id: 'LID001' },
+      pushName: 'Paciente LID',
+      message: { conversation: 'Oi, preciso de ajuda' },
+      messageTimestamp: 1723500000,
+    },
+  };
+  const normalizado = normalizarEventoEvolution(evento);
+  assert.ok(normalizado);
+  assert.equal(normalizado.remetente, '5511999990000');
+  assert.equal(normalizado.id_externo, 'whatsapp:5511999990000:LID001');
+});
+
+test('mensagem @lid sem remoteJidAlt é recusada — não cria contato fantasma', () => {
+  const evento = {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '123456789012345@lid', fromMe: false, id: 'LID002' },
+      message: { conversation: 'Oi' },
+      messageTimestamp: 1723500000,
+    },
+  };
+  assert.equal(normalizarEventoEvolution(evento), null);
+});
+
+test('eco fromMe:true com @lid usa remoteJidAlt para formar id_provedor', () => {
+  const evento = {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '123456789012345@lid', remoteJidAlt: '5511999990000@s.whatsapp.net', fromMe: true, id: 'LID003' },
+      message: { conversation: 'Resposta da equipe' },
+      messageTimestamp: 1723500000,
+    },
+  };
+  const normalizado = normalizarEcoDeEnvioEvolution(evento);
+  assert.ok(normalizado);
+  assert.equal(normalizado.telefone, '5511999990000');
+  assert.equal(normalizado.id_provedor, 'whatsapp:5511999990000:LID003');
+});
+
+test('eco fromMe:true com @lid mas sem remoteJidAlt é recusado', () => {
+  const evento = {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: '123456789012345@lid', fromMe: true, id: 'LID004' },
+      message: { conversation: 'Oi' },
+      messageTimestamp: 1723500000,
+    },
+  };
+  assert.equal(normalizarEcoDeEnvioEvolution(evento), null);
+});
