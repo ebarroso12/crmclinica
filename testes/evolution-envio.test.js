@@ -65,6 +65,67 @@ test('falha de rede vira erro descritivo, não exceção crua', async () => {
   );
 });
 
+test('recusa de conexão (ECONNREFUSED) não é indeterminada — seguro retentar', async () => {
+  const fetchImpl = async () => {
+    const erro = new Error('connect ECONNREFUSED');
+    erro.code = 'ECONNREFUSED';
+    throw erro;
+  };
+  const cliente = criarClienteEvolucaoEnvio(CONFIG, { fetchImpl });
+
+  await assert.rejects(
+    () => cliente.enviar({ telefone: '5511999990000', texto: 'oi' }),
+    (erro) => erro.indeterminado === false || erro.indeterminado === undefined,
+  );
+});
+
+// Achado B-5: ECONNRESET depois do request já ter sido mandado é
+// indeterminado — a mensagem pode ter saído, e a outbox não pode reenviar
+// automaticamente sem risco de duplicar o envio ao paciente. `.code` direto
+// cobre chamadores que já lançam o erro de baixo nível (ex.: sockets crus);
+// `.cause.code` é onde o `fetch` nativo (undici) aninha o código real.
+test('ECONNRESET pós-envio (erro.code direto) é indeterminado', async () => {
+  const fetchImpl = async () => {
+    const erro = new Error('socket hang up');
+    erro.code = 'ECONNRESET';
+    throw erro;
+  };
+  const cliente = criarClienteEvolucaoEnvio(CONFIG, { fetchImpl });
+
+  await assert.rejects(
+    () => cliente.enviar({ telefone: '5511999990000', texto: 'oi' }),
+    (erro) => erro.indeterminado === true,
+  );
+});
+
+test('ECONNRESET pós-envio (erro.cause.code, formato do fetch nativo) é indeterminado', async () => {
+  const fetchImpl = async () => {
+    throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+  };
+  const cliente = criarClienteEvolucaoEnvio(CONFIG, { fetchImpl });
+
+  await assert.rejects(
+    () => cliente.enviar({ telefone: '5511999990000', texto: 'oi' }),
+    (erro) => erro.indeterminado === true,
+  );
+});
+
+test('ECONNRESET pós-envio também é indeterminado em enviarMidia', async () => {
+  const fetchImpl = async () => {
+    const erro = new Error('socket hang up');
+    erro.code = 'ECONNRESET';
+    throw erro;
+  };
+  const cliente = criarClienteEvolucaoEnvio(CONFIG, { fetchImpl });
+
+  await assert.rejects(
+    () => cliente.enviarMidia({
+      telefone: '5511999990000', mediaUrl: 'https://exemplo.com/a.jpg', tipo: 'imagem',
+    }),
+    (erro) => erro.indeterminado === true,
+  );
+});
+
 test('telefone vazio ou só símbolos é recusado antes de chamar a rede', async () => {
   const fetchImpl = fetchFalso(async () => new Response('{}', { status: 200 }));
   const cliente = criarClienteEvolucaoEnvio(CONFIG, { fetchImpl });
