@@ -13,6 +13,21 @@
 // a mesma mensagem duas vezes — risco aceito por ora, documentado aqui para
 // quem for revisar depois.
 
+// Achado B-5 (docs/superpowers/plans/2026-08-13-achados-pendentes.md): um
+// ECONNRESET depois do request já ter sido mandado é tão "indeterminado"
+// quanto um TimeoutError/AbortError — a Evolution pode ter recebido e
+// processado o envio antes da conexão cair; só a nossa leitura da resposta
+// que não chegou. Sem esta checagem, esse erro caía no `throw` genérico
+// abaixo (indeterminado = false) e a outbox reenviava a mesma mensagem ao
+// paciente — mesma família de risco do M-1 (corrigido no Comando 7 via
+// LEASE_MS), caminho de erro diferente. `erro.cause?.code` é onde o fetch
+// nativo (undici) aninha o código do socket; `erro.code` cobre chamadas que
+// já vêm com o erro de baixo nível direto (ex.: `fetchImpl` de teste).
+function ehFalhaIndeterminada(erro) {
+  if (erro.name === 'TimeoutError' || erro.name === 'AbortError') return true;
+  return (erro.cause?.code ?? erro.code) === 'ECONNRESET';
+}
+
 function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
   const fetchImpl = dependencias.fetchImpl || globalThis.fetch;
   const disponivel = Boolean(configuracao.apiUrl && configuracao.apiKey && configuracao.instancia);
@@ -58,7 +73,8 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
         // mensagem duas vezes ao paciente. Qualquer outro erro de rede (recusa
         // de conexão, DNS, etc.) acontece ANTES do pedido chegar ao servidor —
         // aí sim é seguro dizer "não foi enviada" e permitir retentativa.
-        falha.indeterminado = erro.name === 'TimeoutError' || erro.name === 'AbortError';
+        // ECONNRESET entra na mesma incerteza do timeout — ver `ehFalhaIndeterminada`.
+        falha.indeterminado = ehFalhaIndeterminada(erro);
         throw falha;
       }
 
@@ -114,7 +130,7 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
         });
       } catch (erro) {
         const falha = new Error(`falha de rede ao chamar a Evolution API (mídia): ${erro.message}`);
-        falha.indeterminado = erro.name === 'TimeoutError' || erro.name === 'AbortError';
+        falha.indeterminado = ehFalhaIndeterminada(erro);
         throw falha;
       }
 
