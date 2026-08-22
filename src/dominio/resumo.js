@@ -49,6 +49,7 @@ function montarResumo(
   saudeInbox = { estado: 'nao_configurado' },
   dados = { conversas: [], leads: [] },
   saudeOutbox = { estado: 'nao_configurado' },
+  serena = null,
 ) {
   const descricao = descreverConfiguracao(configuracao);
 
@@ -64,6 +65,15 @@ function montarResumo(
       outbox: { saude: saudeOutbox.estado },
       provedorModelo: descricao.provedorModelo,
       fonteDeVerdade: { nome: 'CRM', banco: descricao.banco },
+      // O interruptor da automação, visível no resumo: "Serena desligada"
+      // passou 5 dias invisível em 2026-08 porque o painel só mostrava se a
+      // INTEGRAÇÃO estava configurada — não se ela estava ligada. `desde` é o
+      // `alterado_em` da configuração: é o que permite dizer "há quanto tempo".
+      // `null` aqui significa "não conseguimos ler" — e a tela NÃO mostra
+      // banner nesse caso: alarme sem dado é alarme falso.
+      serena: serena
+        ? { ativa: serena.ativa === true, desde: serena.alterado_em ?? null, motivo: serena.motivo ?? null }
+        : null,
     },
   };
 }
