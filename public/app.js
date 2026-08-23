@@ -114,7 +114,10 @@ async function carregarAuditoria(mais = false) {
     for (const item of dados.itens) {
       const linha = document.createElement('li');
       linha.className = 'contato-item';
-      linha.textContent = `${item.acao} · ${item.entidade} #${item.entidade_id ?? '—'} · ${item.usuario_nome ?? 'sistema'} · ${new Date(item.criado_em).toLocaleString('pt-BR')}`;
+      const detalhe = item.detalhe && Object.keys(item.detalhe).length
+        ? ` · ${Object.entries(item.detalhe).map(([chave, valor]) => `${chave}=${valor}`).join(', ')}`
+        : '';
+      linha.textContent = `${item.acao} · ${item.entidade} #${item.entidade_id ?? '—'} · ${item.usuario_nome ?? 'sistema'} · ${new Date(item.criado_em).toLocaleString('pt-BR')}${detalhe}`;
       lista.append(linha);
     }
     cursorAuditoria = dados.proximo_cursor;
