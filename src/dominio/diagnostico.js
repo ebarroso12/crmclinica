@@ -173,6 +173,23 @@ async function executarDiagnostico(sondas = {}) {
     }));
   }
 
+  // Achado do incidente de 22/08: o host respondia (`alcancavel: true`) mas
+  // a instância tinha sumido inteira — zero cadastrada, sem erro visível em
+  // lugar nenhum. `alcancavel` sozinho não pega isso; precisa checar
+  // separadamente (ver o comentário em `sondaDaEvolution`).
+  if (evolucao?.configurada && evolucao.alcancavel === true && evolucao.instanciaExiste === false) {
+    const gatewayAtendendo = canal?.vinculado === true && canal?.conectado === true;
+    registrar(achado({
+      area: 'evolucao',
+      nivel: gatewayAtendendo ? 'falha' : 'critico',
+      titulo: 'a Evolution API responde, mas não tem nenhuma instância cadastrada',
+      detalhe: evolucao.instancia ? `instância esperada: "${evolucao.instancia}"` : null,
+      reparo: gatewayAtendendo
+        ? 'O host está de pé, mas a instância sumiu — recrie-a (QR code novo) e reconfigure o webhook dela. O gateway do OpenClaw está atendendo como reserva enquanto isso.'
+        : 'O host está de pé, mas a instância sumiu — recrie-a (QR code novo) e reconfigure o webhook dela. Nenhum canal de reserva está atendendo agora.',
+    }));
+  }
+
   const google = await verificar('google', sondas.google);
   if (google?.configurada && !google.alcancavel) {
     registrar(achado({ area: 'google', nivel: 'falha', titulo: 'o espelho da agenda Google não responde', detalhe: google.motivo ?? null, reparo: 'Confira a credencial da conta de serviço e o compartilhamento do calendário.' }));
@@ -228,6 +245,22 @@ async function executarDiagnostico(sondas = {}) {
         reparo: 'Confira manualmente se a mensagem chegou antes de decidir reenviar ou descartar.',
       }));
     }
+  }
+
+  // ---------------------------------------------------- entregas da automação
+  //
+  // Achado do incidente de 22/08: o único sinal que continua verdadeiro
+  // mesmo quando fila, worker, canal e Evolution reportam "ok" cada um
+  // isoladamente — ver o comentário em `sondaDeEntregasFalhadas`.
+  const entregas = await verificar('entregas', sondas.entregas);
+  if (entregas && entregas.total > 0) {
+    registrar(achado({
+      area: 'entregas',
+      nivel: 'critico',
+      titulo: `${entregas.total} resposta(s) da automação falharam ao entregar na última hora`,
+      detalhe: 'a Serena gerou a resposta, mas o envio ao paciente não confirmou — motivo exato em audit_log (ação resposta_nao_entregue)',
+      reparo: 'Confira o motivo em audit_log antes de assumir qual elo quebrou — fila, canal, instância e credencial podem parecer certos isoladamente e mesmo assim a entrega falhar (ex.: credencial que só existe num dos ambientes que enviam mensagem).',
+    }));
   }
 
   // ------------------------------------------------------------------- fila

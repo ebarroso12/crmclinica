@@ -88,7 +88,7 @@ function sondaDoCanal(vinculo) {
 function sondaDaEvolution(configuracaoEvolution, { fetchImpl = globalThis.fetch, repositorio = null } = {}) {
   const configurada = Boolean(configuracaoEvolution?.apiUrl && configuracaoEvolution?.apiKey);
   if (!configurada) {
-    return async () => ({ configurada: false, instancia: null, alcancavel: null, fila: null });
+    return async () => ({ configurada: false, instancia: null, alcancavel: null, instanciaExiste: null, fila: null });
   }
 
   return async () => {
@@ -106,6 +106,37 @@ function sondaDaEvolution(configuracaoEvolution, { fetchImpl = globalThis.fetch,
       alcancavel = false;
     }
 
+    // Achado do incidente de 22/08: `alcancavel` sozinho NÃO prova que há
+    // atendimento — a raiz de `EVOLUTION_API_URL` devolve 200 "Welcome"
+    // mesmo com ZERO instância cadastrada (aconteceu de verdade: a
+    // instância sumiu inteira, sem erro visível em lugar nenhum, e esta
+    // sonda, do jeito que estava, teria dito "alcançável" e nada mais).
+    // `instanciaExiste` confere só isso — se `/instance/fetchInstances`
+    // devolve pelo menos um item — e fica `null` (não `false`) em qualquer
+    // ambiguidade (host inalcançável, resposta não-2xx, corpo que não é a
+    // lista esperada). Deliberadamente NÃO tenta ler o estado de conexão de
+    // cada instância: o formato exato dessa parte da resposta não foi
+    // confirmado contra uma resposta real da API, e inventar o parsing
+    // seria inventar comportamento — o mesmo erro que esta sonda já evita
+    // ao não validar uma rota de status específica acima.
+    let instanciaExiste = null;
+    if (alcancavel) {
+      try {
+        const base = configuracaoEvolution.apiUrl.replace(/\/+$/, '');
+        const respostaInstancias = await fetchImpl(`${base}/instance/fetchInstances`, {
+          method: 'GET',
+          headers: { apikey: configuracaoEvolution.apiKey },
+          signal: AbortSignal.timeout(configuracaoEvolution.timeoutMs ?? 5000),
+        });
+        if (respostaInstancias.ok) {
+          const lista = await respostaInstancias.json().catch(() => null);
+          instanciaExiste = Array.isArray(lista) ? lista.length > 0 : null;
+        }
+      } catch {
+        instanciaExiste = null;
+      }
+    }
+
     const fila = repositorio?.contarTrabalhosDeOutboxPorEstado
       ? await repositorio.contarTrabalhosDeOutboxPorEstado().catch(() => null)
       : null;
@@ -114,8 +145,29 @@ function sondaDaEvolution(configuracaoEvolution, { fetchImpl = globalThis.fetch,
       configurada: true,
       instancia: configuracaoEvolution.instancia ?? null,
       alcancavel,
+      instanciaExiste,
       fila,
     };
+  };
+}
+
+/**
+ * Falhas de entrega recentes da automação — achado do incidente de 22/08.
+ *
+ * É o sinal de mais alto nível que existe: não importa ONDE a cadeia
+ * quebrou (webhook sem configurar na instância nova, instância que sumiu,
+ * credencial que só existe na Vercel e falta no `.env` do worker do VPS —
+ * um blind spot que NENHUMA outra sonda deste arquivo alcança, porque cada
+ * processo só enxerga o próprio ambiente). Se a Serena gera resposta e ela
+ * não sai, este número sobe. Foi exatamente o que aconteceu: fila, worker,
+ * canal e Evolution reportavam "ok" cada um isoladamente, e mesmo assim
+ * nada chegava ao paciente — só o resultado fim-a-fim provava o contrário.
+ */
+function sondaDeEntregasFalhadas(repositorio, { janelaMs = 60 * 60 * 1000 } = {}) {
+  return async () => {
+    const desde = new Date(Date.now() - janelaMs).toISOString();
+    const total = (await repositorio.contarEntregasFalhadasDaAutomacao?.({ desde })) ?? 0;
+    return { total, janelaMs };
   };
 }
 
@@ -191,4 +243,5 @@ function sondaDaOutbox(repositorio, { limiteMs = 3 * 60 * 1000, atrasoVencidoMs 
 
 module.exports = {
   sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker, sondaDaOutbox,
+  sondaDeEntregasFalhadas,
 };

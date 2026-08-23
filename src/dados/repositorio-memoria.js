@@ -1370,6 +1370,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return total;
     },
 
+    /** Espelha `repositorio.js`: conta por `acao` e `criado_em` no array de auditoria em memória. */
+    async contarEntregasFalhadasDaAutomacao({ desde }) {
+      let total = 0;
+      for (const registro of auditoria) {
+        if (registro.acao === 'resposta_nao_entregue' && registro.criado_em >= desde) total += 1;
+      }
+      return total;
+    },
+
     /** Para o heartbeat do worker: quantos trabalhos em cada estado agora. */
     async contarTrabalhosDeOutboxPorEstado() {
       const total = { pendente: 0, processando: 0, concluido: 0, morto: 0, incerto: 0 };
