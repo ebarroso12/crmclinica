@@ -249,7 +249,11 @@ async function carregarResumo() {
 
     const avisoSerena = seletor('#aviso-serena');
     if (avisoSerena) {
-      const serena = resumo.atendimento?.serena;
+      // Achado da auditoria de 22/08: `montarResumo` aninha em
+      // `plataforma.serena` (src/dominio/resumo.js) — não existe `atendimento`
+      // na raiz do resumo. Lendo daqui, o banner nunca aparecia, mesmo com a
+      // Serena desligada há dias.
+      const serena = resumo.plataforma?.serena;
       if (serena && serena.ativa === false) {
         avisoSerena.hidden = false;
         const ha = serena.desde ? haQuanto(serena.desde) : '';
@@ -268,8 +272,12 @@ async function carregarResumo() {
     aplicarEstado('#saude-inbox', inbox?.saude ?? 'ausente');
     aplicarEstado('#saude-crm', fonteDeVerdade.banco === 'configurado' ? 'operacional' : 'ausente');
 
-    const pilula = seletor('#estado-serena');
-    if (pilula) pilula.textContent = atendimento.integracao === 'configurada' ? 'Ativa' : 'Aguardando integração';
+    // Achado da auditoria de 22/08: esta função (polling global a cada 60s)
+    // também escrevia `#estado-serena` com "Ativa"/"Aguardando integração"
+    // (status de CONFIGURAÇÃO da integração) — sobrescrevendo periodicamente
+    // o "Ligada"/"Desligada" real que `desenharEstadoDaSerena` (dona correta
+    // do elemento, na tela Serena) tinha acabado de calcular a partir do
+    // interruptor de verdade. `#estado-serena` tem uma dona só: desenharEstadoDaSerena.
   } catch {
     for (const alvo of ['#saude-orquestrador', '#saude-atendimento', '#saude-inbox', '#saude-crm']) {
       aplicarEstado(alvo, 'indisponivel');

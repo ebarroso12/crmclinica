@@ -2497,11 +2497,20 @@ function criarRepositorio(pool) {
       const PADRAO = {
         id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
         agenda: null, pausada_ate: null, ligada_ate: null,
+        // Achado da auditoria de 22/08: sem estas duas no SELECT, a decisão
+        // real (contatoNaAtivacao em src/dominio/serena.js) nunca via
+        // modo_ativacao/ativacao_percentual — sempre caía no `?? 'todos'` e
+        // um rollout parcial configurado pela API (`PUT /api/serena/ativacao`)
+        // silenciosamente virava "responde 100% dos contatos" na primeira
+        // decisão seguinte. Fail-open no sentido perigoso: devia restringir
+        // e não restringia. Os defaults abaixo batem com os da migration 028
+        // (DEFAULT 'todos' / DEFAULT 100).
+        modo_ativacao: 'todos', ativacao_percentual: 100,
       };
 
       const consulta = (colunasNovas) => consultar(`
         SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo,
-               ${colunasNovas ? 'c.agenda, c.pausada_ate, c.ligada_ate,' : ''}
+               ${colunasNovas ? 'c.agenda, c.pausada_ate, c.ligada_ate, c.modo_ativacao, c.ativacao_percentual,' : ''}
                u.nome AS alterado_por_nome
           FROM serena_configuracao c
           LEFT JOIN usuarios u ON u.id = c.alterado_por
