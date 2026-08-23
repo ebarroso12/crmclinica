@@ -60,6 +60,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const lembretes = [];
   const serenaPrompts = [];
   const serenaRegras = [];
+  const instagramRegrasGatilho = [];
+  const instagramComentariosProcessados = [];
   const serenaVozSessoes = new Map();
   const serenaVozTurnos = [];
   const tarefas = [];
@@ -155,6 +157,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
     serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1, automacaoOutbox: 1,
+    instagramRegraGatilho: 1, instagramComentario: 1,
     // Nome distinto de `bloqueio` (que já é usado por bloqueios de agenda,
     // outro conceito) — contato bloqueado é desvio de atendimento automático.
     contatoBloqueado: 1,
@@ -2250,6 +2253,91 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       if (indice === -1) return 0;
       serenaRegras.splice(indice, 1);
       return 1;
+    },
+
+    // ------------------------------------------- Instagram — regras de gatilho
+
+    async listarRegrasDeGatilho({ apenasAtivas = false } = {}) {
+      return instagramRegrasGatilho
+        .filter((regra) => !apenasAtivas || regra.ativa)
+        .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+        .map((regra) => ({
+          ...regra,
+          criado_por_nome: regra.criado_por ? usuarios.get(regra.criado_por)?.nome ?? null : null,
+        }));
+    },
+
+    async obterRegraDeGatilho(id) {
+      return instagramRegrasGatilho.find((regra) => regra.id === Number(id)) ?? null;
+    },
+
+    async criarRegraDeGatilho({
+      nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, criadoPor = null,
+    }) {
+      if (instagramRegrasGatilho.some((regra) => regra.nome === nome)) {
+        const erro = new Error('duplicate key value violates unique constraint');
+        erro.code = '23505';
+        erro.constraint = 'instagram_regras_gatilho_nome_key';
+        throw erro;
+      }
+
+      const regra = {
+        id: proximoId.instagramRegraGatilho++,
+        nome,
+        palavra_gatilho: palavraGatilho,
+        mensagem_dm: mensagemDm,
+        mensagem_publica: mensagemPublica,
+        cta_whatsapp: ctaWhatsapp,
+        ativa: true,
+        criado_por: criadoPor,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      instagramRegrasGatilho.push(regra);
+      return regra;
+    },
+
+    async atualizarRegraDeGatilho(id, campos) {
+      const regra = instagramRegrasGatilho.find((item) => item.id === Number(id));
+      if (!regra) return null;
+
+      const permitidos = ['nome', 'palavra_gatilho', 'mensagem_dm', 'mensagem_publica', 'cta_whatsapp', 'ativa'];
+      for (const [campo, valor] of Object.entries(campos)) {
+        if (permitidos.includes(campo)) regra[campo] = valor;
+      }
+      regra.atualizado_em = agora().toISOString();
+      return regra;
+    },
+
+    async removerRegraDeGatilho(id) {
+      const indice = instagramRegrasGatilho.findIndex((regra) => regra.id === Number(id));
+      if (indice === -1) return 0;
+      instagramRegrasGatilho.splice(indice, 1);
+      return 1;
+    },
+
+    async obterComentarioProcessado(comentarioIdExterno) {
+      return instagramComentariosProcessados.find((c) => c.comentario_id_externo === comentarioIdExterno) ?? null;
+    },
+
+    async registrarComentarioProcessado({
+      comentarioIdExterno, postId = null, autorIgId, regraId = null,
+      respostaPublicaEnviada = false, dmEnviada = false,
+    }) {
+      if (instagramComentariosProcessados.some((c) => c.comentario_id_externo === comentarioIdExterno)) return null;
+
+      const registro = {
+        id: proximoId.instagramComentario++,
+        comentario_id_externo: comentarioIdExterno,
+        post_id: postId,
+        autor_ig_id: autorIgId,
+        regra_id: regraId,
+        resposta_publica_enviada: respostaPublicaEnviada,
+        dm_enviada: dmEnviada,
+        criado_em: agora().toISOString(),
+      };
+      instagramComentariosProcessados.push(registro);
+      return registro;
     },
 
     // --------------------------------------------------------- Serena — voz

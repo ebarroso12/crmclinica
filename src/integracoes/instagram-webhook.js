@@ -110,4 +110,87 @@ function normalizarEventoInstagram(payload = {}) {
   };
 }
 
-module.exports = { normalizarEventoInstagram };
+// `entry[].time` do webhook de comentários é epoch em SEGUNDOS (diferente de
+// `messaging.timestamp`, em milissegundos, tratado por `instanteIso` acima) —
+// mesma ressalva de conhecimento de plataforma não verificado feita no
+// cabeçalho do arquivo: a documentação pública promete segundos aqui, mas
+// isto não foi conferido contra um payload real de comentário.
+function instanteIsoSegundos(epochSegundos) {
+  if (epochSegundos === undefined || epochSegundos === null || epochSegundos === '') return null;
+  const numero = typeof epochSegundos === 'string' && /^\d+$/.test(epochSegundos) ? Number(epochSegundos) : epochSegundos;
+  if (typeof numero !== 'number' || !Number.isFinite(numero) || numero <= 0) return null;
+  const data = new Date(numero * 1000);
+  return Number.isNaN(data.getTime()) ? null : data.toISOString();
+}
+
+/**
+ * Traduz um evento de COMENTÁRIO do webhook do Instagram (`entry[].changes[]`
+ * com `field: 'comments'`) para `{ comentario_id_externo, post_id,
+ * autor_ig_id, autor_username, texto, ocorrido_em }`. Devolve `null` (nunca
+ * lança) quando não há comentário de paciente a processar.
+ *
+ * MESMA RESSALVA do cabeçalho deste arquivo e de `normalizarEventoInstagram`:
+ * o formato exato de `entry[].changes[]` para o campo `comments` é
+ * conhecimento de plataforma (Webhooks de Comments da Instagram Graph API da
+ * Meta) — NÃO verificado ainda contra um payload real capturado deste
+ * projeto. Validar contra payload real antes de ligar este webhook de
+ * verdade; qualquer divergência encontrada então deve ser corrigida ali, não
+ * adivinhada agora.
+ *
+ * LACUNA CONHECIDA E ACEITA (documentada, não escondida): diferente do
+ * `message.is_echo` que a Meta manda para mensagens, o payload documentado de
+ * `changes[].value` para comentários NÃO inclui nenhum campo equivalente que
+ * diga "este comentário foi feito pela própria conta da clínica". Sem um
+ * campo real pra isso, esta função NÃO inventa um e portanto NÃO filtra
+ * auto-comentário — se isso vier a importar na prática (a clínica comentando
+ * sob a própria automação e disparando um loop), a defesa real precisaria
+ * comparar `autor_ig_id` contra o ID da conta comercial já conhecido por
+ * `instagram-envio.js` (`configuracao.contaComercialId`), decisão de escopo
+ * futuro não tomada aqui.
+ */
+function normalizarComentarioInstagram(payload = {}) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
+  const primeiraEntrada = entradas[0];
+  if (!primeiraEntrada || typeof primeiraEntrada !== 'object' || Array.isArray(primeiraEntrada)) return null;
+
+  const mudancas = Array.isArray(primeiraEntrada.changes) ? primeiraEntrada.changes : [];
+  const mudancaDeComentario = mudancas.find(
+    (item) => item && typeof item === 'object' && !Array.isArray(item) && item.field === 'comments',
+  );
+  if (!mudancaDeComentario) return null;
+
+  const valor = mudancaDeComentario.value;
+  if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return null;
+
+  // Resposta a outro comentário — inclui a resposta pública que a PRÓPRIA
+  // automação acabou de postar sob o comentário-gatilho. Sem este corte, uma
+  // resposta de paciente à resposta pública da clínica reacionaria a
+  // automação em cadeia. `parent_id` presente e não vazio = é uma resposta,
+  // não um comentário raiz de post.
+  if (texto(valor.parent_id)) return null;
+
+  const comentarioIdExterno = texto(valor.id);
+  // Sem id nativo do comentário não há chave de idempotência
+  // (`instagram_comentarios_processados.comentario_id_externo`) — recusar,
+  // mesmo raciocínio do `mid` ausente em `normalizarEventoInstagram`.
+  if (!comentarioIdExterno) return null;
+
+  const autorIgId = texto(valor.from?.id);
+  if (!autorIgId) return null;
+
+  const conteudo = texto(valor.text);
+  if (!conteudo) return null;
+
+  return {
+    comentario_id_externo: comentarioIdExterno,
+    post_id: texto(valor.media?.id) || null,
+    autor_ig_id: autorIgId,
+    autor_username: texto(valor.from?.username) || null,
+    texto: conteudo.slice(0, LIMITE_TEXTO),
+    ocorrido_em: instanteIsoSegundos(primeiraEntrada.time),
+  };
+}
+
+module.exports = { normalizarEventoInstagram, normalizarComentarioInstagram };

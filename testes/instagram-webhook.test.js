@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizarEventoInstagram } = require('../src/integracoes/instagram-webhook');
+const { normalizarEventoInstagram, normalizarComentarioInstagram } = require('../src/integracoes/instagram-webhook');
 
 const MENSAGEM_TEXTO = Object.freeze({
   object: 'instagram',
@@ -143,4 +143,92 @@ test('ocorrido_em é null quando não há timestamp no evento', () => {
   const normalizado = normalizarEventoInstagram(evento);
   assert.ok(normalizado);
   assert.equal(normalizado.ocorrido_em, null);
+});
+
+// ------------------------------------------------- normalizarComentarioInstagram
+
+const COMENTARIO = Object.freeze({
+  object: 'instagram',
+  entry: [
+    {
+      id: '17841400000000000',
+      time: 1723500000,
+      changes: [
+        {
+          field: 'comments',
+          value: {
+            id: '17865000000000001',
+            text: 'Quero saber mais, preço?',
+            from: { id: '9988776655443322', username: 'paciente_curioso' },
+            media: { id: '18000000000000001', media_product_type: 'FEED' },
+          },
+        },
+      ],
+    },
+  ],
+});
+
+test('traduz um comentário do Instagram para o contrato interno', () => {
+  const normalizado = normalizarComentarioInstagram(COMENTARIO);
+  assert.ok(normalizado);
+  assert.equal(normalizado.comentario_id_externo, '17865000000000001');
+  assert.equal(normalizado.post_id, '18000000000000001');
+  assert.equal(normalizado.autor_ig_id, '9988776655443322');
+  assert.equal(normalizado.autor_username, 'paciente_curioso');
+  assert.equal(normalizado.texto, 'Quero saber mais, preço?');
+  assert.equal(normalizado.ocorrido_em, new Date(1723500000 * 1000).toISOString());
+});
+
+test('ignora comentário que é resposta a outro comentário (parent_id presente)', () => {
+  const evento = {
+    entry: [{
+      time: 1723500000,
+      changes: [{
+        field: 'comments',
+        value: {
+          id: 'C2',
+          parent_id: 'C1',
+          text: 'obrigado!',
+          from: { id: '111', username: 'alguem' },
+        },
+      }],
+    }],
+  };
+  assert.equal(normalizarComentarioInstagram(evento), null);
+});
+
+test('normalizarComentarioInstagram não derruba com payload vazio, nulo ou malformado', () => {
+  assert.equal(normalizarComentarioInstagram(), null);
+  assert.equal(normalizarComentarioInstagram(null), null);
+  assert.equal(normalizarComentarioInstagram({}), null);
+  assert.equal(normalizarComentarioInstagram({ entry: [] }), null);
+  assert.equal(normalizarComentarioInstagram({ entry: [{}] }), null, 'entry[0] sem changes');
+  assert.equal(normalizarComentarioInstagram({ entry: [{ changes: [] }] }), null, 'changes vazio');
+  assert.equal(
+    normalizarComentarioInstagram({ entry: [{ changes: [{ field: 'mentions', value: {} }] }] }),
+    null,
+    'changes sem nenhum item field:comments',
+  );
+  assert.equal(
+    normalizarComentarioInstagram({ entry: [{ changes: [{ field: 'comments', value: null }] }] }),
+    null,
+    'value ausente/malformado',
+  );
+  assert.equal(
+    normalizarComentarioInstagram({ entry: [{ changes: [{ field: 'comments', value: { text: 'oi', from: { id: '1' } } }] }] }),
+    null,
+    'value sem id do comentário',
+  );
+  assert.equal(
+    normalizarComentarioInstagram({ entry: [{ changes: [{ field: 'comments', value: { id: 'C1', text: 'oi' } }] }] }),
+    null,
+    'value sem from.id',
+  );
+  assert.equal(
+    normalizarComentarioInstagram({ entry: [{ changes: [{ field: 'comments', value: { id: 'C1', from: { id: '1' } } }] }] }),
+    null,
+    'value sem texto',
+  );
+  assert.equal(normalizarComentarioInstagram({ entry: 'texto solto' }), null);
+  assert.equal(normalizarComentarioInstagram({ entry: [{ changes: 'texto solto' }] }), null);
 });

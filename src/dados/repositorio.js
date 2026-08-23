@@ -2790,6 +2790,97 @@ function criarRepositorio(pool) {
       return rowCount;
     },
 
+    // ------------------------------------------- Instagram — regras de gatilho
+
+    async listarRegrasDeGatilho({ apenasAtivas = false } = {}) {
+      const { rows } = await consultar(`
+        SELECT r.*, u.nome AS criado_por_nome
+          FROM instagram_regras_gatilho r
+          LEFT JOIN usuarios u ON u.id = r.criado_por
+         ${apenasAtivas ? 'WHERE r.ativa' : ''}
+         ORDER BY r.nome
+      `);
+      return rows.map((linha) => ({
+        ...linha, id: Number(linha.id), ativa: linha.ativa === true, cta_whatsapp: linha.cta_whatsapp === true,
+      }));
+    },
+
+    async obterRegraDeGatilho(id) {
+      const { rows } = await consultar('SELECT * FROM instagram_regras_gatilho WHERE id = $1', [id]);
+      return rows[0]
+        ? { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true }
+        : null;
+    },
+
+    async criarRegraDeGatilho({
+      nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, criadoPor = null,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO instagram_regras_gatilho (nome, palavra_gatilho, mensagem_dm, mensagem_publica, cta_whatsapp, criado_por)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp, criadoPor]);
+
+      return { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true };
+    },
+
+    async atualizarRegraDeGatilho(id, campos) {
+      const permitidos = new Map([
+        ['nome', 'nome'], ['palavra_gatilho', 'palavra_gatilho'], ['mensagem_dm', 'mensagem_dm'],
+        ['mensagem_publica', 'mensagem_publica'], ['cta_whatsapp', 'cta_whatsapp'], ['ativa', 'ativa'],
+      ]);
+
+      const partes = ['atualizado_em = now()'];
+      const valores = [];
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}`);
+      }
+      if (valores.length === 0) return this.obterRegraDeGatilho(id);
+
+      valores.push(id);
+      const { rows } = await consultar(
+        `UPDATE instagram_regras_gatilho SET ${partes.join(', ')} WHERE id = $${valores.length} RETURNING *`,
+        valores,
+      );
+      return rows[0]
+        ? { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true }
+        : null;
+    },
+
+    async removerRegraDeGatilho(id) {
+      const { rowCount } = await consultar('DELETE FROM instagram_regras_gatilho WHERE id = $1', [id]);
+      return rowCount;
+    },
+
+    // Idempotência do webhook de comentário: o mesmo comentário reentregue
+    // pelo provedor não pode ser processado (e respondido) duas vezes.
+    async obterComentarioProcessado(comentarioIdExterno) {
+      const { rows } = await consultar(
+        'SELECT * FROM instagram_comentarios_processados WHERE comentario_id_externo = $1',
+        [comentarioIdExterno],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), regra_id: rows[0].regra_id ? Number(rows[0].regra_id) : null } : null;
+    },
+
+    async registrarComentarioProcessado({
+      comentarioIdExterno, postId = null, autorIgId, regraId = null,
+      respostaPublicaEnviada = false, dmEnviada = false,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO instagram_comentarios_processados
+          (comentario_id_externo, post_id, autor_ig_id, regra_id, resposta_publica_enviada, dm_enviada)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (comentario_id_externo) DO NOTHING
+        RETURNING *
+      `, [comentarioIdExterno, postId, autorIgId, regraId, respostaPublicaEnviada, dmEnviada]);
+      return rows[0]
+        ? { ...rows[0], id: Number(rows[0].id), regra_id: rows[0].regra_id ? Number(rows[0].regra_id) : null }
+        : null;
+    },
+
     // --------------------------------------------------------- Serena — voz
 
     async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {

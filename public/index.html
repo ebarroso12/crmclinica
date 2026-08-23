@@ -164,6 +164,7 @@
         <p class="divisor" id="grupo-controle">CONTROLE</p>
         <ul aria-labelledby="grupo-controle">
           <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
+          <li><button type="button" data-tela="instagram"><span class="icone-menu" aria-hidden="true">◘</span> Instagram</button></li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
           <li id="item-bloqueios" hidden>
             <button type="button" data-tela="bloqueios"><span class="icone-menu" aria-hidden="true">⊘</span> Bloqueio de Contato</button>
@@ -935,6 +936,58 @@
           </form>
 
           <ul class="lista-regras" id="serena-regras">
+            <li class="vazio">carregando…</li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- Instagram -->
+      <section id="instagram" class="tela" hidden aria-labelledby="titulo-instagram">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-instagram">Instagram</h2>
+            <p>Regras de gatilho: quando uma palavra aparece num comentário de post, o sistema responde publicamente e manda uma DM.</p>
+          </div>
+        </div>
+
+        <!-- Regras de gatilho -->
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Regras de gatilho</h3>
+              <p>A palavra é procurada no comentário; ao bater, dispara as duas mensagens sempre juntas.</p>
+            </div>
+            <div class="linha-acoes" id="instagram-regras-acoes" hidden>
+              <button type="button" class="secundario" id="instagram-nova-regra">Nova regra</button>
+            </div>
+          </div>
+
+          <form id="form-gatilho" class="form-regra" hidden>
+            <div class="grade-form">
+              <div>
+                <label for="gatilho-nome">Nome</label>
+                <input id="gatilho-nome" type="text" maxlength="80" required>
+              </div>
+              <div>
+                <label for="gatilho-palavra">Palavra-gatilho</label>
+                <input id="gatilho-palavra" type="text" maxlength="100" required>
+              </div>
+            </div>
+            <label for="gatilho-mensagem-publica">Mensagem pública (resposta ao comentário)</label>
+            <textarea id="gatilho-mensagem-publica" rows="2" maxlength="500" required></textarea>
+            <label for="gatilho-mensagem-dm">Mensagem de DM</label>
+            <textarea id="gatilho-mensagem-dm" rows="3" maxlength="2000" required></textarea>
+            <label class="marcador">
+              <input type="checkbox" id="gatilho-cta-whatsapp">
+              Incluir botão de WhatsApp na DM
+            </label>
+            <div class="linha-acoes">
+              <button type="submit" class="primario">Salvar regra</button>
+              <button type="button" class="secundario" id="instagram-cancelar-regra">Cancelar</button>
+            </div>
+          </form>
+
+          <ul class="lista-regras" id="instagram-regras">
             <li class="vazio">carregando…</li>
           </ul>
         </article>

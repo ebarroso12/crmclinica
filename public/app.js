@@ -10,6 +10,7 @@ const TITULOS = {
   agenda: 'Agenda',
   metricas: 'Métricas',
   serena: 'Serena',
+  instagram: 'Instagram',
   contatos: 'Contatos',
   auditoria: 'Auditoria',
   bloqueios: 'Bloqueio de Contato',
@@ -39,6 +40,7 @@ function abrirTela(tela) {
   if (tela === 'agenda') carregarAgenda();
   if (tela === 'metricas') carregarMetricas();
   if (tela === 'serena') carregarSerena();
+  if (tela === 'instagram') carregarInstagram();
   if (tela === 'contatos') carregarContatos();
   if (tela === 'auditoria') carregarAuditoria();
   if (tela === 'bloqueios') carregarBloqueios();
@@ -3592,6 +3594,72 @@ function abrirEditorDeRegra(regra = null) {
 }
 
 // ---------------------------------------------------------------------------
+// Instagram: regras de gatilho de comentário (palavra -> DM + resposta pública).
+// ---------------------------------------------------------------------------
+
+let instagramPainel = null;
+let gatilhoEmEdicao = null;
+
+function resumirTexto(texto, limite = 60) {
+  const t = String(texto ?? '');
+  return t.length > limite ? `${t.slice(0, limite)}…` : t;
+}
+
+async function carregarInstagram() {
+  try {
+    const dados = await pedirJson('/api/instagram');
+    instagramPainel = dados;
+
+    const acoes = seletor('#instagram-regras-acoes');
+    if (acoes) acoes.hidden = !dados.pode_gerenciar;
+
+    desenharGatilhos(dados.regras ?? [], dados.pode_gerenciar);
+  } catch (erro) {
+    informar(`Não foi possível carregar o Instagram: ${erro.message}`);
+  }
+}
+
+function desenharGatilhos(regras, podeGerenciar) {
+  const lista = seletor('#instagram-regras');
+  if (!lista) return;
+
+  if (regras.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma regra cadastrada.</li>';
+    return;
+  }
+
+  lista.innerHTML = regras.map((gatilho) => `
+    <li class="${gatilho.ativa ? '' : 'desligada'}">
+      <div>
+        <strong>${escapar(gatilho.nome)} <span class="pilula pequena">${escapar(gatilho.palavra_gatilho)}</span></strong>
+        <small>Pública: ${escapar(resumirTexto(gatilho.mensagem_publica))} · DM: ${escapar(resumirTexto(gatilho.mensagem_dm))}</small>
+      </div>
+      <div class="linha-acoes">
+        ${podeGerenciar ? `
+          <button type="button" class="secundario" data-gatilho-ativo="${gatilho.id}" data-valor="${gatilho.ativa ? 'false' : 'true'}">
+            ${gatilho.ativa ? 'Desligar' : 'Ligar'}
+          </button>
+          <button type="button" class="secundario" data-editar-gatilho="${gatilho.id}">Editar</button>
+          <button type="button" class="perigo" data-remover-gatilho="${gatilho.id}">Apagar</button>` : ''}
+      </div>
+    </li>`).join('');
+}
+
+function abrirEditorDeGatilho(gatilho = null) {
+  gatilhoEmEdicao = gatilho;
+  const form = seletor('#form-gatilho');
+  if (!form) return;
+
+  form.hidden = false;
+  seletor('#gatilho-nome').value = gatilho?.nome ?? '';
+  seletor('#gatilho-palavra').value = gatilho?.palavra_gatilho ?? '';
+  seletor('#gatilho-mensagem-publica').value = gatilho?.mensagem_publica ?? '';
+  seletor('#gatilho-mensagem-dm').value = gatilho?.mensagem_dm ?? '';
+  seletor('#gatilho-cta-whatsapp').checked = gatilho ? gatilho.cta_whatsapp === true : true;
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ---------------------------------------------------------------------------
 // Contatos: a base de pacientes. Excluir é soft delete — o histórico fica.
 // ---------------------------------------------------------------------------
 
@@ -3757,6 +3825,23 @@ document.addEventListener('click', async (evento) => {
       await carregarSerena();
     }
 
+    if (alvo.id === 'instagram-nova-regra') abrirEditorDeGatilho(null);
+    if (alvo.id === 'instagram-cancelar-regra') seletor('#form-gatilho').hidden = true;
+    if (alvo.dataset.gatilhoAtivo) {
+      await pedirJson(`/api/instagram/regras/${alvo.dataset.gatilhoAtivo}/ativa`, { metodo: 'POST', corpo: { ativa: alvo.dataset.valor === 'true' } });
+      await carregarInstagram();
+    }
+    if (alvo.dataset.editarGatilho) {
+      const gatilho = (instagramPainel?.regras ?? []).find((r) => String(r.id) === alvo.dataset.editarGatilho);
+      abrirEditorDeGatilho(gatilho ?? null);
+    }
+    if (alvo.dataset.removerGatilho) {
+      if (!confirm('Apagar esta regra de gatilho?')) return;
+      await pedirJson(`/api/instagram/regras/${alvo.dataset.removerGatilho}`, { metodo: 'DELETE' });
+      informar('Regra apagada.');
+      await carregarInstagram();
+    }
+
     if (alvo.id === 'contato-novo') abrirEditorDeContato(null);
     if (alvo.id === 'contato-cancelar') seletor('#contato-editor').hidden = true;
     if (alvo.dataset.verContato) await verHistoricoDoContato(alvo.dataset.verContato);
@@ -3843,6 +3928,33 @@ document.addEventListener('submit', async (evento) => {
       }
       form.hidden = true;
       await carregarSerena();
+    } catch (erro) {
+      informar(erro.message);
+    }
+    return;
+  }
+
+  if (form.id === 'form-gatilho') {
+    evento.preventDefault();
+    const corpo = {
+      nome: seletor('#gatilho-nome').value,
+      palavra_gatilho: seletor('#gatilho-palavra').value,
+      mensagem_publica: seletor('#gatilho-mensagem-publica').value,
+      mensagem_dm: seletor('#gatilho-mensagem-dm').value,
+      cta_whatsapp: seletor('#gatilho-cta-whatsapp').checked,
+    };
+    try {
+      if (gatilhoEmEdicao) {
+        await pedirJson(`/api/instagram/regras/${gatilhoEmEdicao.id}`, {
+          metodo: 'PUT', corpo: corpo,
+        });
+      } else {
+        await pedirJson('/api/instagram/regras', {
+          metodo: 'POST', corpo: corpo,
+        });
+      }
+      form.hidden = true;
+      await carregarInstagram();
     } catch (erro) {
       informar(erro.message);
     }
