@@ -196,6 +196,15 @@ async function main() {
     try {
       const resultado = await outbox.processarLote({ limite: lote, worker });
       if (resultado.reivindicados > 0 || resultado.recuperados > 0) {
+        // Resumo das ações dos concluídos: sem isto, um lote com
+        // concluidos:1 pode esconder uma falha de entrega (escalonada)
+        // ou um silenciamento da barreira (aguardando_equipe).
+        const acoes = {};
+        for (const item of resultado.resultados ?? []) {
+          if (item.status === 'concluido' && item.acao) {
+            acoes[item.acao] = (acoes[item.acao] ?? 0) + 1;
+          }
+        }
         console.log('[outbox] lote', JSON.stringify({
           reivindicados: resultado.reivindicados,
           concluidos: resultado.concluidos,
@@ -203,6 +212,7 @@ async function main() {
           mortos: resultado.mortos,
           incertos: resultado.incertos,
           recuperados: resultado.recuperados,
+          acoes: Object.keys(acoes).length > 0 ? acoes : undefined,
         }));
       }
       return resultado;

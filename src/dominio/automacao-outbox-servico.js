@@ -157,7 +157,7 @@ function criarServicoDeOutbox({
       await auditar('outbox_concluido', trabalho.id, {
         conversa_id: trabalho.conversa_id, acao: desfecho.acao, motivo: desfecho.motivo,
       });
-      return { id: trabalho.id, status: 'concluido', acao: desfecho.acao, trabalho: marcado };
+      return { id: trabalho.id, status: 'concluido', acao: desfecho.acao, motivo: desfecho.motivo, trabalho: marcado };
     }
 
     if (desfecho.desfecho === 'incerto') {

@@ -59,8 +59,15 @@ function criarClienteInstagramEnvio(configuracao = {}, dependencias = {}) {
       // Resposta HTTP de erro é a Graph API dizendo "recebi e recusei" —
       // não é incerteza, é uma recusa conhecida. Seguro retentar.
       const corpoErro = await resposta.json().catch(() => null);
-      const mensagemErro = corpoErro?.error?.message;
-      throw new Error(mensagemErro || `Graph API do Instagram respondeu HTTP ${resposta.status}`);
+      const erroDaMeta = corpoErro?.error;
+      const mensagemErro = erroDaMeta?.message || `Graph API do Instagram respondeu HTTP ${resposta.status}`;
+      const erro = new Error(mensagemErro);
+      // Código e subcódigo da Meta ajudam a distinguir token expirado (190),
+      // permissão insuficiente, usuário não-testador em modo dev, etc.
+      erro.codigo = erroDaMeta?.code ?? null;
+      erro.subcodigo = erroDaMeta?.error_subcode ?? null;
+      erro.tipo = erroDaMeta?.type ?? null;
+      throw erro;
     }
 
     const dados = await resposta.json().catch(() => null);
