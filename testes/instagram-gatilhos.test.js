@@ -185,6 +185,7 @@ test('comentário com gatilho dispara DM, cria contato/conversa/lead e registra 
   const leads = await repositorio.listarLeads({});
   assert.equal(leads.length, 1);
   assert.equal(leads[0].origem, 'INSTAGRAM');
+  assert.equal(leads[0].origem_detalhe, `Comentário-gatilho: ${CAMPOS_REGRA.nome}`, 'diferencia lead de gatilho de um DM comum na tela de Leads');
 
   const registrado = await repositorio.obterComentarioProcessado('c2');
   assert.equal(registrado.regra_id, regra.id);

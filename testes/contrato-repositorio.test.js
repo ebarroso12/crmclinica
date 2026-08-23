@@ -295,6 +295,25 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(doContato.length, 1);
     });
 
+    await t.test('origemDetalhe é gravado na criação e sobrevive a atualizações posteriores', async () => {
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-origem-detalhe-1', nome: 'Teste Origem Detalhe', canal: 'instagram',
+      });
+
+      const criado = await repositorio.salvarLead(contato.id, {
+        origem: 'INSTAGRAM', origemDetalhe: 'Comentário-gatilho: preço',
+      });
+      assert.equal(criado.origem_detalhe, 'Comentário-gatilho: preço');
+
+      // Mesmo raciocínio de `origem`: não é sobrescrito numa atualização
+      // posterior da mesma conversa (descreve de onde o lead nasceu).
+      const atualizado = await repositorio.salvarLead(contato.id, { temperatura: 'quente' });
+      assert.equal(atualizado.origem_detalhe, 'Comentário-gatilho: preço');
+
+      const obtido = await repositorio.obterLead(criado.id);
+      assert.equal(obtido.origem_detalhe, 'Comentário-gatilho: preço');
+    });
+
     await t.test('a busca encontra por nome e por telefone', async () => {
       await repositorio.encontrarOuCriarContato({ telefone: '5516900000009', nome: 'Zoraide Especial' });
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900000009' });

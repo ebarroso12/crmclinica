@@ -235,7 +235,15 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     await repositorio.registrarMensagem(conversa.id, {
       direcao: 'saida', conteudo: regra.mensagem_dm, autor_tipo: 'automacao',
     });
-    await repositorio.salvarLead(contato.id, { conversaId: conversa.id, origem: origemDoCanal('instagram') });
+    // origemDetalhe marca que este lead nasceu de um comentário-gatilho (e
+    // qual regra bateu) — é o que diferencia, na tela de Leads, um lead que
+    // veio de "avaliação" no comentário de um DM comum do Instagram. Ver
+    // pedido do Dr. Edson (23/08): "as que tiver o gatilho, diferencia".
+    await repositorio.salvarLead(contato.id, {
+      conversaId: conversa.id,
+      origem: origemDoCanal('instagram'),
+      origemDetalhe: `Comentário-gatilho: ${regra.nome}`,
+    });
 
     await repositorio.registrarComentarioProcessado({
       comentarioIdExterno, postId, autorIgId, regraId: regra.id, respostaPublicaEnviada, dmEnviada,

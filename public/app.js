@@ -972,7 +972,9 @@ async function carregarLeads() {
         botao.textContent = lead.nome || lead.telefone || 'Lead sem nome';
 
         const detalhe = document.createElement('small');
-        detalhe.textContent = `${lead.origem} · ${lead.temperatura}`;
+        detalhe.textContent = lead.origem_detalhe
+          ? `${lead.origem} (${lead.origem_detalhe}) · ${lead.temperatura}`
+          : `${lead.origem} · ${lead.temperatura}`;
 
         // Aging: há quantos dias o card está nesta coluna. A cor vem da faixa
         // calculada no servidor — o navegador só pinta.

@@ -1336,17 +1336,22 @@ function criarRepositorio(pool) {
     },
 
     /** Cria ou atualiza o lead do contato, mantendo o vínculo com a conversa. */
-    async salvarLead(contatoId, { conversaId = null, temperatura = null, estagio = null, origem = null } = {}) {
+    async salvarLead(contatoId, {
+      conversaId = null, temperatura = null, estagio = null, origem = null, origemDetalhe = null,
+    } = {}) {
+      // origem_detalhe só é gravado na criação (não entra no SET do
+      // ON CONFLICT) — mesmo raciocínio de `origem`: descreve de onde o lead
+      // nasceu, não deve mudar em atualizações posteriores da mesma conversa.
       const { rows } = await consultar(`
-        INSERT INTO leads (contato_id, conversa_id, temperatura, estagio, origem)
-        VALUES ($1, $2, COALESCE($3, 'frio'), COALESCE($4, 'novo'), COALESCE($5, 'WHATSAPP'))
+        INSERT INTO leads (contato_id, conversa_id, temperatura, estagio, origem, origem_detalhe)
+        VALUES ($1, $2, COALESCE($3, 'frio'), COALESCE($4, 'novo'), COALESCE($5, 'WHATSAPP'), $6)
         ON CONFLICT (contato_id) DO UPDATE SET
           conversa_id = COALESCE(EXCLUDED.conversa_id, leads.conversa_id),
           temperatura = COALESCE($3, leads.temperatura),
           estagio     = COALESCE($4, leads.estagio),
           atualizado_em = now()
-        RETURNING id, contato_id, conversa_id, temperatura, estagio, origem
-      `, [contatoId, conversaId, temperatura, estagio, origem]);
+        RETURNING id, contato_id, conversa_id, temperatura, estagio, origem, origem_detalhe
+      `, [contatoId, conversaId, temperatura, estagio, origem, origemDetalhe]);
 
       return { ...rows[0], id: Number(rows[0].id), contato_id: Number(rows[0].contato_id) };
     },

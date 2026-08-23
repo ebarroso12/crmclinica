@@ -920,7 +920,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         .slice(0, limite);
     },
 
-    async salvarLead(contatoId, { conversaId = null, temperatura = null, estagio = null, origem = null } = {}) {
+    async salvarLead(contatoId, {
+      conversaId = null, temperatura = null, estagio = null, origem = null, origemDetalhe = null,
+    } = {}) {
       const existente = [...leads.values()].find((lead) => lead.contato_id === Number(contatoId));
 
       if (existente) {
@@ -950,7 +952,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         convenio_nome: null,
         urgencia: null,
         disponibilidade: null,
-        origem_detalhe: null,
+        origem_detalhe: origemDetalhe,
         utm_source: null,
         utm_medium: null,
         utm_campaign: null,
