@@ -79,8 +79,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const iaModelos = [
     { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
     { id: 2, provedor: 'openai', modelo: 'gpt-4o', rotulo: 'GPT-4o', ativo: true, padrao: false, custo_entrada_usd_mi: 2.5, custo_saida_usd_mi: 10 },
+    { id: 8, provedor: 'openai', modelo: 'o3-mini', rotulo: 'Codex o3-mini', ativo: true, padrao: false, custo_entrada_usd_mi: 1.1, custo_saida_usd_mi: 4.4 },
     { id: 3, provedor: 'anthropic', modelo: 'claude-haiku-4-5-20251001', rotulo: 'Claude Haiku 4.5', ativo: true, padrao: true, custo_entrada_usd_mi: 1, custo_saida_usd_mi: 5 },
     { id: 4, provedor: 'anthropic', modelo: 'claude-sonnet-5', rotulo: 'Claude Sonnet 5', ativo: true, padrao: false, custo_entrada_usd_mi: 3, custo_saida_usd_mi: 15 },
+    { id: 9, provedor: 'anthropic', modelo: 'claude-3-5-sonnet-20241022', rotulo: 'Claude 3.5 Sonnet', ativo: true, padrao: false, custo_entrada_usd_mi: 3, custo_saida_usd_mi: 15 },
     { id: 5, provedor: 'google', modelo: 'gemini-2.5-flash', rotulo: 'Gemini 2.5 Flash', ativo: true, padrao: false, custo_entrada_usd_mi: 0.3, custo_saida_usd_mi: 2.5 },
     { id: 6, provedor: 'deepseek', modelo: 'deepseek-chat', rotulo: 'DeepSeek Chat', ativo: true, padrao: false, custo_entrada_usd_mi: 0.27, custo_saida_usd_mi: 1.1 },
     { id: 7, provedor: 'kimi', modelo: 'kimi-latest', rotulo: 'Kimi (Moonshot)', ativo: true, padrao: false, custo_entrada_usd_mi: 0.6, custo_saida_usd_mi: 2.5 },

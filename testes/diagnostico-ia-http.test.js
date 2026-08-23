@@ -158,3 +158,67 @@ test('POST /api/diagnostico/acoes reprocessa lembretes falhados', async () => {
     await ambiente.encerrar();
   }
 });
+
+test('GET /api/diagnostico/ias lista provedores disponíveis para reparo', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const ambiente = await subirServidor({ repositorio });
+  try {
+    const resposta = await ambiente.pedir('/api/diagnostico/ias');
+    assert.equal(resposta.status, 200);
+
+    const corpo = await resposta.json();
+    assert.ok(Array.isArray(corpo.ias));
+    assert.ok(corpo.ias.length >= 4);
+    assert.ok(corpo.ias.some((i) => i.id === 'codex'));
+    assert.ok(corpo.ias.some((i) => i.id === 'claude'));
+    assert.ok(corpo.ias.some((i) => i.id === 'deepseek'));
+    assert.ok(corpo.ias.some((i) => i.id === 'kimi'));
+  } finally {
+    await ambiente.encerrar();
+  }
+});
+
+test('POST /api/diagnostico/reparo-executavel exige area e titulo', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const gatewayDeIA = gatewayComAdaptadores(repositorio, {
+    anthropic: async () => ({ texto: 'Plano executável.', tokensEntrada: 10, tokensSaida: 5 }),
+  });
+  const ambiente = await subirServidor({ repositorio, gatewayDeIA });
+  try {
+    const semArea = await ambiente.pedir('/api/diagnostico/reparo-executavel', POST({ titulo: 'x' }));
+    assert.equal(semArea.status, 400);
+
+    const semTitulo = await ambiente.pedir('/api/diagnostico/reparo-executavel', POST({ area: 'outbox' }));
+    assert.equal(semTitulo.status, 400);
+  } finally {
+    await ambiente.encerrar();
+  }
+});
+
+test('POST /api/diagnostico/reparo-executavel gera plano com IA selecionada', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const gatewayDeIA = gatewayComAdaptadores(repositorio, {
+    openai: async ({ prompt }) => {
+      return { texto: '1. REQUER_DECISAO_HUMANA\n2. Verifique token.', tokensEntrada: 50, tokensSaida: 20 };
+    },
+  });
+  const ambiente = await subirServidor({ repositorio, gatewayDeIA });
+  try {
+    const resposta = await ambiente.pedir('/api/diagnostico/reparo-executavel', POST({
+      area: 'instagram',
+      titulo: 'Token expirado',
+      nivel: 'falha',
+      detalhe: 'access token não é aceito',
+      ia: 'codex',
+    }));
+    assert.equal(resposta.status, 200);
+
+    const corpo = await resposta.json();
+    assert.equal(corpo.ia_escolhida, 'codex');
+    assert.equal(corpo.ia_rotulo, 'Codex (OpenAI)');
+    assert.equal(corpo.acao_aplicavel, null);
+    assert.match(corpo.plano, /REQUER_DECISAO_HUMANA/);
+  } finally {
+    await ambiente.encerrar();
+  }
+});

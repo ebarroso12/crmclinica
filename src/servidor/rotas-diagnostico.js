@@ -9,7 +9,7 @@ const {
 } = require('../dominio/diagnostico-sondas');
 const { decidirAtendimento } = require('../dominio/sincronia-serena');
 const { conferirConexao } = require('../dados/conferir-conexao');
-const { gerarParecer, gerarPlanoDeReparo } = require('../dominio/diagnostico-ia');
+const { gerarParecer, gerarPlanoDeReparo, gerarReparoExecutavel, IAS_DE_REPARO } = require('../dominio/diagnostico-ia');
 
 // Centro operacional: a rota que responde "o sistema está inteiro?".
 //
@@ -137,6 +137,43 @@ function criarRotasDeDiagnostico({
         achado,
         provedor: corpo?.provedor ?? null,
         modelo: corpo?.modelo ?? null,
+      });
+
+      return {
+        ...resultado,
+        acao_aplicavel: achado.acao ?? null,
+      };
+    },
+
+    /** GET /api/diagnostico/ias — IAs disponíveis para reparo executável. */
+    async listarIAs(usuario) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      return { ias: IAS_DE_REPARO };
+    },
+
+    /** POST /api/diagnostico/reparo-executavel — plano de reparo executável com IA selecionada. */
+    async reparoExecutavel(usuario, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      if (!gateway) throw new Error('gateway de IA não disponível');
+
+      const area = String(corpo?.area ?? '').trim();
+      const titulo = String(corpo?.titulo ?? '').trim();
+      if (!area) throw new ErroDeContrato('campo "area" é obrigatório', 'area');
+      if (!titulo) throw new ErroDeContrato('campo "titulo" é obrigatório', 'titulo');
+
+      const achado = {
+        area,
+        nivel: corpo?.nivel ?? 'falha',
+        titulo,
+        detalhe: corpo?.detalhe ?? null,
+        reparo: corpo?.reparo ?? null,
+        acao: corpo?.acao ?? null,
+      };
+
+      const resultado = await gerarReparoExecutavel({
+        gateway,
+        achado,
+        ia: corpo?.ia ?? 'codex',
       });
 
       return {

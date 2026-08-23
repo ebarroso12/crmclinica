@@ -842,6 +842,8 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/diagnostico': () => rotasDeDiagnostico.varrer(usuario),
       'POST /api/diagnostico/parecer': async () => rotasDeDiagnostico.parecer(usuario, await lerJson(req)),
       'POST /api/diagnostico/reparo': async () => rotasDeDiagnostico.reparo(usuario, await lerJson(req)),
+      'GET /api/diagnostico/ias': () => rotasDeDiagnostico.listarIAs(usuario),
+      'POST /api/diagnostico/reparo-executavel': async () => rotasDeDiagnostico.reparoExecutavel(usuario, await lerJson(req)),
       'POST /api/diagnostico/acoes': async () => rotasDeDiagnostico.acoes(usuario, await lerJson(req)),
       'GET /api/serena/teste': () => rotasDaSerena.lerTeste(usuario, url),
       // Abrir não exige corpo: o modelo é opcional, e recusar com "corpo vazio"
