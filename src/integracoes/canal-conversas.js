@@ -4,13 +4,13 @@ const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = req
 const { normalizarTelefone } = require('../dominio/serena');
 
 // Envio de mensagem da equipe (ou da automação) para o paciente, pelo
-// WhatsApp da clínica.
+// WhatsApp ou Instagram da clínica.
 //
 // Sem isto, responder pelo painel só gravava no banco: a equipe escrevia, via a
 // mensagem na tela, e do outro lado ninguém recebia nada. O inbox parecia um
 // atendimento e era um bloco de notas.
 //
-// Duas vias, nesta ordem:
+// WhatsApp tem duas vias, nesta ordem:
 //   1. Evolution API (REST) — quando configurada, é a via PRIMÁRIA: não
 //      depende de um processo de gateway sempre conectado.
 //   2. Gateway WebSocket do OpenClaw — reserva. Continua exatamente como
@@ -18,10 +18,20 @@ const { normalizarTelefone } = require('../dominio/serena');
 // A chave de idempotência, derivada da mensagem gravada, vale para a via 2;
 // a via 1 não tem idempotência nativa nesse endpoint — ver o aviso em
 // evolution-envio.js.
+//
+// Instagram é uma via única e separada (Graph API, `instagram-envio.js`) —
+// achado de 23/08: `entregarAoPaciente` (atendimento.js) já reconhecia
+// conversas do Instagram na escolha do destinatário (PSID em vez de telefone),
+// mas este arquivo nunca ganhou a metade que falta — `enviar()` sempre caía
+// no WhatsApp (Evolution/OpenClaw) não importa o canal da conversa, tratando
+// o PSID como se fosse número de telefone. O trabalho da outbox "concluía"
+// sem erro sem nunca de fato notificar o Instagram — silêncio sem aviso, o
+// mesmo tipo de bug que o Comando 7 documentou para a barreira de decisão.
 
 function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
   let cliente = dependencias.cliente ?? null;
   const evolucao = dependencias.evolucao ?? null;
+  const instagram = dependencias.instagram ?? null;
 
   function conectar() {
     if (cliente) return cliente;
@@ -56,18 +66,27 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
   }
 
   return {
-    disponivel: Boolean(configuracao.url) || Boolean(evolucao?.disponivel),
+    disponivel: Boolean(configuracao.url) || Boolean(evolucao?.disponivel) || Boolean(instagram?.disponivel),
 
     /**
      * Entrega a mensagem e devolve o identificador confirmado.
      *
-     * Tenta a Evolution primeiro quando disponível; se falhar (ou não
-     * estiver configurada), cai para o gateway do OpenClaw — nunca o
-     * contrário, e nunca silenciosamente sem tentar as duas quando ambas
-     * existem. Sem identificador não há confirmação, e sem confirmação a
-     * mensagem não pode ser dada como entregue.
+     * `canal` decide a via: 'instagram' vai direto pro Graph API (PSID não é
+     * telefone, não passa por `normalizarTelefone`, não tenta Evolution nem
+     * o gateway do OpenClaw). Qualquer outro valor (ou ausente, mesmo
+     * comportamento de sempre) segue o caminho de WhatsApp: tenta a
+     * Evolution primeiro quando disponível; se falhar (ou não estiver
+     * configurada), cai para o gateway do OpenClaw — nunca o contrário, e
+     * nunca silenciosamente sem tentar as duas quando ambas existem. Sem
+     * identificador não há confirmação, e sem confirmação a mensagem não
+     * pode ser dada como entregue.
      */
-    async enviar({ telefone, texto, chave }) {
+    async enviar({ telefone, texto, chave, canal }) {
+      if (canal === 'instagram') {
+        if (!instagram?.disponivel) throw new Error('canal do Instagram não configurado');
+        return instagram.enviar({ telefone, texto });
+      }
+
       // O contato guarda o telefone como o canal o entregou, e isso inclui
       // mascara. Normalizar aqui evita mandar para um numero que nao existe.
       // Feito uma vez só: as duas vias recebem o mesmo dado normalizado.
@@ -97,9 +116,13 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
      * Só a Evolution API: o protocolo `send` do gateway WebSocket do OpenClaw
      * nunca teve suporte a mídia confirmado (é outro processo, no VPS, fora
      * do que este projeto testa) — arriscar mandar um anexo por um canal sem
-     * contrato conhecido é pior do que recusar com um erro claro.
+     * contrato conhecido é pior do que recusar com um erro claro. Instagram
+     * (`instagram-envio.js`) ainda não tem envio de mídia implementado —
+     * mesma recusa clara, não silêncio.
      */
-    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo, canal }) {
+      if (canal === 'instagram') throw new Error('envio de anexo pelo Instagram ainda não é suportado');
+
       const destino = normalizarTelefone(telefone);
       if (!destino) throw new Error('telefone inválido para envio');
       if (!evolucao?.disponivel) throw new Error('envio de anexo exige a Evolution API configurada');

@@ -81,3 +81,54 @@ test('telefone inválido é recusado antes de tentar qualquer via', async () => 
   const canal = criarCanalDeConversas({}, { evolucao });
   await assert.rejects(() => canal.enviar({ telefone: 'abc', texto: 'oi', chave: 'k5' }));
 });
+
+// -------------------------------------------------------------------- Instagram
+//
+// Achado de 23/08: `enviar` nunca soube rotear pro Instagram — sempre caía no
+// caminho de WhatsApp (Evolution/gateway), tratando o PSID como telefone.
+// A outbox "concluía" o trabalho sem erro, mas nada era de fato entregue.
+
+test('canal:"instagram" vai direto pro cliente do Instagram — nunca tenta Evolution nem gateway', async () => {
+  const evolucao = { disponivel: true, async enviar() { throw new Error('Evolution não deveria ser chamada'); } };
+  const cliente = gatewayFalso(() => { throw new Error('gateway não deveria ser chamado'); });
+  const instagram = {
+    disponivel: true,
+    async enviar({ telefone, texto }) {
+      // PSID de verdade: numérico longo, mas NÃO é telefone — não pode
+      // passar por normalizarTelefone nem levar prefixo de DDI.
+      assert.equal(telefone, '17841474502266312');
+      assert.equal(texto, 'oi paciente do Instagram');
+      return { identificador: 'ig-msg-1' };
+    },
+  };
+
+  const canal = criarCanalDeConversas({ url: 'wss://gateway.exemplo/ws' }, { cliente, evolucao, instagram });
+  const resultado = await canal.enviar({
+    telefone: '17841474502266312', texto: 'oi paciente do Instagram', chave: 'k6', canal: 'instagram',
+  });
+  assert.equal(resultado.identificador, 'ig-msg-1');
+});
+
+test('canal:"instagram" sem cliente do Instagram configurado recusa com erro claro', async () => {
+  const evolucao = { disponivel: true, async enviar() { throw new Error('não deveria chamar'); } };
+  const canal = criarCanalDeConversas({}, { evolucao }); // sem instagram
+  await assert.rejects(
+    () => canal.enviar({ telefone: '17841474502266312', texto: 'oi', chave: 'k7', canal: 'instagram' }),
+    /Instagram não configurado/,
+  );
+});
+
+test('canal.disponivel considera o cliente do Instagram mesmo sem Evolution/gateway', () => {
+  const instagram = { disponivel: true };
+  const canal = criarCanalDeConversas({}, { instagram });
+  assert.equal(canal.disponivel, true);
+});
+
+test('enviarMidia com canal:"instagram" recusa com erro claro (sem suporte a anexo ainda)', async () => {
+  const evolucao = { disponivel: true, async enviarMidia() { throw new Error('não deveria chamar'); } };
+  const canal = criarCanalDeConversas({}, { evolucao });
+  await assert.rejects(
+    () => canal.enviarMidia({ telefone: '17841474502266312', mediaUrl: 'https://x', tipo: 'imagem', canal: 'instagram' }),
+    /Instagram.*não é suportado/,
+  );
+});

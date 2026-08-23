@@ -176,8 +176,10 @@ function criarAplicacao(dependencias = {}) {
   // só o gateway do OpenClaw contava; agora a Evolution sozinha também basta,
   // e "canal_nao_configurado" só volta a aparecer se nenhuma das duas estiver.
   const canalDeConversas = dependencias.canalDeConversas
-    || ((configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel)
-      ? criarCanalDeConversas(configuracao.openclaw.canalClinica, { evolucao: clienteEvolucaoEnvio })
+    || ((configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel || clienteInstagramEnvio.disponivel)
+      ? criarCanalDeConversas(configuracao.openclaw.canalClinica, {
+        evolucao: clienteEvolucaoEnvio, instagram: clienteInstagramEnvio,
+      })
       : null);
 
   // Barramento das Conversas ao vivo: cada mensagem gravada passa por aqui e

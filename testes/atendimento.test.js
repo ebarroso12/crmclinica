@@ -463,6 +463,7 @@ test('A1.9: entrega automática no Instagram usa o identificador (PSID) como des
   assert.equal(resultado.entregue, true, 'sem isto, toda automação do Instagram travava em contato_sem_telefone');
   assert.equal(canal.envios.length, 1);
   assert.equal(canal.envios[0].telefone, 'ig-psid-1', 'o "telefone" passado ao transporte é o identificador do Instagram');
+  assert.equal(canal.envios[0].canal, 'instagram', 'sem isto, canal-conversas.js roteava toda entrega pro WhatsApp, mesmo numa conversa do Instagram');
 });
 
 test('A1.9: contato do Instagram sem identificador nenhum não tenta entregar (contato_sem_destinatario)', async () => {

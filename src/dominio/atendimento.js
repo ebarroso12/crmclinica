@@ -815,12 +815,10 @@ function criarAtendimento({
       // (PSID), não `telefone` — mesma lista CANAIS_SEM_TELEFONE usada na
       // entrada (receberMensagem). Sem isto, toda automação numa conversa do
       // Instagram travava sempre em 'contato_sem_telefone', mesmo com o
-      // contato certo já reconhecido sem duplicar. O transporte de envio de
-      // verdade (Graph API do Instagram) ainda não existe — só `canal`
-      // (Evolution/OpenClaw, WhatsApp) está injetado até essa peça ser
-      // construída; até lá, uma tentativa de entrega numa conversa do
-      // Instagram falha mais abaixo, no transporte em si, com um erro real —
-      // não mais aqui, com o motivo errado, antes de sequer tentar.
+      // contato certo já reconhecido sem duplicar. `canal.enviar`/`enviarMidia`
+      // abaixo recebem `conversa.canal` explicitamente — é isso que faz
+      // `canal-conversas.js` escolher o transporte certo (Graph API do
+      // Instagram em vez de Evolution/OpenClaw).
       const destinatario = CANAIS_SEM_TELEFONE.has(conversa.canal) ? contato?.identificador : contato?.telefone;
       if (!destinatario) return { enviada: false, motivo: 'contato_sem_destinatario' };
 
@@ -831,6 +829,7 @@ function criarAtendimento({
       const resultado = anexo
         ? await canal.enviarMidia({
           telefone: destinatario,
+          canal: conversa.canal,
           // O bucket é privado: media_url grava só o path interno
           // (anexo.caminho), nunca uma URL pública. A Evolution precisa de
           // uma URL alcançável de fato — gerada aqui, na hora do envio, de
@@ -843,6 +842,7 @@ function criarAtendimento({
         : await canal.enviar({
           telefone: destinatario,
           texto,
+          canal: conversa.canal,
           // Comando 7, segunda auditoria, achado N-10: este comentário dizia
           // que a chave, sozinha, impedia o paciente de receber a mesma
           // resposta duas vezes — falso para a Evolution (canal primário
