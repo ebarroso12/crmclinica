@@ -1113,14 +1113,30 @@ function criarRepositorio(pool) {
      * com fichas duplicadas não se recupera direito depois.
      */
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
-      const { rows } = await consultar(`
-        INSERT INTO contatos (telefone, nome, origem, identificador)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (telefone) WHERE telefone IS NOT NULL
-        DO UPDATE SET nome = COALESCE(contatos.nome, EXCLUDED.nome),
-                      excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
-        RETURNING id
-      `, [telefone, nome, canal, identificador]);
+      // Achado de 23/08 (integração de Instagram): telefone e identificador são
+      // chaves de dedupe ALTERNATIVAS, não a mesma coisa — um único
+      // `ON CONFLICT (telefone)` nunca dispara para canais sem telefone
+      // (Instagram), e cada mensagem nova do mesmo seguidor criava um contato
+      // novo. Dois caminhos de INSERT, escolhidos pela presença de telefone:
+      // Postgres não permite dois alvos de ON CONFLICT na mesma instrução.
+      // Índice de identificador: db/043_contatos_identificador_uk.sql.
+      const { rows } = telefone
+        ? await consultar(`
+            INSERT INTO contatos (telefone, nome, origem, identificador)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (telefone) WHERE telefone IS NOT NULL
+            DO UPDATE SET nome = COALESCE(contatos.nome, EXCLUDED.nome),
+                          excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
+            RETURNING id
+          `, [telefone, nome, canal, identificador])
+        : await consultar(`
+            INSERT INTO contatos (telefone, nome, origem, identificador)
+            VALUES (NULL, $1, $2, $3)
+            ON CONFLICT (identificador) WHERE identificador IS NOT NULL AND telefone IS NULL
+            DO UPDATE SET nome = COALESCE(contatos.nome, EXCLUDED.nome),
+                          excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
+            RETURNING id
+          `, [nome, canal, identificador]);
 
       return this.obterContato(rows[0].id);
     },

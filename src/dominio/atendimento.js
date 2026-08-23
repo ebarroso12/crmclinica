@@ -92,13 +92,17 @@ function criarAtendimento({
       );
     }
 
+    // WhatsApp, site e formulário sempre mandaram telefone em `evento.remetente`
+    // — só um canal sem telefone (Instagram, identificado pelo PSID) é
+    // exceção. Gravar um PSID na coluna `telefone` poluiria um campo que o
+    // resto do sistema trata como telefone de verdade (normalização, exibição).
+    const CANAIS_SEM_TELEFONE = new Set(['instagram']);
+    const semTelefone = CANAIS_SEM_TELEFONE.has(evento.canal);
     const contato = await repositorio.encontrarOuCriarContato({
-      telefone: evento.remetente,
+      telefone: semTelefone ? null : evento.remetente,
       nome: evento.nome,
       canal: evento.canal,
-      // O identificador só existe quando o canal fornece um próprio (perfil do
-      // Instagram, por exemplo). Repetir o telefone aqui seria ruído na ficha.
-      identificador: evento.identificador ?? null,
+      identificador: semTelefone ? evento.remetente : (evento.identificador ?? null),
     });
 
     const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, evento.canal);

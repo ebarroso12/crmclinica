@@ -715,7 +715,13 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     },
 
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
-      const existente = [...contatos.values()].find((contato) => contato.telefone === telefone);
+      // Achado de 23/08: `contato.telefone === telefone` com os dois `null`
+      // (canal sem telefone, ex. Instagram) casava `null === null` e misturava
+      // pessoas diferentes no mesmo contato. Telefone só compara quando
+      // presente; sem telefone, a chave de dedupe passa a ser o identificador.
+      const existente = [...contatos.values()].find((contato) => (
+        telefone ? contato.telefone === telefone : contato.telefone === null && contato.identificador === identificador
+      ));
       if (existente) {
         if (!existente.nome && nome) existente.nome = nome;
         // Excluído que volta a escrever é reativado, não duplicado.
