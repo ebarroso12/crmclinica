@@ -68,6 +68,58 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(segundo.nome, 'Marina', 'nome já registrado não é sobrescrito');
     });
 
+    await t.test('contato sem telefone (Instagram) não duplica pelo identificador', async () => {
+      const primeiro = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-1', nome: 'Ana', canal: 'instagram',
+      });
+      const segundo = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-1', nome: 'Ana Paula', canal: 'instagram',
+      });
+
+      assert.equal(primeiro.id, segundo.id);
+      assert.equal(segundo.nome, 'Ana', 'nome já registrado não é sobrescrito');
+    });
+
+    await t.test('dois PSIDs diferentes do Instagram nunca colidem no mesmo contato', async () => {
+      const a = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-a', nome: 'Pessoa A', canal: 'instagram',
+      });
+      const b = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-b', nome: 'Pessoa B', canal: 'instagram',
+      });
+
+      assert.notEqual(a.id, b.id);
+    });
+
+    await t.test('telefone adicionado depois a um contato do Instagram não quebra o reconhecimento pelo identificador', async () => {
+      // Achado da revisão de banco de 23/08: a Serena vai perguntar telefone
+      // durante a qualificação de um lead do Instagram — se isso "promover" o
+      // contato (ganhar telefone além do identificador) fizer a PRÓXIMA
+      // mensagem da mesma pessoa criar um contato novo, é exatamente a
+      // duplicação que a correção original devia evitar, só que por outra porta.
+      const criado = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-promovido', nome: 'Beatriz', canal: 'instagram',
+      });
+      await repositorio.atualizarContato(criado.id, { telefone: '5516999998888' });
+
+      const depoisDePromovido = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-promovido', nome: 'Beatriz', canal: 'instagram',
+      });
+
+      assert.equal(depoisDePromovido.id, criado.id, 'segunda mensagem do mesmo PSID precisa achar o MESMO contato');
+      assert.equal(depoisDePromovido.telefone, '5516999998888', 'o telefone gravado manualmente não pode ser apagado');
+    });
+
+    await t.test('dois contatos incompletos (sem telefone nem identificador) nunca colidem entre si', async () => {
+      // Cadastro manual parcial (ex.: a feature de qualidade cadastral) — sem
+      // NENHUMA chave, cada chamada tem que criar um contato novo, nunca casar
+      // com um incompleto anterior de outra pessoa.
+      const um = await repositorio.encontrarOuCriarContato({ telefone: null, nome: 'Incompleto Um' });
+      const dois = await repositorio.encontrarOuCriarContato({ telefone: null, nome: 'Incompleto Dois' });
+
+      assert.notEqual(um.id, dois.id);
+    });
+
     await t.test('busca de contato acha por nome e por telefone digitado', async () => {
       await repositorio.encontrarOuCriarContato({ telefone: '5516988887777', nome: 'Joana Ribeiro' });
       await repositorio.encontrarOuCriarContato({ telefone: '5511955554444', nome: 'Carlos Menezes' });
@@ -241,6 +293,62 @@ for (const { nome, montar } of implementacoes) {
 
       const doContato = (await repositorio.listarLeads()).filter((lead) => lead.contato_id === contato.id);
       assert.equal(doContato.length, 1);
+    });
+
+    await t.test('origemDetalhe é gravado na criação e sobrevive a atualizações posteriores', async () => {
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-origem-detalhe-1', nome: 'Teste Origem Detalhe', canal: 'instagram',
+      });
+
+      const criado = await repositorio.salvarLead(contato.id, {
+        origem: 'INSTAGRAM', origemDetalhe: 'Comentário-gatilho: preço',
+      });
+      assert.equal(criado.origem_detalhe, 'Comentário-gatilho: preço');
+
+      // Mesmo raciocínio de `origem`: não é sobrescrito numa atualização
+      // posterior da mesma conversa (descreve de onde o lead nasceu).
+      const atualizado = await repositorio.salvarLead(contato.id, { temperatura: 'quente' });
+      assert.equal(atualizado.origem_detalhe, 'Comentário-gatilho: preço');
+
+      const obtido = await repositorio.obterLead(criado.id);
+      assert.equal(obtido.origem_detalhe, 'Comentário-gatilho: preço');
+    });
+
+    await t.test('metricasInstagram soma comentários processados, com/sem gatilho, e agrupa por regra', async () => {
+      const regraA = await repositorio.criarRegraDeGatilho({
+        nome: 'Métrica - regra A', palavraGatilho: 'preço', mensagemDm: 'DM de teste bem detalhada aqui.',
+        mensagemPublica: 'Resposta pública de teste.',
+      });
+      const regraB = await repositorio.criarRegraDeGatilho({
+        nome: 'Métrica - regra B', palavraGatilho: 'agendar', mensagemDm: 'Outra DM de teste bem detalhada.',
+        mensagemPublica: 'Outra resposta pública.',
+      });
+
+      await repositorio.registrarComentarioProcessado({
+        comentarioIdExterno: 'metrica-c1', autorIgId: 'ig1', regraId: regraA.id,
+        respostaPublicaEnviada: true, dmEnviada: true,
+      });
+      await repositorio.registrarComentarioProcessado({
+        comentarioIdExterno: 'metrica-c2', autorIgId: 'ig2', regraId: regraA.id,
+        respostaPublicaEnviada: true, dmEnviada: false,
+      });
+      await repositorio.registrarComentarioProcessado({
+        comentarioIdExterno: 'metrica-c3', autorIgId: 'ig3', regraId: null,
+        respostaPublicaEnviada: false, dmEnviada: false,
+      });
+
+      const metricas = await repositorio.metricasInstagram();
+      assert.ok(metricas.total_comentarios >= 3);
+      assert.ok(metricas.com_gatilho >= 2);
+      assert.ok(metricas.resposta_publica_enviada >= 2);
+      assert.ok(metricas.dm_enviada >= 1);
+
+      const linhaA = metricas.por_regra.find((r) => r.id === regraA.id);
+      const linhaB = metricas.por_regra.find((r) => r.id === regraB.id);
+      assert.ok(linhaA, 'regra A aparece no agrupamento mesmo sem ter recebido comentário nenhum ainda seria ok, mas aqui recebeu 2');
+      assert.equal(linhaA.total, 2);
+      assert.ok(linhaB, 'regra B aparece no agrupamento mesmo com 0 comentários — LEFT JOIN, não INNER');
+      assert.equal(linhaB.total, 0);
     });
 
     await t.test('a busca encontra por nome e por telefone', async () => {

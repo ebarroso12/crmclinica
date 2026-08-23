@@ -1113,14 +1113,40 @@ function criarRepositorio(pool) {
      * com fichas duplicadas não se recupera direito depois.
      */
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
-      const { rows } = await consultar(`
-        INSERT INTO contatos (telefone, nome, origem, identificador)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (telefone) WHERE telefone IS NOT NULL
-        DO UPDATE SET nome = COALESCE(contatos.nome, EXCLUDED.nome),
-                      excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
-        RETURNING id
-      `, [telefone, nome, canal, identificador]);
+      // Achado de 23/08 (integração de Instagram, duas rodadas de revisão):
+      // telefone e identificador são chaves de dedupe ALTERNATIVAS, não a
+      // mesma coisa — um único `ON CONFLICT (telefone)` nunca dispara para
+      // canais sem telefone (Instagram), e cada mensagem nova do mesmo
+      // seguidor criava um contato novo. Dois caminhos de INSERT, escolhidos
+      // pela presença de telefone: Postgres não permite dois alvos de
+      // ON CONFLICT na mesma instrução.
+      //
+      // O índice de identificador (db/043 + 044) NÃO exige telefone nulo: a
+      // Serena vai perguntar telefone durante a qualificação de um lead do
+      // Instagram, e esse contato pode ganhar telefone depois de já existir
+      // (via edição manual ou pela própria conversa). Se o índice exigisse
+      // telefone ainda nulo, a mensagem seguinte da MESMA pessoa deixaria de
+      // reconhecer o contato promovido e criaria um duplicado — achado real
+      // da revisão de banco, não hipotético. Índice: db/044_contatos_identificador_uk_sem_restricao_telefone.sql.
+      const marcarReativado = `
+        nome = COALESCE(contatos.nome, EXCLUDED.nome),
+        excluido_em = NULL, excluido_por = NULL, excluido_motivo = NULL
+      `;
+      const { rows } = telefone
+        ? await consultar(`
+            INSERT INTO contatos (telefone, nome, origem, identificador)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (telefone) WHERE telefone IS NOT NULL
+            DO UPDATE SET ${marcarReativado}
+            RETURNING id
+          `, [telefone, nome, canal, identificador])
+        : await consultar(`
+            INSERT INTO contatos (telefone, nome, origem, identificador)
+            VALUES (NULL, $1, $2, $3)
+            ON CONFLICT (identificador) WHERE identificador IS NOT NULL
+            DO UPDATE SET ${marcarReativado}
+            RETURNING id
+          `, [nome, canal, identificador]);
 
       return this.obterContato(rows[0].id);
     },
@@ -1310,17 +1336,22 @@ function criarRepositorio(pool) {
     },
 
     /** Cria ou atualiza o lead do contato, mantendo o vínculo com a conversa. */
-    async salvarLead(contatoId, { conversaId = null, temperatura = null, estagio = null, origem = null } = {}) {
+    async salvarLead(contatoId, {
+      conversaId = null, temperatura = null, estagio = null, origem = null, origemDetalhe = null,
+    } = {}) {
+      // origem_detalhe só é gravado na criação (não entra no SET do
+      // ON CONFLICT) — mesmo raciocínio de `origem`: descreve de onde o lead
+      // nasceu, não deve mudar em atualizações posteriores da mesma conversa.
       const { rows } = await consultar(`
-        INSERT INTO leads (contato_id, conversa_id, temperatura, estagio, origem)
-        VALUES ($1, $2, COALESCE($3, 'frio'), COALESCE($4, 'novo'), COALESCE($5, 'WHATSAPP'))
+        INSERT INTO leads (contato_id, conversa_id, temperatura, estagio, origem, origem_detalhe)
+        VALUES ($1, $2, COALESCE($3, 'frio'), COALESCE($4, 'novo'), COALESCE($5, 'WHATSAPP'), $6)
         ON CONFLICT (contato_id) DO UPDATE SET
           conversa_id = COALESCE(EXCLUDED.conversa_id, leads.conversa_id),
           temperatura = COALESCE($3, leads.temperatura),
           estagio     = COALESCE($4, leads.estagio),
           atualizado_em = now()
-        RETURNING id, contato_id, conversa_id, temperatura, estagio, origem
-      `, [contatoId, conversaId, temperatura, estagio, origem]);
+        RETURNING id, contato_id, conversa_id, temperatura, estagio, origem, origem_detalhe
+      `, [contatoId, conversaId, temperatura, estagio, origem, origemDetalhe]);
 
       return { ...rows[0], id: Number(rows[0].id), contato_id: Number(rows[0].contato_id) };
     },
@@ -1992,6 +2023,41 @@ function criarRepositorio(pool) {
         atrasados: Number(linha.atrasados ?? 0),
         pendentes: Number(linha.pendentes ?? 0),
       };
+    },
+
+    /**
+     * Para o diagnóstico: os motivos reais dos lembretes que esgotaram as
+     * tentativas, agrupados. Mesmo espírito de `ultimosErrosDaOutbox`: o
+     * achado já traz o motivo em vez de mandar o admin caçar no banco.
+     */
+    async ultimosErrosDeLembretes({ limite = 3 } = {}) {
+      const { rows } = await consultar(
+        `SELECT left(coalesce(ultimo_erro, '(sem motivo registrado)'), 300) AS erro,
+                count(*)::int AS total
+           FROM lembretes
+          WHERE estado = 'falhou'
+          GROUP BY 1
+          ORDER BY total DESC, erro
+          LIMIT $1`,
+        [Number(limite)],
+      );
+      return rows.map((linha) => ({ erro: linha.erro, total: Number(linha.total) }));
+    },
+
+    /**
+     * Para o botão "Aplicar reparo" do centro operacional: devolve à fila os
+     * lembretes que esgotaram as tentativas. Idempotente por natureza;
+     * `tentar_em = now()` os torna elegíveis já — `agendar_para` de um
+     * falhado sempre está no passado, então não precisa mudar.
+     */
+    async reprocessarLembretesFalhados() {
+      const { rowCount } = await consultar(
+        `UPDATE lembretes
+            SET estado = 'pendente', tentativas = 0, ultimo_erro = NULL,
+                tentar_em = now(), processando_por = NULL, processando_desde = NULL
+          WHERE estado = 'falhou'`,
+      );
+      return rowCount;
     },
 
     /**
@@ -2764,6 +2830,136 @@ function criarRepositorio(pool) {
       return rowCount;
     },
 
+    // ------------------------------------------- Instagram — regras de gatilho
+
+    async listarRegrasDeGatilho({ apenasAtivas = false } = {}) {
+      const { rows } = await consultar(`
+        SELECT r.*, u.nome AS criado_por_nome
+          FROM instagram_regras_gatilho r
+          LEFT JOIN usuarios u ON u.id = r.criado_por
+         ${apenasAtivas ? 'WHERE r.ativa' : ''}
+         ORDER BY r.nome
+      `);
+      return rows.map((linha) => ({
+        ...linha, id: Number(linha.id), ativa: linha.ativa === true, cta_whatsapp: linha.cta_whatsapp === true,
+      }));
+    },
+
+    async obterRegraDeGatilho(id) {
+      const { rows } = await consultar('SELECT * FROM instagram_regras_gatilho WHERE id = $1', [id]);
+      return rows[0]
+        ? { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true }
+        : null;
+    },
+
+    async criarRegraDeGatilho({
+      nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, criadoPor = null,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO instagram_regras_gatilho (nome, palavra_gatilho, mensagem_dm, mensagem_publica, cta_whatsapp, criado_por)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp, criadoPor]);
+
+      return { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true };
+    },
+
+    async atualizarRegraDeGatilho(id, campos) {
+      const permitidos = new Map([
+        ['nome', 'nome'], ['palavra_gatilho', 'palavra_gatilho'], ['mensagem_dm', 'mensagem_dm'],
+        ['mensagem_publica', 'mensagem_publica'], ['cta_whatsapp', 'cta_whatsapp'], ['ativa', 'ativa'],
+      ]);
+
+      const partes = ['atualizado_em = now()'];
+      const valores = [];
+      for (const [campo, valor] of Object.entries(campos)) {
+        const coluna = permitidos.get(campo);
+        if (!coluna) continue;
+        valores.push(valor);
+        partes.push(`${coluna} = $${valores.length}`);
+      }
+      if (valores.length === 0) return this.obterRegraDeGatilho(id);
+
+      valores.push(id);
+      const { rows } = await consultar(
+        `UPDATE instagram_regras_gatilho SET ${partes.join(', ')} WHERE id = $${valores.length} RETURNING *`,
+        valores,
+      );
+      return rows[0]
+        ? { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true }
+        : null;
+    },
+
+    async removerRegraDeGatilho(id) {
+      const { rowCount } = await consultar('DELETE FROM instagram_regras_gatilho WHERE id = $1', [id]);
+      return rowCount;
+    },
+
+    // Idempotência do webhook de comentário: o mesmo comentário reentregue
+    // pelo provedor não pode ser processado (e respondido) duas vezes.
+    async obterComentarioProcessado(comentarioIdExterno) {
+      const { rows } = await consultar(
+        'SELECT * FROM instagram_comentarios_processados WHERE comentario_id_externo = $1',
+        [comentarioIdExterno],
+      );
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), regra_id: rows[0].regra_id ? Number(rows[0].regra_id) : null } : null;
+    },
+
+    async registrarComentarioProcessado({
+      comentarioIdExterno, postId = null, autorIgId, regraId = null,
+      respostaPublicaEnviada = false, dmEnviada = false,
+    }) {
+      const { rows } = await consultar(`
+        INSERT INTO instagram_comentarios_processados
+          (comentario_id_externo, post_id, autor_ig_id, regra_id, resposta_publica_enviada, dm_enviada)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (comentario_id_externo) DO NOTHING
+        RETURNING *
+      `, [comentarioIdExterno, postId, autorIgId, regraId, respostaPublicaEnviada, dmEnviada]);
+      return rows[0]
+        ? { ...rows[0], id: Number(rows[0].id), regra_id: rows[0].regra_id ? Number(rows[0].regra_id) : null }
+        : null;
+    },
+
+    /**
+     * Resumo de quantas vezes cada regra de gatilho já disparou e quantas
+     * ações realmente saíram (resposta pública, DM) — pedido do Dr. Edson
+     * (23/08) para a própria tela do Instagram, sem passar pelo dashboard
+     * grande de métricas (`criarServicoDeMetricas`). Sem período: é volume
+     * baixo (comentários por gatilho), acumulado desde sempre é o que importa
+     * aqui — "isso está funcionando de verdade?".
+     */
+    async metricasInstagram() {
+      const { rows: totaisRows } = await consultar(`
+        SELECT
+          count(*)::int AS total_comentarios,
+          count(*) FILTER (WHERE regra_id IS NOT NULL)::int AS com_gatilho,
+          count(*) FILTER (WHERE resposta_publica_enviada)::int AS resposta_publica_enviada,
+          count(*) FILTER (WHERE dm_enviada)::int AS dm_enviada
+        FROM instagram_comentarios_processados
+      `);
+      const totais = totaisRows[0] ?? {
+        total_comentarios: 0, com_gatilho: 0, resposta_publica_enviada: 0, dm_enviada: 0,
+      };
+
+      const { rows: porRegra } = await consultar(`
+        SELECT r.id, r.nome, r.ativa, count(c.id)::int AS total
+          FROM instagram_regras_gatilho r
+          LEFT JOIN instagram_comentarios_processados c ON c.regra_id = r.id
+         GROUP BY r.id, r.nome, r.ativa
+         ORDER BY total DESC, r.nome
+      `);
+
+      return {
+        total_comentarios: totais.total_comentarios,
+        com_gatilho: totais.com_gatilho,
+        sem_gatilho: totais.total_comentarios - totais.com_gatilho,
+        resposta_publica_enviada: totais.resposta_publica_enviada,
+        dm_enviada: totais.dm_enviada,
+        por_regra: porRegra.map((linha) => ({ ...linha, id: Number(linha.id), ativa: linha.ativa === true })),
+      };
+    },
+
     // --------------------------------------------------------- Serena — voz
 
     async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {
@@ -3242,6 +3438,44 @@ function criarRepositorio(pool) {
         [desde],
       );
       return Number(rows[0]?.total ?? 0);
+    },
+
+    /**
+     * Para o diagnóstico: os motivos reais dos trabalhos que esgotaram as
+     * tentativas (ou terminaram incertos), agrupados. O achado que só diz
+     * "veja o ultimo_erro" sem mostrar o erro manda o admin caçar no banco;
+     * aqui a varredura já traz o motivo.
+     */
+    async ultimosErrosDaOutbox({ limite = 3 } = {}) {
+      const { rows } = await consultar(
+        `SELECT left(coalesce(ultimo_erro, '(sem motivo registrado)'), 300) AS erro,
+                count(*)::int AS total
+           FROM automacao_outbox
+          WHERE status IN ('morto', 'incerto')
+          GROUP BY 1
+          ORDER BY total DESC, erro
+          LIMIT $1`,
+        [Number(limite)],
+      );
+      return rows.map((linha) => ({ erro: linha.erro, total: Number(linha.total) }));
+    },
+
+    /**
+     * Para o botão "Aplicar reparo" do centro operacional: devolve à fila o
+     * que esgotou as tentativas. Idempotente por natureza — aplicar de novo
+     * sem mortos novos não muda nada. A decisão de reprocessar é do admin; o
+     * que muda aqui é só o estado, nunca o histórico (o erro fica registrado
+     * no achado e na telemetria até ser sobrescrito pela nova tentativa).
+     */
+    async reenfileirarTrabalhosMortosDaOutbox() {
+      const { rowCount } = await consultar(
+        `UPDATE automacao_outbox
+            SET status = 'pendente', tentativas = 0, ultimo_erro = NULL,
+                disponivel_em = now(), concluido_em = NULL,
+                reivindicado_por = NULL, reivindicado_em = NULL
+          WHERE status = 'morto'`,
+      );
+      return rowCount;
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

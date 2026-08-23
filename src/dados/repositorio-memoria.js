@@ -60,6 +60,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const lembretes = [];
   const serenaPrompts = [];
   const serenaRegras = [];
+  const instagramRegrasGatilho = [];
+  const instagramComentariosProcessados = [];
   const serenaVozSessoes = new Map();
   const serenaVozTurnos = [];
   const tarefas = [];
@@ -155,6 +157,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     lead: 1, usuario: 1, etiqueta: 1, sessao: 1, recuperacao: 1, leadEvento: 1,
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
     serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1, automacaoOutbox: 1,
+    instagramRegraGatilho: 1, instagramComentario: 1,
     // Nome distinto de `bloqueio` (que já é usado por bloqueios de agenda,
     // outro conceito) — contato bloqueado é desvio de atendimento automático.
     contatoBloqueado: 1,
@@ -715,7 +718,27 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     },
 
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
-      const existente = [...contatos.values()].find((contato) => contato.telefone === telefone);
+      // Achado de 23/08 (revisão de banco + código, duas rodadas): telefone e
+      // identificador são chaves de dedupe alternativas, cada uma só compara
+      // quando está presente na chamada — nunca por igualdade entre dois
+      // `null` (isso já colidiu pessoas diferentes duas vezes: primeiro dois
+      // contatos do Instagram distintos, depois dois cadastros manuais
+      // incompletos, caso real de testes/contatos-qualidade.test.js). Sem
+      // telefone NEM identificador na chamada, não há chave nenhuma — cada
+      // chamada cria um contato novo, igual ao Postgres (índice parcial exige
+      // `identificador IS NOT NULL`).
+      //
+      // O match por identificador NÃO exige `contato.telefone === null`: a
+      // Serena vai perguntar telefone durante a qualificação de um lead do
+      // Instagram, e esse contato pode ganhar telefone depois de já existir.
+      // Se o match exigisse telefone ainda nulo, a mensagem seguinte da MESMA
+      // pessoa deixaria de reconhecer o contato promovido e criaria um
+      // duplicado — a mesma classe de bug, só que pela porta oposta.
+      const existente = [...contatos.values()].find((contato) => (
+        telefone
+          ? contato.telefone === telefone
+          : Boolean(identificador) && contato.identificador === identificador
+      ));
       if (existente) {
         if (!existente.nome && nome) existente.nome = nome;
         // Excluído que volta a escrever é reativado, não duplicado.
@@ -897,7 +920,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         .slice(0, limite);
     },
 
-    async salvarLead(contatoId, { conversaId = null, temperatura = null, estagio = null, origem = null } = {}) {
+    async salvarLead(contatoId, {
+      conversaId = null, temperatura = null, estagio = null, origem = null, origemDetalhe = null,
+    } = {}) {
       const existente = [...leads.values()].find((lead) => lead.contato_id === Number(contatoId));
 
       if (existente) {
@@ -927,7 +952,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         convenio_nome: null,
         urgencia: null,
         disponibilidade: null,
-        origem_detalhe: null,
+        origem_detalhe: origemDetalhe,
         utm_source: null,
         utm_medium: null,
         utm_campaign: null,
@@ -1386,6 +1411,42 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         total[trabalho.status] = (total[trabalho.status] ?? 0) + 1;
       }
       return total;
+    },
+
+    /** Espelha `repositorio.js`: motivos agrupados dos mortos/incertos, truncados em 300. */
+    async ultimosErrosDaOutbox({ limite = 3 } = {}) {
+      const grupos = new Map();
+      for (const trabalho of automacaoOutbox.values()) {
+        if (!['morto', 'incerto'].includes(trabalho.status)) continue;
+        const erro = String(trabalho.ultimo_erro ?? '(sem motivo registrado)').slice(0, 300);
+        grupos.set(erro, (grupos.get(erro) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([erro, total]) => ({ erro, total }))
+        .sort((a, b) => b.total - a.total || (a.erro < b.erro ? -1 : 1))
+        .slice(0, Number(limite));
+    },
+
+    /**
+     * Espelha `repositorio.js`: devolve os mortos à fila, idempotente por
+     * natureza. Devolve quantos foram reenfileirados.
+     */
+    async reenfileirarTrabalhosMortosDaOutbox() {
+      const instante = agora().toISOString();
+      let reenfileirados = 0;
+      for (const trabalho of automacaoOutbox.values()) {
+        if (trabalho.status !== 'morto') continue;
+        trabalho.status = 'pendente';
+        trabalho.tentativas = 0;
+        trabalho.ultimo_erro = null;
+        trabalho.disponivel_em = instante;
+        trabalho.concluido_em = null;
+        trabalho.reivindicado_por = null;
+        trabalho.reivindicado_em = null;
+        trabalho.atualizado_em = instante;
+        reenfileirados += 1;
+      }
+      return reenfileirados;
     },
 
     // ---------------------------------------------------------------- analítica
@@ -2232,6 +2293,116 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return 1;
     },
 
+    // ------------------------------------------- Instagram — regras de gatilho
+
+    async listarRegrasDeGatilho({ apenasAtivas = false } = {}) {
+      return instagramRegrasGatilho
+        .filter((regra) => !apenasAtivas || regra.ativa)
+        .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+        .map((regra) => ({
+          ...regra,
+          criado_por_nome: regra.criado_por ? usuarios.get(regra.criado_por)?.nome ?? null : null,
+        }));
+    },
+
+    async obterRegraDeGatilho(id) {
+      return instagramRegrasGatilho.find((regra) => regra.id === Number(id)) ?? null;
+    },
+
+    async criarRegraDeGatilho({
+      nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, criadoPor = null,
+    }) {
+      if (instagramRegrasGatilho.some((regra) => regra.nome === nome)) {
+        const erro = new Error('duplicate key value violates unique constraint');
+        erro.code = '23505';
+        erro.constraint = 'instagram_regras_gatilho_nome_key';
+        throw erro;
+      }
+
+      const regra = {
+        id: proximoId.instagramRegraGatilho++,
+        nome,
+        palavra_gatilho: palavraGatilho,
+        mensagem_dm: mensagemDm,
+        mensagem_publica: mensagemPublica,
+        cta_whatsapp: ctaWhatsapp,
+        ativa: true,
+        criado_por: criadoPor,
+        criado_em: agora().toISOString(),
+        atualizado_em: agora().toISOString(),
+      };
+      instagramRegrasGatilho.push(regra);
+      return regra;
+    },
+
+    async atualizarRegraDeGatilho(id, campos) {
+      const regra = instagramRegrasGatilho.find((item) => item.id === Number(id));
+      if (!regra) return null;
+
+      const permitidos = ['nome', 'palavra_gatilho', 'mensagem_dm', 'mensagem_publica', 'cta_whatsapp', 'ativa'];
+      for (const [campo, valor] of Object.entries(campos)) {
+        if (permitidos.includes(campo)) regra[campo] = valor;
+      }
+      regra.atualizado_em = agora().toISOString();
+      return regra;
+    },
+
+    async removerRegraDeGatilho(id) {
+      const indice = instagramRegrasGatilho.findIndex((regra) => regra.id === Number(id));
+      if (indice === -1) return 0;
+      instagramRegrasGatilho.splice(indice, 1);
+      return 1;
+    },
+
+    async obterComentarioProcessado(comentarioIdExterno) {
+      return instagramComentariosProcessados.find((c) => c.comentario_id_externo === comentarioIdExterno) ?? null;
+    },
+
+    async registrarComentarioProcessado({
+      comentarioIdExterno, postId = null, autorIgId, regraId = null,
+      respostaPublicaEnviada = false, dmEnviada = false,
+    }) {
+      if (instagramComentariosProcessados.some((c) => c.comentario_id_externo === comentarioIdExterno)) return null;
+
+      const registro = {
+        id: proximoId.instagramComentario++,
+        comentario_id_externo: comentarioIdExterno,
+        post_id: postId,
+        autor_ig_id: autorIgId,
+        regra_id: regraId,
+        resposta_publica_enviada: respostaPublicaEnviada,
+        dm_enviada: dmEnviada,
+        criado_em: agora().toISOString(),
+      };
+      instagramComentariosProcessados.push(registro);
+      return registro;
+    },
+
+    async metricasInstagram() {
+      const totalComentarios = instagramComentariosProcessados.length;
+      const comGatilho = instagramComentariosProcessados.filter((c) => c.regra_id !== null).length;
+      const respostaPublicaEnviada = instagramComentariosProcessados.filter((c) => c.resposta_publica_enviada).length;
+      const dmEnviada = instagramComentariosProcessados.filter((c) => c.dm_enviada).length;
+
+      const porRegra = instagramRegrasGatilho
+        .map((regra) => ({
+          id: regra.id,
+          nome: regra.nome,
+          ativa: regra.ativa,
+          total: instagramComentariosProcessados.filter((c) => c.regra_id === regra.id).length,
+        }))
+        .sort((a, b) => b.total - a.total || a.nome.localeCompare(b.nome));
+
+      return {
+        total_comentarios: totalComentarios,
+        com_gatilho: comGatilho,
+        sem_gatilho: totalComentarios - comGatilho,
+        resposta_publica_enviada: respostaPublicaEnviada,
+        dm_enviada: dmEnviada,
+        por_regra: porRegra,
+      };
+    },
+
     // --------------------------------------------------------- Serena — voz
 
     async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {
@@ -2420,6 +2591,41 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       }
 
       return liberados.map(enriquecerLembrete);
+    },
+
+    /** Espelha `repositorio.js`: motivos agrupados dos falhados, truncados em 300. */
+    async ultimosErrosDeLembretes({ limite = 3 } = {}) {
+      const grupos = new Map();
+      for (const lembrete of lembretes) {
+        if (lembrete.estado !== 'falhou') continue;
+        const erro = String(lembrete.ultimo_erro ?? '(sem motivo registrado)').slice(0, 300);
+        grupos.set(erro, (grupos.get(erro) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([erro, total]) => ({ erro, total }))
+        .sort((a, b) => b.total - a.total || (a.erro < b.erro ? -1 : 1))
+        .slice(0, Number(limite));
+    },
+
+    /**
+     * Espelha `repositorio.js`: devolve os falhados à fila, idempotente por
+     * natureza. Devolve quantos foram reprocessados.
+     */
+    async reprocessarLembretesFalhados() {
+      const instante = agora().toISOString();
+      let reprocessados = 0;
+      for (const lembrete of lembretes) {
+        if (lembrete.estado !== 'falhou') continue;
+        lembrete.estado = 'pendente';
+        lembrete.tentativas = 0;
+        lembrete.ultimo_erro = null;
+        lembrete.tentar_em = instante;
+        lembrete.processando_por = null;
+        lembrete.processando_desde = null;
+        lembrete.atualizado_em = instante;
+        reprocessados += 1;
+      }
+      return reprocessados;
     },
 
     async cancelarLembretesDoAgendamento(agendamentoId, { motivo = 'cancelado', exceto = null } = {}) {

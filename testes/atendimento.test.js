@@ -401,3 +401,88 @@ test('falha ao registrar o opt-out não derruba o atendimento', async () => {
   assert.equal(resultado.acao, 'respondida_pela_automacao');
   assert.equal((await repositorio.listarConversas({})).length, 1);
 });
+
+// ----------------------------------------------------------- canal sem telefone (Instagram)
+//
+// Achado de 23/08, na integração de Instagram: `evento.remetente` de um canal
+// sem telefone é o identificador próprio (PSID) — gravá-lo em `telefone`
+// poluiria um campo que o resto do sistema trata como telefone de verdade, e
+// duas mensagens do mesmo PSID precisam reconhecer o mesmo contato.
+
+const EVENTO_INSTAGRAM = Object.freeze({
+  canal: 'instagram',
+  estrategia_ia: 'crm_despacha',
+  remetente: 'ig-psid-1',
+  nome: null,
+  texto: 'Quero saber sobre a avaliação',
+});
+
+test('mensagem de canal sem telefone (Instagram) grava o identificador, não o telefone', async () => {
+  const { repositorio, atendimento } = montar();
+
+  await atendimento.receberMensagem({ ...EVENTO_INSTAGRAM, id_externo: 'instagram:ig-psid-1:1' });
+
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 1);
+  assert.equal(conversas[0].contato.telefone, null);
+  assert.equal(conversas[0].contato.identificador, 'ig-psid-1');
+});
+
+test('duas mensagens do mesmo PSID do Instagram reaproveitam o mesmo contato, não duplicam', async () => {
+  const { repositorio, atendimento } = montar();
+
+  await atendimento.receberMensagem({ ...EVENTO_INSTAGRAM, id_externo: 'instagram:ig-psid-1:1' });
+  await atendimento.receberMensagem({
+    ...EVENTO_INSTAGRAM, id_externo: 'instagram:ig-psid-1:2', texto: 'segunda mensagem',
+  });
+
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 1, 'a segunda mensagem precisa cair na MESMA conversa, não abrir contato novo');
+});
+
+test('PSIDs diferentes do Instagram nunca colidem no mesmo contato', async () => {
+  const { repositorio, atendimento } = montar();
+
+  await atendimento.receberMensagem({ ...EVENTO_INSTAGRAM, id_externo: 'instagram:ig-psid-1:1' });
+  await atendimento.receberMensagem({
+    ...EVENTO_INSTAGRAM, id_externo: 'instagram:ig-psid-2:1', remetente: 'ig-psid-2', texto: 'outra pessoa',
+  });
+
+  const conversas = await repositorio.listarConversas({});
+  assert.equal(conversas.length, 2, 'pessoas diferentes (telefone null nos dois) não podem virar o mesmo contato');
+});
+
+test('A1.9: entrega automática no Instagram usa o identificador (PSID) como destinatário, não telefone', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal });
+
+  const resultado = await atendimento.receberMensagem(EVENTO_INSTAGRAM);
+
+  assert.equal(resultado.entregue, true, 'sem isto, toda automação do Instagram travava em contato_sem_telefone');
+  assert.equal(canal.envios.length, 1);
+  assert.equal(canal.envios[0].telefone, 'ig-psid-1', 'o "telefone" passado ao transporte é o identificador do Instagram');
+  assert.equal(canal.envios[0].canal, 'instagram', 'sem isto, canal-conversas.js roteava toda entrega pro WhatsApp, mesmo numa conversa do Instagram');
+});
+
+test('A1.9: contato do Instagram sem identificador nenhum não tenta entregar (contato_sem_destinatario)', async () => {
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso();
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal });
+
+  // Simula uma conversa do Instagram cujo contato, por algum motivo, ficou
+  // sem identificador (não deveria acontecer pelo fluxo normal — defesa em
+  // profundidade). Cria o contato/conversa direto, sem passar por
+  // receberMensagem, e entrega pela mesma via pública que a equipe usa
+  // (responderComoEquipe também aciona entregarAoPaciente).
+  const contato = await repositorio.encontrarOuCriarContato({ telefone: null, identificador: null, nome: 'Sem Chave', canal: 'instagram' });
+  const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'instagram');
+
+  const resultado = await atendimento.responderComoEquipe(conversa.id, 'oi');
+
+  assert.equal(resultado.enviada, false);
+  assert.equal(resultado.motivo_falha, 'contato_sem_destinatario');
+  assert.equal(canal.envios.length, 0);
+});

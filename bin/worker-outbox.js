@@ -42,6 +42,7 @@ const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
 const { criarServicoDeLembretes } = require('../src/dominio/lembretes-servico');
 const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
 const { criarClienteEvolucaoEnvio } = require('../src/integracoes/evolution-envio');
+const { criarClienteInstagramEnvio } = require('../src/integracoes/instagram-envio');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
 const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
@@ -93,17 +94,25 @@ async function main() {
     process.exit(1);
   }
 
-  // Duas vias de entrega, mesma ordem e mesma composição que o servidor HTTP
-  // usa (ver criarAplicacao em src/servidor/http.js): Evolution primeiro
-  // quando configurada, o gateway do OpenClaw como reserva. Sem a Evolution
-  // aqui, o worker só entregaria pelo caminho antigo — silenciosamente sem a
-  // via primária.
+  // Vias de entrega, mesma composição que o servidor HTTP usa (ver
+  // criarAplicacao em src/servidor/http.js): WhatsApp tenta a Evolution
+  // primeiro quando configurada, o gateway do OpenClaw como reserva.
+  // Instagram é via própria (Graph API), escolhida por `conversa.canal` em
+  // `canal.enviar` — sem os dois clientes aqui, o worker (que é quem de fato
+  // entrega, não o servidor HTTP) ficaria preso no caminho antigo,
+  // silenciosamente sem as vias primárias. Achado de 23/08: o cliente do
+  // Instagram nunca tinha sido instanciado neste arquivo — o webhook recebia
+  // e enfileirava normalmente, o worker "concluía" o trabalho sem erro, mas
+  // nada era de fato entregue (canal-conversas.js caía sempre no WhatsApp).
   const clienteEvolucaoEnvio = criarClienteEvolucaoEnvio(configuracao.evolution);
-  const canalDeConversas = (configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel)
-    ? criarCanalDeConversas(configuracao.openclaw.canalClinica, { evolucao: clienteEvolucaoEnvio })
+  const clienteInstagramEnvio = criarClienteInstagramEnvio(configuracao.instagram);
+  const canalDeConversas = (configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel || clienteInstagramEnvio.disponivel)
+    ? criarCanalDeConversas(configuracao.openclaw.canalClinica, {
+      evolucao: clienteEvolucaoEnvio, instagram: clienteInstagramEnvio,
+    })
     : null;
   if (!canalDeConversas) {
-    console.warn('[outbox] nenhum canal de entrega configurado (nem Evolution, nem gateway do OpenClaw) — os trabalhos vão ficar sem "canal_nao_configurado" resolvido.');
+    console.warn('[outbox] nenhum canal de entrega configurado (nem Evolution, nem gateway do OpenClaw, nem Instagram) — os trabalhos vão ficar sem "canal_nao_configurado" resolvido.');
   }
 
   const servicoDaSerena = criarServicoDaSerena({ repositorio });

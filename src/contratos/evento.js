@@ -208,6 +208,24 @@ function exigirEstrategiaDoAdaptador(evento, adaptador) {
     return Object.freeze({ ...evento, estrategia_ia: 'crm_despacha' });
   }
 
+  if (adaptador === 'instagram_ingresso_crm') {
+    // O Instagram não tem "agente do canal" gerenciando resposta por fora,
+    // ao contrário do WhatsApp (OpenClaw) — quem decide é sempre o CRM/Serena.
+    if (evento.canal !== 'instagram') {
+      throw new ErroDeEstrategia(
+        'a ponte de ingresso do Instagram só aceita o canal instagram',
+        'estrategia_ia_incompativel',
+      );
+    }
+    if (declarada && declarada !== 'crm_despacha') {
+      throw new ErroDeEstrategia(
+        'na ponte de ingresso a resposta pertence exclusivamente ao CRM',
+        'estrategia_ia_incompativel',
+      );
+    }
+    return Object.freeze({ ...evento, estrategia_ia: 'crm_despacha' });
+  }
+
   if (adaptador === 'openclaw_webhook') {
     if (evento.canal === 'whatsapp') {
       if (!declarada) {
