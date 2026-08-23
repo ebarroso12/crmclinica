@@ -2886,6 +2886,45 @@ function criarRepositorio(pool) {
         : null;
     },
 
+    /**
+     * Resumo de quantas vezes cada regra de gatilho já disparou e quantas
+     * ações realmente saíram (resposta pública, DM) — pedido do Dr. Edson
+     * (23/08) para a própria tela do Instagram, sem passar pelo dashboard
+     * grande de métricas (`criarServicoDeMetricas`). Sem período: é volume
+     * baixo (comentários por gatilho), acumulado desde sempre é o que importa
+     * aqui — "isso está funcionando de verdade?".
+     */
+    async metricasInstagram() {
+      const { rows: totaisRows } = await consultar(`
+        SELECT
+          count(*)::int AS total_comentarios,
+          count(*) FILTER (WHERE regra_id IS NOT NULL)::int AS com_gatilho,
+          count(*) FILTER (WHERE resposta_publica_enviada)::int AS resposta_publica_enviada,
+          count(*) FILTER (WHERE dm_enviada)::int AS dm_enviada
+        FROM instagram_comentarios_processados
+      `);
+      const totais = totaisRows[0] ?? {
+        total_comentarios: 0, com_gatilho: 0, resposta_publica_enviada: 0, dm_enviada: 0,
+      };
+
+      const { rows: porRegra } = await consultar(`
+        SELECT r.id, r.nome, r.ativa, count(c.id)::int AS total
+          FROM instagram_regras_gatilho r
+          LEFT JOIN instagram_comentarios_processados c ON c.regra_id = r.id
+         GROUP BY r.id, r.nome, r.ativa
+         ORDER BY total DESC, r.nome
+      `);
+
+      return {
+        total_comentarios: totais.total_comentarios,
+        com_gatilho: totais.com_gatilho,
+        sem_gatilho: totais.total_comentarios - totais.com_gatilho,
+        resposta_publica_enviada: totais.resposta_publica_enviada,
+        dm_enviada: totais.dm_enviada,
+        por_regra: porRegra.map((linha) => ({ ...linha, id: Number(linha.id), ativa: linha.ativa === true })),
+      };
+    },
+
     // --------------------------------------------------------- Serena — voz
 
     async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {

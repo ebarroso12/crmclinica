@@ -314,6 +314,43 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(obtido.origem_detalhe, 'Comentário-gatilho: preço');
     });
 
+    await t.test('metricasInstagram soma comentários processados, com/sem gatilho, e agrupa por regra', async () => {
+      const regraA = await repositorio.criarRegraDeGatilho({
+        nome: 'Métrica - regra A', palavraGatilho: 'preço', mensagemDm: 'DM de teste bem detalhada aqui.',
+        mensagemPublica: 'Resposta pública de teste.',
+      });
+      const regraB = await repositorio.criarRegraDeGatilho({
+        nome: 'Métrica - regra B', palavraGatilho: 'agendar', mensagemDm: 'Outra DM de teste bem detalhada.',
+        mensagemPublica: 'Outra resposta pública.',
+      });
+
+      await repositorio.registrarComentarioProcessado({
+        comentarioIdExterno: 'metrica-c1', autorIgId: 'ig1', regraId: regraA.id,
+        respostaPublicaEnviada: true, dmEnviada: true,
+      });
+      await repositorio.registrarComentarioProcessado({
+        comentarioIdExterno: 'metrica-c2', autorIgId: 'ig2', regraId: regraA.id,
+        respostaPublicaEnviada: true, dmEnviada: false,
+      });
+      await repositorio.registrarComentarioProcessado({
+        comentarioIdExterno: 'metrica-c3', autorIgId: 'ig3', regraId: null,
+        respostaPublicaEnviada: false, dmEnviada: false,
+      });
+
+      const metricas = await repositorio.metricasInstagram();
+      assert.ok(metricas.total_comentarios >= 3);
+      assert.ok(metricas.com_gatilho >= 2);
+      assert.ok(metricas.resposta_publica_enviada >= 2);
+      assert.ok(metricas.dm_enviada >= 1);
+
+      const linhaA = metricas.por_regra.find((r) => r.id === regraA.id);
+      const linhaB = metricas.por_regra.find((r) => r.id === regraB.id);
+      assert.ok(linhaA, 'regra A aparece no agrupamento mesmo sem ter recebido comentário nenhum ainda seria ok, mas aqui recebeu 2');
+      assert.equal(linhaA.total, 2);
+      assert.ok(linhaB, 'regra B aparece no agrupamento mesmo com 0 comentários — LEFT JOIN, não INNER');
+      assert.equal(linhaB.total, 0);
+    });
+
     await t.test('a busca encontra por nome e por telefone', async () => {
       await repositorio.encontrarOuCriarContato({ telefone: '5516900000009', nome: 'Zoraide Especial' });
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900000009' });

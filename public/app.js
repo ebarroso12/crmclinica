@@ -3616,9 +3616,34 @@ async function carregarInstagram() {
     if (acoes) acoes.hidden = !dados.pode_gerenciar;
 
     desenharGatilhos(dados.regras ?? [], dados.pode_gerenciar);
+    desenharMetricasInstagram(dados.metricas ?? null);
   } catch (erro) {
     informar(`Não foi possível carregar o Instagram: ${erro.message}`);
   }
+}
+
+function desenharMetricasInstagram(metricas) {
+  definirTexto('#ig-metrica-total', metricas ? String(metricas.total_comentarios) : '—');
+  definirTexto('#ig-metrica-com-gatilho', metricas ? String(metricas.com_gatilho) : '—');
+  definirTexto('#ig-metrica-resposta-publica', metricas ? String(metricas.resposta_publica_enviada) : '—');
+  definirTexto('#ig-metrica-dm', metricas ? String(metricas.dm_enviada) : '—');
+
+  const lista = seletor('#instagram-metricas-por-regra');
+  if (!lista) return;
+
+  const porRegra = metricas?.por_regra ?? [];
+  if (porRegra.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma regra cadastrada ainda.</li>';
+    return;
+  }
+
+  lista.innerHTML = porRegra.map((linha) => `
+    <li class="${linha.ativa ? '' : 'desligada'}">
+      <div>
+        <strong>${escapar(linha.nome)}</strong>
+        <small>${linha.total} comentário(s) processado(s)${linha.ativa ? '' : ' · regra desligada'}</small>
+      </div>
+    </li>`).join('');
 }
 
 function desenharGatilhos(regras, podeGerenciar) {

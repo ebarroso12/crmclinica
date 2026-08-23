@@ -77,13 +77,17 @@ function criarRotasDeInstagram({ servico }) {
       return servico.removerRegra(exigirIdentificador(id, 'regra_id'));
     },
 
-    /** GET /api/instagram — estado e regras, o que a tela precisa de uma vez (mesmo padrão de `painel` em rotas-serena.js). */
+    /** GET /api/instagram — estado, regras e métricas, o que a tela precisa de uma vez (mesmo padrão de `painel` em rotas-serena.js). */
     async painel(usuario) {
       exigirPermissao(usuario, 'instagram:ler');
-      const regras = await servico.listarRegras({});
+      const [regras, metricas] = await Promise.all([
+        servico.listarRegras({}),
+        servico.metricas(),
+      ]);
 
       return {
         regras,
+        metricas,
         // Quem só tem `instagram:ler` vê tudo e não muda nada; a tela usa isto
         // para esconder os botões em vez de deixar o usuário descobrir com um 403.
         pode_gerenciar: usuario?.papel === 'admin',

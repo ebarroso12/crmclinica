@@ -252,6 +252,10 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     return { regra, resposta_publica_enviada: respostaPublicaEnviada, dm_enviada: dmEnviada };
   }
 
+  async function metricas() {
+    return repositorio.metricasInstagram();
+  }
+
   return {
     listarRegras,
     obterRegra,
@@ -260,6 +264,7 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     definirRegraAtiva,
     removerRegra,
     processarComentario,
+    metricas,
   };
 }
 

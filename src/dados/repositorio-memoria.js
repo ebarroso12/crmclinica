@@ -2342,6 +2342,31 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return registro;
     },
 
+    async metricasInstagram() {
+      const totalComentarios = instagramComentariosProcessados.length;
+      const comGatilho = instagramComentariosProcessados.filter((c) => c.regra_id !== null).length;
+      const respostaPublicaEnviada = instagramComentariosProcessados.filter((c) => c.resposta_publica_enviada).length;
+      const dmEnviada = instagramComentariosProcessados.filter((c) => c.dm_enviada).length;
+
+      const porRegra = instagramRegrasGatilho
+        .map((regra) => ({
+          id: regra.id,
+          nome: regra.nome,
+          ativa: regra.ativa,
+          total: instagramComentariosProcessados.filter((c) => c.regra_id === regra.id).length,
+        }))
+        .sort((a, b) => b.total - a.total || a.nome.localeCompare(b.nome));
+
+      return {
+        total_comentarios: totalComentarios,
+        com_gatilho: comGatilho,
+        sem_gatilho: totalComentarios - comGatilho,
+        resposta_publica_enviada: respostaPublicaEnviada,
+        dm_enviada: dmEnviada,
+        por_regra: porRegra,
+      };
+    },
+
     // --------------------------------------------------------- Serena — voz
 
     async criarSessaoDeVoz({ id, usuarioId, conversaId = null, perfil, consentimentoEm, expiraEm }) {

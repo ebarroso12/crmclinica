@@ -279,6 +279,28 @@ test('falha no envio da DM não quebra o processamento do comentário (best-effo
   assert.equal(registrado.regra_id, regra.id);
 });
 
+test('servico.metricas() reflete os comentários processados, inclusive os sem gatilho', async () => {
+  const instagramEnvio = instagramEnvioFalso();
+  const { servico } = montar({ instagramEnvio });
+  const regra = await servico.criarRegra({ ...CAMPOS_REGRA });
+
+  await servico.processarComentario({
+    comentarioIdExterno: 'm1', postId: 'p1', autorIgId: 'ig1', autorUsername: 'a', texto: 'qual o preço?',
+  });
+  await servico.processarComentario({
+    comentarioIdExterno: 'm2', postId: 'p1', autorIgId: 'ig2', autorUsername: 'b', texto: 'que lugar lindo',
+  });
+
+  const metricas = await servico.metricas();
+  assert.equal(metricas.total_comentarios, 2);
+  assert.equal(metricas.com_gatilho, 1);
+  assert.equal(metricas.sem_gatilho, 1);
+  assert.equal(metricas.dm_enviada, 1);
+  assert.equal(metricas.por_regra.length, 1);
+  assert.equal(metricas.por_regra[0].id, regra.id);
+  assert.equal(metricas.por_regra[0].total, 1);
+});
+
 test('sem instagramEnvio configurado, processarComentario não lança e marca dm_enviada:false', async () => {
   const { repositorio, servico } = montar({ instagramEnvio: null });
   const regra = await servico.criarRegra({ ...CAMPOS_REGRA });
