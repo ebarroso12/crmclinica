@@ -36,9 +36,22 @@ function pior(a, b) {
  * forma automática quando ela existe — e é `null` de propósito quando o conserto
  * exige julgamento humano, para a tela não oferecer um botão que resolve o
  * problema errado.
+ *
+ * `acao` é o reparo APLICÁVEL pelo botão da tela (ver rotas-diagnostico):
+ * um identificador de allowlist, decidido aqui de forma determinística —
+ * nunca pela IA. `null` quando não há ação segura e idempotente conhecida.
  */
-function achado({ area, nivel, titulo, detalhe = null, reparo = null, comando = null }) {
-  return { area, nivel, titulo, detalhe, reparo, comando };
+function achado({ area, nivel, titulo, detalhe = null, reparo = null, comando = null, acao = null }) {
+  return { area, nivel, titulo, detalhe, reparo, comando, acao };
+}
+
+/**
+ * Resume os motivos reais de uma fila para o detalhe do achado:
+ * `[{ erro, total }]` vira "3× timeout do provedor; 2× instância sumida".
+ */
+function formatarErros(erros = []) {
+  if (!erros.length) return null;
+  return `motivos: ${erros.map((item) => `${item.total}× ${item.erro}`).join('; ')}`;
 }
 
 /**
@@ -249,7 +262,9 @@ async function executarDiagnostico(sondas = {}) {
         area: 'outbox',
         nivel: 'critico',
         titulo: `${outbox.fila.morto} trabalho(s) da automação esgotaram as tentativas (morto)`,
+        detalhe: formatarErros(outbox.erros) ?? 'veja o motivo (ultimo_erro) antes que vire padrão',
         reparo: 'Essas respostas não foram entregues e a automação desistiu. Veja o motivo (ultimo_erro) antes que vire padrão.',
+        acao: 'outbox:reenfileirar-mortos',
       }));
     }
 
@@ -296,9 +311,11 @@ async function executarDiagnostico(sondas = {}) {
     if (fila.falhados > 0) {
       registrar(achado({
         area: 'lembretes',
-        nivel: 'aviso',
+        nivel: 'falha',
         titulo: `${fila.falhados} lembrete(s) falharam de vez`,
+        detalhe: formatarErros(fila.errosFalhados) ?? 'esgotaram as tentativas',
         reparo: 'Esgotaram as tentativas. Vale ver o motivo antes que vire padrão.',
+        acao: 'lembretes:reprocessar-falhados',
       }));
     }
 

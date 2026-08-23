@@ -2026,6 +2026,41 @@ function criarRepositorio(pool) {
     },
 
     /**
+     * Para o diagnóstico: os motivos reais dos lembretes que esgotaram as
+     * tentativas, agrupados. Mesmo espírito de `ultimosErrosDaOutbox`: o
+     * achado já traz o motivo em vez de mandar o admin caçar no banco.
+     */
+    async ultimosErrosDeLembretes({ limite = 3 } = {}) {
+      const { rows } = await consultar(
+        `SELECT left(coalesce(ultimo_erro, '(sem motivo registrado)'), 300) AS erro,
+                count(*)::int AS total
+           FROM lembretes
+          WHERE estado = 'falhou'
+          GROUP BY 1
+          ORDER BY total DESC, erro
+          LIMIT $1`,
+        [Number(limite)],
+      );
+      return rows.map((linha) => ({ erro: linha.erro, total: Number(linha.total) }));
+    },
+
+    /**
+     * Para o botão "Aplicar reparo" do centro operacional: devolve à fila os
+     * lembretes que esgotaram as tentativas. Idempotente por natureza;
+     * `tentar_em = now()` os torna elegíveis já — `agendar_para` de um
+     * falhado sempre está no passado, então não precisa mudar.
+     */
+    async reprocessarLembretesFalhados() {
+      const { rowCount } = await consultar(
+        `UPDATE lembretes
+            SET estado = 'pendente', tentativas = 0, ultimo_erro = NULL,
+                tentar_em = now(), processando_por = NULL, processando_desde = NULL
+          WHERE estado = 'falhou'`,
+      );
+      return rowCount;
+    },
+
+    /**
      * Verifica objetos do banco que as migrations deveriam ter criado.
      *
      * Olha o objeto, não o registro no ledger: `supabase_migrations` só recebe
@@ -3403,6 +3438,44 @@ function criarRepositorio(pool) {
         [desde],
       );
       return Number(rows[0]?.total ?? 0);
+    },
+
+    /**
+     * Para o diagnóstico: os motivos reais dos trabalhos que esgotaram as
+     * tentativas (ou terminaram incertos), agrupados. O achado que só diz
+     * "veja o ultimo_erro" sem mostrar o erro manda o admin caçar no banco;
+     * aqui a varredura já traz o motivo.
+     */
+    async ultimosErrosDaOutbox({ limite = 3 } = {}) {
+      const { rows } = await consultar(
+        `SELECT left(coalesce(ultimo_erro, '(sem motivo registrado)'), 300) AS erro,
+                count(*)::int AS total
+           FROM automacao_outbox
+          WHERE status IN ('morto', 'incerto')
+          GROUP BY 1
+          ORDER BY total DESC, erro
+          LIMIT $1`,
+        [Number(limite)],
+      );
+      return rows.map((linha) => ({ erro: linha.erro, total: Number(linha.total) }));
+    },
+
+    /**
+     * Para o botão "Aplicar reparo" do centro operacional: devolve à fila o
+     * que esgotou as tentativas. Idempotente por natureza — aplicar de novo
+     * sem mortos novos não muda nada. A decisão de reprocessar é do admin; o
+     * que muda aqui é só o estado, nunca o histórico (o erro fica registrado
+     * no achado e na telemetria até ser sobrescrito pela nova tentativa).
+     */
+    async reenfileirarTrabalhosMortosDaOutbox() {
+      const { rowCount } = await consultar(
+        `UPDATE automacao_outbox
+            SET status = 'pendente', tentativas = 0, ultimo_erro = NULL,
+                disponivel_em = now(), concluido_em = NULL,
+                reivindicado_por = NULL, reivindicado_em = NULL
+          WHERE status = 'morto'`,
+      );
+      return rowCount;
     },
 
     // ---------------------------------------------------------------- tentativas de autenticação

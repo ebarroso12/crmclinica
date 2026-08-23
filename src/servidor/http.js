@@ -330,6 +330,7 @@ function criarAplicacao(dependencias = {}) {
     evolucaoFetchImpl: dependencias.evolucaoFetchImpl,
     instagramConfig: configuracao.instagram,
     instagramFetchImpl: dependencias.instagramFetchImpl,
+    gateway: gatewayDeIA,
   });
 
   const rotasDaSerena = criarRotasDaSerena({
@@ -806,7 +807,7 @@ function criarAplicacao(dependencias = {}) {
   async function tratarRotasDaSerena(req, res, rota, metodo, url, usuario) {
     // `/api/diagnostico` vive no mapa desta função; o prefixo sozinho o
     // deixaria de fora e a rota responderia 404 com o botão da tela quebrado.
-    if (!rota.startsWith('/api/serena') && rota !== '/api/diagnostico') return false;
+    if (!rota.startsWith('/api/serena') && !rota.startsWith('/api/diagnostico')) return false;
     const semCache = { 'cache-control': 'no-store' };
 
     if (rota === '/api/serena/voz/status' && metodo === 'GET') {
@@ -839,6 +840,9 @@ function criarAplicacao(dependencias = {}) {
       'GET /api/serena/canal': () => rotasDaSerena.estadoDoCanal(usuario),
       'GET /api/serena/canal/risco': () => rotasDaSerena.riscoDoCanal(usuario),
       'GET /api/diagnostico': () => rotasDeDiagnostico.varrer(usuario),
+      'POST /api/diagnostico/parecer': async () => rotasDeDiagnostico.parecer(usuario, await lerJson(req)),
+      'POST /api/diagnostico/reparo': async () => rotasDeDiagnostico.reparo(usuario, await lerJson(req)),
+      'POST /api/diagnostico/acoes': async () => rotasDeDiagnostico.acoes(usuario, await lerJson(req)),
       'GET /api/serena/teste': () => rotasDaSerena.lerTeste(usuario, url),
       // Abrir não exige corpo: o modelo é opcional, e recusar com "corpo vazio"
       // faria a rota rejeitar exatamente o uso mais simples que ela suporta.

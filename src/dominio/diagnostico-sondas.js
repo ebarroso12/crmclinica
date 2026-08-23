@@ -45,11 +45,16 @@ function sondaDoBanco(repositorio, objetosEsperados = [], conferirConexao = null
 function sondaDaFila(repositorio) {
   return async () => {
     const resumo = await repositorio.resumirFilaDeLembretes?.();
+    // Os motivos reais dos falhados, para o achado já chegar com o "porquê" —
+    // sem isso o texto manda o admin olhar o ultimo_erro e ele precisa ir ao
+    // banco caçar.
+    const errosFalhados = (await repositorio.ultimosErrosDeLembretes?.()) ?? [];
     return {
       presos: Number(resumo?.presos ?? 0),
       falhados: Number(resumo?.falhados ?? 0),
       atrasados: Number(resumo?.atrasados ?? 0),
       pendentes: Number(resumo?.pendentes ?? 0),
+      errosFalhados,
     };
   };
 }
@@ -274,6 +279,10 @@ function sondaDaOutbox(repositorio, { limiteMs = 3 * 60 * 1000, atrasoVencidoMs 
     const antesDe = new Date(agoraMs - atrasoVencidoMs).toISOString();
     const fila = (await repositorio.contarTrabalhosDeOutboxPorEstado?.()) ?? null;
     const vencidos = (await repositorio.contarTrabalhosDeOutboxVencidos?.({ antesDe })) ?? 0;
+    // Os motivos reais dos mortos/incertos: o achado de fila morta sem o
+    // ultimo_erro manda o admin caçar no banco; com ele, a varredura já
+    // responde "por que desistiram".
+    const erros = (await repositorio.ultimosErrosDaOutbox?.()) ?? [];
 
     return {
       ativo,
@@ -281,6 +290,7 @@ function sondaDaOutbox(repositorio, { limiteMs = 3 * 60 * 1000, atrasoVencidoMs 
       idade_ms: idadeMs,
       fila,
       vencidos,
+      erros,
     };
   };
 }

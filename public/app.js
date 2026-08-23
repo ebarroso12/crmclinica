@@ -3395,7 +3395,10 @@ async function carregarSerena() {
     // A varredura mostra o estado interno da infraestrutura — nome do usuário do
     // banco, serviços parados. Quem atende paciente não precisa disso.
     const cartaoDeDiagnostico = seletor('#diagnostico-card');
-    if (cartaoDeDiagnostico) cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
+    if (cartaoDeDiagnostico) {
+      cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
+      if (dados.pode_gerenciar) carregarSeletorDeIaDoDiagnostico().catch(() => {});
+    }
     desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
       const bloco = seletor(alvo);
@@ -4755,8 +4758,10 @@ async function varrerSistema() {
   const botao = seletor('#diagnostico-verificar');
   const resumo = seletor('#diagnostico-resumo');
   const area = seletor('#diagnostico-achados');
+  const parecerContainer = seletor('#diagnostico-parecer');
   if (!area) return;
 
+  if (parecerContainer) { parecerContainer.hidden = true; parecerContainer.innerHTML = ''; }
   if (botao) { botao.disabled = true; botao.textContent = 'Verificando…'; }
   if (resumo) resumo.textContent = 'consultando banco, esquema, fila, canal e automação…';
 
@@ -4792,6 +4797,28 @@ async function varrerSistema() {
         bloco.appendChild(reparo);
       }
 
+      const botoes = document.createElement('div');
+      botoes.className = 'linha-acoes';
+      botoes.style.marginTop = '0.5rem';
+
+      const btnReparo = document.createElement('button');
+      btnReparo.type = 'button';
+      btnReparo.className = 'secundario btn-reparo-ia';
+      btnReparo.textContent = 'Planejar reparo com IA';
+      btnReparo.addEventListener('click', () => planoDeReparo(item, bloco));
+      botoes.appendChild(btnReparo);
+
+      if (item.acao) {
+        const btnAplicar = document.createElement('button');
+        btnAplicar.type = 'button';
+        btnAplicar.className = 'primario';
+        btnAplicar.textContent = 'Aplicar reparo';
+        btnAplicar.addEventListener('click', () => aplicarReparo(item.acao));
+        botoes.appendChild(btnAplicar);
+      }
+
+      bloco.appendChild(botoes);
+
       return bloco;
     }));
   } catch (erro) {
@@ -4801,7 +4828,116 @@ async function varrerSistema() {
   }
 }
 
+async function planoDeReparo(item, bloco) {
+  const botao = bloco.querySelector('.btn-reparo-ia');
+  if (botao) { botao.disabled = true; botao.textContent = 'Planejando…'; }
+  try {
+    const { provedor } = provedorEscolhidoDoDiagnostico();
+    const resultado = await pedirJson('/api/diagnostico/reparo', {
+      metodo: 'POST',
+      corpo: {
+        area: item.area,
+        nivel: item.nivel,
+        titulo: item.titulo,
+        detalhe: item.detalhe,
+        reparo: item.reparo,
+        acao: item.acao,
+        ...(provedor ? { provedor } : {}),
+      },
+    });
+    const plano = document.createElement('div');
+    plano.className = 'nota';
+    plano.innerHTML = `<pre style="white-space:pre-wrap">${escapar(resultado.plano)}</pre>`;
+    const origem = document.createElement('small');
+    origem.textContent = `Gerado por ${resultado.gerado_por}${resultado.de_cache ? ' · reaproveitado' : ''}`;
+    plano.appendChild(origem);
+    bloco.appendChild(plano);
+  } catch (erro) {
+    const msg = document.createElement('p');
+    msg.className = 'nota';
+    msg.textContent = `não foi possível planejar reparo: ${erro.message}`;
+    bloco.appendChild(msg);
+  } finally {
+    if (botao) { botao.disabled = false; botao.textContent = 'Planejar reparo com IA'; }
+  }
+}
+
+async function aplicarReparo(acao) {
+  if (!confirm(`Aplicar o reparo "${acao}"?\n\nIsso altera o banco de produção. Certifique-se de que entende o problema.`)) return;
+  try {
+    const resultado = await pedirJson('/api/diagnostico/acoes', {
+      metodo: 'POST', corpo: { acao },
+    });
+    alert(`Reparo aplicado: ${JSON.stringify(resultado)}`);
+    await varrerSistema();
+  } catch (erro) {
+    alert(`Falha ao aplicar reparo: ${erro.message}`);
+  }
+}
+
+async function parecerDaIA() {
+  const botao = seletor('#diagnostico-parecer-ia');
+  const container = seletor('#diagnostico-parecer');
+  if (!container) return;
+  if (botao) { botao.disabled = true; botao.textContent = 'Analisando…'; }
+  container.hidden = false;
+  container.textContent = 'Consultando a IA…';
+  try {
+    const { provedor } = provedorEscolhidoDoDiagnostico();
+    const resultado = await pedirJson('/api/diagnostico/parecer', {
+      metodo: 'POST', corpo: provedor ? { provedor } : {},
+    });
+    container.innerHTML = `<pre style="white-space:pre-wrap">${escapar(resultado.parecer)}</pre>`;
+    const origem = document.createElement('p');
+    origem.className = 'nota';
+    origem.textContent = `Gerado por ${resultado.gerado_por}${resultado.de_cache ? ' · reaproveitado do cache do dia' : ''}${resultado.fallback_de ? ` · fallback de ${resultado.fallback_de}` : ''}`;
+    container.appendChild(origem);
+  } catch (erro) {
+    container.textContent = `não foi possível obter parecer: ${erro.message}`;
+  } finally {
+    if (botao) { botao.disabled = false; botao.textContent = 'Parecer da IA'; }
+  }
+}
+
+function provedorEscolhidoDoDiagnostico() {
+  const seletorIa = seletor('#diagnostico-ia');
+  const provedor = seletorIa?.value || null;
+  return { provedor, modelo: null };
+}
+
+async function carregarSeletorDeIaDoDiagnostico() {
+  const seletorIa = seletor('#diagnostico-ia');
+  if (!seletorIa) return;
+  if (!catalogoDeIA) {
+    try {
+      const { provedores } = await pedirJson('/api/ia/modelos');
+      catalogoDeIA = provedores;
+    } catch {
+      seletorIa.innerHTML = '<option value="" disabled>Provedores indisponíveis</option>';
+      return;
+    }
+  }
+  seletorIa.innerHTML = '<option value="" disabled>Escolha a IA…</option>';
+  let temDisponivel = false;
+  for (const linha of catalogoDeIA) {
+    const opcao = document.createElement('option');
+    opcao.value = linha.provedor;
+    opcao.textContent = linha.disponivel ? linha.provedor : `${linha.provedor} (sem chave)`;
+    opcao.disabled = !linha.disponivel;
+    seletorIa.append(opcao);
+    if (linha.disponivel) temDisponivel = true;
+  }
+  const salvo = localStorage.getItem('centro-operacional:provedor-ia');
+  if (salvo) seletorIa.value = salvo;
+  seletorIa.addEventListener('change', () => {
+    localStorage.setItem('centro-operacional:provedor-ia', seletorIa.value);
+  });
+  const botaoParecer = seletor('#diagnostico-parecer-ia');
+  if (botaoParecer) botaoParecer.hidden = !temDisponivel;
+}
+
 seletor('#diagnostico-verificar')?.addEventListener('click', varrerSistema);
+seletor('#diagnostico-parecer-ia')?.addEventListener('click', parecerDaIA);
 
 /**
  * Move um lead de etapa no funil.

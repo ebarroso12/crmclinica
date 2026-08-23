@@ -1,0 +1,10 @@
+audit_log
+conversas
+mensagens
+recuperacoes_senha
+serena_configuracao
+serena_prompts
+serena_regras
+sessoes
+tentativas_autenticacao
+usuarios

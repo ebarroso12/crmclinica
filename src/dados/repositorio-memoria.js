@@ -1413,6 +1413,42 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return total;
     },
 
+    /** Espelha `repositorio.js`: motivos agrupados dos mortos/incertos, truncados em 300. */
+    async ultimosErrosDaOutbox({ limite = 3 } = {}) {
+      const grupos = new Map();
+      for (const trabalho of automacaoOutbox.values()) {
+        if (!['morto', 'incerto'].includes(trabalho.status)) continue;
+        const erro = String(trabalho.ultimo_erro ?? '(sem motivo registrado)').slice(0, 300);
+        grupos.set(erro, (grupos.get(erro) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([erro, total]) => ({ erro, total }))
+        .sort((a, b) => b.total - a.total || (a.erro < b.erro ? -1 : 1))
+        .slice(0, Number(limite));
+    },
+
+    /**
+     * Espelha `repositorio.js`: devolve os mortos à fila, idempotente por
+     * natureza. Devolve quantos foram reenfileirados.
+     */
+    async reenfileirarTrabalhosMortosDaOutbox() {
+      const instante = agora().toISOString();
+      let reenfileirados = 0;
+      for (const trabalho of automacaoOutbox.values()) {
+        if (trabalho.status !== 'morto') continue;
+        trabalho.status = 'pendente';
+        trabalho.tentativas = 0;
+        trabalho.ultimo_erro = null;
+        trabalho.disponivel_em = instante;
+        trabalho.concluido_em = null;
+        trabalho.reivindicado_por = null;
+        trabalho.reivindicado_em = null;
+        trabalho.atualizado_em = instante;
+        reenfileirados += 1;
+      }
+      return reenfileirados;
+    },
+
     // ---------------------------------------------------------------- analítica
 
     async registrarEventoAnalitico({ nome, entidade = null, entidadeId = null, propriedades = null, chave = null }) {
@@ -2555,6 +2591,41 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       }
 
       return liberados.map(enriquecerLembrete);
+    },
+
+    /** Espelha `repositorio.js`: motivos agrupados dos falhados, truncados em 300. */
+    async ultimosErrosDeLembretes({ limite = 3 } = {}) {
+      const grupos = new Map();
+      for (const lembrete of lembretes) {
+        if (lembrete.estado !== 'falhou') continue;
+        const erro = String(lembrete.ultimo_erro ?? '(sem motivo registrado)').slice(0, 300);
+        grupos.set(erro, (grupos.get(erro) ?? 0) + 1);
+      }
+      return [...grupos.entries()]
+        .map(([erro, total]) => ({ erro, total }))
+        .sort((a, b) => b.total - a.total || (a.erro < b.erro ? -1 : 1))
+        .slice(0, Number(limite));
+    },
+
+    /**
+     * Espelha `repositorio.js`: devolve os falhados à fila, idempotente por
+     * natureza. Devolve quantos foram reprocessados.
+     */
+    async reprocessarLembretesFalhados() {
+      const instante = agora().toISOString();
+      let reprocessados = 0;
+      for (const lembrete of lembretes) {
+        if (lembrete.estado !== 'falhou') continue;
+        lembrete.estado = 'pendente';
+        lembrete.tentativas = 0;
+        lembrete.ultimo_erro = null;
+        lembrete.tentar_em = instante;
+        lembrete.processando_por = null;
+        lembrete.processando_desde = null;
+        lembrete.atualizado_em = instante;
+        reprocessados += 1;
+      }
+      return reprocessados;
     },
 
     async cancelarLembretesDoAgendamento(agendamentoId, { motivo = 'cancelado', exceto = null } = {}) {

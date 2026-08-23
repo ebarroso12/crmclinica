@@ -1,5 +1,6 @@
 'use strict';
 
+const { ErroDeContrato } = require('../contratos/erros');
 const { exigirPermissao } = require('../seguranca/rbac');
 const { executarDiagnostico } = require('../dominio/diagnostico');
 const {
@@ -8,6 +9,7 @@ const {
 } = require('../dominio/diagnostico-sondas');
 const { decidirAtendimento } = require('../dominio/sincronia-serena');
 const { conferirConexao } = require('../dados/conferir-conexao');
+const { gerarParecer, gerarPlanoDeReparo } = require('../dominio/diagnostico-ia');
 
 // Centro operacional: a rota que responde "o sistema está inteiro?".
 //
@@ -37,10 +39,16 @@ const OBJETOS_ESPERADOS = Object.freeze([
   { tabela: 'mensagens', coluna: 'entrega_falhou' },
 ]);
 
+const ACOES_APLICAVEIS = Object.freeze([
+  'outbox:reenfileirar-mortos',
+  'lembretes:reprocessar-falhados',
+]);
+
 function criarRotasDeDiagnostico({
   repositorio, serena, pool = null, vinculo = null, politica = null, googleAgenda = null,
   evolucaoConfig = null, evolucaoFetchImpl = undefined,
   instagramConfig = null, instagramFetchImpl = undefined,
+  gateway = null,
 }) {
   return {
     /** GET /api/diagnostico — a varredura completa. */
@@ -72,6 +80,92 @@ function criarRotasDeDiagnostico({
           ...(instagramFetchImpl ? { fetchImpl: instagramFetchImpl } : {}),
         }),
       });
+    },
+
+    /** POST /api/diagnostico/parecer — IA sobre o laudo inteiro. */
+    async parecer(usuario, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      if (!gateway) throw new Error('gateway de IA não disponível');
+
+      const laudo = await executarDiagnostico({
+        banco: sondaDoBanco(repositorio, OBJETOS_ESPERADOS, pool ? () => conferirConexao(pool) : null),
+        fila: sondaDaFila(repositorio),
+        canal: sondaDoCanal(vinculo),
+        evolucao: sondaDaEvolution(evolucaoConfig, {
+          repositorio,
+          ...(evolucaoFetchImpl ? { fetchImpl: evolucaoFetchImpl } : {}),
+        }),
+        serena: sondaDaSerena(serena, politica, decidirAtendimento),
+        google: sondaDoGoogle(googleAgenda),
+        worker: sondaDoWorker(repositorio),
+        outbox: sondaDaOutbox(repositorio),
+        entregas: sondaDeEntregasFalhadas(repositorio),
+        instagram: sondaDoInstagram(instagramConfig, {
+          ...(instagramFetchImpl ? { fetchImpl: instagramFetchImpl } : {}),
+        }),
+      });
+
+      return gerarParecer({
+        gateway,
+        achados: laudo.achados,
+        provedor: corpo?.provedor ?? null,
+        modelo: corpo?.modelo ?? null,
+      });
+    },
+
+    /** POST /api/diagnostico/reparo — plano de reparo por IA para um achado. */
+    async reparo(usuario, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      if (!gateway) throw new Error('gateway de IA não disponível');
+
+      const area = String(corpo?.area ?? '').trim();
+      const titulo = String(corpo?.titulo ?? '').trim();
+      if (!area) throw new ErroDeContrato('campo "area" é obrigatório', 'area');
+      if (!titulo) throw new ErroDeContrato('campo "titulo" é obrigatório', 'titulo');
+
+      const achado = {
+        area,
+        nivel: corpo?.nivel ?? 'falha',
+        titulo,
+        detalhe: corpo?.detalhe ?? null,
+        reparo: corpo?.reparo ?? null,
+        acao: corpo?.acao ?? null,
+      };
+
+      const resultado = await gerarPlanoDeReparo({
+        gateway,
+        achado,
+        provedor: corpo?.provedor ?? null,
+        modelo: corpo?.modelo ?? null,
+      });
+
+      return {
+        ...resultado,
+        acao_aplicavel: achado.acao ?? null,
+      };
+    },
+
+    /** POST /api/diagnostico/acoes — reparo aplicável de allowlist fechada. */
+    async acoes(usuario, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+
+      const acao = String(corpo?.acao ?? '').trim();
+      if (!ACOES_APLICAVEIS.includes(acao)) {
+        throw new ErroDeContrato(`ação não reconhecida: ${acao}`, 'acao');
+      }
+
+      if (acao === 'outbox:reenfileirar-mortos') {
+        const reenfileirados = await repositorio.reenfileirarTrabalhosMortosDaOutbox();
+        return { acao, reenfileirados };
+      }
+
+      if (acao === 'lembretes:reprocessar-falhados') {
+        const reprocessados = await repositorio.reprocessarLembretesFalhados();
+        return { acao, reprocessados };
+      }
+
+      // Inatingível (allowlist cobre), mas mantém para segurança.
+      throw new ErroDeContrato(`ação não implementada: ${acao}`, 'acao');
     },
   };
 }

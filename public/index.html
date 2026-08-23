@@ -744,10 +744,15 @@
               <p id="diagnostico-resumo">clique em verificar para varrer o sistema</p>
             </div>
             <div class="linha-acoes">
+              <select id="diagnostico-ia" title="Provedor de IA para análise e reparo">
+                <option value="" disabled>Carregando provedores…</option>
+              </select>
+              <button type="button" class="secundario" id="diagnostico-parecer-ia" hidden>Parecer da IA</button>
               <button type="button" class="primario" id="diagnostico-verificar">Verificar agora</button>
             </div>
           </div>
 
+          <div id="diagnostico-parecer" class="nota" hidden></div>
           <div id="diagnostico-achados"></div>
 
           <p class="nota">

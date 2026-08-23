@@ -1,0 +1,176 @@
+User:
+extensionplugin:///app/.agents/plugins/githubextensionplugin:///app/.agents/plugins/supabaseextensionplugin:///app/.agents/plugins/audio_generation ❯ me resuma de maneira datalhada todo o projeto, falhas possiveis quebras, falhas de horario, falhas de respostas, falaba da caixa de conversa, falha da interação com paciente, falha na respostas, falhas de app, falhas de api, falhas do webhook, falhas do openclaw, ponto a ponto virgulas a virgulas, todo alinhamento posicionamento, porem primeiro resume para o que o app serve aqui estao o repositorio https://github.com/ebarroso12/crmclinica, a pagina https://crmclinica.edsonbarrosojr.com.br/ , https://vercel.com/edsonbarroso-7705s-projects/crmclinica , https://supabase.com/dashboard/project/umvpwqqjzpxwuxdnnxzy revise tudo nao quero quebradeira, nao quero erro , nao quero ter de voltar mais aqui para rever ou refazer ,
+Kimi:
+Vou fazer uma análise completa do projeto: repositório GitHub, página no ar, e o projeto Supabase. Primeiro, deixe-me carregar as ferramentas necessárias e mapear tudo.O projeto está no ar (tela de login carrega). Agora vou explorar a fundo o repositório e o Supabase em paralelo.Estrutura mapeada. Agora vou verificar o estado real do banco (advisors de segurança/performance, migrations aplicadas) e os arquivos críticos do servidor.Banco e repo mapeados — já identifiquei divergências importantes no histórico de migrations. Agora vou ler os arquivos críticos: webhook, gateway OpenClaw, Serena (horários), e o frontend.Saúde em produção confirmada (banco OK, RLS ativo, usuário não privilegiado). Agora vou ler os arquivos críticos de integração e domínio.A documentação é rica. Para analisar o código com profundidade, vou baixar o repositório localmente — assim consigo varrer tudo (inclusive o frontend de 171 KB) sem depender de leituras parciais.O código é de alta qualidade. Agora vou verificar o estado operacional real do banco — filas, heartbeats dos workers, falhas — e ler o motor de atendimento.Achado crítico: há 652 trabalhos pendente na fila de automação e nada processado desde 17/08 — o worker que faz a Serena responder parece parado. Vou confirmar o estado completo.Vou rodar a suíte de testes completa do projeto para verificação real, e em paralelo ler a documentação da agenda.Últimas verificações de segurança e da ponte do OpenClaw antes de consolidar o relatório.Análise completa. Agora vou consolidar tudo num relatório detalhado.Revisei tudo: repositório (commit que está no ar), site em produção, banco Supabase consultado diretamente, e rodei a suíte de testes inteira (1.240 testes, zero falhas). O relatório completo está no arquivo anexo. Aqui vai o essencial:
+Para que serve o app
+O crmclinica é a caixa de entrada única da Clínica Dr. Edson Barroso: mensagens de pacientes chegam pelo WhatsApp (via Evolution API ou ponte do OpenClaw), viram contato + conversa + lead, e as respostas saem pela equipe ou pela Serena (agente de IA com interruptor, pausa, plantão e grade de horário no fuso de SP). Agenda marca consultas com conflito impedido pelo banco, lembretes de 24h/2h saem pelo gateway do OpenClaw, e tudo é auditado.
+O que está quebrado AGORA (medido no banco, não é hipótese)
+🔴 WhatsApp da clínica desvinculado do OpenClaw — último envio real em 17/08 08:00; erro gravado: “No active WhatsApp Web listener”; nenhuma mensagem de paciente entra desde 20/08 13:36 (~47h de silêncio).
+🔴 Worker da outbox morto há 5 dias (heartbeat parou 17/08 08:50) — 652 trabalhos pendentes acumulados em 81 conversas. É ele que faz a Serena responder.
+🟡 Serena desligada desde 17/08 08:38 (decisão registrada em auditoria) — 64 pacientes silenciados na semana.
+🔴 Armadilha ao religar: se você subir o worker sem limpar a fila, os 652 trabalhos expirados vão escalonar 81 conversas para “assumido por humano” de uma vez. O relatório traz o SQL de limpeza e a ordem exata: limpar fila → subir worker → revincular WhatsApp → só então religar a Serena.
+🟡 5 lembretes falharam definitivamente (a consulta de 21/08 16h ficou sem nenhuma confirmação) e a agenda futura está vazia — zero agendamentos, zero lembretes na fila.
+Ponto a ponto (detalhado no relatório)
+Horário: impecável — fuso SP, janela que cruza meia-noite, bug do minuto 23:59 já corrigido. Único risco: interruptor não expira (foi o que aconteceu).
+Respostas: cadeia de 6 elos toda protegida (idempotência, barreira final, entrega incerta nunca retentada). Fragilidade assumida: a Evolution não tem idempotência nativa.
+Chat: SSE com replay do banco e cursor monotônico, sólido; na Vercel reconecta a cada 270s, com fallback de polling de 30s.
+Webhook: HMAC em tempo constante, teto de corpo, dupla porta deduplicada. Ressalva: token da Evolution vai na URL.
+OpenClaw: pareamento Ed25519 correto e documentado; dívida aberta é o cliente de eventos ainda em HTTP, e o monitoramento não distingue “gateway ok” de “canal WhatsApp vinculado”.
+Banco: drift de migrations (012–042 aplicadas sem registro; 008/009 só existem no banco), 36 FKs sem índice, 4 políticas RLS duplicadas, Leaked Password Protection desligada.
+Alinhamento/CSS: sem quebra estrutural; único ponto é a ficha do paciente empilhar abaixo de 980px (testar no celular).
+Veredito: o software é de alta qualidade — o que está quebrado é a operação (canal desvinculado + worker morto + fila represada). Seguindo a tabela de ações do relatório na ordem, você resolve tudo sem tocar em código e sem incidente novo.
+User:
+user_pasted_clipboard_long_content_as_file_8181, 0 falhas, 0.txt
+pegue tudo que viu , nao sei por qual motivo a parte de interaçao ali do chat onde tem a interaçao com o paciente eu nao estava vendo o que a serena escrevia apenas o paciente, entao ficava ruim alem disso por diversas vezes teve duplicidade de respostas e respostas sem criterios, alem disso nunca funcinou com o hoario pre estabelecido oque gerou uma enorme confusao alem disso olha o que o lixo do claude achou e foi ele q fez tudo esta em anexo
+Kimi:
+Vou ler o anexo primeiro e depois cruzar com o código para explicar cada sintoma que você viveu (Serena invisível no chat, respostas duplicadas, respostas sem critério, horário que nunca funcionou).O anexo é o log da sessão do Claude — ele investigou a duplicidade e deixou correções prontas numa branch local. Importante: o estado que o log descreve (“nada pushado, main em 27c7edb”) já é passado — a produção hoje roda o commit 3464b2f, que já inclui essas correções (as migrations 037, 038 e 042 existem no repo e no banco). Agora vou rastrear no código a causa exata de cada sintoma que você viveu: Serena invisível no chat, duplicidades, respostas sem critério e o horário que nunca valeu.Agora tenho a cadeia completa de evidências. Vou anexar a análise dos quatro sintomas ao relatório e te explicar aqui.Crucei o anexo, o código e os dados reais do banco. Cada sintoma que você viveu tem causa confirmada — e o relatório foi atualizado com o Anexo B completo. Resumo direto:
+1. “Eu via o paciente, mas não via o que a Serena escrevia”
+Duas causas, uma por época: - Até 17/08: quem respondia era o agente nativo do OpenClaw, falando direto no WhatsApp — a resposta nunca passava pelo CRM. E o webhook descartava todo fromMe:true, então nem o eco aparecia. O banco só tinha metade da conversa. Corrigido em 17/08 (migration 042 + PR #46). - Estrutural, ainda existe: o push ao vivo (SSE) só alcança quem está conectado no mesmo processo. A mensagem do paciente entra pelo webhook na Vercel → aparece na hora. A resposta da Serena é gerada pelo worker no VPS → o push sai no processo errado, e a tela só mostra na reconexão (a cada ~4,5 min) ou no F5. Paciente ao vivo, Serena invisível — exatamente o seu sintoma. Correção definitiva ainda pendente: LISTEN/NOTIFY ou poll de cursor no SSE.
+2. Duplicidade de respostas
+Quatro causas reais empilhadas, todas já corrigidas no código no ar: a dupla porta de entrada (Evolution + ponte OpenClaw carimbando prefixos diferentes — a mesma que o Claude achou), o lease por lote no worker, a falta de marca de “entregue” (reenvio após queda) e o cursor da tela que retrocedia e renderizava a mesma mensagem duas vezes.
+3. Respostas sem critério
+Confirmado: na era openclaw_gerencia, nada do que foi configurado no CRM valia — nem os 6 prompts versionados, nem as 21 regras/barreiras clínicas. O agente do OpenClaw respondia com o prompt dele. O incidente de 17/08 foi isso: a Vercel tinha SERENA_TRANSPORTE_WHATSAPP="" e o agente nativo disparou. Hoje o webhook força crm_despacha e toda resposta passa pelo prompt + regras + barreira final.
+4. O horário nunca funcionou
+A grade só barra o caminho crm_despacha — o agente nativo a ignorava completamente. No banco: em 10/08 a automação respondeu das 07h às 23h, atravessando o horário comercial inteiro.
+Agravante: 12 desligamentos e 7 religamentos da Serena entre 02/08 e 17/08 (283 silêncios por “desligada”, 226 por “fora do horário”) — com o estado mudando toda hora, nada parecia estável.
+E um ponto que precisa da sua confirmação: a grade gravada hoje é o inverso do horário comercial — seg–sex 00:00–08:00 e 18:00–23:59, fim de semana o dia todo. Se a ideia era “Serena cobre quando a clínica está fechada”, está certo. Se você queria “ela atende em horário comercial”, a grade está invertida em relação à sua intenção.
+Sobre o anexo do Claude
+O diagnóstico central dele está correto (a dupla porta de entrada), mas o estado que ele declara já expirou: “main intacta, nada pushado, produção intocada” não é mais verdade — a produção roda 3464b2f, que já inclui o hotfix inteiro (037, 038, 042 aplicadas no banco; o bloqueio de Preview da branch está no vercel.json). O que continua valendo do log dele: a ordem quebrada das migrations 016/017/018 (mesmo drift que apontei), e um risco aberto real — se a Evolution começar a mandar JID @lid, a deduplicação por telefone para de funcionar; vale tratar isso antes.
+O relatório anexo agora tem o Anexo B com tudo isso detalhado, incluindo as 4 ações novas (confirmar a grade, fechar o SSE entre processos, tratar @lid, alerta de “Serena desligada há Xh”) somadas ao plano de recuperação anterior — que continua valendo: limpar a fila → subir o worker → revincular o WhatsApp → religar a Serena, nessa ordem.
+User:
+a ideia para renovar pode partir tando daqui https://app.gptmaker.ai/browse como tb do chatwood https://chatwoot.edsonbarrosojr.com.br/app/accounts/1/dashboard
+Kimi:
+Vou abrir as duas referências para ver o que cada uma oferece antes de te dar o parecer.Abri as duas — ambas caem no login, então não vi os produtos por dentro (se quiser que eu analise telas reais, me passe credenciais de teste ou capturas). Mas para comparar arquiteturas, o essencial já está claro, e cruzei com os 4 sintomas reais que você viveu. O relatório ganhou o Anexo C completo. Resumo direto:
+O que cada um é
+Chatwoot (que você já tem no ar): inbox omnichannel maduro, open source, self-hosted — ou seja, os dados continuam seus. Seu forte é exatamente onde o crmclinica sofre: real-time de verdade (WebSocket, não o SSE caseiro), mobile, anexos, filas.
+GPT Maker: SaaS de agentes de IA prontos para WhatsApp. O horário do agente funciona sem esforço (seu sintoma B.4), treinamento simples, disparos prontos. Mas é caixa-preta e os dados moram na infra deles.
+Como cada um bate nos seus sintomas reais
+Sintoma
+Chatwoot
+GPT Maker
+Renovar o crmclinica
+Não via a resposta da Serena
+✅ se a IA responder por ele
+✅
+✅ fechando o SSE entre processos (LISTEN/NOTIFY)
+Duplicidade
+✅
+✅
+✅ já corrigido no código no ar
+Respostas sem critério
+⚠️ barreiras clínicas teriam de ser reescritas
+⚠️ viram prompt num SaaS, sem enforcement
+✅ já corrigido (prompt + 21 regras + barreira final)
+Horário que nunca valeu
+❌ só tem “business hours” da inbox
+✅ funciona
+✅ já corrigido; falta só confirmar a intenção da grade
+Minha recomendação
+Renovar o crmclinica roubando duas ideias, sem migrar os dados:
+Do Chatwoot, o real-time: trocar o SSE por-processo por Postgres LISTEN/NOTIFY — o banco já é a fonte da verdade e já grava os eventos. É a cura definitiva do “só vejo o paciente”. E usar o Chatwoot como referência visual da tela de Conversas (filas, atribuição, notas internas).
+Do GPT Maker, a disciplina operacional do agente: o horário deles funciona porque o agente tem um estado e um relógio só — no seu, o código já faz isso; o que faltou foi operação (alerta “Serena desligada há Xh”, fim do liga/desliga como hábito).
+Não importar de nenhum dos dois: a terceirização do dado clínico — que é justamente o que seu sistema faz melhor que ambos (RLS, auditoria, redator de segredos, nada clínico atravessando).
+Se um dia a dor do inbox superar tudo, a única migração que não joga fora o que já está auditado é: Chatwoot como tela + Serena como cérebro — e ela continua disponível depois. GPT Maker como peça central de uma clínica eu não recomendaria: resolve o horário pagando com compliance e lock-in.
+E a ordem continua valendo: antes de renovar, colocar o atual de pé (limpar fila → subir worker → revincular WhatsApp → religar Serena). Renovar por cima do sistema quebrado é trocar de carro com o motor fundido.
+User:
+o q seguir e vamos la o que ira mudar?
+Kimi:
+Fechado. Então o caminho é: colocar o atual de pé (operação) + renovar onde dói (código). Vou te dizer exatamente o que seguir, o que muda para você e para a recepção, e já começo a parte que é minha (código). Primeiro o mapa completo:
+O que seguir — 3 fases, na ordem
+Fase 0 — Ressuscitar (você executa, ~30 min, sem mexer em código). Eu te entrego os comandos prontos. Sem isso, qualquer renovação nasce em cima de sistema morto.
+Fase 1 — O que eu mudo no código (eu implemento agora, em branch separada, PR para você revisar — nada vai direto para produção):
+#
+Mudança
+O que muda na prática
+1
+Chat ao vivo entre processos — o servidor passa a reler os eventos novos do banco a cada ~2 s a partir do cursor, dentro da conexão SSE
+A resposta da Serena aparece na tela segundos depois de ela responder, mesmo gerada pelo worker no VPS. Fim do “só vejo o paciente” — sem F5
+2
+Alerta “Serena desligada” — banner no topo do painel quando a automação está desligada, com o tempo decorrido
+Nunca mais fica 5 dias sem ninguém perceber. O desligamento continua existindo; ele só deixa de ser invisível
+3
+Tratar JID @lid nas duas portas de entrada
+A deduplicação continua funcionando quando o WhatsApp mudar o formato do identificador — sem isso, a duplicidade de respostas volta
+4
+Guia de alinhamento das migrations (repair 012–042, reconstruir 008/009)
+Um ambiente novo passa a poder ser montado fiel à produção; futuros db push param de quebrar
+Fase 2 — Deploy e confirmação (você): merge do PR, deploy automático na Vercel, e confirmar no painel se a grade da Serena é mesmo “cobrir fora do expediente” ou se estava invertida em relação à sua intenção.
+Fase 0 — os comandos (copie e cole, nesta ordem)
+Passo 1 — Limpar a fila represada (Supabase → SQL Editor):
+UPDATE automacao_outboxSET status = 'morto', ultimo_erro = 'limpeza_manual_pos_incidente_2026-08-22'WHERE status = 'pendente' AND criado_em < now() - interval '30 minutes';
+(Isso impede a armadilha: 81 conversas virarem “assumidas por humano” de uma vez quando o worker voltar.)
+Passo 2 — Subir o worker da outbox (SSH no servidor srv905994):
+systemctl status crmclinica-outbox.service   # confirme o nome com: systemctl list-units | grep crmclinicasystemctl enable --now crmclinica-outbox.service# garanta que a unit tem: Restart=always
+Passo 3 — Revincular o WhatsApp (com o celular da clínica em mãos):
+openclaw --profile clinica channels login --channel whatsapp --account defaultopenclaw channels status --json   # tem que mostrar linked: true, connected: true
+Passo 4 — Religar a Serena pelo painel (só depois dos 3 passos acima) e mandar uma mensagem de teste de um número interno.
+Agora começo a Fase 1. Vou ler o trecho do servidor que cuida do SSE para implementar o item 1 direito.Agora vou ver como o painel lê o estado da Serena e onde o /api/resumo é montado, para implementar o banner.Tenho tudo o que preciso. Vou implementar as 4 mudanças. Começo pela cura do B.1 (chat ao vivo entre processos).Agora conecto a releitura no handler SSE do http.js e adiciono a config:Cometi um erro — a edição substituiu a regra .aviso em vez de adicionar ao lado. Corrijo agora:
+User:
+qual o motivo de ligar o opwnclw de novo se ele estava duplicando a resposta com o evolution
+Kimi:
+Pergunta perfeita — e a resposta é a parte mais importante de entender do sistema. Vou separar as duas coisas que o OpenClaw faz na sua arquitetura, porque a duplicidade veio de uma delas:
+As duas portas do WhatsApp (a origem da duplicidade)
+Sua clínica tem um número de WhatsApp conectado em dois lugares ao mesmo tempo:
+Evolution API — entrega o webhook da mensagem do paciente;
+OpenClaw — tem a ponte (plugin) que também entrega a mesma mensagem, e o gateway que envia mensagens.
+A duplicidade acontecia na entrada: a mesma mensagem chegava duas vezes (uma por cada porta), cada uma com um carimbo diferente (evolution: / openclaw:), e o banco não reconhecia que era a mesma — duas linhas, dois trabalhos, duas respostas.
+Isso já está corrigido (o hotfix do Claude, já no ar): as duas portas agora carimbam a mesma chave whatsapp:<telefone>:<id>, e o índice único do banco mata a segunda cópia. Mesmo que as duas entreguem, só uma vira mensagem.
+Por que o OpenClaw precisa voltar
+Porque hoje ele é o único caminho de envio de duas coisas críticas — e a Evolution não as substitui:
+Função
+Quem faz hoje
+Pode viver sem o OpenClaw?
+Lembretes 24h/2h (confirmação de consulta)
+Só o gateway do OpenClaw (método send, com confirmação e deduplicação real)
+❌ Não — a Evolution não está ligada aos lembretes
+Respostas da Serena
+Evolution primário + OpenClaw como fallback
+⚠️ Funciona sem ele, mas perde a rede de segurança: se a Evolution falhar, a Serena não responde
+Ponte de entrada (segunda porta)
+OpenClaw
+✅ Poderia ser desligada — a Evolution sozinha basta
+O sintoma atual confirma isso: o erro gravado nos lembretes é No active WhatsApp Web listener — o OpenClaw perdeu o vínculo do WhatsApp, e por isso os lembretes pararam. A Evolution, que estava mandando as mensagens de conversa, também está com problema (nada entra desde 20/08).
+A pergunta certa não é “ligar ou não ligar” — é “qual porta ligar”
+Se você quiser acabar de vez com a possibilidade de duplicidade por dupla entrada, o desenho mais limpo é:
+Entrada: só a Evolution (desligar a ponte do OpenClaw — ela virou redundante);
+Saída: Evolution primário + OpenClaw de fallback (como já é);
+Lembretes: OpenClaw (único que faz).
+Mas hoje, com o sistema no chão, a ordem continua sendo a da Fase 0: limpar fila → subir worker → revincular o WhatsApp (tanto na Evolution quanto no OpenClaw — os dois estão sem vínculo) → religar Serena.
+Quer que eu deixe a configuração final “uma porta de entrada só” já desenhada na renovação que estou fazendo? Assim a duplicidade por dupla entrada deixa de ser “impedida pelo índice” e passa a ser “impossível por construção”.
+User:
+o problema e que ele tem de mandar respostas e lembrancas corretas ele estava mandando mensagem em horas erradas e qua nao tinham mais fazendo confusao com o horario da agenda
+Kimi:
+Entendi perfeitamente. Você está apontando a falha mais grave: a Serena falava na hora errada e dizia coisas que não batiam com a agenda real. Isso não é “bug de tela” — é o sistema perdendo a confiança do paciente. Deixa eu te mostrar a causa exata, porque ela explica os dois erros de uma vez:
+Por que a Serena falava na hora errada e confundia a agenda
+A resposta curta: na época em que isso acontecia, quem respondia não era o sistema que tem a agenda. Era o agente nativo do OpenClaw — e ele:
+Nunca lia a grade de horários do CRM — a grade que você configurou (08h–18h, ou a que está gravada) só vale para o caminho crm_despacha. O agente do OpenClaw não sabia que ela existia. Resultado medido no banco: em 10/08 a automação respondeu das 07h às 23h, furando o horário comercial o dia inteiro.
+Nunca consultava a agenda real — ele não sabia quais horários estavam livres ou ocupados. Então “agendar às 14h de amanhã” saía da cabeça do modelo, não da agenda. Se o paciente pedia um horário que já estava ocupado, a Serena confirmava de qualquer jeito — porque ela não tinha como saber.
+Respondia no fuso errado — o servidor roda em UTC. Se o agente não forçasse São Paulo, “amanhã às 14h” podia cair 3 horas fora.
+É por isso que a confusão era total: a Serena não estava “com defeito” — ela estava respondendo por fora do sistema, sem grade, sem agenda, sem fuso. Você configurava tudo no CRM, e quem falava com o paciente era outro.
+O que já mudou (e por que agora é diferente)
+O incidente de 17/08 foi exatamente isso: o agente nativo disparou indevidamente, e a equipe desligou tudo. Hoje, o sistema no ar (3464b2f) funciona assim:
+O webhook força crm_despacha — não importa o que a variável de ambiente diga, toda mensagem de WhatsApp passa pelo CRM antes de responder;
+A barreira final relê a grade no último instante antes de enviar — se estiver fora do horário, a resposta não sai;
+O orquestrador recebe só o contexto mínimo — e a agenda é consultada de verdade, com conflito impedido pelo banco (EXCLUDE constraint);
+O fuso é sempre America/Sao_Paulo — inclusive no horário de verão, se voltar.
+Mas tem uma coisa que só você pode confirmar: a grade gravada hoje no banco é 00:00–08:00 e 18:00–23:59 de segunda a sexta (sábado e domingo o dia todo). Isso é o inverso do horário comercial. Duas possibilidades:
+Você quer isso mesmo (a Serena cobre quando a clínica está fechada) → está certo;
+Você esperava que ela atendesse no horário comercial → a grade está invertida, e é isso que causava a sensação de “ela nunca obedece o horário”.
+O que a renovação vai fazer para isso nunca mais acontecer
+Além do que já está pronto (chat ao vivo entre processos, alerta de “Serena desligada”), vou adicionar uma coisa específica para o seu sintoma:
+Confirmação visual da grade no painel — quando você abrir a tela da Serena, vai ver escrito em português claro: “A Serena atende de segunda a sexta, das 00:00 às 08:00 e das 18:00 às 23:59. Sábado e domingo, o dia todo.” Sem traduzir código, sem adivinhar. Se estiver invertido, você vê na hora.
+E uma pergunta que decide o próximo passo: qual é o horário que a Serena deveria obedecer? Me diga em uma frase (ex: “segunda a sexta, 08h às 18h, e sábado de manhã”), que eu gravo a grade certa e te mostro como confirmar.
+User:
+conseguiria acoplar a minha agenda ou algo asism para que o openclaw entrasse pq o que esta la hoje e o meu completo porem precisamos da agenda do dr edson aqui https://app.tribemd.com/atendimentos/agenda?view=day&search={%22medico_id%22:56528,%22from%22:%222026-08-22%22,%22to%22:%222026-08-22%22}
+Kimi:
+Entendi — você quer que a Serena (via OpenClaw) saiba de verdade quando o Dr. Edson está ocupado, consultando a agenda real dele no TribeMD (o prontuário/sistema clínico que vocês usam hoje), em vez de depender só da agenda interna do CRM. Isso resolve a raiz do “ela confirmava horário que não existia”.
+Antes de eu dizer como acoplar, preciso ver o que o TribeMD expõe (API, webhook, ou só tela). Vou pesquisar agora.A busca pública não achou documentação do TribeMD (só produtos homônimos de pagamento/CRM). Vou tentar abrir o próprio site para ver o que ele oferece:Sim, dá para acoplar — e a boa notícia é que metade da estrada já existe no seu projeto. Deixa eu te mostrar o que descobri olhando o código agora, e aí preciso de duas respostas suas para escolher o caminho certo.
+O que existe hoje
+A agenda do CRM já tem toda a estrutura de “horário ocupado”: tabela de agendamentos com trava de conflito no PostgreSQL (impossível gravar dois pacientes no mesmo horário), bloqueios (almoço, férias), e a rota /api/agenda/horarios que devolve só os horários realmente livres do dia.
+O cliente de leitura do Google Calendar já está escrito: o google-calendario.js tem leitura paginada com syncToken (sincronia incremental) — foi feito para o envio, mas as primitivas de leitura já existem.
+O que NÃO existe: a Serena/OpenClaw hoje não consulta a agenda em lugar nenhum. Ela decide responder olhando só a grade dela (que horas ela pode falar), não a agenda do médico (que horas o Dr. Edson está livre). É exatamente por isso que ela confirmava horário que não existia.
+O desenho da integração
+TribeMD (agenda real do Dr. Edson, medico_id 56528)        │  (caminho a definir — pergunta abaixo)        ▼Espelho no CRM: compromissos do TribeMD entram comoBLOQUEIOS na agenda do profissional "Dr. Edson"        │        ▼Serena ganha ferramenta nova: "consultar horários livres"→ ela só oferece horário que passou pela trava do banco→ proposta → confirmação do paciente → grava (fluxo de 2 passos que já existe)
+Ou seja: o TribeMD vira a fonte da verdade da ocupação do Dr. Edson; o CRM espelha isso como bloqueios; e a Serena passa a só poder oferecer o que está livre de verdade. A trava de conflito do PostgreSQL protege tudo — mesmo se o espelho atrasar alguns minutos, uma consulta marcada pelo WhatsApp não colide com outra do WhatsApp.
+O que eu não vou fazer: raspagem de tela do TribeMD (aquele link exige login; quebraria silenciosamente a cada atualização deles e violaria os termos de uso). Isso é exatamente o tipo de “quebradeira” que você me proibiu.
+Para escolher o caminho de entrada dos dados, preciso saber o que o seu TribeMD oferece:O projeto já tem migração de sincronia inbound do Google (022)! Vou ler isso antes de criar qualquer coisa:A Serena já tem consultar_horarios e agendar na API dela. Falta ver como ocupados lê o Google e como o agendar grava:Agora implemento as duas mudanças. Primeiro vejo os helpers de config:Agora aplico as três mudanças no rotas-agente.js:Agora atualizo os testes existentes e adiciono os novos:Agora os três testes novos (barreira do agendar, profissional fixo, id inválido):Um teste antigo falhou — vou investigar com a resposta real da API:Isolado, funciona. A falha só acontece na suíte — pode ser ordem/interferência. Rodando de novo para confirmar:A edição do teste 4 não chegou a gravar (edições paralelas no mesmo arquivo). Corrigindo:Agora a lógica do banner no app.js:Banner pronto. Agora os testes da releitura de eventos — primeiro releio a implementação atual:6/6. Agora o tratamento de JID @lid no webhook da Evolution:Corrijo os dois lados. Primeiro o webhook da Evolution:Agora a ponte OpenClaw:Agora testes do @lid nos dois lados. Vejo os testes existentes:O plano de 008/009 já existe. Faltam dois docs: o guia de acoplamento TribeMD (o principal) e o de alinhamento do registro de migrações. Escrevo os dois:Docs prontos. Agora persistir no GitHub — primeiro verifico se há credenciais locais, senão uso a integração GitHub:Primeiro commit enviado. Agora os arquivos de código — leio e empurro em lotes:
