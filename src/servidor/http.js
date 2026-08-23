@@ -11,6 +11,7 @@ const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
 const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('../integracoes/evolution-webhook');
+const { normalizarEventoInstagram } = require('../integracoes/instagram-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarClienteStorage } = require('../integracoes/supabase-storage');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
@@ -95,6 +96,13 @@ const CABECALHOS_SEGURANCA = Object.freeze({
 // generosa pra reconexão legítima de múltiplas abas, barra só loop
 // indefinido ou abuso deliberado.
 const LIMITE_DE_TICKETS_POR_MINUTO = 60;
+
+// Adaptadores de "porta de ponte": ingresso de mensagem de paciente vindo de
+// fora, sem usuário logado na requisição. A resposta da IA vai para a outbox
+// durável em vez de rodar síncrona (ver despachoEmSegundoPlano em
+// receberEventoAssinado) — o provedor (Evolution, Meta) tem timeout curto de
+// aceite, e gerar a resposta da IA costuma levar mais que isso.
+const ADAPTADORES_DE_PONTE = new Set(['openclaw_ingresso_crm', 'instagram_ingresso_crm']);
 
 function responder(res, status, corpo, tipo = 'application/json; charset=utf-8', extras = {}) {
   res.writeHead(status, { ...CABECALHOS_SEGURANCA, ...extras, 'content-type': tipo });
@@ -309,6 +317,8 @@ function criarAplicacao(dependencias = {}) {
     googleAgenda: agendaDoGoogle,
     evolucaoConfig: configuracao.evolution,
     evolucaoFetchImpl: dependencias.evolucaoFetchImpl,
+    instagramConfig: configuracao.instagram,
+    instagramFetchImpl: dependencias.instagramFetchImpl,
   });
 
   const rotasDaSerena = criarRotasDaSerena({
@@ -376,6 +386,13 @@ function criarAplicacao(dependencias = {}) {
     cabecalhosDeAssinatura,
     nomeDaPorta,
     tokenAlternativo = null,
+    // Achado 23/08 (Instagram): ao contrário da ponte OpenClaw (que já manda
+    // o corpo no contrato interno do CRM, sem tradução), o Instagram assina
+    // o payload NATIVO da Meta — precisa de tradução mesmo no caminho
+    // autenticado por ASSINATURA, não só no caminho alternativo por token
+    // (que hoje só existe pra Evolution). `tokenAlternativo.adaptar` continua
+    // servindo o caso antigo; este é o caso novo, para quem sempre assina.
+    adaptar = null,
   }) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
 
@@ -439,6 +456,18 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
       corpoInterpretado = traduzido;
+    } else if (adaptar) {
+      // Caminho autenticado por assinatura (Instagram): o corpo ainda é o
+      // payload nativo do provedor, precisa da mesma tradução — e do mesmo
+      // "aceito e ignorado" para evento que não é mensagem de paciente
+      // (eco, recibo de leitura), em vez de erro que faria a Meta reter e
+      // martelar retry.
+      const traduzido = adaptar(corpoInterpretado) ?? null;
+      if (!traduzido) {
+        responderJson(res, 200, { aceito: true, ignorado: true });
+        return;
+      }
+      corpoInterpretado = traduzido;
     }
 
     const validado = validarEvento(corpoInterpretado);
@@ -468,11 +497,13 @@ function criarAplicacao(dependencias = {}) {
       throw erro;
     }
 
-    // Só a porta da ponte (Evolution/OpenClaw ingresso) vai para a outbox —
-    // a porta do orquestrador (`openclaw_webhook`, `/api/eventos`) continua
-    // despachando a IA de forma síncrona, dentro desta requisição, como
-    // sempre fez.
-    const despachoEmSegundoPlano = adaptador === 'openclaw_ingresso_crm';
+    // Só as portas de ponte (Evolution/OpenClaw ingresso, Instagram ingresso)
+    // vão para a outbox — a porta do orquestrador (`openclaw_webhook`,
+    // `/api/eventos`) continua despachando a IA de forma síncrona, dentro
+    // desta requisição, como sempre fez. Instagram entra na mesma lista pelo
+    // mesmo motivo do WhatsApp: gerar a resposta da IA leva mais que o
+    // timeout curto de aceite que a Meta também impõe.
+    const despachoEmSegundoPlano = ADAPTADORES_DE_PONTE.has(adaptador);
 
     async function processarEGravarRecibo() {
       // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
@@ -578,6 +609,38 @@ function criarAplicacao(dependencias = {}) {
         // quando `adaptar` não reconheceu nada.
         adaptarEco: normalizarEcoDeEnvioEvolution,
       } : null,
+    });
+  }
+
+  /**
+   * Verificação inicial do webhook (GET) — a Meta manda `hub.mode`,
+   * `hub.verify_token`, `hub.challenge` na querystring uma vez, ao ligar o
+   * webhook, e espera receber o `hub.challenge` de volta em texto puro,
+   * SEM envelope JSON. Sem isto, o Instagram/Facebook recusa configurar o
+   * webhook — diferente do WhatsApp/Evolution, que não tem esse handshake.
+   */
+  function responderVerificacaoDeWebhook(res, url, verifyTokenEsperado) {
+    const modo = url?.searchParams?.get('hub.mode');
+    const tokenRecebido = url?.searchParams?.get('hub.verify_token');
+    const challenge = url?.searchParams?.get('hub.challenge');
+
+    if (modo === 'subscribe' && challenge && tokenIngressoValido(tokenRecebido, verifyTokenEsperado)) {
+      responder(res, 200, challenge, 'text/plain; charset=utf-8');
+      return;
+    }
+    responderJson(res, 403, { erro: 'verificação de webhook recusada' });
+  }
+
+  async function receberMensagemDoInstagram(req, res) {
+    return receberEventoAssinado(req, res, {
+      segredo: configuracao.instagram.appSecret,
+      adaptador: 'instagram_ingresso_crm',
+      // Formato da Meta: `sha256=<hex>` — o mesmo que `assinaturaValida` já
+      // trata (ver integracoes/openclaw.js). Sem tokenAlternativo: a Meta
+      // sempre assina os eventos POST, ao contrário da Evolution.
+      cabecalhosDeAssinatura: ['x-hub-signature-256'],
+      nomeDaPorta: 'ingresso do Instagram',
+      adaptar: normalizarEventoInstagram,
     });
   }
 
@@ -1865,6 +1928,22 @@ function criarAplicacao(dependencias = {}) {
         // adaptador são diferentes de /api/eventos para que o payload nunca
         // possa se promover a dono da resposta automática.
         await receberMensagemDoWhatsapp(req, res, url);
+        return;
+      }
+
+      if (rota === '/api/canais/instagram/eventos') {
+        // GET: verificação única do webhook, exigida pela Meta ao ligar a
+        // integração (hub.challenge). POST: eventos de verdade (DM),
+        // assinados por HMAC — ver receberMensagemDoInstagram.
+        if (metodo === 'GET') {
+          responderVerificacaoDeWebhook(res, url, configuracao.instagram.verifyToken);
+          return;
+        }
+        if (metodo !== 'POST') {
+          responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET, POST' });
+          return;
+        }
+        await receberMensagemDoInstagram(req, res);
         return;
       }
 

@@ -146,4 +146,4 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
   };
 }
 
-module.exports = { criarClienteEvolucaoEnvio };
+module.exports = { criarClienteEvolucaoEnvio, ehFalhaIndeterminada };

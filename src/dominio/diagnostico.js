@@ -195,6 +195,23 @@ async function executarDiagnostico(sondas = {}) {
     registrar(achado({ area: 'google', nivel: 'falha', titulo: 'o espelho da agenda Google não responde', detalhe: google.motivo ?? null, reparo: 'Confira a credencial da conta de serviço e o compartilhamento do calendário.' }));
   }
 
+  const instagram = await verificar('instagram', sondas.instagram);
+  if (instagram?.configurada && instagram.alcancavel === false) {
+    registrar(achado({
+      area: 'instagram',
+      nivel: 'falha',
+      titulo: 'a integração de Instagram não responde',
+      reparo: 'Confira INSTAGRAM_ACCESS_TOKEN/INSTAGRAM_BUSINESS_ACCOUNT_ID e se a Graph API está alcançável.',
+    }));
+  } else if (instagram?.configurada && instagram.alcancavel === true && instagram.contaValida === false) {
+    registrar(achado({
+      area: 'instagram',
+      nivel: 'falha',
+      titulo: 'a integração de Instagram responde, mas o token/conta não é aceito',
+      reparo: 'O access token pode ter expirado ou a conta comercial configurada não bate mais. Gere um novo token de longa duração e confirme o INSTAGRAM_BUSINESS_ACCOUNT_ID.',
+    }));
+  }
+
   const worker = await verificar('worker', sondas.worker);
   if (worker && !worker.ativo) {
     registrar(achado({ area: 'worker', nivel: 'critico', titulo: 'o worker de lembretes não confirmou atividade', detalhe: worker.detalhe ?? null, reparo: 'Reinicie o serviço do worker e confira os logs do OpenClaw.', comando: 'reiniciar:crmclinica-lembretes' }));
