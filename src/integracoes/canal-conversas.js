@@ -22,6 +22,7 @@ const { normalizarTelefone } = require('../dominio/serena');
 function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
   let cliente = dependencias.cliente ?? null;
   const evolucao = dependencias.evolucao ?? null;
+  const instagram = dependencias.instagram ?? null;
 
   function conectar() {
     if (cliente) return cliente;
@@ -56,7 +57,7 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
   }
 
   return {
-    disponivel: Boolean(configuracao.url) || Boolean(evolucao?.disponivel),
+    disponivel: Boolean(configuracao.url) || Boolean(evolucao?.disponivel) || Boolean(instagram?.disponivel),
 
     /**
      * Entrega a mensagem e devolve o identificador confirmado.
@@ -66,8 +67,18 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
      * contrário, e nunca silenciosamente sem tentar as duas quando ambas
      * existem. Sem identificador não há confirmação, e sem confirmação a
      * mensagem não pode ser dada como entregue.
+     *
+     * Quando `canal === 'instagram'`, o envio vai pela Graph API do Instagram
+     * (instagram-envio.js) em vez das vias de WhatsApp.
      */
-    async enviar({ telefone, texto, chave }) {
+    async enviar({ canal: canalDestino = 'whatsapp', telefone, texto, chave }) {
+      if (canalDestino === 'instagram') {
+        if (!instagram?.disponivel) throw new Error('Instagram API não configurada');
+        // No Instagram o "telefone" é o PSID (page-scoped id) — quem chama
+        // (entregarAoPaciente) já extraiu o identificador correto.
+        return instagram.enviar({ telefone, texto });
+      }
+
       // O contato guarda o telefone como o canal o entregou, e isso inclui
       // mascara. Normalizar aqui evita mandar para um numero que nao existe.
       // Feito uma vez só: as duas vias recebem o mesmo dado normalizado.
@@ -99,7 +110,11 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
      * do que este projeto testa) — arriscar mandar um anexo por um canal sem
      * contrato conhecido é pior do que recusar com um erro claro.
      */
-    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+    async enviarMidia({ canal: canalDestino = 'whatsapp', telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+      if (canalDestino === 'instagram') {
+        throw new Error('envio de anexo pelo Instagram ainda não é suportado');
+      }
+
       const destino = normalizarTelefone(telefone);
       if (!destino) throw new Error('telefone inválido para envio');
       if (!evolucao?.disponivel) throw new Error('envio de anexo exige a Evolution API configurada');

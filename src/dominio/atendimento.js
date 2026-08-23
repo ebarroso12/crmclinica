@@ -830,6 +830,7 @@ function criarAtendimento({
 
       const resultado = anexo
         ? await canal.enviarMidia({
+          canal: conversa.canal,
           telefone: destinatario,
           // O bucket é privado: media_url grava só o path interno
           // (anexo.caminho), nunca uma URL pública. A Evolution precisa de
@@ -841,6 +842,7 @@ function criarAtendimento({
           nomeArquivo: anexo.nome || null,
         })
         : await canal.enviar({
+          canal: conversa.canal,
           telefone: destinatario,
           texto,
           // Comando 7, segunda auditoria, achado N-10: este comentário dizia

@@ -81,3 +81,41 @@ test('telefone inválido é recusado antes de tentar qualquer via', async () => 
   const canal = criarCanalDeConversas({}, { evolucao });
   await assert.rejects(() => canal.enviar({ telefone: 'abc', texto: 'oi', chave: 'k5' }));
 });
+
+test('com Instagram disponível, o canal fica disponível mesmo sem WhatsApp', () => {
+  const instagram = { disponivel: true, async enviar() { return { identificador: 'ig-1' }; } };
+  const canal = criarCanalDeConversas({}, { instagram });
+  assert.equal(canal.disponivel, true);
+});
+
+test('envio com canal=instagram usa a Graph API do Instagram', async () => {
+  const instagram = {
+    disponivel: true,
+    async enviar({ telefone, texto }) {
+      assert.equal(telefone, '17841400498422295');
+      assert.equal(texto, 'oi pelo Instagram');
+      return { identificador: 'ig-123' };
+    },
+  };
+  const evolucao = { disponivel: true, async enviar() { throw new Error('não deveria chamar evolução'); } };
+  const canal = criarCanalDeConversas({}, { instagram, evolucao });
+  const resultado = await canal.enviar({ canal: 'instagram', telefone: '17841400498422295', texto: 'oi pelo Instagram', chave: 'k6' });
+  assert.equal(resultado.identificador, 'ig-123');
+});
+
+test('envio para Instagram sem API configurada lança erro claro', async () => {
+  const canal = criarCanalDeConversas({}, {});
+  await assert.rejects(
+    () => canal.enviar({ canal: 'instagram', telefone: '17841400498422295', texto: 'oi', chave: 'k7' }),
+    /Instagram API não configurada/,
+  );
+});
+
+test('envio de mídia para Instagram é recusado com erro claro', async () => {
+  const instagram = { disponivel: true, async enviar() { return { identificador: 'ig-456' }; } };
+  const canal = criarCanalDeConversas({}, { instagram });
+  await assert.rejects(
+    () => canal.enviarMidia({ canal: 'instagram', telefone: '17841400498422295', mediaUrl: 'https://exemplo.com/foto.jpg', tipo: 'image' }),
+    /envio de anexo pelo Instagram ainda não é suportado/,
+  );
+});
