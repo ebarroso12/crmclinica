@@ -17,7 +17,7 @@ test('sem EVOLUTION_API_URL/KEY, a sonda não tenta rede nenhuma', async () => {
 
   const resultado = await sonda();
 
-  assert.deepEqual(resultado, { configurada: false, instancia: null, alcancavel: null, fila: null });
+  assert.deepEqual(resultado, { configurada: false, instancia: null, alcancavel: null, instanciaExiste: null, fila: null });
   assert.equal(fetchChamado, false);
 });
 
@@ -77,4 +77,87 @@ test('sem repositório, a fila vem null — não inventa contagem', async () => 
 
   const resultado = await sonda();
   assert.equal(resultado.fila, null);
+});
+
+// Achado do incidente de 22/08: a raiz da API responde 200 mesmo com zero
+// instância cadastrada — `alcancavel` sozinho não pega isso.
+test('alcançável mas zero instância cadastrada: instanciaExiste false', async () => {
+  const sonda = sondaDaEvolution(
+    { apiUrl: 'https://evolution.exemplo.com', apiKey: 'chave', instancia: 'clinica' },
+    {
+      fetchImpl: async (url) => {
+        if (String(url).endsWith('/instance/fetchInstances')) {
+          return { ok: true, json: async () => [] };
+        }
+        return { ok: true, status: 200 };
+      },
+    },
+  );
+
+  const resultado = await sonda();
+  assert.equal(resultado.alcancavel, true);
+  assert.equal(resultado.instanciaExiste, false);
+});
+
+test('alcançável e pelo menos uma instância cadastrada: instanciaExiste true', async () => {
+  const sonda = sondaDaEvolution(
+    { apiUrl: 'https://evolution.exemplo.com', apiKey: 'chave', instancia: 'clinica' },
+    {
+      fetchImpl: async (url) => {
+        if (String(url).endsWith('/instance/fetchInstances')) {
+          return { ok: true, json: async () => [{ name: 'clinica', connectionStatus: 'open' }] };
+        }
+        return { ok: true, status: 200 };
+      },
+    },
+  );
+
+  const resultado = await sonda();
+  assert.equal(resultado.instanciaExiste, true);
+});
+
+test('a chamada de fetchInstances manda a apikey no header', async () => {
+  let headerRecebido = null;
+  const sonda = sondaDaEvolution(
+    { apiUrl: 'https://evolution.exemplo.com', apiKey: 'chave-secreta', instancia: 'clinica' },
+    {
+      fetchImpl: async (url, opcoes) => {
+        if (String(url).endsWith('/instance/fetchInstances')) {
+          headerRecebido = opcoes?.headers?.apikey ?? null;
+          return { ok: true, json: async () => [] };
+        }
+        return { ok: true, status: 200 };
+      },
+    },
+  );
+
+  await sonda();
+  assert.equal(headerRecebido, 'chave-secreta');
+});
+
+test('host inalcançável: instanciaExiste fica null (ambíguo), não false', async () => {
+  const sonda = sondaDaEvolution(
+    { apiUrl: 'https://evolution.exemplo.com', apiKey: 'chave' },
+    { fetchImpl: async () => { throw new Error('ECONNREFUSED'); } },
+  );
+
+  const resultado = await sonda();
+  assert.equal(resultado.alcancavel, false);
+  assert.equal(resultado.instanciaExiste, null, 'sem saber se o host está de pé, não dá pra afirmar nada sobre a instância');
+});
+
+test('fetchInstances responde não-2xx: instanciaExiste fica null, não lança', async () => {
+  const sonda = sondaDaEvolution(
+    { apiUrl: 'https://evolution.exemplo.com', apiKey: 'chave-errada' },
+    {
+      fetchImpl: async (url) => {
+        if (String(url).endsWith('/instance/fetchInstances')) return { ok: false, status: 401 };
+        return { ok: true, status: 200 };
+      },
+    },
+  );
+
+  const resultado = await sonda();
+  assert.equal(resultado.alcancavel, true);
+  assert.equal(resultado.instanciaExiste, null);
 });

@@ -3196,6 +3196,28 @@ function criarRepositorio(pool) {
       return Number(rows[0]?.total ?? 0);
     },
 
+    /**
+     * Para o diagnóstico: quantas respostas da automação falharam ao
+     * entregar nas últimas horas — o sinal fim-a-fim, o único que continua
+     * verdadeiro mesmo quando fila, worker, canal e Evolution reportam "ok"
+     * cada um isoladamente (aconteceu de verdade em 22/08: o worker do VPS
+     * tinha credencial da Evolution só na Vercel, faltando no `.env` dele
+     * próprio — nenhuma sonda deste processo enxerga o `.env` de outro
+     * processo, mas o resultado — entrega que não sai — é observável aqui).
+     * `automacao_outbox.ultimo_erro` NÃO serve pra isso: o trabalho termina
+     * `concluido` mesmo quando a entrega falha (a automação escalona pra
+     * equipe e segue) — o motivo real fica só em `audit_log`, ação
+     * `resposta_nao_entregue` (ver `escalonar`/`entregarAoPaciente` em
+     * `src/dominio/atendimento.js`).
+     */
+    async contarEntregasFalhadasDaAutomacao({ desde }) {
+      const { rows } = await consultar(
+        "SELECT count(*)::int AS total FROM audit_log WHERE acao = 'resposta_nao_entregue' AND criado_em >= $1::timestamptz",
+        [desde],
+      );
+      return Number(rows[0]?.total ?? 0);
+    },
+
     // ---------------------------------------------------------------- tentativas de autenticação
 
     async registrarTentativa({ ip = null, hashConta = null, acao = 'login', sucesso = false }) {

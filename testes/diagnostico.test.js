@@ -180,6 +180,57 @@ test('trabalho com desfecho incerto na outbox é falha, não crítico — decis�
   assert.equal(item.nivel, 'falha');
 });
 
+// Incidente de 22/08: os dois achados abaixo cobrem o que nenhuma sonda
+// pegava até aqui — instância que sumiu (host responde, mas não tem nada
+// cadastrado) e entrega que falha fim-a-fim mesmo com tudo "ok" isolado.
+
+test('Evolution alcançável mas sem instância cadastrada é crítico quando o OpenClaw também não atende', async () => {
+  const r = await executarDiagnostico(comFalha({
+    canal: async () => ({ vinculado: false, conectado: false }),
+    evolucao: async () => ({ configurada: true, instancia: 'clinica', alcancavel: true, instanciaExiste: false, fila: null }),
+  }));
+  const item = r.achados.find((a) => a.area === 'evolucao');
+  assert.ok(item);
+  assert.equal(item.nivel, 'critico');
+  assert.match(item.titulo, /não tem nenhuma instância cadastrada/);
+});
+
+test('Evolution sem instância cadastrada é falha, não crítico, quando o gateway OpenClaw está atendendo', async () => {
+  // Mesmo raciocínio já aplicado a "alcancavel: false" (Comando 4): se a
+  // reserva está de pé, não é o mesmo nível de urgência.
+  const r = await executarDiagnostico(comFalha({
+    canal: async () => ({ vinculado: true, conectado: true, numero: '+5516993120938' }),
+    evolucao: async () => ({ configurada: true, instancia: 'clinica', alcancavel: true, instanciaExiste: false, fila: null }),
+  }));
+  const item = r.achados.find((a) => a.area === 'evolucao');
+  assert.ok(item);
+  assert.equal(item.nivel, 'falha');
+});
+
+test('instanciaExiste null (ambíguo) não gera achado — só false gera', async () => {
+  const r = await executarDiagnostico(comFalha({
+    evolucao: async () => ({ configurada: true, instancia: 'clinica', alcancavel: true, instanciaExiste: null, fila: null }),
+  }));
+  assert.equal(r.achados.some((a) => a.area === 'evolucao'), false);
+});
+
+test('resposta da automação que falhou ao entregar na última hora é crítico', async () => {
+  const r = await executarDiagnostico(comFalha({
+    entregas: async () => ({ total: 3, janelaMs: 3_600_000 }),
+  }));
+  const item = r.achados.find((a) => a.area === 'entregas');
+  assert.ok(item);
+  assert.equal(item.nivel, 'critico');
+  assert.match(item.titulo, /3 resposta\(s\)/);
+});
+
+test('zero entrega falhada não gera achado', async () => {
+  const r = await executarDiagnostico(comFalha({
+    entregas: async () => ({ total: 0, janelaMs: 3_600_000 }),
+  }));
+  assert.equal(r.achados.some((a) => a.area === 'entregas'), false);
+});
+
 test('todo achado diz o que fazer', async () => {
   // Achado sem reparo transfere para quem lê o trabalho de descobrir o que fazer
   // — que é justamente o trabalho que a varredura deveria poupar.

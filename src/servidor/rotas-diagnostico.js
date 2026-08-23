@@ -4,6 +4,7 @@ const { exigirPermissao } = require('../seguranca/rbac');
 const { executarDiagnostico } = require('../dominio/diagnostico');
 const {
   sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker, sondaDaOutbox,
+  sondaDeEntregasFalhadas,
 } = require('../dominio/diagnostico-sondas');
 const { decidirAtendimento } = require('../dominio/sincronia-serena');
 const { conferirConexao } = require('../dados/conferir-conexao');
@@ -61,6 +62,9 @@ function criarRotasDeDiagnostico({
         // Comando 7, achado A-1: worker separado (bin/worker-outbox.js), sem
         // observabilidade nenhuma até aqui.
         outbox: sondaDaOutbox(repositorio),
+        // Incidente de 22/08: o sinal fim-a-fim que pega falha mesmo quando
+        // cada peça isolada (fila, worker, canal, Evolution) reporta "ok".
+        entregas: sondaDeEntregasFalhadas(repositorio),
       });
     },
   };
