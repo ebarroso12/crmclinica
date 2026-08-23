@@ -2497,28 +2497,54 @@ function criarRepositorio(pool) {
       const PADRAO = {
         id: 1, ativa: true, alterado_por: null, alterado_em: null, motivo: null,
         agenda: null, pausada_ate: null, ligada_ate: null,
+        // Achado da auditoria de 22/08: sem estas duas no SELECT, a decisão
+        // real (contatoNaAtivacao em src/dominio/serena.js) nunca via
+        // modo_ativacao/ativacao_percentual — sempre caía no `?? 'todos'` e
+        // um rollout parcial configurado pela API (`PUT /api/serena/ativacao`)
+        // silenciosamente virava "responde 100% dos contatos" na primeira
+        // decisão seguinte. Fail-open no sentido perigoso: devia restringir
+        // e não restringia. Os defaults abaixo batem com os da migration 028
+        // (DEFAULT 'todos' / DEFAULT 100).
+        modo_ativacao: 'todos', ativacao_percentual: 100,
       };
 
-      const consulta = (colunasNovas) => consultar(`
+      const consulta = (colunas013, colunas028) => consultar(`
         SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo,
-               ${colunasNovas ? 'c.agenda, c.pausada_ate, c.ligada_ate,' : ''}
+               ${colunas013 ? 'c.agenda, c.pausada_ate, c.ligada_ate,' : ''}
+               ${colunas028 ? 'c.modo_ativacao, c.ativacao_percentual,' : ''}
                u.nome AS alterado_por_nome
           FROM serena_configuracao c
           LEFT JOIN usuarios u ON u.id = c.alterado_por
          WHERE c.id = 1
       `);
 
+      // 42703 = coluna inexistente: o código subiu antes da migração
+      // correspondente. Deploy e migração não são atômicas, e o intervalo
+      // entre os dois não pode derrubar o painel inteiro da Serena.
+      //
+      // Achado da revisão de 22/08 ao fix acima (agenda/pausada_ate/ligada_ate
+      // e modo_ativacao/ativacao_percentual): as duas guardas precisam ser
+      // INDEPENDENTES, não uma só. A 013 (agenda/pausada_ate/ligada_ate) e a
+      // 028 (modo_ativacao/ativacao_percentual) podem estar em estágios
+      // diferentes no mesmo banco — um banco com a 013 aplicada e a 028
+      // pendente é um estado real (staging recriado até um ponto
+      // intermediário, restauração de backup entre as duas). Uma guarda só
+      // faria a 028 pendente derrubar TAMBÉM agenda/pausada_ate/ligada_ate,
+      // que existem de verdade no banco — apagando uma pausa humana ativa ou
+      // o horário configurado, o mesmo fail-open que este arquivo existe
+      // para evitar. Por isso a segunda tentativa mantém as colunas da 013 e
+      // só solta as da 028; só a terceira solta as duas.
       let rows;
       try {
-        ({ rows } = await consulta(true));
+        ({ rows } = await consulta(true, true));
       } catch (erro) {
-        // 42703 = coluna inexistente: o código subiu antes da migração 013.
-        // Deploy e migração não são atômicos, e o intervalo entre os dois não
-        // pode derrubar o painel inteiro da Serena — o horário é um detalhe
-        // dela, não a razão de ela existir. Sem as colunas, a leitura degrada
-        // para "sem limite de horário", que é o padrão de quem nunca configurou.
         if (erro.code !== '42703') throw erro;
-        ({ rows } = await consulta(false));
+        try {
+          ({ rows } = await consulta(true, false));
+        } catch (erro2) {
+          if (erro2.code !== '42703') throw erro2;
+          ({ rows } = await consulta(false, false));
+        }
       }
 
       // Linha ausente nasce ligada e sem limite: um sistema que sobe mudo sem

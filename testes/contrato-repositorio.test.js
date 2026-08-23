@@ -646,6 +646,27 @@ for (const { nome, montar } of implementacoes) {
       assert.equal((await repositorio.obterConfiguracaoDaSerena()).ativa, true);
     });
 
+    await t.test('ativação gradual: o que é gravado é o que a decisão real relê depois', async () => {
+      // Achado da auditoria de 22/08: `obterConfiguracaoDaSerena` no PostgreSQL
+      // não trazia `modo_ativacao`/`ativacao_percentual` no SELECT — um rollout
+      // parcial gravado por `definirAtivacaoGradual` sobrevivia no banco, mas a
+      // decisão de resposta (que só chama `obterConfiguracaoDaSerena`, nunca
+      // `definirAtivacaoGradual`) nunca via a restrição e caía no `?? 'todos'`,
+      // respondendo a 100% dos contatos mesmo com um percentual configurado.
+      const gravado = await repositorio.definirAtivacaoGradual({ modo: 'percentual', percentual: 30 });
+      assert.equal(gravado.modo_ativacao, 'percentual');
+      assert.equal(gravado.ativacao_percentual, 30);
+
+      const relido = await repositorio.obterConfiguracaoDaSerena();
+      assert.equal(relido.modo_ativacao, 'percentual', 'a decisão real relê por aqui — precisa bater com o que foi gravado');
+      assert.equal(relido.ativacao_percentual, 30);
+
+      // Devolve ao padrão para não vazar estado para os testes seguintes.
+      const restaurado = await repositorio.definirAtivacaoGradual({ modo: 'todos', percentual: 100 });
+      assert.equal(restaurado.modo_ativacao, 'todos');
+      assert.equal((await repositorio.obterConfiguracaoDaSerena()).modo_ativacao, 'todos');
+    });
+
     await t.test('prompt: versão sequencial, edição só de rascunho, uma publicada por vez', async () => {
       const primeira = await repositorio.criarPromptDaSerena({
         titulo: 'Política v1', conteudo: 'Você é Serena, assistente da clínica.',
