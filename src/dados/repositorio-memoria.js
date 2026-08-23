@@ -715,12 +715,26 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     },
 
     async encontrarOuCriarContato({ telefone, nome = null, canal = 'whatsapp', identificador = null }) {
-      // Achado de 23/08: `contato.telefone === telefone` com os dois `null`
-      // (canal sem telefone, ex. Instagram) casava `null === null` e misturava
-      // pessoas diferentes no mesmo contato. Telefone só compara quando
-      // presente; sem telefone, a chave de dedupe passa a ser o identificador.
+      // Achado de 23/08 (revisão de banco + código, duas rodadas): telefone e
+      // identificador são chaves de dedupe alternativas, cada uma só compara
+      // quando está presente na chamada — nunca por igualdade entre dois
+      // `null` (isso já colidiu pessoas diferentes duas vezes: primeiro dois
+      // contatos do Instagram distintos, depois dois cadastros manuais
+      // incompletos, caso real de testes/contatos-qualidade.test.js). Sem
+      // telefone NEM identificador na chamada, não há chave nenhuma — cada
+      // chamada cria um contato novo, igual ao Postgres (índice parcial exige
+      // `identificador IS NOT NULL`).
+      //
+      // O match por identificador NÃO exige `contato.telefone === null`: a
+      // Serena vai perguntar telefone durante a qualificação de um lead do
+      // Instagram, e esse contato pode ganhar telefone depois de já existir.
+      // Se o match exigisse telefone ainda nulo, a mensagem seguinte da MESMA
+      // pessoa deixaria de reconhecer o contato promovido e criaria um
+      // duplicado — a mesma classe de bug, só que pela porta oposta.
       const existente = [...contatos.values()].find((contato) => (
-        telefone ? contato.telefone === telefone : contato.telefone === null && contato.identificador === identificador
+        telefone
+          ? contato.telefone === telefone
+          : Boolean(identificador) && contato.identificador === identificador
       ));
       if (existente) {
         if (!existente.nome && nome) existente.nome = nome;

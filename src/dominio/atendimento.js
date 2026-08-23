@@ -29,6 +29,13 @@ function bloqueioDaBarreiraPrecisaEscalar(motivo) {
   return !MOTIVOS_DE_DECISAO_HUMANA_RECENTE.has(motivo);
 }
 
+// Canais sem telefone (Instagram identifica pelo PSID) usam `identificador`
+// como chave de contato e destinatário de envio, não `telefone` — mesma lista
+// usada tanto na entrada (receberMensagem, criação de contato) quanto na
+// saída (entregarAoPaciente, escolha do destinatário). Uma lista só, para as
+// duas pontas nunca divergirem sobre o que cada canal usa.
+const CANAIS_SEM_TELEFONE = new Set(['instagram']);
+
 // Pedido explícito do Edson (2026-08-16): telefone na lista de bloqueio
 // (db/040_contatos_bloqueados.sql) nunca recebe resposta da automação —
 // em vez disso, cada mensagem que chega dele é respondida com este texto
@@ -96,7 +103,6 @@ function criarAtendimento({
     // — só um canal sem telefone (Instagram, identificado pelo PSID) é
     // exceção. Gravar um PSID na coluna `telefone` poluiria um campo que o
     // resto do sistema trata como telefone de verdade (normalização, exibição).
-    const CANAIS_SEM_TELEFONE = new Set(['instagram']);
     const semTelefone = CANAIS_SEM_TELEFONE.has(evento.canal);
     const contato = await repositorio.encontrarOuCriarContato({
       telefone: semTelefone ? null : evento.remetente,
@@ -804,7 +810,19 @@ function criarAtendimento({
 
     try {
       const contato = await repositorio.obterContato(conversa.contato_id);
-      if (!contato?.telefone) return { enviada: false, motivo: 'contato_sem_telefone' };
+      // Achado A1.9 (generalização por canal, 23/08): canais sem telefone
+      // (Instagram) identificam o destinatário do envio pelo `identificador`
+      // (PSID), não `telefone` — mesma lista CANAIS_SEM_TELEFONE usada na
+      // entrada (receberMensagem). Sem isto, toda automação numa conversa do
+      // Instagram travava sempre em 'contato_sem_telefone', mesmo com o
+      // contato certo já reconhecido sem duplicar. O transporte de envio de
+      // verdade (Graph API do Instagram) ainda não existe — só `canal`
+      // (Evolution/OpenClaw, WhatsApp) está injetado até essa peça ser
+      // construída; até lá, uma tentativa de entrega numa conversa do
+      // Instagram falha mais abaixo, no transporte em si, com um erro real —
+      // não mais aqui, com o motivo errado, antes de sequer tentar.
+      const destinatario = CANAIS_SEM_TELEFONE.has(conversa.canal) ? contato?.identificador : contato?.telefone;
+      if (!destinatario) return { enviada: false, motivo: 'contato_sem_destinatario' };
 
       // Mesma chave de idempotência nos dois casos — ver o comentário abaixo
       // sobre o que ela realmente protege (não é dedupe nativo da Evolution).
@@ -812,7 +830,7 @@ function criarAtendimento({
 
       const resultado = anexo
         ? await canal.enviarMidia({
-          telefone: contato.telefone,
+          telefone: destinatario,
           // O bucket é privado: media_url grava só o path interno
           // (anexo.caminho), nunca uma URL pública. A Evolution precisa de
           // uma URL alcançável de fato — gerada aqui, na hora do envio, de
@@ -823,7 +841,7 @@ function criarAtendimento({
           nomeArquivo: anexo.nome || null,
         })
         : await canal.enviar({
-          telefone: contato.telefone,
+          telefone: destinatario,
           texto,
           // Comando 7, segunda auditoria, achado N-10: este comentário dizia
           // que a chave, sozinha, impedia o paciente de receber a mesma
@@ -849,14 +867,17 @@ function criarAtendimento({
           console.error(`[atendimento] falha ao marcar entrega confirmada: ${erroDeMarca.message}`);
         });
       }
-      // Migration 042: grava o ID nativo do WhatsApp nesta mensagem — é o que
+      // Migration 042: grava o ID nativo do provedor nesta mensagem — é o que
       // permite reconhecer o eco `fromMe:true` desta MESMA mensagem quando o
       // webhook o devolver, e não gravá-la de novo como se fosse uma resposta
       // enviada por fora (ver normalizarEcoDeEnvioEvolution /
-      // registrarEnvioExternoDoWhatsapp). Best-effort: uma falha aqui não
+      // registrarEnvioExternoDoWhatsapp). Achado A1.9: prefixo por canal
+      // (`conversa.canal`), não mais fixo em 'whatsapp' — para WhatsApp o
+      // valor é idêntico a antes (`conversa.canal === 'whatsapp'`), sem
+      // quebrar o dedupe de eco existente. Best-effort: uma falha aqui não
       // desfaz um envio que já aconteceu de verdade.
       if (resultado?.identificador && repositorio.marcarIdProvedorDaMensagem) {
-        await repositorio.marcarIdProvedorDaMensagem(mensagemId, `whatsapp:${contato.telefone}:${resultado.identificador}`)
+        await repositorio.marcarIdProvedorDaMensagem(mensagemId, `${conversa.canal}:${destinatario}:${resultado.identificador}`)
           .catch((erroDeMarca) => {
             console.error(`[atendimento] falha ao marcar id do provedor: ${erroDeMarca.message}`);
           });

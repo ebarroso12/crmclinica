@@ -68,6 +68,58 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(segundo.nome, 'Marina', 'nome já registrado não é sobrescrito');
     });
 
+    await t.test('contato sem telefone (Instagram) não duplica pelo identificador', async () => {
+      const primeiro = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-1', nome: 'Ana', canal: 'instagram',
+      });
+      const segundo = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-1', nome: 'Ana Paula', canal: 'instagram',
+      });
+
+      assert.equal(primeiro.id, segundo.id);
+      assert.equal(segundo.nome, 'Ana', 'nome já registrado não é sobrescrito');
+    });
+
+    await t.test('dois PSIDs diferentes do Instagram nunca colidem no mesmo contato', async () => {
+      const a = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-a', nome: 'Pessoa A', canal: 'instagram',
+      });
+      const b = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-b', nome: 'Pessoa B', canal: 'instagram',
+      });
+
+      assert.notEqual(a.id, b.id);
+    });
+
+    await t.test('telefone adicionado depois a um contato do Instagram não quebra o reconhecimento pelo identificador', async () => {
+      // Achado da revisão de banco de 23/08: a Serena vai perguntar telefone
+      // durante a qualificação de um lead do Instagram — se isso "promover" o
+      // contato (ganhar telefone além do identificador) fizer a PRÓXIMA
+      // mensagem da mesma pessoa criar um contato novo, é exatamente a
+      // duplicação que a correção original devia evitar, só que por outra porta.
+      const criado = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-promovido', nome: 'Beatriz', canal: 'instagram',
+      });
+      await repositorio.atualizarContato(criado.id, { telefone: '5516999998888' });
+
+      const depoisDePromovido = await repositorio.encontrarOuCriarContato({
+        telefone: null, identificador: 'ig-psid-contrato-promovido', nome: 'Beatriz', canal: 'instagram',
+      });
+
+      assert.equal(depoisDePromovido.id, criado.id, 'segunda mensagem do mesmo PSID precisa achar o MESMO contato');
+      assert.equal(depoisDePromovido.telefone, '5516999998888', 'o telefone gravado manualmente não pode ser apagado');
+    });
+
+    await t.test('dois contatos incompletos (sem telefone nem identificador) nunca colidem entre si', async () => {
+      // Cadastro manual parcial (ex.: a feature de qualidade cadastral) — sem
+      // NENHUMA chave, cada chamada tem que criar um contato novo, nunca casar
+      // com um incompleto anterior de outra pessoa.
+      const um = await repositorio.encontrarOuCriarContato({ telefone: null, nome: 'Incompleto Um' });
+      const dois = await repositorio.encontrarOuCriarContato({ telefone: null, nome: 'Incompleto Dois' });
+
+      assert.notEqual(um.id, dois.id);
+    });
+
     await t.test('busca de contato acha por nome e por telefone digitado', async () => {
       await repositorio.encontrarOuCriarContato({ telefone: '5516988887777', nome: 'Joana Ribeiro' });
       await repositorio.encontrarOuCriarContato({ telefone: '5511955554444', nome: 'Carlos Menezes' });
