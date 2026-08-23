@@ -227,6 +227,11 @@ async function renovarSessao() {
   }
 }
 
+// Estado do banner #aviso-serena entre polls — ver comentários dentro de
+// carregarResumo(). null = ainda não sabemos o estado real da Serena.
+let serenaAvisoUltimoEstado = null;
+let serenaAvisoDadosDesatualizados = false;
+
 async function carregarResumo() {
   try {
     const resumo = await pedirJson('/api/resumo');
@@ -254,16 +259,35 @@ async function carregarResumo() {
       // na raiz do resumo. Lendo daqui, o banner nunca aparecia, mesmo com a
       // Serena desligada há dias.
       const serena = resumo.plataforma?.serena;
-      if (serena && serena.ativa === false) {
-        avisoSerena.hidden = false;
-        const ha = serena.desde ? haQuanto(serena.desde) : '';
-        avisoSerena.textContent = ha
-          ? `Serena desligada ${ha} — o atendimento automático está pausado.`
-          : 'Serena desligada — o atendimento automático está pausado.';
-      } else {
-        avisoSerena.hidden = true;
-        avisoSerena.textContent = '';
+      const desligada = Boolean(serena && serena.ativa === false);
+      const mudouDeEstado = desligada !== serenaAvisoUltimoEstado;
+
+      // Achado da revisão de UX de 22/08: `#aviso-serena` é `role="alert"`
+      // (index.html) — uma região aria-live="assertive" do leitor de tela,
+      // que interrompe qualquer fala em andamento a cada mudança de texto.
+      // Este poll roda a cada 60s; reescrever o texto em todo poll faria o
+      // leitor de tela interromper de novo a cada minuto durante TODA uma
+      // queda da automação, porque "há N min" muda a cada minuto — o pior
+      // momento possível para atrapalhar quem está atendendo manualmente.
+      // Por isso só reescreve quando o estado de verdade muda (ligou/
+      // desligou) ou quando o dado volta a ficar fresco depois de uma falha
+      // de poll (abaixo). O texto fica com o tempo decorrido congelado no
+      // valor de quando apareceu — troca deliberada: a informação essencial
+      // (a automação está parada) não muda com o relógio, e vale mais que
+      // repetir a interrupção.
+      if (mudouDeEstado || (desligada && serenaAvisoDadosDesatualizados)) {
+        avisoSerena.hidden = !desligada;
+        if (desligada) {
+          const ha = serena.desde ? haQuanto(serena.desde) : '';
+          avisoSerena.textContent = ha
+            ? `Serena desligada ${ha} — o atendimento automático está pausado.`
+            : 'Serena desligada — o atendimento automático está pausado.';
+        } else {
+          avisoSerena.textContent = '';
+        }
       }
+      serenaAvisoUltimoEstado = desligada;
+      serenaAvisoDadosDesatualizados = false;
     }
 
     const { orquestrador, atendimento, inbox, fonteDeVerdade } = resumo.plataforma;
@@ -282,6 +306,18 @@ async function carregarResumo() {
     for (const alvo of ['#saude-orquestrador', '#saude-atendimento', '#saude-inbox', '#saude-crm']) {
       aplicarEstado(alvo, 'indisponivel');
     }
+
+    // Achado da revisão de UX de 22/08: sem isto, uma falha de poll deixava
+    // o banner "Serena desligada há Xh" congelado, com o tempo decorrido
+    // cada vez mais errado e nenhuma pista de que o dado está velho — e, se
+    // a automação tivesse voltado durante a falha, ninguém saberia pela
+    // tela. Marca uma vez; o texto volta ao normal sozinho no próximo poll
+    // que tiver sucesso (ver `serenaAvisoDadosDesatualizados` acima).
+    const avisoSerena = seletor('#aviso-serena');
+    if (avisoSerena && !avisoSerena.hidden && !serenaAvisoDadosDesatualizados) {
+      avisoSerena.textContent += ' (falha ao atualizar — este dado pode estar desatualizado)';
+    }
+    serenaAvisoDadosDesatualizados = true;
   }
 }
 
