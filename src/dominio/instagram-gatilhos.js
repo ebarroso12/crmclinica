@@ -200,18 +200,21 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
       }
     }
 
-    // DM privada. Best-effort — mesmo raciocínio de `entregarAoPaciente` em
-    // src/dominio/atendimento.js: falha de rede no envio não pode derrubar o
-    // processamento do comentário (o registro de idempotência abaixo precisa
-    // acontecer de qualquer jeito); `dm_enviada:false` no retorno é o que
-    // sobra para alguém perceber que a mensagem não saiu.
+    // DM privada. Endereça por `comment_id` (não pelo `autorIgId`/PSID) —
+    // achado de 23/08 (ver instagram-envio.js): é a primeira mensagem depois
+    // de um comentário, sem conversa aberta ainda, e a Graph API só libera
+    // esse envio quando o destinatário é referenciado pelo comentário que
+    // originou o gatilho. Best-effort — mesmo raciocínio de
+    // `entregarAoPaciente` em src/dominio/atendimento.js: falha de rede no
+    // envio não pode derrubar o processamento do comentário (o registro de
+    // idempotência abaixo precisa acontecer de qualquer jeito);
+    // `dm_enviada:false` no retorno é o que sobra para alguém perceber que a
+    // mensagem não saiu.
     let dmEnviada = false;
-    if (instagramEnvio) {
+    if (instagramEnvio && typeof instagramEnvio.responderComentarioPrivadamente === 'function') {
       try {
-        await instagramEnvio.enviar({
-          telefone: autorIgId,
-          texto: regra.mensagem_dm,
-          chave: `gatilho:${comentarioIdExterno}`,
+        await instagramEnvio.responderComentarioPrivadamente({
+          comentarioIdExterno, texto: regra.mensagem_dm,
         });
         dmEnviada = true;
       } catch (erro) {

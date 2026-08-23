@@ -14,6 +14,11 @@ function instagramEnvioFalso({ falhar = false } = {}) {
       if (falhar) throw new Error('Graph API do Instagram indisponível');
       return { identificador: 'ig-msg-1' };
     },
+    async responderComentarioPrivadamente(carga) {
+      envios.push(carga);
+      if (falhar) throw new Error('Graph API do Instagram indisponível');
+      return { identificador: 'ig-msg-1' };
+    },
   };
 }
 
@@ -158,9 +163,8 @@ test('comentário com gatilho dispara DM, cria contato/conversa/lead e registra 
   assert.equal(resultado.resposta_publica_enviada, false);
 
   assert.equal(instagramEnvio.envios.length, 1);
-  assert.equal(instagramEnvio.envios[0].telefone, 'ig2');
+  assert.equal(instagramEnvio.envios[0].comentarioIdExterno, 'c2', 'DM do gatilho endereça por comment_id, não por PSID');
   assert.equal(instagramEnvio.envios[0].texto, CAMPOS_REGRA.mensagemDm);
-  assert.equal(instagramEnvio.envios[0].chave, 'gatilho:c2');
 
   const contatos = await repositorio.listarContatos({});
   assert.equal(contatos.length, 1);

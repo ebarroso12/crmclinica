@@ -134,6 +134,34 @@ function criarClienteInstagramEnvio(configuracao = {}, dependencias = {}) {
     },
 
     /**
+     * Responde PRIVADAMENTE a um comentário (DM) usando `recipient.comment_id`
+     * em vez de `recipient.id` — é o formato que a Graph API exige para a
+     * primeira mensagem depois de um comentário, quando ainda não existe
+     * conversa aberta com aquela pessoa (o PSID normal em `recipient.id` só
+     * funciona depois que já existe troca de DM). Confirmado em 23/08 contra
+     * a automação externa anterior (exportação real de produção que o
+     * Dr. Edson colou no chat) — antes disso este arquivo só tinha
+     * `enviar()` com `recipient.id`, que a
+     * metade "DM do gatilho" (processarComentario, em instagram-gatilhos.js)
+     * usava por engano com o `autorIgId` do comentário — endereçamento que só
+     * é válido para conversa já existente, não para a primeira mensagem.
+     */
+    async responderComentarioPrivadamente({ comentarioIdExterno, texto }) {
+      if (!disponivel) {
+        throw new Error('Instagram API não configurada (accessToken/contaComercialId)');
+      }
+      if (typeof fetchImpl !== 'function') throw new Error('fetch indisponível');
+
+      const idDoComentario = String(comentarioIdExterno ?? '').trim();
+      if (!idDoComentario) throw new Error('id de comentário inválido para resposta privada');
+
+      return enviarPayload({
+        recipient: { comment_id: idDoComentario },
+        message: { text: String(texto ?? '') },
+      });
+    },
+
+    /**
      * Responde publicamente a um comentário (visível a todo mundo, embaixo
      * do comentário original) — a metade pública do requisito do gatilho:
      * "resposta pública no comentário E DM privada, sempre as duas".

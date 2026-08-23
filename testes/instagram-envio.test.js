@@ -168,6 +168,32 @@ test('destinatário vazio ou só espaços é recusado antes de chamar a rede', a
   assert.equal(fetchImpl.chamadas.length, 0);
 });
 
+test('responderComentarioPrivadamente envia POST /me/messages com recipient.comment_id (não recipient.id)', async () => {
+  const fetchImpl = fetchFalso(async () => new Response(
+    JSON.stringify({ recipient_id: 'psid-123', message_id: 'mid.MSG456' }),
+    { status: 200 },
+  ));
+  const cliente = criarClienteInstagramEnvio(CONFIG, { fetchImpl });
+
+  const resultado = await cliente.responderComentarioPrivadamente({ comentarioIdExterno: 'C1', texto: 'Olá! Te chamei aqui.' });
+  assert.equal(resultado.identificador, 'mid.MSG456');
+
+  assert.equal(fetchImpl.chamadas.length, 1);
+  const [{ url, opcoes }] = fetchImpl.chamadas;
+  assert.equal(url, 'https://graph.instagram.com/v23.0/me/messages');
+  const corpo = JSON.parse(opcoes.body);
+  assert.deepEqual(corpo.recipient, { comment_id: 'C1' }, 'primeira mensagem depois de comentário usa comment_id, não PSID');
+  assert.deepEqual(corpo.message, { text: 'Olá! Te chamei aqui.' });
+});
+
+test('responderComentarioPrivadamente recusa id de comentário vazio antes de chamar a rede', async () => {
+  const fetchImpl = fetchFalso(async () => new Response('{}', { status: 200 }));
+  const cliente = criarClienteInstagramEnvio(CONFIG, { fetchImpl });
+
+  await assert.rejects(() => cliente.responderComentarioPrivadamente({ comentarioIdExterno: '', texto: 'oi' }));
+  assert.equal(fetchImpl.chamadas.length, 0);
+});
+
 test('encerrar() existe e resolve sem lançar (cliente é stateless)', async () => {
   const cliente = criarClienteInstagramEnvio(CONFIG, { fetchImpl: fetchFalso(async () => new Response('{}')) });
   await assert.doesNotReject(() => cliente.encerrar());
