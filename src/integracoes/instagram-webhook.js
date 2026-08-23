@@ -137,18 +137,19 @@ function instanteIsoSegundos(epochSegundos) {
  * verdade; qualquer divergência encontrada então deve ser corrigida ali, não
  * adivinhada agora.
  *
- * LACUNA CONHECIDA E ACEITA (documentada, não escondida): diferente do
- * `message.is_echo` que a Meta manda para mensagens, o payload documentado de
- * `changes[].value` para comentários NÃO inclui nenhum campo equivalente que
- * diga "este comentário foi feito pela própria conta da clínica". Sem um
- * campo real pra isso, esta função NÃO inventa um e portanto NÃO filtra
- * auto-comentário — se isso vier a importar na prática (a clínica comentando
- * sob a própria automação e disparando um loop), a defesa real precisaria
- * comparar `autor_ig_id` contra o ID da conta comercial já conhecido por
- * `instagram-envio.js` (`configuracao.contaComercialId`), decisão de escopo
- * futuro não tomada aqui.
+ * Achado A1.9-B (23/08): a lacuna "detectar comentário da própria clínica"
+ * (sem equivalente a `message.is_echo` no payload de comentário) foi FECHADA
+ * — a documentação de referência da Graph API (developers.facebook.com/docs/
+ * graph-api/webhooks/reference/instagram) mostra `value.from.id` e
+ * `value.from.self_ig_scoped_id`, e `self_ig_scoped_id` é o ID do autor do
+ * comentário visto pela conta que recebeu o webhook — se o comentário for da
+ * PRÓPRIA conta comercial, `from.id` (ou `self_ig_scoped_id`) bate com o
+ * `contaComercialId` configurado. Passar `contaComercialId` (segundo
+ * argumento, opcional) ativa esse corte; sem ele, mantém o comportamento
+ * anterior (não filtra) — é assim que os testes existentes, sem essa
+ * informação, continuam passando sem mudar.
  */
-function normalizarComentarioInstagram(payload = {}) {
+function normalizarComentarioInstagram(payload = {}, { contaComercialId = null } = {}) {
   if (!payload || typeof payload !== 'object') return null;
 
   const entradas = Array.isArray(payload.entry) ? payload.entry : [];
@@ -179,6 +180,13 @@ function normalizarComentarioInstagram(payload = {}) {
 
   const autorIgId = texto(valor.from?.id);
   if (!autorIgId) return null;
+
+  // Comentário da própria clínica (ex.: a resposta pública que ESTA MESMA
+  // automação acabou de postar, no raro caso de `parent_id` não vir
+  // preenchido) — evita reagir ao próprio comentário. Só filtra quando o
+  // chamador informou `contaComercialId`; sem ele, segue sem filtrar.
+  const idAlternativo = texto(valor.from?.self_ig_scoped_id);
+  if (contaComercialId && (autorIgId === contaComercialId || idAlternativo === contaComercialId)) return null;
 
   const conteudo = texto(valor.text);
   if (!conteudo) return null;

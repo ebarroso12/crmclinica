@@ -152,8 +152,9 @@ test('comentário com gatilho dispara DM, cria contato/conversa/lead e registra 
 
   assert.equal(resultado.regra.id, regra.id);
   assert.equal(resultado.dm_enviada, true);
-  // Nenhum método de resposta pública existe ainda em instagram-envio.js —
-  // ver comentário em src/dominio/instagram-gatilhos.js.
+  // Este fake (instagramEnvioFalso) não implementa responderComentarioPublicamente
+  // de propósito — prova o caminho defensivo (sem o método, não quebra, só
+  // fica false). O caminho COM o método está no teste seguinte.
   assert.equal(resultado.resposta_publica_enviada, false);
 
   assert.equal(instagramEnvio.envios.length, 1);
@@ -183,6 +184,54 @@ test('comentário com gatilho dispara DM, cria contato/conversa/lead e registra 
 
   const registrado = await repositorio.obterComentarioProcessado('c2');
   assert.equal(registrado.regra_id, regra.id);
+  assert.equal(registrado.dm_enviada, true);
+});
+
+test('com responderComentarioPublicamente disponível, a resposta pública é chamada com o comentário e o texto certos', async () => {
+  // Achado A1.9-B (23/08): a implementação anterior chamava o método com a
+  // chave errada (`comentarioId` em vez de `comentarioIdExterno`) — como o
+  // fake antigo não tinha o método, nada pegava isso. Este teste usa um fake
+  // QUE TEM o método, exatamente para expor esse tipo de erro de novo se
+  // reaparecer.
+  const chamadas = [];
+  const instagramEnvio = {
+    ...instagramEnvioFalso(),
+    async responderComentarioPublicamente(carga) {
+      chamadas.push(carga);
+      return { identificador: 'ig-reply-1' };
+    },
+  };
+  const { servico } = montar({ instagramEnvio });
+  await servico.criarRegra({ ...CAMPOS_REGRA });
+
+  const resultado = await servico.processarComentario({
+    comentarioIdExterno: 'c9', postId: 'p1', autorIgId: 'ig9', autorUsername: 'carla', texto: 'qual o preço?',
+  });
+
+  assert.equal(resultado.resposta_publica_enviada, true);
+  assert.equal(chamadas.length, 1);
+  assert.equal(chamadas[0].comentarioIdExterno, 'c9', 'o id do comentário precisa chegar com o nome de campo certo');
+  assert.equal(chamadas[0].texto, CAMPOS_REGRA.mensagemPublica);
+});
+
+test('falha na resposta pública é best-effort — não impede a DM nem o registro', async () => {
+  const instagramEnvio = {
+    ...instagramEnvioFalso(),
+    async responderComentarioPublicamente() {
+      throw new Error('Graph API recusou a resposta pública');
+    },
+  };
+  const { repositorio, servico } = montar({ instagramEnvio });
+  await servico.criarRegra({ ...CAMPOS_REGRA });
+
+  const resultado = await servico.processarComentario({
+    comentarioIdExterno: 'c10', postId: 'p1', autorIgId: 'ig10', autorUsername: 'pedro', texto: 'preço?',
+  });
+
+  assert.equal(resultado.resposta_publica_enviada, false);
+  assert.equal(resultado.dm_enviada, true, 'a DM não pode falhar só porque a resposta pública falhou');
+  const registrado = await repositorio.obterComentarioProcessado('c10');
+  assert.equal(registrado.resposta_publica_enviada, false);
   assert.equal(registrado.dm_enviada, true);
 });
 

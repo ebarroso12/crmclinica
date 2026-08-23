@@ -197,6 +197,37 @@ test('ignora comentário que é resposta a outro comentário (parent_id presente
   assert.equal(normalizarComentarioInstagram(evento), null);
 });
 
+test('com contaComercialId informado, ignora comentário feito pela própria conta (from.id bate)', () => {
+  const evento = {
+    entry: [{
+      time: 1723500000,
+      changes: [{
+        field: 'comments',
+        value: { id: 'C9', text: 'resposta da clínica', from: { id: '555000111', username: 'clinica_oficial' } },
+      }],
+    }],
+  };
+  assert.equal(normalizarComentarioInstagram(evento, { contaComercialId: '555000111' }), null);
+});
+
+test('com contaComercialId informado, ignora comentário via self_ig_scoped_id', () => {
+  const evento = {
+    entry: [{
+      time: 1723500000,
+      changes: [{
+        field: 'comments',
+        value: { id: 'C10', text: 'resposta da clínica', from: { id: '999', self_ig_scoped_id: '555000111', username: 'clinica_oficial' } },
+      }],
+    }],
+  };
+  assert.equal(normalizarComentarioInstagram(evento, { contaComercialId: '555000111' }), null);
+});
+
+test('sem contaComercialId informado, comentário da própria conta NÃO é filtrado (comportamento anterior preservado)', () => {
+  const normalizado = normalizarComentarioInstagram(COMENTARIO);
+  assert.ok(normalizado, 'sem contaComercialId, o filtro fica desligado — mesmo comportamento de antes');
+});
+
 test('normalizarComentarioInstagram não derruba com payload vazio, nulo ou malformado', () => {
   assert.equal(normalizarComentarioInstagram(), null);
   assert.equal(normalizarComentarioInstagram(null), null);

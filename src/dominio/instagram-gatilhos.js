@@ -180,19 +180,19 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
       return { regra: null };
     }
 
-    // Resposta pública ao comentário. LACUNA CONHECIDA E ACEITA: hoje
-    // `src/integracoes/instagram-envio.js` só expõe `enviar()` (DM via Graph
-    // API `/me/messages`) — não existe nenhum método de resposta pública a
-    // comentário (endpoint `/{comment-id}/replies` da Graph API, escopo e
-    // chamada diferentes). Não inventamos essa chamada de rede aqui: o campo
-    // que o chamador recebe (`resposta_publica_enviada`) simplesmente fica
-    // `false` até esse transporte existir, e o fluxo segue para a DM — que já
-    // tem transporte pronto —, sem quebrar.
+    // Resposta pública ao comentário — endpoint `/{comment-id}/replies` da
+    // Graph API, implementado em `instagram-envio.js` em 23/08 (achado
+    // A1.9-B: não verificado contra chamada real, sem credencial disponível
+    // — validar antes de confiar em produção). Mantém a checagem defensiva
+    // por `typeof` para o caso de um `instagramEnvio` de teste/futuro que
+    // não implemente o método — nesse caso o campo devolvido ao chamador
+    // (`resposta_publica_enviada`) fica `false` e o fluxo segue para a DM,
+    // sem quebrar.
     let respostaPublicaEnviada = false;
     if (instagramEnvio && typeof instagramEnvio.responderComentarioPublicamente === 'function') {
       try {
         await instagramEnvio.responderComentarioPublicamente({
-          comentarioId: comentarioIdExterno, texto: regra.mensagem_publica,
+          comentarioIdExterno, texto: regra.mensagem_publica,
         });
         respostaPublicaEnviada = true;
       } catch (erro) {

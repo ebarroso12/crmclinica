@@ -133,6 +133,66 @@ function criarClienteInstagramEnvio(configuracao = {}, dependencias = {}) {
       });
     },
 
+    /**
+     * Responde publicamente a um comentário (visível a todo mundo, embaixo
+     * do comentário original) — a metade pública do requisito do gatilho:
+     * "resposta pública no comentário E DM privada, sempre as duas".
+     *
+     * Endpoint diferente do envio de DM: `POST /{comment-id}/replies`, corpo
+     * `{ message: texto }` (confirmado contra a documentação de referência
+     * da Graph API — developers.facebook.com/docs/marketing-api/reference/
+     * instagram-comment/replies — em 23/08). ATENÇÃO: essa referência é do
+     * produto "Instagram API with Facebook Login" (host graph.facebook.com);
+     * o resto deste arquivo usa "Instagram API with Instagram Login" (host
+     * graph.instagram.com, o mesmo de `enviar()`/`enviarBotaoWhatsapp()`).
+     * Mantido `graph.instagram.com` aqui por consistência com o resto da
+     * integração — se a conta em uso for do outro produto, o host pode
+     * precisar mudar. Não verificado contra uma chamada real (sem
+     * credencial disponível) — validar antes de confiar em produção.
+     */
+    async responderComentarioPublicamente({ comentarioIdExterno, texto }) {
+      if (!disponivel) {
+        throw new Error('Instagram API não configurada (accessToken/contaComercialId)');
+      }
+      if (typeof fetchImpl !== 'function') throw new Error('fetch indisponível');
+
+      const idDoComentario = String(comentarioIdExterno ?? '').trim();
+      if (!idDoComentario) throw new Error('id de comentário inválido para resposta pública');
+
+      const url = `https://graph.instagram.com/${apiVersion}/${idDoComentario}/replies`;
+      let resposta;
+      try {
+        resposta = await fetchImpl(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${configuracao.accessToken}`,
+          },
+          body: JSON.stringify({ message: String(texto ?? '') }),
+          signal: AbortSignal.timeout(configuracao.timeoutMs ?? 15000),
+        });
+      } catch (erro) {
+        const falha = new Error(`falha de rede ao responder comentário no Instagram: ${erro.message}`);
+        falha.indeterminado = ehFalhaIndeterminada(erro);
+        throw falha;
+      }
+
+      if (!resposta.ok) {
+        const corpoErro = await resposta.json().catch(() => null);
+        const mensagemErro = corpoErro?.error?.message;
+        throw new Error(mensagemErro || `Graph API do Instagram respondeu HTTP ${resposta.status}`);
+      }
+
+      const dados = await resposta.json().catch(() => null);
+      // A resposta de sucesso deste endpoint devolve o id da nova réplica
+      // (`{ id: "..." }") — formato diferente do envio de DM
+      // (`{ recipient_id, message_id }`), documentado como tal na referência.
+      const identificador = dados?.id ?? null;
+      if (!identificador) throw new Error('a Graph API não confirmou a resposta pública ao comentário');
+
+      return { identificador };
+    },
+
     async encerrar() {
       // Sem estado nenhum pra fechar: cada enviar() é um POST isolado, sem
       // conexão persistente (mesmo modelo stateless de evolution-envio.js,

@@ -675,7 +675,9 @@ function criarAplicacao(dependencias = {}) {
     const primeiraMudanca = corpoInterpretado?.entry?.[0]?.changes?.find((c) => c?.field === 'comments');
 
     if (primeiraMudanca) {
-      const comentario = normalizarComentarioInstagram(corpoInterpretado);
+      const comentario = normalizarComentarioInstagram(corpoInterpretado, {
+        contaComercialId: configuracao.instagram.contaComercialId,
+      });
       if (!comentario) {
         responderJson(res, 200, { aceito: true, ignorado: true });
         return;
