@@ -624,6 +624,23 @@ function criarAtendimento({
     return conversa;
   }
 
+  /**
+   * Libera em massa as conversas que a PRÓPRIA AUTOMAÇÃO travou por falha —
+   * nunca uma que um humano de verdade assumiu. A distinção é `atribuido_a`:
+   * a rota HTTP de `assumir`/`responder como equipe` sempre injeta o usuário
+   * autenticado antes de chamar o domínio (ver PERMISSAO_POR_ACAO em
+   * http.js), então toda tomada real de posse tem dono. `escalonar()` nunca
+   * seta `atribuido_a` — não sabe quem devolveria a conversa, porque ninguém
+   * decidiu nada. Existe para o dia em que um canal inteiro cai por um
+   * tempo: corrigir a causa raiz não bastava, cada conversa presa ainda
+   * exigia um clique manual, uma por uma.
+   */
+  async function liberarEmMassa() {
+    const ids = await repositorio.listarConversasEscalonadasSemDono();
+    for (const id of ids) await liberar(id);
+    return { liberadas: ids.length };
+  }
+
   /** Devolve a conversa à automação. */
   async function liberar(conversaId) {
     // Mesmo raciocínio de `assumir`: só publica/audita quando é uma
@@ -904,8 +921,20 @@ function criarAtendimento({
     }
   }
 
+  // Achado de 23/08: até aqui, escalonar() travava assumida_por_humano:true
+  // em toda FALHA técnica — o mesmo campo que `assumir()` usa quando uma
+  // pessoa clica o botão. Numa indisponibilidade real (ex.: token de canal
+  // quebrado), toda conversa nova caía sozinha na fila da equipe e ficava
+  // presa lá — mesmo depois de corrigida a causa raiz — até alguém, uma por
+  // uma, clicar "Devolver à IA". Decisão explícita do dono do produto: pausar
+  // a automação é ato de pessoa (`assumir`) ou grade de horário
+  // (`fora_do_horario`, que já não passa por aqui — ver `serena.js`), nunca
+  // efeito colateral de falha. Escalonar por falha continua avisando a
+  // equipe (mensagem de sistema + auditoria — nada se perde em silêncio),
+  // só não desliga mais a automação: a próxima mensagem do paciente tenta de
+  // novo, e se a causa raiz já foi corrigida, a conversa se resolve sozinha.
   async function escalonar(conversaId, motivo) {
-    await repositorio.atualizarConversa(conversaId, { assumida_por_humano: true, status: 'aberta' });
+    await repositorio.atualizarConversa(conversaId, { status: 'aberta' });
     const { mensagem: avisoDeEscalonamento } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
       tipo: 'sistema',
@@ -1006,6 +1035,7 @@ function criarAtendimento({
     responderSePossivel,
     assumir,
     liberar,
+    liberarEmMassa,
     responderComoEquipe,
     registrarEnvioExternoDoWhatsapp,
     escalonar,

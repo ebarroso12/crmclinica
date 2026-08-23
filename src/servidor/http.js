@@ -1296,6 +1296,14 @@ function criarAplicacao(dependencias = {}) {
       return true;
     }
 
+    // Antes do bloco genérico de /api/conversas/:id (mais abaixo), pela mesma
+    // razão de /api/conversas/aguardando: "liberar-todas" não é um id.
+    if (rota === '/api/conversas/liberar-todas' && metodo === 'POST') {
+      exigirPermissao(usuario, 'conversas:assumir');
+      responderJson(res, 200, await conversas.liberarTodas());
+      return true;
+    }
+
     if (rota === '/api/leads' && metodo === 'GET') {
       exigirPermissao(usuario, 'leads:ler');
       const kanban = await conversas.listarLeads(await rotasDeLeads.listarParaKanban());

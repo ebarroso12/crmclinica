@@ -168,8 +168,10 @@ test('trabalho preso repetidas vezes esgota as tentativas e vai para dead-letter
   assert.equal(registro.morto, 1);
   assert.equal(registro.pendente, 0);
 
+  // Achado de 23/08: dead-letter escalona (avisa a equipe, checado abaixo)
+  // mas não trava mais a automação sozinha — só `assumir()` (pessoa) trava.
   const conversaDepois = await repositorio.obterConversa(conversa.id);
-  assert.equal(conversaDepois.assumida_por_humano, true, 'dead-letter tem que escalonar para a equipe');
+  assert.equal(conversaDepois.assumida_por_humano, false);
   assert.ok(repositorio._auditoria.some((r) => r.acao === 'escalonada' && r.entidadeId === conversa.id));
   assert.ok(repositorio._auditoria.some((r) => r.acao === 'outbox_morto'));
 });
@@ -264,9 +266,11 @@ test('entrega com desfecho incerto (timeout) nunca é retentada automaticamente'
   assert.equal(fila.incerto, 1);
   assert.equal(fila.pendente, 0, 'não pode voltar pendente — isso permitiria uma retentativa automática');
 
-  // A conversa já foi escalonada pelo próprio atendimento (ver atendimento.js).
+  // A conversa já foi escalonada pelo próprio atendimento (ver atendimento.js)
+  // — avisa a equipe, mas não trava mais a automação sozinha (achado de
+  // 23/08; só `assumir()`, ato de pessoa, trava).
   const conversaDepois = await repositorio.obterConversa(conversa.id);
-  assert.equal(conversaDepois.assumida_por_humano, true);
+  assert.equal(conversaDepois.assumida_por_humano, false);
 });
 
 // ---------------------------------------------- reenvio de resposta já entregue
@@ -320,15 +324,16 @@ test('resposta com entrega indeterminada não é reenviada na segunda chamada', 
   assert.equal(primeira.entregaIncerta, true);
   assert.equal(canal.chamadas, 1, 'a única tentativa é a que ficou indeterminada');
 
-  // A própria escalação da primeira chamada já marca a conversa como
-  // `assumida_por_humano` (achado A-2, ver teste "entrega com desfecho
-  // incerto" acima) — isso, sozinho, já barra uma automação de responder de
-  // novo. Para provar que o *migration 038* (marcar a entrega indeterminada
-  // na própria mensagem) é quem protege depois que a equipe devolve a
-  // conversa — cenário real: humano viu o aviso, devolveu para a fila
-  // automática sem responder — simulamos exatamente essa devolução aqui.
-  // Sem a checagem de `entrega_indeterminada` em `respostaAnterior`
-  // (atendimento.js), este segundo `responderSePossivel` tentaria reenviar.
+  // Até 23/08, a própria escalação da primeira chamada já marcava a conversa
+  // como `assumida_por_humano`, e isso sozinho já barraria uma automação de
+  // responder de novo — hoje escalonar() não trava mais sozinho (só
+  // `assumir()`, ato de pessoa, trava), então esta linha simula o mesmo
+  // estado (conversa livre, sem intervenção humana) que já é o padrão desde
+  // então. O que este teste prova é diferente: que o *migration 038*
+  // (marcar a entrega indeterminada na própria mensagem) protege contra
+  // reenvio mesmo com a conversa livre — sem essa checagem em
+  // `respostaAnterior` (atendimento.js), este segundo `responderSePossivel`
+  // tentaria reenviar.
   await repositorio.atualizarConversa(conversa.id, { assumida_por_humano: false });
 
   const segunda = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: mensagemEntrada.id });
@@ -371,9 +376,12 @@ test('trabalho processado sem orquestrador configurado escalona para a equipe e 
   assert.equal(resultado.status, 'concluido');
   assert.equal(resultado.acao, 'escalonada_para_equipe');
 
-  // Mas a equipe FOI avisada: é essa a diferença do achado A-2.
+  // Mas a equipe FOI avisada: é essa a diferença do achado A-2 (mensagem de
+  // sistema + auditoria — não mais o campo `assumida_por_humano`, que desde
+  // 23/08 só uma pessoa via `assumir()` trava).
   const conversaDepois = await repositorio.obterConversa(conversa.id);
-  assert.equal(conversaDepois.assumida_por_humano, true, 'sem isso, ninguém sabe que o paciente ficou sem resposta');
+  assert.equal(conversaDepois.assumida_por_humano, false);
+  assert.ok(repositorio._auditoria.some((r) => r.acao === 'escalonada' && r.entidadeId === conversa.id));
 });
 
 // -------------------------------------------------- barreira de controle (Comando 2)
@@ -663,8 +671,11 @@ test('trabalho mais velho que o limite não gera resposta automática — escalo
   assert.equal(resultado.acao, 'expirado_sem_resposta_automatica');
   assert.equal(canal.envios.length, 0, 'nenhuma resposta automática foi enviada — o trabalho nem chegou a gerar uma');
 
+  // Escalonado (avisa a equipe, não descartado em silêncio), mas não trava
+  // mais a automação sozinha desde 23/08 — só `assumir()` (pessoa) trava.
   const conversaDepois = await repositorio.obterConversa(conversa.id);
-  assert.equal(conversaDepois.assumida_por_humano, true, 'escalonado para a equipe, não descartado em silêncio');
+  assert.equal(conversaDepois.assumida_por_humano, false);
+  assert.ok(repositorio._auditoria.some((r) => r.acao === 'escalonada' && r.entidadeId === conversa.id));
 
   const fila = await repositorio.contarTrabalhosDeOutboxPorEstado();
   assert.equal(fila.concluido, 1);

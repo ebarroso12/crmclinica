@@ -393,6 +393,24 @@ function criarRotasDeConversas({
       return { conversa, detalhe: 'Conversa assumida. A resposta automática está pausada.' };
     },
 
+    /**
+     * POST /api/conversas/liberar-todas — devolve à automação toda conversa
+     * que a PRÓPRIA automação travou por falha (nunca uma que um humano
+     * assumiu de verdade — ver o comentário de `liberarEmMassa` em
+     * atendimento.js). Existe para o dia em que um canal cai por um tempo:
+     * corrigida a causa raiz, ninguém deveria precisar clicar conversa por
+     * conversa pra destravar o que sobrou.
+     */
+    async liberarTodas() {
+      const { liberadas } = await atendimento.liberarEmMassa();
+      return {
+        liberadas,
+        detalhe: liberadas > 0
+          ? `${liberadas} conversa(s) devolvida(s) à automação.`
+          : 'Nenhuma conversa travada por falha para liberar.',
+      };
+    },
+
     /** POST /api/conversas/:id/etiquetas — substitui o conjunto de etiquetas. */
     async definirEtiquetas(conversaId, corpo) {
       const id = exigirIdentificador(conversaId, 'conversa_id');

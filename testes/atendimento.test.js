@@ -103,7 +103,12 @@ test('falha de entrega automática escala sem afirmar resposta entregue', async 
   const resultado = await atendimento.receberMensagem(EVENTO);
   assert.equal(resultado.acao, 'escalonada_por_falha_entrega');
   const [conversa] = await repositorio.listarConversas({});
-  assert.equal((await repositorio.obterConversa(conversa.id)).assumida_por_humano, true);
+  // Achado de 23/08: falha técnica avisa a equipe (mensagem + auditoria,
+  // conferidas abaixo), mas não trava mais a automação — só `assumir()`
+  // (pessoa) ou grade de horário travam. Sem isto, uma indisponibilidade
+  // temporária deixava toda conversa nova presa até alguém, uma por uma,
+  // "Devolver à IA" — mesmo depois de corrigida a causa raiz.
+  assert.equal((await repositorio.obterConversa(conversa.id)).assumida_por_humano, false);
   // Nome canônico da trilha — o mesmo que a view de métricas da Serena lê.
   assert.ok(repositorio._auditoria.some((r) => r.acao === 'resposta_nao_entregue'
     && r.detalhe?.autor === 'automacao'));
@@ -269,7 +274,9 @@ test('falha do orquestrador escalona para a equipe em vez de travar', async () =
 
   const [conversa] = await repositorio.listarConversas({});
   const depois = await repositorio.obterConversa(conversa.id);
-  assert.equal(depois.assumida_por_humano, true, 'a conversa não pode ficar órfã');
+  // Achado de 23/08: avisa a equipe (mensagem de sistema + auditoria), mas
+  // não trava mais a automação sozinha — só `assumir()` (pessoa) trava.
+  assert.equal(depois.assumida_por_humano, false);
 });
 
 test('sem orquestrador configurado, a conversa é escalonada para a equipe — Comando 7, achado A-2', async () => {
@@ -296,9 +303,13 @@ test('sem orquestrador configurado, a conversa é escalonada para a equipe — C
   const [conversa] = await repositorio.listarConversas({});
   assert.equal((await repositorio.listarMensagens(conversa.id)).length, 2, 'a mensagem do paciente + o aviso de escalonamento');
 
-  // A conversa vai para a equipe de verdade — não fica "aberta" sem dono.
+  // A equipe é avisada de verdade — mensagem de sistema + auditoria acima —
+  // mas a automação não fica travada sozinha por uma falha (achado de 23/08:
+  // só `assumir()`, ato de pessoa, trava). Sem orquestrador é config estática,
+  // então a próxima tentativa vai falhar de novo e avisar de novo — sem
+  // exigir destravar manualmente uma vez corrigido.
   const depois = await repositorio.obterConversa(conversa.id);
-  assert.equal(depois.assumida_por_humano, true, 'a conversa não pode ficar órfã, sem ninguém saber que não foi respondida');
+  assert.equal(depois.assumida_por_humano, false);
 });
 
 test('definir temperatura preserva as etiquetas da equipe e reflete no lead', async () => {

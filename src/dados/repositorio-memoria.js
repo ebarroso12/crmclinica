@@ -390,6 +390,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return montarConversa(conversa);
     },
 
+    // Paridade com repositorio.js — ver o comentário lá.
+    async listarConversasEscalonadasSemDono() {
+      return [...conversas.values()]
+        .filter((conversa) => conversa.assumida_por_humano === true
+          && (conversa.atribuido_a === null || conversa.atribuido_a === undefined))
+        .map((conversa) => Number(conversa.id));
+    },
+
     async liberarConversaSeNecessario(id) {
       const conversa = conversas.get(Number(id));
       if (!conversa) return null;

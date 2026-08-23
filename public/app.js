@@ -1667,6 +1667,7 @@ function mostrarAplicacao() {
   if (usuarioAtual?.master) carregarUsuarios();
 
   sincronizarParadaDeEmergencia();
+  sincronizarLiberarEmMassa();
 }
 
 // --- Parada de emergência da Serena ---
@@ -1751,6 +1752,46 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
     sincronizarParadaDeEmergencia();
   } finally {
     botao.disabled = false;
+  }
+});
+
+// --- Liberar em massa ---
+//
+// Achado de 23/08: falha técnica (canal fora do ar) já não trava mais a
+// automação sozinha (ver escalonar() em atendimento.js) — mas qualquer
+// indisponibilidade anterior a essa correção, ou uma futura, ainda pode
+// deixar várias conversas presas de uma vez. Este botão libera de uma vez só
+// as que a PRÓPRIA automação travou — nunca as que um humano assumiu de
+// verdade (o backend distingue por `atribuido_a`, ver liberarEmMassa).
+
+function sincronizarLiberarEmMassa() {
+  const botao = seletor('#liberar-em-massa');
+  if (!botao) return;
+  // Mesma permissão de assumir/devolver conversa — não é uma ação nova de
+  // RBAC, é a mesma ação (liberar) aplicada a várias conversas de uma vez.
+  botao.hidden = !podeFazer('conversas:assumir');
+}
+
+seletor('#liberar-em-massa')?.addEventListener('click', async () => {
+  const botao = seletor('#liberar-em-massa');
+  if (!window.confirm(
+    'Liberar todas as conversas travadas por falha da automação?\n\nSó afeta conversas que a própria Serena travou sozinha depois de uma falha técnica — nenhuma conversa que um humano assumiu de verdade é mexida.',
+  )) return;
+
+  botao.disabled = true;
+  const textoOriginal = botao.textContent;
+  botao.textContent = 'Liberando…';
+  try {
+    const resultado = await pedirJson('/api/conversas/liberar-todas', { metodo: 'POST' });
+    informar(resultado.detalhe);
+    // A lista de conversas (fila "aguardando equipe") precisa refletir a
+    // liberação na hora, sem esperar o próximo refresh automático.
+    if (typeof carregarConversas === 'function') carregarConversas();
+  } catch (erro) {
+    informar(`Não consegui liberar: ${erro.message}`);
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoOriginal;
   }
 });
 

@@ -182,6 +182,16 @@
       <!-- Parada de emergência: visível em toda tela, só para quem pode gerenciar
            a Serena. Um clique + uma confirmação = nenhuma resposta automática
            sai até alguém religar. As mensagens dos pacientes seguem entrando. -->
+      <!-- Achado de 23/08: falha técnica (canal fora do ar) não trava mais a
+           automação sozinha (ver escalonar() em atendimento.js) — mas o
+           histórico anterior a essa correção, e qualquer outra indisponibilidade
+           futura, ainda pode deixar várias conversas presas de uma vez. Este
+           botão libera de uma vez só as que a PRÓPRIA automação travou —
+           nunca as que um humano assumiu de verdade (ver liberarEmMassa). -->
+      <button type="button" class="liberar-em-massa" id="liberar-em-massa" hidden>
+        ✓ Liberar todas as travadas por falha
+      </button>
+
       <button type="button" class="parada-emergencia" id="parada-emergencia" data-estado="armada" hidden>
         ⛔ PARAR SERENA
       </button>

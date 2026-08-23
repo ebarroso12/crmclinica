@@ -603,6 +603,18 @@ function criarRepositorio(pool) {
       return rows[0] ? montarConversa(rows[0]) : null;
     },
 
+    /**
+     * IDs travados pela própria automação (`escalonar()`), nunca por um
+     * humano — ver o comentário de `liberarEmMassa` em atendimento.js para o
+     * porquê de `atribuido_a IS NULL` ser o distintivo certo.
+     */
+    async listarConversasEscalonadasSemDono() {
+      const { rows } = await consultar(`
+        SELECT id FROM conversas WHERE assumida_por_humano = true AND atribuido_a IS NULL
+      `);
+      return rows.map((linha) => Number(linha.id));
+    },
+
     /** Mesmo raciocínio de `assumirConversaSeNecessario`, para devolver à automação. */
     async liberarConversaSeNecessario(id) {
       const { rows } = await consultar(`
