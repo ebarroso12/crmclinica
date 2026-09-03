@@ -5021,3 +5021,12 @@ async function moverLead(leadId, estagio, extras = {}) {
     await carregarLeads();
   }
 }
+
+// Registra o service worker fora do fluxo de login: o critério de
+// instalabilidade do Chrome (o botão "Instalar app") exige um worker
+// registrado, e a tela de login já deve contar para isso.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}

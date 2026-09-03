@@ -81,6 +81,11 @@ const ARQUIVOS_PUBLICOS = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/serena-voz.js', ['serena-voz.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
+  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
+  ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
+  ['/icone-192.png', ['icone-192.png', 'image/png']],
+  ['/icone-512.png', ['icone-512.png', 'image/png']],
+  ['/icone-maskable-512.png', ['icone-maskable-512.png', 'image/png']],
 ]);
 
 const CABECALHOS_SEGURANCA = Object.freeze({
@@ -91,7 +96,8 @@ const CABECALHOS_SEGURANCA = Object.freeze({
   // A interface só carrega recursos do próprio domínio: sem CDN, sem script inline, sem iframe.
   'content-security-policy':
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self' ws: wss:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    "connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; " +
+    "form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 });
 
 // Teto de bilhetes de SSE por usuário, por minuto (janela deslizante) — ver

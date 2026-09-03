@@ -70,3 +70,39 @@ test('rota desconhecida responde 404 e método errado responde 405', async (t) =
   assert.equal(metodoErrado.status, 405);
   assert.equal(metodoErrado.headers.get('allow'), 'GET');
 });
+
+// O botão "Instalar app" do Chrome depende do manifest, do ícone e do
+// service worker estarem, de fato, acessíveis na origem — um deles sumindo
+// (rota removida sem querer, content-type errado) tira a instalabilidade
+// sem que nada mais quebre visivelmente.
+test('os artefatos do PWA instalável são servidos com o content-type certo', async (t) => {
+  const app = await subirServidor();
+  t.after(() => app.encerrar());
+
+  const manifesto = await app.pedir('/manifest.webmanifest');
+  assert.equal(manifesto.status, 200);
+  assert.match(manifesto.headers.get('content-type'), /application\/manifest\+json/);
+  const dados = await manifesto.json();
+  assert.equal(dados.display, 'standalone');
+  assert.ok(Array.isArray(dados.icons) && dados.icons.length >= 2);
+
+  const worker = await app.pedir('/sw.js');
+  assert.equal(worker.status, 200);
+  assert.match(worker.headers.get('content-type'), /text\/javascript/);
+
+  for (const icone of ['/icone-192.png', '/icone-512.png', '/icone-maskable-512.png']) {
+    const resposta = await app.pedir(icone);
+    assert.equal(resposta.status, 200, `ícone ${icone} deveria responder 200`);
+    assert.equal(resposta.headers.get('content-type'), 'image/png');
+  }
+});
+
+test('a CSP libera o service worker e o manifest sem afrouxar o resto da política', async (t) => {
+  const app = await subirServidor();
+  t.after(() => app.encerrar());
+
+  const csp = (await app.pedir('/health')).headers.get('content-security-policy');
+  assert.match(csp, /worker-src 'self'/);
+  assert.match(csp, /manifest-src 'self'/);
+  assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval/);
+});
