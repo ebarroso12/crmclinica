@@ -42,6 +42,7 @@ const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
 const { criarServicoDeLembretes } = require('../src/dominio/lembretes-servico');
 const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
 const { criarClienteEvolucaoEnvio } = require('../src/integracoes/evolution-envio');
+const { criarClienteInstagramEnvio } = require('../src/integracoes/instagram-envio');
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
 const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
@@ -93,17 +94,19 @@ async function main() {
     process.exit(1);
   }
 
-  // Duas vias de entrega, mesma ordem e mesma composição que o servidor HTTP
+  // Três vias de entrega, mesma ordem e mesma composição que o servidor HTTP
   // usa (ver criarAplicacao em src/servidor/http.js): Evolution primeiro
-  // quando configurada, o gateway do OpenClaw como reserva. Sem a Evolution
-  // aqui, o worker só entregaria pelo caminho antigo — silenciosamente sem a
+  // quando configurada, o gateway do OpenClaw como reserva, e Instagram
+  // (Graph API) para conversas do canal instagram. Sem a Evolution aqui,
+  // o worker só entregaria pelo caminho antigo — silenciosamente sem a
   // via primária.
   const clienteEvolucaoEnvio = criarClienteEvolucaoEnvio(configuracao.evolution);
-  const canalDeConversas = (configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel)
-    ? criarCanalDeConversas(configuracao.openclaw.canalClinica, { evolucao: clienteEvolucaoEnvio })
+  const clienteInstagramEnvio = criarClienteInstagramEnvio(configuracao.instagram);
+  const canalDeConversas = (configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel || clienteInstagramEnvio.disponivel)
+    ? criarCanalDeConversas(configuracao.openclaw.canalClinica, { evolucao: clienteEvolucaoEnvio, instagram: clienteInstagramEnvio })
     : null;
   if (!canalDeConversas) {
-    console.warn('[outbox] nenhum canal de entrega configurado (nem Evolution, nem gateway do OpenClaw) — os trabalhos vão ficar sem "canal_nao_configurado" resolvido.');
+    console.warn('[outbox] nenhum canal de entrega configurado (nem Evolution, nem gateway do OpenClaw, nem Instagram) — os trabalhos vão ficar sem "canal_nao_configurado" resolvido.');
   }
 
   const servicoDaSerena = criarServicoDaSerena({ repositorio });
@@ -193,6 +196,15 @@ async function main() {
     try {
       const resultado = await outbox.processarLote({ limite: lote, worker });
       if (resultado.reivindicados > 0 || resultado.recuperados > 0) {
+        // Resumo das ações dos concluídos: sem isto, um lote com
+        // concluidos:1 pode esconder uma falha de entrega (escalonada)
+        // ou um silenciamento da barreira (aguardando_equipe).
+        const acoes = {};
+        for (const item of resultado.resultados ?? []) {
+          if (item.status === 'concluido' && item.acao) {
+            acoes[item.acao] = (acoes[item.acao] ?? 0) + 1;
+          }
+        }
         console.log('[outbox] lote', JSON.stringify({
           reivindicados: resultado.reivindicados,
           concluidos: resultado.concluidos,
@@ -200,6 +212,7 @@ async function main() {
           mortos: resultado.mortos,
           incertos: resultado.incertos,
           recuperados: resultado.recuperados,
+          acoes: Object.keys(acoes).length > 0 ? acoes : undefined,
         }));
       }
       return resultado;

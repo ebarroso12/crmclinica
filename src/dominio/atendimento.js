@@ -29,6 +29,13 @@ function bloqueioDaBarreiraPrecisaEscalar(motivo) {
   return !MOTIVOS_DE_DECISAO_HUMANA_RECENTE.has(motivo);
 }
 
+// Canais sem telefone (Instagram identifica pelo PSID) usam `identificador`
+// como chave de contato e destinatário de envio, não `telefone` — mesma lista
+// usada tanto na entrada (receberMensagem, criação de contato) quanto na
+// saída (entregarAoPaciente, escolha do destinatário). Uma lista só, para as
+// duas pontas nunca divergirem sobre o que cada canal usa.
+const CANAIS_SEM_TELEFONE = new Set(['instagram']);
+
 // Pedido explícito do Edson (2026-08-16): telefone na lista de bloqueio
 // (db/040_contatos_bloqueados.sql) nunca recebe resposta da automação —
 // em vez disso, cada mensagem que chega dele é respondida com este texto
@@ -92,13 +99,16 @@ function criarAtendimento({
       );
     }
 
+    // WhatsApp, site e formulário sempre mandaram telefone em `evento.remetente`
+    // — só um canal sem telefone (Instagram, identificado pelo PSID) é
+    // exceção. Gravar um PSID na coluna `telefone` poluiria um campo que o
+    // resto do sistema trata como telefone de verdade (normalização, exibição).
+    const semTelefone = CANAIS_SEM_TELEFONE.has(evento.canal);
     const contato = await repositorio.encontrarOuCriarContato({
-      telefone: evento.remetente,
+      telefone: semTelefone ? null : evento.remetente,
       nome: evento.nome,
       canal: evento.canal,
-      // O identificador só existe quando o canal fornece um próprio (perfil do
-      // Instagram, por exemplo). Repetir o telefone aqui seria ruído na ficha.
-      identificador: evento.identificador ?? null,
+      identificador: semTelefone ? evento.remetente : (evento.identificador ?? null),
     });
 
     const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, evento.canal);
@@ -614,6 +624,23 @@ function criarAtendimento({
     return conversa;
   }
 
+  /**
+   * Libera em massa as conversas que a PRÓPRIA AUTOMAÇÃO travou por falha —
+   * nunca uma que um humano de verdade assumiu. A distinção é `atribuido_a`:
+   * a rota HTTP de `assumir`/`responder como equipe` sempre injeta o usuário
+   * autenticado antes de chamar o domínio (ver PERMISSAO_POR_ACAO em
+   * http.js), então toda tomada real de posse tem dono. `escalonar()` nunca
+   * seta `atribuido_a` — não sabe quem devolveria a conversa, porque ninguém
+   * decidiu nada. Existe para o dia em que um canal inteiro cai por um
+   * tempo: corrigir a causa raiz não bastava, cada conversa presa ainda
+   * exigia um clique manual, uma por uma.
+   */
+  async function liberarEmMassa() {
+    const ids = await repositorio.listarConversasEscalonadasSemDono();
+    for (const id of ids) await liberar(id);
+    return { liberadas: ids.length };
+  }
+
   /** Devolve a conversa à automação. */
   async function liberar(conversaId) {
     // Mesmo raciocínio de `assumir`: só publica/audita quando é uma
@@ -800,7 +827,19 @@ function criarAtendimento({
 
     try {
       const contato = await repositorio.obterContato(conversa.contato_id);
-      if (!contato?.telefone) return { enviada: false, motivo: 'contato_sem_telefone' };
+      // Achado A1.9 (generalização por canal, 23/08): canais sem telefone
+      // (Instagram) identificam o destinatário do envio pelo `identificador`
+      // (PSID), não `telefone` — mesma lista CANAIS_SEM_TELEFONE usada na
+      // entrada (receberMensagem). Sem isto, toda automação numa conversa do
+      // Instagram travava sempre em 'contato_sem_telefone', mesmo com o
+      // contato certo já reconhecido sem duplicar. O transporte de envio de
+      // verdade (Graph API do Instagram) ainda não existe — só `canal`
+      // (Evolution/OpenClaw, WhatsApp) está injetado até essa peça ser
+      // construída; até lá, uma tentativa de entrega numa conversa do
+      // Instagram falha mais abaixo, no transporte em si, com um erro real —
+      // não mais aqui, com o motivo errado, antes de sequer tentar.
+      const destinatario = CANAIS_SEM_TELEFONE.has(conversa.canal) ? contato?.identificador : contato?.telefone;
+      if (!destinatario) return { enviada: false, motivo: 'contato_sem_destinatario' };
 
       // Mesma chave de idempotência nos dois casos — ver o comentário abaixo
       // sobre o que ela realmente protege (não é dedupe nativo da Evolution).
@@ -808,7 +847,8 @@ function criarAtendimento({
 
       const resultado = anexo
         ? await canal.enviarMidia({
-          telefone: contato.telefone,
+          canal: conversa.canal,
+          telefone: destinatario,
           // O bucket é privado: media_url grava só o path interno
           // (anexo.caminho), nunca uma URL pública. A Evolution precisa de
           // uma URL alcançável de fato — gerada aqui, na hora do envio, de
@@ -819,7 +859,8 @@ function criarAtendimento({
           nomeArquivo: anexo.nome || null,
         })
         : await canal.enviar({
-          telefone: contato.telefone,
+          canal: conversa.canal,
+          telefone: destinatario,
           texto,
           // Comando 7, segunda auditoria, achado N-10: este comentário dizia
           // que a chave, sozinha, impedia o paciente de receber a mesma
@@ -845,14 +886,17 @@ function criarAtendimento({
           console.error(`[atendimento] falha ao marcar entrega confirmada: ${erroDeMarca.message}`);
         });
       }
-      // Migration 042: grava o ID nativo do WhatsApp nesta mensagem — é o que
+      // Migration 042: grava o ID nativo do provedor nesta mensagem — é o que
       // permite reconhecer o eco `fromMe:true` desta MESMA mensagem quando o
       // webhook o devolver, e não gravá-la de novo como se fosse uma resposta
       // enviada por fora (ver normalizarEcoDeEnvioEvolution /
-      // registrarEnvioExternoDoWhatsapp). Best-effort: uma falha aqui não
+      // registrarEnvioExternoDoWhatsapp). Achado A1.9: prefixo por canal
+      // (`conversa.canal`), não mais fixo em 'whatsapp' — para WhatsApp o
+      // valor é idêntico a antes (`conversa.canal === 'whatsapp'`), sem
+      // quebrar o dedupe de eco existente. Best-effort: uma falha aqui não
       // desfaz um envio que já aconteceu de verdade.
       if (resultado?.identificador && repositorio.marcarIdProvedorDaMensagem) {
-        await repositorio.marcarIdProvedorDaMensagem(mensagemId, `whatsapp:${contato.telefone}:${resultado.identificador}`)
+        await repositorio.marcarIdProvedorDaMensagem(mensagemId, `${conversa.canal}:${destinatario}:${resultado.identificador}`)
           .catch((erroDeMarca) => {
             console.error(`[atendimento] falha ao marcar id do provedor: ${erroDeMarca.message}`);
           });
@@ -877,8 +921,20 @@ function criarAtendimento({
     }
   }
 
+  // Achado de 23/08: até aqui, escalonar() travava assumida_por_humano:true
+  // em toda FALHA técnica — o mesmo campo que `assumir()` usa quando uma
+  // pessoa clica o botão. Numa indisponibilidade real (ex.: token de canal
+  // quebrado), toda conversa nova caía sozinha na fila da equipe e ficava
+  // presa lá — mesmo depois de corrigida a causa raiz — até alguém, uma por
+  // uma, clicar "Devolver à IA". Decisão explícita do dono do produto: pausar
+  // a automação é ato de pessoa (`assumir`) ou grade de horário
+  // (`fora_do_horario`, que já não passa por aqui — ver `serena.js`), nunca
+  // efeito colateral de falha. Escalonar por falha continua avisando a
+  // equipe (mensagem de sistema + auditoria — nada se perde em silêncio),
+  // só não desliga mais a automação: a próxima mensagem do paciente tenta de
+  // novo, e se a causa raiz já foi corrigida, a conversa se resolve sozinha.
   async function escalonar(conversaId, motivo) {
-    await repositorio.atualizarConversa(conversaId, { assumida_por_humano: true, status: 'aberta' });
+    await repositorio.atualizarConversa(conversaId, { status: 'aberta' });
     const { mensagem: avisoDeEscalonamento } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
       tipo: 'sistema',
@@ -979,6 +1035,7 @@ function criarAtendimento({
     responderSePossivel,
     assumir,
     liberar,
+    liberarEmMassa,
     responderComoEquipe,
     registrarEnvioExternoDoWhatsapp,
     escalonar,

@@ -148,8 +148,14 @@ test('E2E: orquestrador fora do ar escala para a equipe; o retry com a mesma cha
 
   // A mensagem NÃO se perdeu; a conversa foi para a equipe (com a nota privada
   // de sistema da escalonação — que não conta como resposta ao paciente).
+  // Achado de 23/08: indisponibilidade avisa a equipe (checado abaixo pela
+  // ausência de resposta ao paciente), mas não trava mais a automação
+  // sozinha — só `assumir()` (pessoa) trava. Por isso `liberar()` mais
+  // abaixo já não é estritamente necessário para o retry funcionar, mas
+  // continua sendo chamado aqui por fidelidade ao fluxo real (a equipe vê o
+  // aviso e devolve, mesmo que a automação já estivesse livre).
   const conversa = await mundo.repositorio.obterConversa(recibo.conversa_id);
-  assert.equal(conversa.assumida_por_humano, true, 'indisponibilidade não deixa conversa órfã');
+  assert.equal(conversa.assumida_por_humano, false);
   const aposFalha = await mundo.repositorio.listarMensagens(recibo.conversa_id);
   assert.equal(aposFalha.filter((m) => m.direcao === 'entrada').length, 1);
   assert.equal(aposFalha.filter((m) => m.direcao === 'saida' && !m.privada).length, 0,

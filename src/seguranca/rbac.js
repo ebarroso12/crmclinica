@@ -48,6 +48,12 @@ const PERMISSOES = Object.freeze({
   // para a secretária humana. Mesmo nível de contatos:editar — quem
   // gerencia relacionamento com paciente, não só o admin.
   'bloqueios:gerenciar': ['admin', 'gestor'],
+
+  // Instagram: mesmo raciocínio da Serena — ler o estado é de quem atende,
+  // mexer na conexão e nas regras de palavra-gatilho (o que sai publicamente
+  // em nome da clínica) é só do admin.
+  'instagram:ler': ['admin', 'gestor', 'atendente'],
+  'instagram:gerenciar': ['admin'],
 });
 
 const PERMISSOES_CONHECIDAS = Object.freeze(Object.keys(PERMISSOES));

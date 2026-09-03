@@ -275,9 +275,28 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 }
 .parada-emergencia[data-estado="parada"]:hover { background: #dea201; }
 
-.rodape-lateral { margin-top: 0; color: #8b95a7; font-size: 11px; padding: 14px 10px 0; }
-/* Sem o botão (papel sem permissão), o rodapé volta a se ancorar no pé sozinho. */
-.parada-emergencia[hidden] ~ .rodape-lateral { margin-top: auto; }
+/* Liberar em massa: mesmo peso visual da parada de emergência, cor oposta
+   (verde = destrava, vermelho = trava) — fica logo acima dela. */
+.liberar-em-massa {
+  margin: auto 10px 0;
+  padding: 11px 10px;
+  width: calc(100% - 20px);
+  border: 0;
+  border-radius: 10px;
+  background: #1c8a4d;
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(28, 138, 77, 0.35);
+}
+.liberar-em-massa:hover { background: #156b3c; }
+.liberar-em-massa:disabled { opacity: 0.6; cursor: default; }
+
+/* margin-top:auto sempre ligado: com um, dois ou nenhum dos botões acima
+   visíveis, o rodapé continua se ancorando no pé do menu sem gap extra. */
+.rodape-lateral { margin-top: auto; color: #8b95a7; font-size: 11px; padding: 14px 10px 0; }
 
 /* Aviso de versão nova: achado do incidente de 2026-08-17 — quem fica com a
    aba aberta por horas nunca sabia que subiu um deploy. Azul/informativo de

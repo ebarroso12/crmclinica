@@ -182,6 +182,20 @@ function carregarConfiguracao(ambiente = process.env) {
       instancia: texto(ambiente.EVOLUTION_INSTANCE) || 'clinica',
       timeoutMs: inteiro(ambiente.EVOLUTION_API_TIMEOUT_MS, 15000),
     },
+    // Integração de Instagram (DM + comentário), em construção 23/08. Os
+    // valores hoje vivem nas credenciais de uma automação externa anterior —
+    // a extração pro ambiente da Vercel/VPS é etapa manual/operacional, fora do escopo de
+    // código. `verifyToken` é o valor que a Meta manda de volta na
+    // verificação GET do webhook (hub.verify_token); `appSecret` assina os
+    // eventos POST (HMAC SHA-256, cabeçalho x-hub-signature-256).
+    instagram: {
+      accessToken: texto(ambiente.INSTAGRAM_ACCESS_TOKEN),
+      appSecret: texto(ambiente.INSTAGRAM_APP_SECRET),
+      contaComercialId: texto(ambiente.INSTAGRAM_BUSINESS_ACCOUNT_ID),
+      verifyToken: texto(ambiente.INSTAGRAM_WEBHOOK_VERIFY_TOKEN),
+      apiVersion: texto(ambiente.INSTAGRAM_API_VERSION) || 'v23.0',
+      timeoutMs: inteiro(ambiente.INSTAGRAM_API_TIMEOUT_MS, 15000),
+    },
     // Storage para anexo de arquivo no chat (foto, documento, áudio). Usa a
     // API REST do Supabase Storage diretamente — sem SDK, mesmo padrão sem
     // dependência de terceiros do resto do projeto (ver

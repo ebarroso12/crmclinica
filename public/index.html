@@ -164,6 +164,7 @@
         <p class="divisor" id="grupo-controle">CONTROLE</p>
         <ul aria-labelledby="grupo-controle">
           <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
+          <li><button type="button" data-tela="instagram"><span class="icone-menu" aria-hidden="true">◘</span> Instagram</button></li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
           <li id="item-bloqueios" hidden>
             <button type="button" data-tela="bloqueios"><span class="icone-menu" aria-hidden="true">⊘</span> Bloqueio de Contato</button>
@@ -181,6 +182,16 @@
       <!-- Parada de emergência: visível em toda tela, só para quem pode gerenciar
            a Serena. Um clique + uma confirmação = nenhuma resposta automática
            sai até alguém religar. As mensagens dos pacientes seguem entrando. -->
+      <!-- Achado de 23/08: falha técnica (canal fora do ar) não trava mais a
+           automação sozinha (ver escalonar() em atendimento.js) — mas o
+           histórico anterior a essa correção, e qualquer outra indisponibilidade
+           futura, ainda pode deixar várias conversas presas de uma vez. Este
+           botão libera de uma vez só as que a PRÓPRIA automação travou —
+           nunca as que um humano assumiu de verdade (ver liberarEmMassa). -->
+      <button type="button" class="liberar-em-massa" id="liberar-em-massa" hidden>
+        ✓ Liberar todas as travadas por falha
+      </button>
+
       <button type="button" class="parada-emergencia" id="parada-emergencia" data-estado="armada" hidden>
         ⛔ PARAR SERENA
       </button>
@@ -743,10 +754,15 @@
               <p id="diagnostico-resumo">clique em verificar para varrer o sistema</p>
             </div>
             <div class="linha-acoes">
+              <select id="diagnostico-ia" title="Provedor de IA para análise e reparo">
+                <option value="" disabled>Carregando provedores…</option>
+              </select>
+              <button type="button" class="secundario" id="diagnostico-parecer-ia" hidden>Parecer da IA</button>
               <button type="button" class="primario" id="diagnostico-verificar">Verificar agora</button>
             </div>
           </div>
 
+          <div id="diagnostico-parecer" class="nota" hidden></div>
           <div id="diagnostico-achados"></div>
 
           <p class="nota">
@@ -935,6 +951,78 @@
           </form>
 
           <ul class="lista-regras" id="serena-regras">
+            <li class="vazio">carregando…</li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- Instagram -->
+      <section id="instagram" class="tela" hidden aria-labelledby="titulo-instagram">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-instagram">Instagram</h2>
+            <p>Regras de gatilho: quando uma palavra aparece num comentário de post, o sistema responde publicamente e manda uma DM.</p>
+          </div>
+        </div>
+
+        <ul class="metricas" id="instagram-metricas">
+          <li><small>COMENTÁRIOS PROCESSADOS</small><strong id="ig-metrica-total">—</strong><span>desde sempre</span></li>
+          <li><small>COM GATILHO</small><strong id="ig-metrica-com-gatilho">—</strong><span>bateram alguma regra</span></li>
+          <li><small>RESPOSTA PÚBLICA ENVIADA</small><strong id="ig-metrica-resposta-publica">—</strong><span>comentários respondidos</span></li>
+          <li><small>DM ENVIADA</small><strong id="ig-metrica-dm">—</strong><span>mensagens privadas enviadas</span></li>
+        </ul>
+
+        <!-- Por regra -->
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Disparos por regra</h3>
+              <p>Quantas vezes cada regra já bateu num comentário.</p>
+            </div>
+          </div>
+          <ul class="lista-regras" id="instagram-metricas-por-regra">
+            <li class="vazio">carregando…</li>
+          </ul>
+        </article>
+
+        <!-- Regras de gatilho -->
+        <article class="card">
+          <div class="card-titulo">
+            <div>
+              <h3>Regras de gatilho</h3>
+              <p>A palavra é procurada no comentário; ao bater, dispara as duas mensagens sempre juntas.</p>
+            </div>
+            <div class="linha-acoes" id="instagram-regras-acoes" hidden>
+              <button type="button" class="secundario" id="instagram-nova-regra">Nova regra</button>
+            </div>
+          </div>
+
+          <form id="form-gatilho" class="form-regra" hidden>
+            <div class="grade-form">
+              <div>
+                <label for="gatilho-nome">Nome</label>
+                <input id="gatilho-nome" type="text" maxlength="80" required>
+              </div>
+              <div>
+                <label for="gatilho-palavra">Palavra-gatilho</label>
+                <input id="gatilho-palavra" type="text" maxlength="100" required>
+              </div>
+            </div>
+            <label for="gatilho-mensagem-publica">Mensagem pública (resposta ao comentário)</label>
+            <textarea id="gatilho-mensagem-publica" rows="2" maxlength="500" required></textarea>
+            <label for="gatilho-mensagem-dm">Mensagem de DM</label>
+            <textarea id="gatilho-mensagem-dm" rows="3" maxlength="2000" required></textarea>
+            <label class="marcador">
+              <input type="checkbox" id="gatilho-cta-whatsapp">
+              Incluir botão de WhatsApp na DM
+            </label>
+            <div class="linha-acoes">
+              <button type="submit" class="primario">Salvar regra</button>
+              <button type="button" class="secundario" id="instagram-cancelar-regra">Cancelar</button>
+            </div>
+          </form>
+
+          <ul class="lista-regras" id="instagram-regras">
             <li class="vazio">carregando…</li>
           </ul>
         </article>

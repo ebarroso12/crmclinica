@@ -45,11 +45,16 @@ function sondaDoBanco(repositorio, objetosEsperados = [], conferirConexao = null
 function sondaDaFila(repositorio) {
   return async () => {
     const resumo = await repositorio.resumirFilaDeLembretes?.();
+    // Os motivos reais dos falhados, para o achado já chegar com o "porquê" —
+    // sem isso o texto manda o admin olhar o ultimo_erro e ele precisa ir ao
+    // banco caçar.
+    const errosFalhados = (await repositorio.ultimosErrosDeLembretes?.()) ?? [];
     return {
       presos: Number(resumo?.presos ?? 0),
       falhados: Number(resumo?.falhados ?? 0),
       atrasados: Number(resumo?.atrasados ?? 0),
       pendentes: Number(resumo?.pendentes ?? 0),
+      errosFalhados,
     };
   };
 }
@@ -151,6 +156,50 @@ function sondaDaEvolution(configuracaoEvolution, { fetchImpl = globalThis.fetch,
   };
 }
 
+/** Estado da integração de Instagram: credencial configurada e conta alcançável. */
+function sondaDoInstagram(configuracaoInstagram, { fetchImpl = globalThis.fetch } = {}) {
+  const configurada = Boolean(configuracaoInstagram?.accessToken && configuracaoInstagram?.contaComercialId);
+  if (!configurada) {
+    return async () => ({ configurada: false, alcancavel: null, contaValida: null });
+  }
+
+  return async () => {
+    let alcancavel = null;
+    let contaValida = null;
+    try {
+      const apiVersion = configuracaoInstagram.apiVersion || 'v23.0';
+      const resposta = await fetchImpl(
+        `https://graph.instagram.com/${apiVersion}/${configuracaoInstagram.contaComercialId}?fields=id`,
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${configuracaoInstagram.accessToken}` },
+          signal: AbortSignal.timeout(configuracaoInstagram.timeoutMs ?? 5000),
+        },
+      );
+      // Mesmo raciocínio da sonda da Evolution: qualquer resposta HTTP prova
+      // que o host está de pé, mesmo 401/403 (token inválido) — isso não é a
+      // mesma coisa que "não alcançável".
+      alcancavel = Boolean(resposta);
+      if (resposta.ok) {
+        const corpo = await resposta.json().catch(() => null);
+        // Ambíguo (corpo inesperado, sem `id`) fica `null`, nunca `false` —
+        // não afirma "token inválido" sem ter certeza do formato da resposta.
+        contaValida = corpo && typeof corpo === 'object' ? Boolean(corpo.id) : null;
+      } else {
+        // Não-2xx com o host respondendo: token/conta quase certamente
+        // inválidos, mas sem parsear o corpo de erro (formato de plataforma,
+        // não confirmado contra uma resposta real) para não inventar.
+        contaValida = false;
+      }
+    } catch {
+      alcancavel = false;
+      contaValida = null;
+    }
+
+    return { configurada: true, alcancavel, contaValida };
+  };
+}
+
 /**
  * Falhas de entrega recentes da automação — achado do incidente de 22/08.
  *
@@ -230,6 +279,10 @@ function sondaDaOutbox(repositorio, { limiteMs = 3 * 60 * 1000, atrasoVencidoMs 
     const antesDe = new Date(agoraMs - atrasoVencidoMs).toISOString();
     const fila = (await repositorio.contarTrabalhosDeOutboxPorEstado?.()) ?? null;
     const vencidos = (await repositorio.contarTrabalhosDeOutboxVencidos?.({ antesDe })) ?? 0;
+    // Os motivos reais dos mortos/incertos: o achado de fila morta sem o
+    // ultimo_erro manda o admin caçar no banco; com ele, a varredura já
+    // responde "por que desistiram".
+    const erros = (await repositorio.ultimosErrosDaOutbox?.()) ?? [];
 
     return {
       ativo,
@@ -237,11 +290,12 @@ function sondaDaOutbox(repositorio, { limiteMs = 3 * 60 * 1000, atrasoVencidoMs 
       idade_ms: idadeMs,
       fila,
       vencidos,
+      erros,
     };
   };
 }
 
 module.exports = {
   sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaEvolution, sondaDaSerena, sondaDoGoogle, sondaDoWorker, sondaDaOutbox,
-  sondaDeEntregasFalhadas,
+  sondaDeEntregasFalhadas, sondaDoInstagram,
 };

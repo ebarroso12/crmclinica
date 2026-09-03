@@ -286,9 +286,11 @@ test('6. Falha ao reler o estado é fail-closed: não envia', async () => {
   assert.equal(resultado.motivo, 'falha_ao_reler_controle');
 
   // Comando 7, achado A-3: ninguém decidiu nada aqui — o banco piscou. A
-  // resposta gerada ficou perdida, e sem escalonar ninguém saberia.
+  // resposta gerada ficou perdida, e sem escalonar ninguém saberia. Achado
+  // de 23/08: escalonar avisa (mensagem + auditoria) mas não trava mais a
+  // automação sozinha — só `assumir()` (pessoa) trava.
   const depois = await repositorio.obterConversa(conversa.id);
-  assert.equal(depois.assumida_por_humano, true, 'falha técnica na releitura do controle precisa escalonar');
+  assert.equal(depois.assumida_por_humano, false);
 });
 
 // ------------------------------------------------------- Comando 7, achado A-3
@@ -330,8 +332,10 @@ for (const motivo of ['fora_do_horario', 'fora_da_ativacao_gradual', 'conversa_r
     assert.equal(resultado.acao, 'resposta_abortada_por_controle');
     assert.equal(resultado.motivo, motivo);
 
+    // Achado de 23/08: escalona (avisa a equipe) mas não trava mais a
+    // automação sozinha — só `assumir()` (pessoa) trava.
     const depois = await repositorio.obterConversa(conversa.id);
-    assert.equal(depois.assumida_por_humano, true, `"${motivo}" é automático/erro — precisa escalonar`);
+    assert.equal(depois.assumida_por_humano, false);
   });
 }
 

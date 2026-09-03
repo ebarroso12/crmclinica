@@ -10,6 +10,7 @@ const TITULOS = {
   agenda: 'Agenda',
   metricas: 'Métricas',
   serena: 'Serena',
+  instagram: 'Instagram',
   contatos: 'Contatos',
   auditoria: 'Auditoria',
   bloqueios: 'Bloqueio de Contato',
@@ -39,6 +40,7 @@ function abrirTela(tela) {
   if (tela === 'agenda') carregarAgenda();
   if (tela === 'metricas') carregarMetricas();
   if (tela === 'serena') carregarSerena();
+  if (tela === 'instagram') carregarInstagram();
   if (tela === 'contatos') carregarContatos();
   if (tela === 'auditoria') carregarAuditoria();
   if (tela === 'bloqueios') carregarBloqueios();
@@ -970,7 +972,9 @@ async function carregarLeads() {
         botao.textContent = lead.nome || lead.telefone || 'Lead sem nome';
 
         const detalhe = document.createElement('small');
-        detalhe.textContent = `${lead.origem} · ${lead.temperatura}`;
+        detalhe.textContent = lead.origem_detalhe
+          ? `${lead.origem} (${lead.origem_detalhe}) · ${lead.temperatura}`
+          : `${lead.origem} · ${lead.temperatura}`;
 
         // Aging: há quantos dias o card está nesta coluna. A cor vem da faixa
         // calculada no servidor — o navegador só pinta.
@@ -1663,6 +1667,7 @@ function mostrarAplicacao() {
   if (usuarioAtual?.master) carregarUsuarios();
 
   sincronizarParadaDeEmergencia();
+  sincronizarLiberarEmMassa();
 }
 
 // --- Parada de emergência da Serena ---
@@ -1747,6 +1752,46 @@ seletor('#parada-emergencia')?.addEventListener('click', async () => {
     sincronizarParadaDeEmergencia();
   } finally {
     botao.disabled = false;
+  }
+});
+
+// --- Liberar em massa ---
+//
+// Achado de 23/08: falha técnica (canal fora do ar) já não trava mais a
+// automação sozinha (ver escalonar() em atendimento.js) — mas qualquer
+// indisponibilidade anterior a essa correção, ou uma futura, ainda pode
+// deixar várias conversas presas de uma vez. Este botão libera de uma vez só
+// as que a PRÓPRIA automação travou — nunca as que um humano assumiu de
+// verdade (o backend distingue por `atribuido_a`, ver liberarEmMassa).
+
+function sincronizarLiberarEmMassa() {
+  const botao = seletor('#liberar-em-massa');
+  if (!botao) return;
+  // Mesma permissão de assumir/devolver conversa — não é uma ação nova de
+  // RBAC, é a mesma ação (liberar) aplicada a várias conversas de uma vez.
+  botao.hidden = !podeFazer('conversas:assumir');
+}
+
+seletor('#liberar-em-massa')?.addEventListener('click', async () => {
+  const botao = seletor('#liberar-em-massa');
+  if (!window.confirm(
+    'Liberar todas as conversas travadas por falha da automação?\n\nSó afeta conversas que a própria Serena travou sozinha depois de uma falha técnica — nenhuma conversa que um humano assumiu de verdade é mexida.',
+  )) return;
+
+  botao.disabled = true;
+  const textoOriginal = botao.textContent;
+  botao.textContent = 'Liberando…';
+  try {
+    const resultado = await pedirJson('/api/conversas/liberar-todas', { metodo: 'POST' });
+    informar(resultado.detalhe);
+    // A lista de conversas (fila "aguardando equipe") precisa refletir a
+    // liberação na hora, sem esperar o próximo refresh automático.
+    if (typeof carregarConversas === 'function') carregarConversas();
+  } catch (erro) {
+    informar(`Não consegui liberar: ${erro.message}`);
+  } finally {
+    botao.disabled = false;
+    botao.textContent = textoOriginal;
   }
 });
 
@@ -3391,7 +3436,10 @@ async function carregarSerena() {
     // A varredura mostra o estado interno da infraestrutura — nome do usuário do
     // banco, serviços parados. Quem atende paciente não precisa disso.
     const cartaoDeDiagnostico = seletor('#diagnostico-card');
-    if (cartaoDeDiagnostico) cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
+    if (cartaoDeDiagnostico) {
+      cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
+      if (dados.pode_gerenciar) carregarSeletorDeIaDoDiagnostico().catch(() => {});
+    }
     desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
       const bloco = seletor(alvo);
@@ -3592,6 +3640,97 @@ function abrirEditorDeRegra(regra = null) {
 }
 
 // ---------------------------------------------------------------------------
+// Instagram: regras de gatilho de comentário (palavra -> DM + resposta pública).
+// ---------------------------------------------------------------------------
+
+let instagramPainel = null;
+let gatilhoEmEdicao = null;
+
+function resumirTexto(texto, limite = 60) {
+  const t = String(texto ?? '');
+  return t.length > limite ? `${t.slice(0, limite)}…` : t;
+}
+
+async function carregarInstagram() {
+  try {
+    const dados = await pedirJson('/api/instagram');
+    instagramPainel = dados;
+
+    const acoes = seletor('#instagram-regras-acoes');
+    if (acoes) acoes.hidden = !dados.pode_gerenciar;
+
+    desenharGatilhos(dados.regras ?? [], dados.pode_gerenciar);
+    desenharMetricasInstagram(dados.metricas ?? null);
+  } catch (erro) {
+    informar(`Não foi possível carregar o Instagram: ${erro.message}`);
+  }
+}
+
+function desenharMetricasInstagram(metricas) {
+  definirTexto('#ig-metrica-total', metricas ? String(metricas.total_comentarios) : '—');
+  definirTexto('#ig-metrica-com-gatilho', metricas ? String(metricas.com_gatilho) : '—');
+  definirTexto('#ig-metrica-resposta-publica', metricas ? String(metricas.resposta_publica_enviada) : '—');
+  definirTexto('#ig-metrica-dm', metricas ? String(metricas.dm_enviada) : '—');
+
+  const lista = seletor('#instagram-metricas-por-regra');
+  if (!lista) return;
+
+  const porRegra = metricas?.por_regra ?? [];
+  if (porRegra.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma regra cadastrada ainda.</li>';
+    return;
+  }
+
+  lista.innerHTML = porRegra.map((linha) => `
+    <li class="${linha.ativa ? '' : 'desligada'}">
+      <div>
+        <strong>${escapar(linha.nome)}</strong>
+        <small>${linha.total} comentário(s) processado(s)${linha.ativa ? '' : ' · regra desligada'}</small>
+      </div>
+    </li>`).join('');
+}
+
+function desenharGatilhos(regras, podeGerenciar) {
+  const lista = seletor('#instagram-regras');
+  if (!lista) return;
+
+  if (regras.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma regra cadastrada.</li>';
+    return;
+  }
+
+  lista.innerHTML = regras.map((gatilho) => `
+    <li class="${gatilho.ativa ? '' : 'desligada'}">
+      <div>
+        <strong>${escapar(gatilho.nome)} <span class="pilula pequena">${escapar(gatilho.palavra_gatilho)}</span></strong>
+        <small>Pública: ${escapar(resumirTexto(gatilho.mensagem_publica))} · DM: ${escapar(resumirTexto(gatilho.mensagem_dm))}</small>
+      </div>
+      <div class="linha-acoes">
+        ${podeGerenciar ? `
+          <button type="button" class="secundario" data-gatilho-ativo="${gatilho.id}" data-valor="${gatilho.ativa ? 'false' : 'true'}">
+            ${gatilho.ativa ? 'Desligar' : 'Ligar'}
+          </button>
+          <button type="button" class="secundario" data-editar-gatilho="${gatilho.id}">Editar</button>
+          <button type="button" class="perigo" data-remover-gatilho="${gatilho.id}">Apagar</button>` : ''}
+      </div>
+    </li>`).join('');
+}
+
+function abrirEditorDeGatilho(gatilho = null) {
+  gatilhoEmEdicao = gatilho;
+  const form = seletor('#form-gatilho');
+  if (!form) return;
+
+  form.hidden = false;
+  seletor('#gatilho-nome').value = gatilho?.nome ?? '';
+  seletor('#gatilho-palavra').value = gatilho?.palavra_gatilho ?? '';
+  seletor('#gatilho-mensagem-publica').value = gatilho?.mensagem_publica ?? '';
+  seletor('#gatilho-mensagem-dm').value = gatilho?.mensagem_dm ?? '';
+  seletor('#gatilho-cta-whatsapp').checked = gatilho ? gatilho.cta_whatsapp === true : true;
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ---------------------------------------------------------------------------
 // Contatos: a base de pacientes. Excluir é soft delete — o histórico fica.
 // ---------------------------------------------------------------------------
 
@@ -3757,6 +3896,23 @@ document.addEventListener('click', async (evento) => {
       await carregarSerena();
     }
 
+    if (alvo.id === 'instagram-nova-regra') abrirEditorDeGatilho(null);
+    if (alvo.id === 'instagram-cancelar-regra') seletor('#form-gatilho').hidden = true;
+    if (alvo.dataset.gatilhoAtivo) {
+      await pedirJson(`/api/instagram/regras/${alvo.dataset.gatilhoAtivo}/ativa`, { metodo: 'POST', corpo: { ativa: alvo.dataset.valor === 'true' } });
+      await carregarInstagram();
+    }
+    if (alvo.dataset.editarGatilho) {
+      const gatilho = (instagramPainel?.regras ?? []).find((r) => String(r.id) === alvo.dataset.editarGatilho);
+      abrirEditorDeGatilho(gatilho ?? null);
+    }
+    if (alvo.dataset.removerGatilho) {
+      if (!confirm('Apagar esta regra de gatilho?')) return;
+      await pedirJson(`/api/instagram/regras/${alvo.dataset.removerGatilho}`, { metodo: 'DELETE' });
+      informar('Regra apagada.');
+      await carregarInstagram();
+    }
+
     if (alvo.id === 'contato-novo') abrirEditorDeContato(null);
     if (alvo.id === 'contato-cancelar') seletor('#contato-editor').hidden = true;
     if (alvo.dataset.verContato) await verHistoricoDoContato(alvo.dataset.verContato);
@@ -3843,6 +3999,33 @@ document.addEventListener('submit', async (evento) => {
       }
       form.hidden = true;
       await carregarSerena();
+    } catch (erro) {
+      informar(erro.message);
+    }
+    return;
+  }
+
+  if (form.id === 'form-gatilho') {
+    evento.preventDefault();
+    const corpo = {
+      nome: seletor('#gatilho-nome').value,
+      palavra_gatilho: seletor('#gatilho-palavra').value,
+      mensagem_publica: seletor('#gatilho-mensagem-publica').value,
+      mensagem_dm: seletor('#gatilho-mensagem-dm').value,
+      cta_whatsapp: seletor('#gatilho-cta-whatsapp').checked,
+    };
+    try {
+      if (gatilhoEmEdicao) {
+        await pedirJson(`/api/instagram/regras/${gatilhoEmEdicao.id}`, {
+          metodo: 'PUT', corpo: corpo,
+        });
+      } else {
+        await pedirJson('/api/instagram/regras', {
+          metodo: 'POST', corpo: corpo,
+        });
+      }
+      form.hidden = true;
+      await carregarInstagram();
     } catch (erro) {
       informar(erro.message);
     }
@@ -4616,8 +4799,10 @@ async function varrerSistema() {
   const botao = seletor('#diagnostico-verificar');
   const resumo = seletor('#diagnostico-resumo');
   const area = seletor('#diagnostico-achados');
+  const parecerContainer = seletor('#diagnostico-parecer');
   if (!area) return;
 
+  if (parecerContainer) { parecerContainer.hidden = true; parecerContainer.innerHTML = ''; }
   if (botao) { botao.disabled = true; botao.textContent = 'Verificando…'; }
   if (resumo) resumo.textContent = 'consultando banco, esquema, fila, canal e automação…';
 
@@ -4653,6 +4838,28 @@ async function varrerSistema() {
         bloco.appendChild(reparo);
       }
 
+      const botoes = document.createElement('div');
+      botoes.className = 'linha-acoes';
+      botoes.style.marginTop = '0.5rem';
+
+      const btnReparo = document.createElement('button');
+      btnReparo.type = 'button';
+      btnReparo.className = 'secundario btn-reparo-ia';
+      btnReparo.textContent = 'Planejar reparo com IA';
+      btnReparo.addEventListener('click', () => planoDeReparo(item, bloco));
+      botoes.appendChild(btnReparo);
+
+      if (item.acao) {
+        const btnAplicar = document.createElement('button');
+        btnAplicar.type = 'button';
+        btnAplicar.className = 'primario';
+        btnAplicar.textContent = 'Aplicar reparo';
+        btnAplicar.addEventListener('click', () => aplicarReparo(item.acao));
+        botoes.appendChild(btnAplicar);
+      }
+
+      bloco.appendChild(botoes);
+
       return bloco;
     }));
   } catch (erro) {
@@ -4662,7 +4869,116 @@ async function varrerSistema() {
   }
 }
 
+async function planoDeReparo(item, bloco) {
+  const botao = bloco.querySelector('.btn-reparo-ia');
+  if (botao) { botao.disabled = true; botao.textContent = 'Planejando…'; }
+  try {
+    const { provedor } = provedorEscolhidoDoDiagnostico();
+    const resultado = await pedirJson('/api/diagnostico/reparo', {
+      metodo: 'POST',
+      corpo: {
+        area: item.area,
+        nivel: item.nivel,
+        titulo: item.titulo,
+        detalhe: item.detalhe,
+        reparo: item.reparo,
+        acao: item.acao,
+        ...(provedor ? { provedor } : {}),
+      },
+    });
+    const plano = document.createElement('div');
+    plano.className = 'nota';
+    plano.innerHTML = `<pre style="white-space:pre-wrap">${escapar(resultado.plano)}</pre>`;
+    const origem = document.createElement('small');
+    origem.textContent = `Gerado por ${resultado.gerado_por}${resultado.de_cache ? ' · reaproveitado' : ''}`;
+    plano.appendChild(origem);
+    bloco.appendChild(plano);
+  } catch (erro) {
+    const msg = document.createElement('p');
+    msg.className = 'nota';
+    msg.textContent = `não foi possível planejar reparo: ${erro.message}`;
+    bloco.appendChild(msg);
+  } finally {
+    if (botao) { botao.disabled = false; botao.textContent = 'Planejar reparo com IA'; }
+  }
+}
+
+async function aplicarReparo(acao) {
+  if (!confirm(`Aplicar o reparo "${acao}"?\n\nIsso altera o banco de produção. Certifique-se de que entende o problema.`)) return;
+  try {
+    const resultado = await pedirJson('/api/diagnostico/acoes', {
+      metodo: 'POST', corpo: { acao },
+    });
+    alert(`Reparo aplicado: ${JSON.stringify(resultado)}`);
+    await varrerSistema();
+  } catch (erro) {
+    alert(`Falha ao aplicar reparo: ${erro.message}`);
+  }
+}
+
+async function parecerDaIA() {
+  const botao = seletor('#diagnostico-parecer-ia');
+  const container = seletor('#diagnostico-parecer');
+  if (!container) return;
+  if (botao) { botao.disabled = true; botao.textContent = 'Analisando…'; }
+  container.hidden = false;
+  container.textContent = 'Consultando a IA…';
+  try {
+    const { provedor } = provedorEscolhidoDoDiagnostico();
+    const resultado = await pedirJson('/api/diagnostico/parecer', {
+      metodo: 'POST', corpo: provedor ? { provedor } : {},
+    });
+    container.innerHTML = `<pre style="white-space:pre-wrap">${escapar(resultado.parecer)}</pre>`;
+    const origem = document.createElement('p');
+    origem.className = 'nota';
+    origem.textContent = `Gerado por ${resultado.gerado_por}${resultado.de_cache ? ' · reaproveitado do cache do dia' : ''}${resultado.fallback_de ? ` · fallback de ${resultado.fallback_de}` : ''}`;
+    container.appendChild(origem);
+  } catch (erro) {
+    container.textContent = `não foi possível obter parecer: ${erro.message}`;
+  } finally {
+    if (botao) { botao.disabled = false; botao.textContent = 'Parecer da IA'; }
+  }
+}
+
+function provedorEscolhidoDoDiagnostico() {
+  const seletorIa = seletor('#diagnostico-ia');
+  const provedor = seletorIa?.value || null;
+  return { provedor, modelo: null };
+}
+
+async function carregarSeletorDeIaDoDiagnostico() {
+  const seletorIa = seletor('#diagnostico-ia');
+  if (!seletorIa) return;
+  if (!catalogoDeIA) {
+    try {
+      const { provedores } = await pedirJson('/api/ia/modelos');
+      catalogoDeIA = provedores;
+    } catch {
+      seletorIa.innerHTML = '<option value="" disabled>Provedores indisponíveis</option>';
+      return;
+    }
+  }
+  seletorIa.innerHTML = '<option value="" disabled>Escolha a IA…</option>';
+  let temDisponivel = false;
+  for (const linha of catalogoDeIA) {
+    const opcao = document.createElement('option');
+    opcao.value = linha.provedor;
+    opcao.textContent = linha.disponivel ? linha.provedor : `${linha.provedor} (sem chave)`;
+    opcao.disabled = !linha.disponivel;
+    seletorIa.append(opcao);
+    if (linha.disponivel) temDisponivel = true;
+  }
+  const salvo = localStorage.getItem('centro-operacional:provedor-ia');
+  if (salvo) seletorIa.value = salvo;
+  seletorIa.addEventListener('change', () => {
+    localStorage.setItem('centro-operacional:provedor-ia', seletorIa.value);
+  });
+  const botaoParecer = seletor('#diagnostico-parecer-ia');
+  if (botaoParecer) botaoParecer.hidden = !temDisponivel;
+}
+
 seletor('#diagnostico-verificar')?.addEventListener('click', varrerSistema);
+seletor('#diagnostico-parecer-ia')?.addEventListener('click', parecerDaIA);
 
 /**
  * Move um lead de etapa no funil.
