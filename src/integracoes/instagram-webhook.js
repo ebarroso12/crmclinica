@@ -58,15 +58,11 @@ function instanteIso(epochMs) {
  * Payload de provedor externo nunca deve derrubar o processo que o chama —
  * por isso "não sei processar isto" sempre vira `null`, nunca uma exceção.
  */
-function normalizarEventoInstagram(payload = {}) {
-  if (!payload || typeof payload !== 'object') return null;
-
-  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
-  const primeiraEntrada = entradas[0];
-  if (!primeiraEntrada || typeof primeiraEntrada !== 'object' || Array.isArray(primeiraEntrada)) return null;
-
-  const eventosDeMensagem = Array.isArray(primeiraEntrada.messaging) ? primeiraEntrada.messaging : [];
-  const evento = eventosDeMensagem[0];
+/**
+ * Traduz UM item de `entry[].messaging[]`. Devolve `null` para tudo que não é
+ * mensagem de paciente a processar — nunca lança.
+ */
+function normalizarUmEventoDeMensagem(evento) {
   if (!evento || typeof evento !== 'object' || Array.isArray(evento)) return null;
 
   // Leitura/entrega não é mensagem: `messaging.read`/`messaging.delivery`
@@ -108,6 +104,51 @@ function normalizarEventoInstagram(payload = {}) {
     origem: 'instagram_webhook',
     ocorrido_em: instanteIso(evento.timestamp),
   };
+}
+
+/**
+ * TODAS as mensagens de uma chamada do webhook, na ordem em que a Meta as
+ * empacotou.
+ *
+ * A Meta empacota mais de um `entry`/`messaging` na mesma chamada. Enquanto
+ * esta porta lia só `entry[0].messaging[0]`, o resto era descartado com HTTP
+ * 200 — e a Meta não reentrega o que já foi aceito, então a mensagem do
+ * paciente sumia sem rastro. Mesma correção que os comentários já receberam;
+ * aqui ela demorou mais porque o caminho passa pela porta assinada, que
+ * processava um evento por requisição.
+ */
+function normalizarEventosInstagram(payload = {}) {
+  if (!payload || typeof payload !== 'object') return [];
+
+  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
+  const eventos = [];
+
+  for (const entrada of entradas) {
+    if (!entrada || typeof entrada !== 'object' || Array.isArray(entrada)) continue;
+    const itens = Array.isArray(entrada.messaging) ? entrada.messaging : [];
+    for (const item of itens) {
+      const traduzido = normalizarUmEventoDeMensagem(item);
+      if (traduzido) eventos.push(traduzido);
+    }
+  }
+
+  return eventos;
+}
+
+/**
+ * O primeiro evento de mensagem do payload — contrato antigo, preservado para
+ * quem só sabe lidar com um evento por vez. Quem processa em produção usa o
+ * plural acima.
+ */
+function normalizarEventoInstagram(payload = {}) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
+  const primeiraEntrada = entradas[0];
+  if (!primeiraEntrada || typeof primeiraEntrada !== 'object' || Array.isArray(primeiraEntrada)) return null;
+
+  const eventosDeMensagem = Array.isArray(primeiraEntrada.messaging) ? primeiraEntrada.messaging : [];
+  return normalizarUmEventoDeMensagem(eventosDeMensagem[0]);
 }
 
 // `entry[].time` do webhook de comentários é epoch em SEGUNDOS (diferente de
@@ -235,4 +276,9 @@ function normalizarComentarioInstagram(payload = {}, { contaComercialId = null }
   return normalizarValorDeComentario(mudancaDeComentario.value, primeiraEntrada.time, contaComercialId);
 }
 
-module.exports = { normalizarEventoInstagram, normalizarComentarioInstagram, normalizarComentariosInstagram };
+module.exports = {
+  normalizarEventoInstagram,
+  normalizarEventosInstagram,
+  normalizarComentarioInstagram,
+  normalizarComentariosInstagram,
+};

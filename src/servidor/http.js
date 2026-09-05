@@ -11,7 +11,7 @@ const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
 const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('../integracoes/evolution-webhook');
-const { normalizarEventoInstagram, normalizarComentariosInstagram } = require('../integracoes/instagram-webhook');
+const { normalizarEventosInstagram, normalizarComentariosInstagram } = require('../integracoes/instagram-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarClienteInstagramEnvio } = require('../integracoes/instagram-envio');
 const { criarServicoDeGatilhos } = require('../dominio/instagram-gatilhos');
@@ -455,6 +455,9 @@ function criarAplicacao(dependencias = {}) {
     }
 
     let corpoInterpretado = interpretarJson(corpoBruto);
+    // Um item na esmagadora maioria das chamadas; mais de um só quando o
+    // provedor empacota (ver o comentário em `adaptar`, logo abaixo).
+    let corposDeEventos = null;
     if (autenticadoPorToken) {
       const traduzido = tokenAlternativo.adaptar?.(corpoInterpretado) ?? null;
       // Evento da Evolution que não é mensagem de paciente (CONNECTION_UPDATE,
@@ -491,46 +494,30 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
       corpoInterpretado = traduzido;
+      corposDeEventos = [corpoInterpretado];
     } else if (adaptar) {
       // Caminho autenticado por assinatura (Instagram): o corpo ainda é o
       // payload nativo do provedor, precisa da mesma tradução — e do mesmo
       // "aceito e ignorado" para evento que não é mensagem de paciente
       // (eco, recibo de leitura), em vez de erro que faria a Meta reter e
       // martelar retry.
+      //
+      // `adaptar` pode devolver UM evento (contrato antigo, ainda usado) ou
+      // uma LISTA: a Meta empacota mais de um `entry`/`messaging` na mesma
+      // chamada, e enquanto esta porta lia só o primeiro, o resto sumia com
+      // HTTP 200 — e a Meta não reentrega o que já foi aceito.
       const traduzido = adaptar(corpoInterpretado) ?? null;
-      if (!traduzido) {
+      const lista = Array.isArray(traduzido) ? traduzido : (traduzido ? [traduzido] : []);
+      if (lista.length === 0) {
         responderJson(res, 200, { aceito: true, ignorado: true });
         return;
       }
-      corpoInterpretado = traduzido;
+      corposDeEventos = lista;
     }
 
-    const validado = validarEvento(corpoInterpretado);
-
-    // Quem responde por este evento é decisão desta porta, não do payload.
-    // Um evento de WhatsApp sem dono declarado é recusado aqui, fechado: se ele
-    // caísse no fluxo de despacho, o CRM reenviaria ao agente uma mensagem que
-    // o agente talvez já tenha respondido — e o paciente receberia duas vezes.
-    let evento;
-    try {
-      evento = exigirEstrategiaDoAdaptador(validado, adaptador);
-    } catch (erro) {
-      if (erro instanceof ErroDeEstrategia) {
-        // A recusa fica no livro: sem isso, um integrador com o payload errado
-        // veria 422 e ninguém da clínica saberia que eventos estão sendo barrados.
-        await repositorio.registrarAuditoria({
-          entidade: 'evento',
-          entidadeId: null,
-          acao: 'evento_recusado_estrategia',
-          detalhe: {
-            canal: validado.canal,
-            estrategia_declarada: validado.estrategia_ia,
-            codigo: erro.codigo,
-          },
-        }).catch(() => {});
-      }
-      throw erro;
-    }
+    // Sem tradução (porta do orquestrador, `/api/eventos`), o corpo já é o
+    // evento no contrato do CRM.
+    const eventosDoLote = corposDeEventos ?? [corpoInterpretado];
 
     // Só as portas de ponte (Evolution/OpenClaw ingresso, Instagram ingresso)
     // vão para a outbox — a porta do orquestrador (`openclaw_webhook`,
@@ -540,65 +527,135 @@ function criarAplicacao(dependencias = {}) {
     // timeout curto de aceite que a Meta também impõe.
     const despachoEmSegundoPlano = ADAPTADORES_DE_PONTE.has(adaptador);
 
-    async function processarEGravarRecibo() {
-      // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
-      const jaProcessado = await repositorio.consultarEvento(evento.chave_idempotencia);
-      if (jaProcessado) return { status: 200, corpo: { ...jaProcessado, duplicado: true } };
+    async function processarUmEvento(corpoDoEvento) {
+      const validado = validarEvento(corpoDoEvento);
 
-      // A mensagem entra no inbox: vira contato, conversa e linha no histórico.
+      // Quem responde por este evento é decisão desta porta, não do payload.
+      // Um evento de WhatsApp sem dono declarado é recusado aqui, fechado: se ele
+      // caísse no fluxo de despacho, o CRM reenviaria ao agente uma mensagem que
+      // o agente talvez já tenha respondido — e o paciente receberia duas vezes.
+      let evento;
+      try {
+        evento = exigirEstrategiaDoAdaptador(validado, adaptador);
+      } catch (erro) {
+        if (erro instanceof ErroDeEstrategia) {
+          // A recusa fica no livro: sem isso, um integrador com o payload errado
+          // veria 422 e ninguém da clínica saberia que eventos estão sendo barrados.
+          await repositorio.registrarAuditoria({
+            entidade: 'evento',
+            entidadeId: null,
+            acao: 'evento_recusado_estrategia',
+            detalhe: {
+              canal: validado.canal,
+              estrategia_declarada: validado.estrategia_ia,
+              codigo: erro.codigo,
+            },
+          }).catch(() => {});
+        }
+        throw erro;
+      }
+
+      async function processarEGravarRecibo() {
+        // Idempotência: o mesmo evento reenviado devolve o mesmo resultado, sem reprocessar.
+        const jaProcessado = await repositorio.consultarEvento(evento.chave_idempotencia);
+        if (jaProcessado) return { status: 200, corpo: { ...jaProcessado, duplicado: true } };
+
+        // A mensagem entra no inbox: vira contato, conversa e linha no histórico.
+        //
+        // Na porta da ponte, o trabalho de responder vai para a outbox durável
+        // em vez de rodar nesta requisição: o plugin do OpenClaw espera no
+        // máximo 10s pelo aceite, e gerar a resposta da IA leva mais que isso —
+        // segurar a conexão fazia toda entrega estourar o timeout do hook e ser
+        // reagendada pelo spool. O aceite atesta a GRAVAÇÃO E O ENFILEIRAMENTO
+        // (síncronos, na mesma transação); quem entrega ao paciente é o worker
+        // da outbox (`bin/worker-outbox.js`), não esta requisição.
+        const resultado = await conversas.receberMensagemDeCanal(evento, { despachoEmSegundoPlano });
+
+        const recibo = {
+          aceito: true,
+          duplicado: false,
+          chave_idempotencia: evento.chave_idempotencia,
+          tipo: evento.tipo,
+          canal: evento.canal,
+          // Quem é o dono da resposta, e o que o transporte fez de fato: junto com
+          // `decisao`, é o que permite auditar "importou sem reenviar" de fora.
+          estrategia_ia: evento.estrategia_ia,
+          decisao_transporte: resultado.ia_despachada === false
+            ? 'importada_sem_despacho'
+            : 'despacho_pelo_crm',
+          conversa_id: resultado.conversa_id ?? null,
+          decisao: resultado.acao,
+          recebido_em: new Date().toISOString(),
+        };
+
+        await repositorio.registrarEvento(evento.chave_idempotencia, recibo);
+        return { status: 202, corpo: recibo };
+      }
+
+      // Comando 3: na porta da ponte, checar duplicidade, gravar a mensagem
+      // (contato, conversa, linha no histórico), enfileirar o trabalho da
+      // automação na outbox durável e registrar o recibo do evento acontecem
+      // NUMA TRANSAÇÃO SÓ — `repositorio.comUsuario` é o mesmo mecanismo que já
+      // protege as outras rotas que gravam mais de uma coisa (ver
+      // `comIdentidade`, mais abaixo neste arquivo). Se qualquer escrita falhar
+      // no meio, a exceção sobe, a transação sofre ROLLBACK e este `try/catch`
+      // de fora responde o erro — nunca um `202` para um trabalho que não
+      // existe. O `202` só sai DEPOIS do COMMIT: "aceito" volta a significar
+      // "gravado com segurança", nunca "vou tentar continuar nesta função
+      // depois de responder" — a promessa que o `setImmediate` não cumpria.
       //
-      // Na porta da ponte, o trabalho de responder vai para a outbox durável
-      // em vez de rodar nesta requisição: o plugin do OpenClaw espera no
-      // máximo 10s pelo aceite, e gerar a resposta da IA leva mais que isso —
-      // segurar a conexão fazia toda entrega estourar o timeout do hook e ser
-      // reagendada pelo spool. O aceite atesta a GRAVAÇÃO E O ENFILEIRAMENTO
-      // (síncronos, na mesma transação); quem entrega ao paciente é o worker
-      // da outbox (`bin/worker-outbox.js`), não esta requisição.
-      const resultado = await conversas.receberMensagemDeCanal(evento, { despachoEmSegundoPlano });
-
-      const recibo = {
-        aceito: true,
-        duplicado: false,
-        chave_idempotencia: evento.chave_idempotencia,
-        tipo: evento.tipo,
-        canal: evento.canal,
-        // Quem é o dono da resposta, e o que o transporte fez de fato: junto com
-        // `decisao`, é o que permite auditar "importou sem reenviar" de fora.
-        estrategia_ia: evento.estrategia_ia,
-        decisao_transporte: resultado.ia_despachada === false
-          ? 'importada_sem_despacho'
-          : 'despacho_pelo_crm',
-        conversa_id: resultado.conversa_id ?? null,
-        decisao: resultado.acao,
-        recebido_em: new Date().toISOString(),
-      };
-
-      await repositorio.registrarEvento(evento.chave_idempotencia, recibo);
-      return { status: 202, corpo: recibo };
+      // A transação é POR EVENTO, não por requisição: num lote, o segundo
+      // evento falhar não pode desfazer o primeiro, que já foi gravado e
+      // enfileirado com sucesso.
+      //
+      // Na porta do orquestrador (síncrona, IA despachada dentro da própria
+      // requisição), NÃO abrimos transação: prender a conexão do pool durante
+      // uma chamada de IA que pode levar dezenas de segundos é exatamente o
+      // problema que a ponte evita ao ir para a outbox — aqui o caminho
+      // continua sem transação, como sempre foi.
+      return despachoEmSegundoPlano
+        ? repositorio.comUsuario(null, processarEGravarRecibo)
+        : processarEGravarRecibo();
     }
 
-    // Comando 3: na porta da ponte, checar duplicidade, gravar a mensagem
-    // (contato, conversa, linha no histórico), enfileirar o trabalho da
-    // automação na outbox durável e registrar o recibo do evento acontecem
-    // NUMA TRANSAÇÃO SÓ — `repositorio.comUsuario` é o mesmo mecanismo que já
-    // protege as outras rotas que gravam mais de uma coisa (ver
-    // `comIdentidade`, mais abaixo neste arquivo). Se qualquer escrita falhar
-    // no meio, a exceção sobe, a transação sofre ROLLBACK e este `try/catch`
-    // de fora responde o erro — nunca um `202` para um trabalho que não
-    // existe. O `202` só sai DEPOIS do COMMIT: "aceito" volta a significar
-    // "gravado com segurança", nunca "vou tentar continuar nesta função
-    // depois de responder" — a promessa que o `setImmediate` não cumpria.
-    //
-    // Na porta do orquestrador (síncrona, IA despachada dentro da própria
-    // requisição), NÃO abrimos transação: prender a conexão do pool durante
-    // uma chamada de IA que pode levar dezenas de segundos é exatamente o
-    // problema que a ponte evita ao ir para a outbox — aqui o caminho
-    // continua sem transação, como sempre foi.
-    const resultadoDaTransacao = despachoEmSegundoPlano
-      ? await repositorio.comUsuario(null, processarEGravarRecibo)
-      : await processarEGravarRecibo();
+    // Uma mensagem por chamada é o caso normal e continua respondendo
+    // exatamente o que sempre respondeu — mesma forma, mesmo status. Nada do
+    // que já integra com esta porta enxerga diferença.
+    if (eventosDoLote.length === 1) {
+      const resultado = await processarUmEvento(eventosDoLote[0]);
+      responderJson(res, resultado.status, resultado.corpo);
+      return;
+    }
 
-    responderJson(res, resultadoDaTransacao.status, resultadoDaTransacao.corpo);
+    // Lote. Cada evento tem transação e chave de idempotência próprias, então
+    // um não desfaz o outro.
+    //
+    // A distinção que importa aqui é entre payload ruim e infraestrutura fora
+    // do ar. Evento MAL FORMADO é registrado e o lote segue: reentregar nunca
+    // vai consertar o payload, e deixar o erro subir faria a Meta remandar o
+    // lote inteiro para sempre por causa de um item — inclusive as mensagens
+    // boas, que ficariam presas atrás dele. Qualquer outra falha (banco fora
+    // do ar, por exemplo) SOBE: ali a reentrega é justamente o que salva a
+    // mensagem do paciente, e as que já passaram voltam como `duplicado` pela
+    // chave de idempotência.
+    const recibos = [];
+    for (const corpoDoEvento of eventosDoLote) {
+      try {
+        const resultado = await processarUmEvento(corpoDoEvento);
+        recibos.push(resultado.corpo);
+      } catch (erro) {
+        if (!(erro instanceof ErroDeContrato || erro instanceof ErroDeEstrategia)) throw erro;
+        console.error(`[http] ${nomeDaPorta}: evento do lote recusado — ${erro.message}`);
+        recibos.push({ aceito: false, recusado: erro.codigo ?? erro.campo ?? 'contrato_invalido' });
+      }
+    }
+
+    responderJson(res, 202, {
+      aceito: true,
+      eventos: recibos.length,
+      recibos,
+      recebido_em: new Date().toISOString(),
+    });
   }
 
   async function receberEventoDoOrquestrador(req, res) {
@@ -739,7 +796,8 @@ function criarAplicacao(dependencias = {}) {
       // sempre assina os eventos POST, ao contrário da Evolution.
       cabecalhosDeAssinatura: ['x-hub-signature-256'],
       nomeDaPorta: 'ingresso do Instagram',
-      adaptar: normalizarEventoInstagram,
+      // Plural: a Meta empacota mais de uma mensagem na mesma chamada.
+      adaptar: normalizarEventosInstagram,
       corpoBrutoFornecido: corpoBruto,
     });
   }
