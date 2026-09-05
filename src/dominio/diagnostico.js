@@ -203,13 +203,39 @@ async function executarDiagnostico(sondas = {}) {
     }));
   }
 
+  // Achado de 05/09: integracao com `configurada: false` nao gerava achado
+  // NENHUM — Evolution ou Instagram desligados liam como "tudo no lugar", e o
+  // laudo saia verde com a clinica sem via de entrega. Ausencia de
+  // configuracao e um fato operacional, nao um silencio.
+  if (evolucao && evolucao.configurada === false) {
+    const gatewayAtendendo = canal?.vinculado === true && canal?.conectado === true;
+    registrar(achado({
+      area: 'evolucao',
+      nivel: gatewayAtendendo ? 'aviso' : 'critico',
+      titulo: 'a Evolution API (canal primario de entrega) nao esta configurada neste ambiente',
+      detalhe: gatewayAtendendo
+        ? 'o gateway do OpenClaw esta atendendo como reserva'
+        : 'nenhuma via de entrega confirmada neste processo',
+      reparo: 'Confira EVOLUTION_API_URL, EVOLUTION_API_KEY e EVOLUTION_INSTANCE neste ambiente. '
+        + 'Cada processo (Vercel, worker do VPS) le o proprio ambiente: faltar aqui nao aparece la.',
+    }));
+  }
+
   const google = await verificar('google', sondas.google);
   if (google?.configurada && !google.alcancavel) {
     registrar(achado({ area: 'google', nivel: 'falha', titulo: 'o espelho da agenda Google não responde', detalhe: google.motivo ?? null, reparo: 'Confira a credencial da conta de serviço e o compartilhamento do calendário.' }));
   }
 
   const instagram = await verificar('instagram', sondas.instagram);
-  if (instagram?.configurada && instagram.alcancavel === false) {
+  if (instagram && instagram.configurada === false) {
+    registrar(achado({
+      area: 'instagram',
+      nivel: 'aviso',
+      titulo: 'a integracao de Instagram nao esta configurada neste ambiente',
+      reparo: 'Confira INSTAGRAM_ACCESS_TOKEN e INSTAGRAM_BUSINESS_ACCOUNT_ID. '
+        + 'Sem eles, comentario e DM entram no CRM e nenhuma resposta sai.',
+    }));
+  } else if (instagram?.configurada && instagram.alcancavel === false) {
     registrar(achado({
       area: 'instagram',
       nivel: 'falha',
@@ -289,7 +315,7 @@ async function executarDiagnostico(sondas = {}) {
     registrar(achado({
       area: 'entregas',
       nivel: 'critico',
-      titulo: `${entregas.total} resposta(s) da automação falharam ao entregar na última hora`,
+      titulo: `${entregas.total} resposta(s) da automação falharam ao entregar nas últimas 24 h`,
       detalhe: 'a Serena gerou a resposta, mas o envio ao paciente não confirmou — motivo exato em audit_log (ação resposta_nao_entregue)',
       reparo: 'Confira o motivo em audit_log antes de assumir qual elo quebrou — fila, canal, instância e credencial podem parecer certos isoladamente e mesmo assim a entrega falhar (ex.: credencial que só existe num dos ambientes que enviam mensagem).',
     }));

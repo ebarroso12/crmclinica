@@ -212,7 +212,7 @@ function sondaDoInstagram(configuracaoInstagram, { fetchImpl = globalThis.fetch 
  * canal e Evolution reportavam "ok" cada um isoladamente, e mesmo assim
  * nada chegava ao paciente — só o resultado fim-a-fim provava o contrário.
  */
-function sondaDeEntregasFalhadas(repositorio, { janelaMs = 60 * 60 * 1000 } = {}) {
+function sondaDeEntregasFalhadas(repositorio, { janelaMs = 24 * 60 * 60 * 1000 } = {}) {
   return async () => {
     const desde = new Date(Date.now() - janelaMs).toISOString();
     const total = (await repositorio.contarEntregasFalhadasDaAutomacao?.({ desde })) ?? 0;
