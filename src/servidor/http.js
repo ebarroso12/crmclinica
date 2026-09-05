@@ -203,6 +203,8 @@ function criarAplicacao(dependencias = {}) {
     || criarAtendimento({
       repositorio,
       orquestrador,
+      // Quem opera a clinica nao entra no funil como paciente.
+      numerosInternos: configuracao.numerosInternos,
       leads: servicoDeLeads,
       lembretes: lembretesLigados,
       serena: servicoDaSerena,

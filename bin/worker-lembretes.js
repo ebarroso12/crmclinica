@@ -275,6 +275,7 @@ async function main() {
       }),
       atendimento: criarAtendimento({
         repositorio,
+        numerosInternos: configuracao.numerosInternos,
         orquestrador: crmDespachaWhatsapp ? criarClienteOpenClaw(configuracao.openclaw) : null,
         leads: criarServicoDeLeads({ repositorio }),
         lembretes,

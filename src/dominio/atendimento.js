@@ -4,6 +4,7 @@ const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
 const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
 const { ehPedidoDeOptOut } = require('./lembretes');
+const { criarNumerosInternos } = require('./numeros-internos');
 const { ErroDeEstrategia } = require('../contratos/erros');
 
 // Comando 7, achado A-3 da auditoria: a barreira final (`podeEntregarAgora`)
@@ -73,8 +74,13 @@ const MENSAGEM_CONTATO_BLOQUEADO = 'Olá! Para que você tenha o melhor '
  */
 function criarAtendimento({
   repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null, emissor = null,
-  qualificacaoIa = null, storage = null,
+  qualificacaoIa = null, storage = null, numerosInternos = [],
 }) {
+  // Quem opera a clínica não é atendido por ela. A lista sai de
+  // `CRMCLINICA_NUMEROS_INTERNOS` + `CRMCLINICA_RESUMO_DESTINATARIOS` +
+  // `WHATSAPP_BUSINESS_PHONE` (ver src/config.js). Vazia por padrão: sem
+  // configuração, ninguém é filtrado.
+  const equipe = criarNumerosInternos(numerosInternos);
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -104,6 +110,26 @@ function criarAtendimento({
     // exceção. Gravar um PSID na coluna `telefone` poluiria um campo que o
     // resto do sistema trata como telefone de verdade (normalização, exibição).
     const semTelefone = CANAIS_SEM_TELEFONE.has(evento.canal);
+
+    // Administrador não é paciente: ele comanda a Serena e recebe os resumos.
+    // A guarda existia desde sempre em `sincronia-conversas.js`, mas essa
+    // rotina é abandonada logo no início quando o transporte é `crm_despacha`
+    // — o modo de produção. Ou seja: no caminho por onde as mensagens
+    // REALMENTE entram (webhook da Evolution), ela nunca rodou. O efeito
+    // aparece agora que o resumo do lead volta a sair: o Dr. Edson recebe o
+    // resumo, responde "ok", e a resposta dele vira contato, conversa aberta e
+    // lead no funil. Cada resumo criaria mais um.
+    //
+    // Antes de gravar qualquer coisa, de propósito: uma linha criada e depois
+    // escondida continua sendo uma linha no banco.
+    if (!semTelefone && equipe.ehInterno(evento.remetente)) {
+      return {
+        acao: 'mensagem_interna_ignorada',
+        motivo: 'número da equipe — comanda, não é atendido',
+        conversa_id: null,
+      };
+    }
+
     const contato = await repositorio.encontrarOuCriarContato({
       telefone: semTelefone ? null : evento.remetente,
       nome: evento.nome,

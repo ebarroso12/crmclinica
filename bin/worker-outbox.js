@@ -144,6 +144,8 @@ async function main() {
   const atendimento = criarAtendimento({
     repositorio,
     orquestrador: criarClienteOpenClaw(configuracao.openclaw),
+    // Quem opera a clinica nao entra no funil como paciente.
+    numerosInternos: configuracao.numerosInternos,
     leads: servicoDeLeads,
     lembretes: servicoDeLembretes,
     serena: servicoDaSerena,
