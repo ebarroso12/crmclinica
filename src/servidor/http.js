@@ -214,7 +214,13 @@ function criarAplicacao(dependencias = {}) {
 
   // Instagram: regras de palavra-gatilho (comentário -> DM + resposta pública).
   const servicoDeGatilhos = dependencias.servicoDeGatilhos
-    || criarServicoDeGatilhos({ repositorio, instagramEnvio: clienteInstagramEnvio, atendimento });
+    || criarServicoDeGatilhos({
+      repositorio,
+      instagramEnvio: clienteInstagramEnvio,
+      atendimento,
+      // Para o CTA da DM do gatilho apontar para o WhatsApp da clínica.
+      numeroWhatsapp: configuracao.openclaw.numeroWhatsapp,
+    });
   const rotasDeInstagram = criarRotasDeInstagram({ servico: servicoDeGatilhos });
 
   // Fluxo comercial: sino de acompanhamento, encerramento com resumo interno e
