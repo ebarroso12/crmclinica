@@ -76,6 +76,10 @@ function decodificarChave(valor) {
 function carregarConfiguracao(ambiente = process.env) {
   const nodeEnv = NIVEIS_VALIDOS.has(texto(ambiente.NODE_ENV)) ? texto(ambiente.NODE_ENV) : 'development';
   const producao = nodeEnv === 'production';
+  // Rodando como função (Vercel, Lambda) ou como processo longo (VPS)? A
+  // diferença decide quantas conexões de banco é seguro pedir — ver `poolMax`.
+  // As duas variáveis são postas pelas próprias plataformas, não por nós.
+  const serverless = Boolean(texto(ambiente.VERCEL) || texto(ambiente.AWS_LAMBDA_FUNCTION_NAME));
   // Comando 4: o padrão continua 'openclaw_gerencia' de propósito — ver o
   // comentário de SERENA_TRANSPORTE_WHATSAPP em .env.exemplo. Este valor não
   // decide o canal de entrega (isso é EVOLUTION_API_URL/KEY/INSTANCE) e não é
@@ -110,7 +114,19 @@ function carregarConfiguracao(ambiente = process.env) {
     banco: {
       configurado: Boolean(texto(ambiente.CRMCLINICA_DATABASE_URL)),
       url: texto(ambiente.CRMCLINICA_DATABASE_URL),
-      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, 10),
+      // Cada instância de função serverless abre o PRÓPRIO pool. Com o padrão
+      // de 10, DUAS instâncias simultâneas já passam do teto de 15 conexões do
+      // pooler do Supabase em modo sessão — e a partir daí qualquer rota que
+      // toque o banco devolve 500. Foi exatamente isso em 05/09: o login parou
+      // (`EMAXCONNSESSION` em /api/auth/google/retorno) sem nenhum defeito de
+      // código, só conexão de sobra pedida por instância demais.
+      //
+      // Uma invocação atende UMA requisição por vez, e dentro de uma transação
+      // todas as consultas reusam o mesmo client (ver `consultar` e
+      // `executarNaTransacao` em repositorio.js) — três é folga, não aperto.
+      // Fora do serverless (worker no VPS, processo longo e único) 10 continua
+      // certo. `CRMCLINICA_DB_POOL_MAX` sobrescreve os dois.
+      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, serverless ? 3 : 10),
       tempoLimiteMs: inteiro(ambiente.CRMCLINICA_DB_TIMEOUT_MS, 10000),
     },
     openclaw: {
