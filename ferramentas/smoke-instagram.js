@@ -181,6 +181,34 @@ async function main() {
     conferir('reentrega não responde de novo', quatro.corpo?.ja_processado === true);
     conferir('nenhuma chamada nova à Graph API', chamadas.length === 0, `${chamadas.length} chamada(s)`);
 
+    // ------------------------------------------------- 5. DM em lote
+    console.log(`\n${cinza('5) DUAS mensagens de direct na mesma chamada, com eco e leitura no meio')}`);
+    chamadas.length = 0;
+    const loteDeDm = {
+      object: 'instagram',
+      entry: [{
+        id: CONTA,
+        time: Math.floor(Date.now() / 1000),
+        messaging: [
+          // Recibo de leitura: a Meta manda no mesmo formato, sem corpo.
+          { sender: { id: 'psid-ana' }, timestamp: Date.now(), read: { mid: 'mid-0' } },
+          { sender: { id: 'psid-ana' }, timestamp: Date.now(), message: { mid: 'mid-1', text: 'oi, queria marcar uma consulta' } },
+          // Eco do proprio envio da clinica.
+          { sender: { id: CONTA }, timestamp: Date.now(), message: { mid: 'mid-eco', text: 'ja respondi', is_echo: true } },
+          { sender: { id: 'psid-bruno' }, timestamp: Date.now(), message: { mid: 'mid-2', text: 'qual o horario de voces?' } },
+        ],
+      }],
+    };
+    const cinco = await mandar(app, loteDeDm);
+    conferir('as DUAS mensagens de paciente do lote foram aceitas',
+      cinco.corpo?.eventos === 2, JSON.stringify(cinco.corpo).slice(0, 200));
+    conferir('eco e recibo de leitura foram descartados',
+      (cinco.corpo?.recibos ?? []).every((r) => r.aceito === true));
+
+    const doDirect = (await repositorio.listarConversas({}))
+      .filter((c) => c.canal === 'instagram' && String(c.contato?.identificador ?? '').startsWith('psid-'));
+    conferir('as duas viraram conversa no inbox', doDirect.length === 2, `${doDirect.length} conversa(s)`);
+
     // ------------------------------------------------------------ métricas
     const metricas = await repositorio.metricasInstagram();
     console.log(`\n${cinza('métricas da tela de Instagram depois do smoke:')}`);
