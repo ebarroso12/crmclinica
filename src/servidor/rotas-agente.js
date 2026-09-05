@@ -32,7 +32,7 @@ const ACOES = Object.freeze([
   'enviar_resumo_equipe',
 ]);
 
-function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao }) {
+function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao, avisoDeEquipe = null }) {
   const segredo = configuracao?.agente?.token ?? '';
 
   /**
@@ -149,12 +149,20 @@ function criarRotasDoAgente({ repositorio, leads, agenda = null, configuracao })
       if (acao === 'enviar_resumo_equipe') {
         const resumo = String(corpo?.resumo ?? '').trim();
         if (!resumo) throw new ErroDeContrato('informe o resumo do lead', 'resumo');
-        try {
-          require('../integracoes/aviso-equipe').enviarResumo(resumo);
-        } catch (erro) {
-          console.error('[aviso-equipe] ' + erro.message);
+
+        // Antes: `execFile('openclaw', …)` disparado e esquecido, com
+        // `{ enviado: true }` respondido de qualquer jeito. Na Vercel a CLI
+        // nao existe, entao a resposta era sempre uma mentira educada. Agora o
+        // envio e aguardado pelo mesmo canal do inbox e o resultado e dito.
+        if (!avisoDeEquipe?.disponivel) {
+          return { enviado: false, motivo: 'nenhum canal de entrega configurado para avisar a equipe' };
         }
-        return { enviado: true };
+        const { enviados, falhas = [] } = await avisoDeEquipe.enviarResumo(resumo);
+        return {
+          enviado: enviados > 0,
+          destinatarios: enviados,
+          ...(falhas.length > 0 ? { falhas: falhas.length } : {}),
+        };
       }
 
       const telefone = String(corpo?.telefone ?? '').trim();

@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizarEventoInstagram, normalizarComentarioInstagram } = require('../src/integracoes/instagram-webhook');
+const {
+  normalizarEventoInstagram, normalizarComentarioInstagram, normalizarComentariosInstagram,
+} = require('../src/integracoes/instagram-webhook');
 
 const MENSAGEM_TEXTO = Object.freeze({
   object: 'instagram',
@@ -262,4 +264,73 @@ test('normalizarComentarioInstagram não derruba com payload vazio, nulo ou malf
   );
   assert.equal(normalizarComentarioInstagram({ entry: 'texto solto' }), null);
   assert.equal(normalizarComentarioInstagram({ entry: [{ changes: 'texto solto' }] }), null);
+});
+
+
+// ----------------------------------------------------- lote de comentários
+
+test('o lote inteiro é lido — a Meta empacota mais de um comentário por chamada', () => {
+  // Achado de 05/09: o singular lê só `entry[0].changes[primeiro com field
+  // comments]`. O resto do lote era descartado com HTTP 200 — e a Meta não
+  // reentrega o que já foi aceito, então o comentário sumia sem rastro.
+  const lote = {
+    entry: [
+      {
+        time: 1756900000,
+        changes: [
+          { field: 'comments', value: { id: 'c1', text: 'quero saber o preço', from: { id: 'ig-1' }, media: { id: 'post-1' } } },
+          { field: 'comments', value: { id: 'c2', text: 'me chama no direct', from: { id: 'ig-2' }, media: { id: 'post-1' } } },
+        ],
+      },
+      {
+        time: 1756900001,
+        changes: [
+          { field: 'comments', value: { id: 'c3', text: 'atende em Ribeirão?', from: { id: 'ig-3' }, media: { id: 'post-2' } } },
+        ],
+      },
+    ],
+  };
+
+  const comentarios = normalizarComentariosInstagram(lote);
+
+  assert.equal(comentarios.length, 3);
+  assert.deepEqual(comentarios.map((c) => c.comentario_id_externo), ['c1', 'c2', 'c3']);
+  assert.equal(comentarios[2].post_id, 'post-2');
+});
+
+test('no lote, os mesmos cortes do singular continuam valendo', () => {
+  const lote = {
+    entry: [{
+      time: 1756900000,
+      changes: [
+        // Resposta a outro comentário: reagir a isto encadeia a automação.
+        { field: 'comments', value: { id: 'c1', parent_id: 'c0', text: 'obrigada!', from: { id: 'ig-1' } } },
+        // Comentário da própria clínica.
+        { field: 'comments', value: { id: 'c2', text: 'oi!', from: { id: 'conta-da-clinica' } } },
+        // Sem texto não há gatilho a avaliar.
+        { field: 'comments', value: { id: 'c3', text: '', from: { id: 'ig-3' } } },
+        // Outro campo do webhook, não é comentário.
+        { field: 'mentions', value: { id: 'c4', text: 'oi', from: { id: 'ig-4' } } },
+        { field: 'comments', value: { id: 'c5', text: 'quanto custa?', from: { id: 'ig-5' } } },
+      ],
+    }],
+  };
+
+  const comentarios = normalizarComentariosInstagram(lote, { contaComercialId: 'conta-da-clinica' });
+
+  assert.deepEqual(comentarios.map((c) => c.comentario_id_externo), ['c5']);
+});
+
+test('o singular continua devolvendo o primeiro comentário do lote', () => {
+  const lote = {
+    entry: [{
+      time: 1756900000,
+      changes: [
+        { field: 'comments', value: { id: 'c1', text: 'primeiro', from: { id: 'ig-1' } } },
+        { field: 'comments', value: { id: 'c2', text: 'segundo', from: { id: 'ig-2' } } },
+      ],
+    }],
+  };
+
+  assert.equal(normalizarComentarioInstagram(lote).comentario_id_externo, 'c1');
 });

@@ -161,7 +161,13 @@ test('sem Evolution configurada, o comportamento antigo do gateway continua — 
     const achadoDoCanal = corpo.achados.find((a) => a.area === 'canal');
     assert.ok(achadoDoCanal);
     assert.equal(achadoDoCanal.nivel, 'critico', 'sem Evolution, o gateway despareado continua crítico');
-    assert.ok(!corpo.achados.some((a) => a.area === 'evolucao'), 'sem configuração, não há o que reportar sobre a Evolution');
+    // Mudanca deliberada de 05/09 (antes: "sem configuracao, nao ha o que
+    // reportar"). Silenciar a ausencia de configuracao era o mecanismo que
+    // fazia o laudo sair verde com a clinica sem via de entrega nenhuma.
+    const achadoDaEvolution = corpo.achados.find((a) => a.area === 'evolucao');
+    assert.ok(achadoDaEvolution, 'Evolution nao configurada agora e um achado, nao um silencio');
+    assert.equal(achadoDaEvolution.nivel, 'critico', 'sem Evolution E com o gateway despareado, ninguem entrega');
+    assert.equal(corpo.saudavel, false);
   } finally {
     await ambiente.encerrar();
   }

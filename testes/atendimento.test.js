@@ -92,6 +92,35 @@ test('Arquitetura B entrega a resposta automática pelo WhatsApp uma única vez'
   assert.equal(canal.envios.length, 1, 'releitura não reenvia a resposta');
 });
 
+test('resposta vazia do orquestrador vai para a equipe, e não vira silêncio', async () => {
+  // Achado de 05/09, conversa 875: o orquestrador devolveu um objeto sem texto
+  // e sem pedido de escalonamento. O paciente ficou sem resposta, a conversa
+  // não foi para ninguém e o trabalho da outbox foi marcado como CONCLUÍDO —
+  // nenhuma sonda do centro operacional enxergava. Silêncio da IA é falha, não
+  // desfecho.
+  const { repositorio, atendimento } = montar({});
+
+  const resultado = await atendimento.receberMensagem(EVENTO);
+
+  assert.equal(resultado.acao, 'sem_resposta_do_orquestrador');
+  assert.equal(resultado.motivo, 'motor_ia_sem_resposta');
+
+  const [conversa] = await repositorio.listarConversas({});
+  const { itens } = await repositorio.listarAuditoria({ limite: 50 });
+  const acoes = itens.map((item) => item.acao);
+  assert.ok(acoes.includes('automacao_sem_resposta'), 'a falha precisa aparecer na auditoria');
+  assert.ok(acoes.includes('escalonada'), 'a conversa precisa ir para a equipe');
+
+  const mensagens = await repositorio.listarMensagens(conversa.id, { incluirPrivadas: true });
+  const aviso = mensagens.find((mensagem) => mensagem.autor_tipo === 'sistema');
+  assert.ok(aviso, 'a equipe vê o aviso interno na própria conversa');
+  assert.match(aviso.conteudo, /motor_ia_sem_resposta/);
+
+  const [depois] = await repositorio.listarConversas({});
+  assert.equal(depois.assumida_por_humano, false,
+    'avisar a equipe não é a mesma coisa que travar a automação (achado de 23/08)');
+});
+
 test('falha de entrega automática escala sem afirmar resposta entregue', async () => {
   const repositorio = criarRepositorioEmMemoria();
   const atendimento = criarAtendimento({

@@ -149,20 +149,7 @@ function instanteIsoSegundos(epochSegundos) {
  * anterior (não filtra) — é assim que os testes existentes, sem essa
  * informação, continuam passando sem mudar.
  */
-function normalizarComentarioInstagram(payload = {}, { contaComercialId = null } = {}) {
-  if (!payload || typeof payload !== 'object') return null;
-
-  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
-  const primeiraEntrada = entradas[0];
-  if (!primeiraEntrada || typeof primeiraEntrada !== 'object' || Array.isArray(primeiraEntrada)) return null;
-
-  const mudancas = Array.isArray(primeiraEntrada.changes) ? primeiraEntrada.changes : [];
-  const mudancaDeComentario = mudancas.find(
-    (item) => item && typeof item === 'object' && !Array.isArray(item) && item.field === 'comments',
-  );
-  if (!mudancaDeComentario) return null;
-
-  const valor = mudancaDeComentario.value;
+function normalizarValorDeComentario(valor, tempoDaEntrada, contaComercialId) {
   if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return null;
 
   // Resposta a outro comentário — inclui a resposta pública que a PRÓPRIA
@@ -197,8 +184,55 @@ function normalizarComentarioInstagram(payload = {}, { contaComercialId = null }
     autor_ig_id: autorIgId,
     autor_username: texto(valor.from?.username) || null,
     texto: conteudo.slice(0, LIMITE_TEXTO),
-    ocorrido_em: instanteIsoSegundos(primeiraEntrada.time),
+    ocorrido_em: instanteIsoSegundos(tempoDaEntrada),
   };
 }
 
-module.exports = { normalizarEventoInstagram, normalizarComentarioInstagram };
+/**
+ * TODOS os comentários de uma chamada do webhook, na ordem em que a Meta os
+ * empacotou.
+ *
+ * Achado de 05/09: `normalizarComentarioInstagram` (singular) lê só o primeiro
+ * `entry` e o primeiro `changes` com `field: 'comments'`. A Meta empacota mais
+ * de um evento na mesma chamada, e o resto era descartado com HTTP 200 — ou
+ * seja, perdido sem reentrega e sem rastro. O singular continua existindo
+ * porque é o contrato que os testes e o caminho antigo usam; quem processa em
+ * produção deve usar este.
+ */
+function normalizarComentariosInstagram(payload = {}, { contaComercialId = null } = {}) {
+  if (!payload || typeof payload !== 'object') return [];
+
+  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
+  const comentarios = [];
+
+  for (const entrada of entradas) {
+    if (!entrada || typeof entrada !== 'object' || Array.isArray(entrada)) continue;
+    const mudancas = Array.isArray(entrada.changes) ? entrada.changes : [];
+    for (const mudanca of mudancas) {
+      if (!mudanca || typeof mudanca !== 'object' || Array.isArray(mudanca)) continue;
+      if (mudanca.field !== 'comments') continue;
+      const comentario = normalizarValorDeComentario(mudanca.value, entrada.time, contaComercialId);
+      if (comentario) comentarios.push(comentario);
+    }
+  }
+
+  return comentarios;
+}
+
+function normalizarComentarioInstagram(payload = {}, { contaComercialId = null } = {}) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const entradas = Array.isArray(payload.entry) ? payload.entry : [];
+  const primeiraEntrada = entradas[0];
+  if (!primeiraEntrada || typeof primeiraEntrada !== 'object' || Array.isArray(primeiraEntrada)) return null;
+
+  const mudancas = Array.isArray(primeiraEntrada.changes) ? primeiraEntrada.changes : [];
+  const mudancaDeComentario = mudancas.find(
+    (item) => item && typeof item === 'object' && !Array.isArray(item) && item.field === 'comments',
+  );
+  if (!mudancaDeComentario) return null;
+
+  return normalizarValorDeComentario(mudancaDeComentario.value, primeiraEntrada.time, contaComercialId);
+}
+
+module.exports = { normalizarEventoInstagram, normalizarComentarioInstagram, normalizarComentariosInstagram };

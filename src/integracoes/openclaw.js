@@ -233,7 +233,12 @@ function criarClienteOpenClaw(configuracao, dependencias = {}) {
       // A última mensagem do contexto é o que a pessoa acabou de escrever.
       const mensagens = evento?.contexto?.mensagens ?? [];
       const texto = mensagens.at(-1)?.texto ?? '';
-      if (!texto) return { resposta: null };
+      // Mensagem sem texto e o audio, a foto e a figurinha — pao de cada dia
+      // num WhatsApp de clinica. Devolver `{ resposta: null }` puro fazia o
+      // paciente ficar sem resposta E sem ninguem avisado: o desfecho subia
+      // como `sem_resposta_do_orquestrador` e a outbox marcava o trabalho como
+      // concluido. Vai para a equipe, com o motivo dito.
+      if (!texto) return { resposta: null, escalonar: true, motivo: 'mensagem_sem_texto' };
 
       // Linha de base ANTES do envio: é ela que separa a resposta desta
       // pergunta das respostas que a sessão já continha.

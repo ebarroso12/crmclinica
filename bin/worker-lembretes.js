@@ -44,6 +44,7 @@ const { criarSincronizadorDeConversas } = require('../src/dominio/sincronia-conv
 const { criarAtendimento } = require('../src/dominio/atendimento');
 const { criarServicoDeLeads } = require('../src/dominio/leads-servico');
 const { criarCanalDeConversas } = require('../src/integracoes/canal-conversas');
+const { criarClienteEvolucaoEnvio } = require('../src/integracoes/evolution-envio');
 const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
 const { criarGeradorDeResumo } = require('../src/dominio/resumo-ia');
 const { criarGatewayDeIA } = require('../src/ia/gateway');
@@ -113,6 +114,14 @@ async function main() {
   });
 
   const servicoDaSerena = criarServicoDaSerena({ repositorio });
+
+  // A via PRIMÁRIA de entrega. `http.js` e `bin/worker-outbox.js` já compõem o
+  // canal assim; só este worker montava `criarCanalDeConversas` sem ela e
+  // ficava preso ao gateway WebSocket da clínica — que esteve parado no VPS.
+  // O efeito era invisível: o resumo do lead saía por um canal morto, e a
+  // conversa já tinha sido marcada como resumida.
+  const clienteEvolucaoEnvio = criarClienteEvolucaoEnvio(configuracao.evolution);
+  const viasDeEntrega = { evolucao: clienteEvolucaoEnvio };
   const crmDespachaWhatsapp = configuracao.serena.transporteWhatsapp === 'crm_despacha';
 
   // Achado do incidente de 2026-08-17: SERENA_TRANSPORTE_WHATSAPP vazia caía,
@@ -270,7 +279,7 @@ async function main() {
         leads: criarServicoDeLeads({ repositorio }),
         lembretes,
         serena: servicoDaSerena,
-        canal: criarCanalDeConversas(configuracao.openclaw.canalClinica),
+        canal: criarCanalDeConversas(configuracao.openclaw.canalClinica, viasDeEntrega),
       }),
       repositorio,
       estrategiaIa: configuracao.serena.transporteWhatsapp,
@@ -325,15 +334,23 @@ async function main() {
 
   const resumoParaEquipe = criarResumoDeAtendimento({
     repositorio,
-    canal: configuracao.openclaw.canalClinica?.url
-      ? criarCanalDeConversas(configuracao.openclaw.canalClinica) : null,
+    // Basta UMA via para o resumo ter por onde sair: antes, sem a URL do
+    // gateway da clínica o resumo era desligado inteiro, mesmo com a Evolution
+    // configurada e entregando mensagem a paciente o dia todo.
+    canal: (configuracao.openclaw.canalClinica?.url || clienteEvolucaoEnvio.disponivel)
+      ? criarCanalDeConversas(configuracao.openclaw.canalClinica, viasDeEntrega) : null,
     destinatarios: configuracao.resumoDeAtendimento.destinatarios,
     silencioMin: configuracao.resumoDeAtendimento.silencioMin,
     gerador: geradorDeResumo,
   });
 
   if (!resumoParaEquipe.ativo) {
-    console.warn('[resumo] sem destinatarios configurados: a equipe nao recebe resumo de atendimento.');
+    // Dizer QUAL das duas metades falta: "sem destinatarios" com a lista cheia
+    // e o canal ausente mandava procurar no lugar errado.
+    const faltando = configuracao.resumoDeAtendimento.destinatarios.length === 0
+      ? 'CRMCLINICA_RESUMO_DESTINATARIOS vazia'
+      : 'nenhum canal de entrega (nem Evolution, nem gateway da clinica)';
+    console.warn(`[resumo] a equipe nao recebe resumo de atendimento: ${faltando}.`);
   }
 
   async function enviarResumos() {
