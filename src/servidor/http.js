@@ -53,6 +53,7 @@ const { criarRotasDeAuditoria } = require('./rotas-auditoria');
 const { criarRotasDoAgente } = require('./rotas-agente');
 const { criarPoliticaDoCanal } = require('../integracoes/openclaw-politica');
 const { criarCanalDeConversas } = require('../integracoes/canal-conversas');
+const { criarAvisoDeEquipe } = require('../integracoes/aviso-equipe');
 const { criarAgendaDoGoogle } = require('../integracoes/google-agenda');
 const { criarCalendarioGoogle } = require('../integracoes/google-calendario');
 const { criarOutboxGoogle } = require('../dominio/google-outbox');
@@ -290,8 +291,15 @@ function criarAplicacao(dependencias = {}) {
     });
   const rotasDeAgenda = criarRotasDeAgenda({ repositorio, agenda: servicoDeAgenda });
   // A Serena opera o CRM por aqui: registra contato, consulta agenda e marca.
+  // O aviso interno sai pelo MESMO canal do inbox (Evolution primeiro, gateway
+  // do OpenClaw como reserva) — nao mais por uma CLI que so existe no VPS.
+  const avisoDeEquipe = dependencias.avisoDeEquipe || criarAvisoDeEquipe({
+    canal: canalDeConversas,
+    destinatarios: configuracao.resumoDeAtendimento.destinatarios,
+  });
+
   const rotasDoAgente = criarRotasDoAgente({
-    repositorio, leads: servicoDeLeads, agenda: servicoDeAgenda, configuracao,
+    repositorio, leads: servicoDeLeads, agenda: servicoDeAgenda, configuracao, avisoDeEquipe,
   });
 
   const rotasDeLembretes = criarRotasDeLembretes({ lembretes: servicoDeLembretes, repositorio });
