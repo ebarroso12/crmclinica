@@ -525,9 +525,24 @@ function descreverConfiguracao(configuracao) {
       integracao: configuracao.openclaw.baseUrl ? 'configurada' : 'ausente',
       assinaturaWebhook: configuracao.openclaw.segredoWebhook ? 'exigida' : 'ausente',
     },
+    // Achado de 05/09: este campo lia so `SERENA_BASE_URL`, uma variavel que
+    // NENHUM caminho de execucao consulta (ela aparece aqui, na validacao de
+    // HTTPS e em lugar nenhum mais). O painel dizia "integracao ausente" com a
+    // Serena ligada, dentro do horario e respondendo paciente — e mandava
+    // procurar defeito onde nao havia. O que decide se ela consegue atender e
+    // ter POR ONDE entregar.
     atendimento: {
       nome: 'Serena',
-      integracao: configuracao.serena.baseUrl ? 'configurada' : 'ausente',
+      integracao: (
+        Boolean(configuracao.evolution.apiUrl && configuracao.evolution.apiKey)
+        || Boolean(configuracao.openclaw.canalClinica?.url)
+        || Boolean(configuracao.instagram?.accessToken && configuracao.instagram?.contaComercialId)
+      ) ? 'configurada' : 'ausente',
+      viasDeEntrega: {
+        evolution: Boolean(configuracao.evolution.apiUrl && configuracao.evolution.apiKey),
+        gatewayDaClinica: Boolean(configuracao.openclaw.canalClinica?.url),
+        instagram: Boolean(configuracao.instagram?.accessToken && configuracao.instagram?.contaComercialId),
+      },
       transporteWhatsapp: configuracao.serena.transporteWhatsapp,
       transporteWhatsappExplicito: configuracao.serena.transporteWhatsappExplicito,
     },
