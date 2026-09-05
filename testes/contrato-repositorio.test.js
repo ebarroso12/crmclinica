@@ -892,5 +892,39 @@ for (const { nome, montar } of implementacoes) {
       });
       // Sem asserção de leitura: a auditoria é append-only e não tem rota de consulta ainda.
     });
+
+    await t.test('conversa reaberta depois de resumida volta para a fila do resumo', async () => {
+      // Achado de 05/09: o filtro era `resumo_enviado_em IS NULL` e nada nunca
+      // devolvia a coluna a nulo. Um lead que escreve, some e volta dois dias
+      // depois gerava UM aviso à equipe na vida inteira dele — a conversa 875
+      // ficou exatamente assim: resumida em 04/09, ativa de novo em 05/09 e
+      // nenhum aviso novo.
+      //
+      // As esperas curtas existem só para os instantes não caírem no mesmo
+      // milissegundo: o que se testa é a ordem entre eles, não a duração.
+      const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
+      const contato = await repositorio.encontrarOuCriarContato({
+        telefone: '5516900000900', nome: 'Rita Resumo',
+      });
+      const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id);
+      const ehEsta = async () => (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 100 }))
+        .some((item) => Number(item.id) === Number(conversa.id));
+
+      await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'entrada', conteudo: 'bom dia, queria marcar', autor_tipo: 'contato',
+      });
+      await respirar();
+      assert.equal(await ehEsta(), true, 'conversa esfriada precisa entrar na varredura');
+
+      await repositorio.marcarResumoEnviado(conversa.id);
+      await respirar();
+      assert.equal(await ehEsta(), false, 'resumo já enviado não sai de novo pelo mesmo assunto');
+
+      await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'entrada', conteudo: 'voltei, ainda da tempo?', autor_tipo: 'contato',
+      });
+      await respirar();
+      assert.equal(await ehEsta(), true, 'mensagem nova depois do resumo devolve a conversa à varredura');
+    });
   });
 }

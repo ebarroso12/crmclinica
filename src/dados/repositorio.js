@@ -1985,11 +1985,25 @@ function criarRepositorio(pool) {
      * despede no WhatsApp. O filtro exige mensagem do paciente para não resumir
      * conversa em que só a Serena falou — disparo sem resposta não é atendimento.
      */
+    /**
+     * As conversas que esfriaram e ainda devem um resumo à equipe.
+     *
+     * A marca vale para o resumo QUE JÁ SAIU, não para a conversa inteira: um
+     * lead que escreve hoje, some e volta depois de amanhã precisa gerar um
+     * resumo novo. Com o filtro antigo (`resumo_enviado_em IS NULL`) ele saía
+     * da varredura para sempre depois do primeiro — a conversa 875 ficou
+     * exatamente assim: resumida em 04/09 e ativa de novo em 05/09, sem
+     * nenhum aviso novo à equipe.
+     *
+     * O índice parcial `conversas_sem_resumo` continua atendendo o ramo
+     * `IS NULL`, que é a maioria; o ramo novo faz varredura por
+     * `ultima_msg_em` e não pesa nesta escala.
+     */
     async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
       const { rows } = await consultar(
         `SELECT c.id, c.contato_id, c.ultima_msg_em
            FROM conversas c
-          WHERE c.resumo_enviado_em IS NULL
+          WHERE (c.resumo_enviado_em IS NULL OR c.resumo_enviado_em < c.ultima_msg_em)
             AND c.ultima_msg_em < now() - ($1 || ' minutes')::interval
             AND EXISTS (
               SELECT 1 FROM mensagens m

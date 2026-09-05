@@ -809,11 +809,50 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         aguardando_resposta_desde: null,
         resumo_interno: null,
         resumo_interno_em: null,
+        // Migration 015 — paridade com repositorio.js.
+        resumo_enviado_em: null,
         criado_em: agora().toISOString(),
       };
       conversas.set(conversa.id, conversa);
       etiquetasDaConversa.set(conversa.id, new Set());
       return montarConversa(conversa);
+    },
+
+    /**
+     * Espelha a consulta do PostgreSQL. Sem esta implementação, a regra de
+     * quem ainda deve resumo só era exercitável contra banco real — e foi
+     * justamente ali que ela ficou errada sem ninguém ver.
+     */
+    async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
+      const limiteMs = agora().getTime() - silencioMin * 60_000;
+
+      return [...conversas.values()]
+        .filter((conversa) => {
+          if (!conversa.ultima_msg_em) return false;
+          const ultima = new Date(conversa.ultima_msg_em).getTime();
+          if (!(ultima < limiteMs)) return false;
+
+          // A marca vale para o resumo que já saiu, não para a conversa
+          // inteira: mensagem nova depois do resumo devolve a conversa à fila.
+          const marcada = conversa.resumo_enviado_em
+            ? new Date(conversa.resumo_enviado_em).getTime() : null;
+          if (marcada !== null && marcada >= ultima) return false;
+
+          return mensagens.some((mensagem) => mensagem.conversa_id === conversa.id
+            && mensagem.autor_tipo === 'contato');
+        })
+        .sort((a, b) => new Date(a.ultima_msg_em) - new Date(b.ultima_msg_em))
+        .slice(0, limite)
+        .map((conversa) => ({
+          id: conversa.id,
+          contato_id: conversa.contato_id,
+          ultima_msg_em: conversa.ultima_msg_em,
+        }));
+    },
+
+    async marcarResumoEnviado(conversaId) {
+      const conversa = conversas.get(Number(conversaId));
+      if (conversa) conversa.resumo_enviado_em = agora().toISOString();
     },
 
     // ---------------------------------------------------------------- etiquetas
