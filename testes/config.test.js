@@ -276,3 +276,26 @@ test('estratégia de WhatsApp inventada é recusada', () => {
   }));
   assert.ok(problemas.some((p) => /SERENA_TRANSPORTE_WHATSAPP/.test(p)));
 });
+
+// --------------------------------------------------- conexões por instância
+
+test('na Vercel o pool de conexões nasce pequeno; no VPS continua 10', () => {
+  // Incidente de 05/09: o login parou com `EMAXCONNSESSION — max clients are
+  // limited to pool_size: 15`. Não havia defeito de código: cada instância de
+  // função abre o próprio pool, e com o padrão de 10 DUAS instâncias
+  // simultâneas já estouram o teto do pooler.
+  const base = { CRMCLINICA_DATABASE_URL: 'postgres://exemplo' };
+
+  assert.equal(carregarConfiguracao(base).banco.poolMax, 10, 'processo longo (worker no VPS)');
+  assert.equal(carregarConfiguracao({ ...base, VERCEL: '1' }).banco.poolMax, 3);
+  assert.equal(carregarConfiguracao({ ...base, AWS_LAMBDA_FUNCTION_NAME: 'fn' }).banco.poolMax, 3);
+});
+
+test('CRMCLINICA_DB_POOL_MAX continua mandando nos dois ambientes', () => {
+  // O padrão novo é uma escolha melhor, não uma prisão: quem sabe o teto do
+  // próprio pooler precisa poder dizer o número.
+  const base = { CRMCLINICA_DATABASE_URL: 'postgres://exemplo', CRMCLINICA_DB_POOL_MAX: '7' };
+
+  assert.equal(carregarConfiguracao(base).banco.poolMax, 7);
+  assert.equal(carregarConfiguracao({ ...base, VERCEL: '1' }).banco.poolMax, 7);
+});
