@@ -180,15 +180,21 @@ test('retentativa do mesmo evento envia com a mesma chave de idempotência', asy
     'é a chave repetida que permite ao gateway recusar a duplicata');
 });
 
-test('sem texto na última mensagem, devolve resposta nula sem chamar chat.send', async () => {
+test('sem texto na última mensagem, manda para a equipe sem chamar chat.send', async () => {
   const cliente = clienteFalso({ 'chat.history': { messages: [] } });
   const orquestrador = criarClienteOpenClaw(CONFIGURACAO, { cliente });
   const resultado = await orquestrador.despacharEvento({
     ...EVENTO_DE_DESPACHO,
     contexto: { contato: { telefone: '5516999999999' }, mensagens: [] },
   });
-  assert.deepEqual(resultado, { resposta: null });
-  assert.ok(!cliente.chamadas.some((c) => c.metodo === 'chat.send'));
+  // Mudanca deliberada de 05/09 (antes: `{ resposta: null }` puro). Audio,
+  // foto e figurinha chegam sem texto o tempo todo num WhatsApp de clinica, e
+  // devolver silencio deixava o paciente sem resposta E sem ninguem avisado —
+  // o desfecho subia como `sem_resposta_do_orquestrador` e a outbox marcava o
+  // trabalho como concluido.
+  assert.deepEqual(resultado, { resposta: null, escalonar: true, motivo: 'mensagem_sem_texto' });
+  assert.ok(!cliente.chamadas.some((c) => c.metodo === 'chat.send'),
+    'sem texto nao ha o que perguntar ao motor: a conversa vai para a equipe direto');
 });
 
 test('falha ao ler a linha de base vira erro identificável, sem envio', async () => {

@@ -566,7 +566,24 @@ function criarAtendimento({
         return { acao: 'escalonada', conversa_id: conversaId, motivo: resposta.motivo };
       }
 
-      return { acao: 'sem_resposta_do_orquestrador', conversa_id: conversaId };
+      // Resposta vazia sem pedido de escalonamento era silencio puro: o
+      // paciente nao recebia nada, a conversa nao ia para a equipe e o
+      // trabalho da outbox era marcado como CONCLUIDO — nenhuma sonda do
+      // centro operacional enxergava. Achado de 05/09 na conversa 875: a
+      // Serena respondeu 15h21m30s, o paciente escreveu 15h21m57s e 23s
+      // depois o desfecho foi este, sem nada aceso em lugar nenhum.
+      await repositorio.registrarAuditoria({
+        entidade: 'conversa',
+        entidadeId: conversaId,
+        acao: 'automacao_sem_resposta',
+        detalhe: { motivo: 'motor_ia_sem_resposta' },
+      }).catch(() => {});
+      await escalonar(conversaId, 'motor_ia_sem_resposta');
+      return {
+        acao: 'sem_resposta_do_orquestrador',
+        conversa_id: conversaId,
+        motivo: 'motor_ia_sem_resposta',
+      };
     } catch (erro) {
       // Falha do orquestrador não pode travar o atendimento: entrega para a equipe.
       await escalonar(conversaId, 'falha_no_orquestrador');
