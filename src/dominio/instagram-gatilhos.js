@@ -1,6 +1,6 @@
 'use strict';
 
-const { comentarioContemGatilho } = require('./texto-normalizado');
+const { comentarioContemGatilho, ehGatilhoDeTodos, termosDoGatilho } = require('./texto-normalizado');
 const { origemDoCanal } = require('./leads');
 
 // Serviço de gatilhos de palavra do Instagram: CRUD das regras
@@ -47,6 +47,16 @@ function validarRegraDeGatilho({
   if (palavraLimpa.length < 2 || palavraLimpa.length > 100) {
     throw new ErroDoInstagram('a palavra-gatilho deve ter entre 2 e 100 caracteres', 'palavra_gatilho_invalida');
   }
+  // Vários termos por regra, separados por vírgula ("agendar, agendamento,
+  // marcar"). Uma lista que só tem separador e termo de uma letra casaria com
+  // quase todo comentário — recusar aqui é melhor do que descobrir depois de
+  // a clínica ter respondido a base inteira.
+  if (!ehGatilhoDeTodos(palavraLimpa) && termosDoGatilho(palavraLimpa).length === 0) {
+    throw new ErroDoInstagram(
+      'informe ao menos um termo com 2 caracteres ou mais (separe variações por vírgula)',
+      'palavra_gatilho_sem_termos',
+    );
+  }
   if (dmLimpa.length < 3 || dmLimpa.length > 2000) {
     throw new ErroDoInstagram('a mensagem de DM deve ter entre 3 e 2000 caracteres', 'mensagem_dm_invalida');
   }
@@ -80,7 +90,9 @@ function paraColunas(validada) {
   };
 }
 
-function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendimento = null } = {}) {
+function criarServicoDeGatilhos({
+  repositorio, instagramEnvio = null, atendimento = null, numeroWhatsapp = null,
+} = {}) {
   if (!repositorio) throw new Error('serviço de gatilhos do Instagram exige um repositório');
   // `atendimento` não é usado ainda por este serviço — reservado para quando o
   // fluxo de qualificação de lead precisar do orquestrador de conversa em vez
@@ -155,6 +167,25 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     return { removida: true, nome: atual.nome };
   }
 
+  /**
+   * O texto que de fato sai na DM: a mensagem da regra e, quando a regra pede
+   * o CTA e há número configurado, o link do WhatsApp da clínica.
+   *
+   * O link vai como texto, não como botão: a DM do gatilho é endereçada por
+   * `comment_id` (private reply), e o formato documentado desse envio é
+   * `message.text` — mandar template de botão por ali é apostar num formato
+   * que a referência não promete.
+   */
+  function montarTextoDaDm(regra) {
+    const base = String(regra.mensagem_dm ?? '');
+    if (regra.cta_whatsapp !== true) return base;
+
+    const digitos = String(numeroWhatsapp ?? '').replace(/\D/g, '');
+    if (!digitos) return base;
+
+    return `${base}\n\nSe preferir, é só chamar no WhatsApp: https://wa.me/${digitos}`;
+  }
+
   // ------------------------------------------------------- comentário → gatilho
 
   /**
@@ -171,7 +202,15 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     if (jaProcessado) return { ja_processado: true };
 
     const regrasAtivas = await repositorio.listarRegrasDeGatilho({ apenasAtivas: true });
-    const regra = regrasAtivas.find((candidata) => comentarioContemGatilho(texto, candidata.palavra_gatilho)) ?? null;
+    // A regra que responde a QUALQUER comentário vai por último: ela existe
+    // para o que sobrou, e consultá-la antes faria ela roubar comentários que
+    // têm gatilho próprio — o paciente que escreveu "quero agendar" receberia
+    // a resposta genérica.
+    const ordenadas = [
+      ...regrasAtivas.filter((candidata) => !ehGatilhoDeTodos(candidata.palavra_gatilho)),
+      ...regrasAtivas.filter((candidata) => ehGatilhoDeTodos(candidata.palavra_gatilho)),
+    ];
+    const regra = ordenadas.find((candidata) => comentarioContemGatilho(texto, candidata.palavra_gatilho)) ?? null;
 
     if (!regra) {
       await repositorio.registrarComentarioProcessado({
@@ -210,11 +249,19 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     // idempotência abaixo precisa acontecer de qualquer jeito);
     // `dm_enviada:false` no retorno é o que sobra para alguém perceber que a
     // mensagem não saiu.
+    // O botão "CTA WhatsApp" da tela era decorativo: `cta_whatsapp` era
+    // gravado, editável e nunca lido por ninguém — o admin ligava e nada
+    // mudava na mensagem. Agora ele acrescenta o link à DM, que é o ponto do
+    // gatilho: tirar a pessoa do comentário e levá-la ao canal onde a Serena
+    // atende de verdade. Sem número configurado, a DM sai como está — link
+    // quebrado seria pior que link nenhum.
+    const textoDaDm = montarTextoDaDm(regra);
+
     let dmEnviada = false;
     if (instagramEnvio && typeof instagramEnvio.responderComentarioPrivadamente === 'function') {
       try {
         await instagramEnvio.responderComentarioPrivadamente({
-          comentarioIdExterno, texto: regra.mensagem_dm,
+          comentarioIdExterno, texto: textoDaDm,
         });
         dmEnviada = true;
       } catch (erro) {
@@ -233,7 +280,7 @@ function criarServicoDeGatilhos({ repositorio, instagramEnvio = null, atendiment
     });
     const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'instagram');
     await repositorio.registrarMensagem(conversa.id, {
-      direcao: 'saida', conteudo: regra.mensagem_dm, autor_tipo: 'automacao',
+      direcao: 'saida', conteudo: textoDaDm, autor_tipo: 'automacao', autor_nome: 'Serena',
     });
     // origemDetalhe marca que este lead nasceu de um comentário-gatilho (e
     // qual regra bateu) — é o que diferencia, na tela de Leads, um lead que

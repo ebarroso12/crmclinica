@@ -26,7 +26,7 @@ test('sem accessToken/contaComercialId, o cliente fica indisponível e enviar() 
   await assert.rejects(() => cliente.enviar({ telefone: 'psid-123', texto: 'oi' }));
 });
 
-test('envia POST /{apiVersion}/me/messages com Bearer no header e recipient/message no corpo', async () => {
+test('envia POST /{apiVersion}/{IG_ID}/messages com Bearer no header e recipient/message no corpo', async () => {
   const fetchImpl = fetchFalso(async () => new Response(
     JSON.stringify({ recipient_id: 'psid-123', message_id: 'mid.MSG123' }),
     { status: 200 },
@@ -38,7 +38,10 @@ test('envia POST /{apiVersion}/me/messages com Bearer no header e recipient/mess
 
   assert.equal(fetchImpl.chamadas.length, 1);
   const [{ url, opcoes }] = fetchImpl.chamadas;
-  assert.equal(url, 'https://graph.instagram.com/v23.0/me/messages');
+  // Mudanca deliberada de 05/09: a referencia da Meta para a Instagram API
+  // with Instagram Login manda usar `/<IG_ID>/messages`, e diz explicitamente
+  // que NAO e `/me/messages` — que era o que este cliente montava.
+  assert.equal(url, 'https://graph.instagram.com/v23.0/17841400000000000/messages');
   assert.equal(opcoes.method, 'POST');
   assert.equal(opcoes.headers.authorization, 'Bearer token-sintetico');
   const corpo = JSON.parse(opcoes.body);
@@ -56,7 +59,7 @@ test('apiVersion customizado é usado na URL', async () => {
   await cliente.enviar({ telefone: 'psid-123', texto: 'oi' });
 
   const [{ url }] = fetchImpl.chamadas;
-  assert.equal(url, 'https://graph.instagram.com/v20.0/me/messages');
+  assert.equal(url, 'https://graph.instagram.com/v20.0/17841400000000000/messages');
 });
 
 test('resposta sem message_id lança erro (Graph API não confirmou o envio)', async () => {
@@ -168,7 +171,7 @@ test('destinatário vazio ou só espaços é recusado antes de chamar a rede', a
   assert.equal(fetchImpl.chamadas.length, 0);
 });
 
-test('responderComentarioPrivadamente envia POST /me/messages com recipient.comment_id (não recipient.id)', async () => {
+test('responderComentarioPrivadamente envia POST /{IG_ID}/messages com recipient.comment_id (não recipient.id)', async () => {
   const fetchImpl = fetchFalso(async () => new Response(
     JSON.stringify({ recipient_id: 'psid-123', message_id: 'mid.MSG456' }),
     { status: 200 },
@@ -180,7 +183,7 @@ test('responderComentarioPrivadamente envia POST /me/messages com recipient.comm
 
   assert.equal(fetchImpl.chamadas.length, 1);
   const [{ url, opcoes }] = fetchImpl.chamadas;
-  assert.equal(url, 'https://graph.instagram.com/v23.0/me/messages');
+  assert.equal(url, 'https://graph.instagram.com/v23.0/17841400000000000/messages');
   const corpo = JSON.parse(opcoes.body);
   assert.deepEqual(corpo.recipient, { comment_id: 'C1' }, 'primeira mensagem depois de comentário usa comment_id, não PSID');
   assert.deepEqual(corpo.message, { text: 'Olá! Te chamei aqui.' });
