@@ -30,7 +30,12 @@ function criarClienteInstagramEnvio(configuracao = {}, dependencias = {}) {
   // ordem que já existia em enviar(), pra não alterar o comportamento
   // observável de quem já chama esse arquivo.
   async function enviarPayload(mensagem) {
-    const url = `https://graph.instagram.com/${apiVersion}/me/messages`;
+    // `/<IG_ID>/messages`, nao `/me/messages`: a referencia da Meta para a
+    // Instagram API with Instagram Login e explicita quanto a isso
+    // (developers.facebook.com/docs/instagram-platform/
+    // instagram-api-with-instagram-login/messaging-api, conferida em 05/09).
+    // `contaComercialId` E esse id — e `disponivel` ja garante que ele existe.
+    const url = `https://graph.instagram.com/${apiVersion}/${configuracao.contaComercialId}/messages`;
 
     let resposta;
     try {

@@ -43,7 +43,10 @@ test('envia template de botão com recipient.id, attachment/payload de botão e 
 
   assert.equal(fetchImpl.chamadas.length, 1);
   const [{ url, opcoes }] = fetchImpl.chamadas;
-  assert.equal(url, 'https://graph.instagram.com/v23.0/me/messages');
+  // Mudanca deliberada de 05/09: a referencia da Meta para a Instagram API
+  // with Instagram Login manda usar `/<IG_ID>/messages`, e diz explicitamente
+  // que NAO e `/me/messages` — que era o que este cliente montava.
+  assert.equal(url, 'https://graph.instagram.com/v23.0/17841400000000000/messages');
   assert.equal(opcoes.method, 'POST');
   assert.equal(opcoes.headers.authorization, 'Bearer token-sintetico');
 
