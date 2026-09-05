@@ -11,7 +11,7 @@ const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
 const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openclaw');
 const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('../integracoes/evolution-webhook');
-const { normalizarEventoInstagram, normalizarComentarioInstagram } = require('../integracoes/instagram-webhook');
+const { normalizarEventoInstagram, normalizarComentariosInstagram } = require('../integracoes/instagram-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarClienteInstagramEnvio } = require('../integracoes/instagram-envio');
 const { criarServicoDeGatilhos } = require('../dominio/instagram-gatilhos');
@@ -684,21 +684,42 @@ function criarAplicacao(dependencias = {}) {
     const primeiraMudanca = corpoInterpretado?.entry?.[0]?.changes?.find((c) => c?.field === 'comments');
 
     if (primeiraMudanca) {
-      const comentario = normalizarComentarioInstagram(corpoInterpretado, {
+      // TODOS os comentarios do lote. Antes so o primeiro era processado e o
+      // resto sumia com HTTP 200 — a Meta nao reentrega o que ja foi aceito.
+      const comentarios = normalizarComentariosInstagram(corpoInterpretado, {
         contaComercialId: configuracao.instagram.contaComercialId,
       });
-      if (!comentario) {
+      if (comentarios.length === 0) {
         responderJson(res, 200, { aceito: true, ignorado: true });
         return;
       }
-      const resultado = await servicoDeGatilhos.processarComentario({
-        comentarioIdExterno: comentario.comentario_id_externo,
-        postId: comentario.post_id,
-        autorIgId: comentario.autor_ig_id,
-        autorUsername: comentario.autor_username,
-        texto: comentario.texto,
+
+      const resultados = [];
+      for (const comentario of comentarios) {
+        try {
+          resultados.push(await servicoDeGatilhos.processarComentario({
+            comentarioIdExterno: comentario.comentario_id_externo,
+            postId: comentario.post_id,
+            autorIgId: comentario.autor_ig_id,
+            autorUsername: comentario.autor_username,
+            texto: comentario.texto,
+          }));
+        } catch (erro) {
+          // Um comentario que estoura nao pode levar os outros do lote junto:
+          // o processamento e idempotente por `comentario_id_externo`, entao
+          // o que ja passou nao repete.
+          console.error(`[instagram] comentario ${comentario.comentario_id_externo} falhou: ${erro.message}`);
+          resultados.push({ erro: erro.message });
+        }
+      }
+
+      responderJson(res, 200, {
+        aceito: true,
+        comentarios: resultados.length,
+        // Lote de um so: mantem a forma antiga da resposta, que e a que os
+        // testes e a Meta ja conhecem.
+        ...(resultados.length === 1 ? resultados[0] : { resultados }),
       });
-      responderJson(res, 200, { aceito: true, ...resultado });
       return;
     }
 
