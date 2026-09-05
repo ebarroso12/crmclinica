@@ -199,6 +199,7 @@ function criarResumoDeAtendimento({
       const conversas = await repositorio.listarConversasSemResumo?.({ silencioMin }) ?? [];
 
       let enviados = 0;
+      let naoEntregues = 0;
       for (const conversa of conversas) {
         try {
           const [contato, mensagens, agendamento, lead] = await Promise.all([
@@ -226,27 +227,65 @@ function criarResumoDeAtendimento({
             rodape,
           ].join('\n\n');
 
-          // Marca antes de enviar. Se o envio falhar no meio dos destinatários,
-          // reenviar tudo no próximo ciclo mandaria o resumo duas vezes para
-          // quem já recebeu — e a equipe passaria a ignorar os resumos.
-          await repositorio.marcarResumoEnviado(conversa.id);
-
+          // Entrega ANTES de marcar. Marcar primeiro fazia toda falha de canal
+          // virar resumo perdido para sempre: a conversa saía da varredura
+          // (`resumo_enviado_em IS NULL`) sem ninguém ter recebido nada, sem
+          // retentativa e sem rastro fora do log do worker. Foi exatamente o
+          // que aconteceu enquanto o gateway da clínica esteve parado.
+          const falhas = [];
+          let confirmados = 0;
           for (const destino of destinatarios) {
-            await canal.enviar({
-              telefone: destino,
-              texto,
-              chave: `resumo:${conversa.id}:${destino}`,
-            });
+            try {
+              await canal.enviar({
+                telefone: destino,
+                texto,
+                chave: `resumo:${conversa.id}:${destino}`,
+              });
+              confirmados += 1;
+            } catch (erro) {
+              falhas.push(erro.message);
+            }
           }
 
-          enviados += 1;
+          // Marca quando ALGUÉM recebeu. Repetir o ciclo inteiro por causa de
+          // um destinatário que falhou mandaria o resumo duas vezes para quem
+          // já leu — e resumo repetido é o começo de a equipe parar de ler os
+          // resumos. Ninguém recebeu: fica sem marca e o próximo ciclo tenta
+          // de novo, que é o comportamento que faltava.
+          if (confirmados > 0) {
+            await repositorio.marcarResumoEnviado(conversa.id);
+            enviados += 1;
+          } else {
+            naoEntregues += 1;
+          }
+
+          if (falhas.length > 0) {
+            console.error(`[resumo] conversa ${conversa.id}: ${falhas.length} destinatário(s) sem entrega — ${falhas.join('; ')}`);
+            // Auditoria porque o log do worker vive no VPS e ninguém o lê: sem
+            // esta linha, a falha de entrega do resumo é invisível no painel.
+            // Nenhum telefone entra no detalhe — número de pessoa não é dado
+            // de diagnóstico.
+            try {
+              await repositorio.registrarAuditoria?.({
+                entidade: 'conversa',
+                entidadeId: conversa.id,
+                acao: confirmados > 0 ? 'resumo_parcialmente_entregue' : 'resumo_nao_entregue',
+                detalhe: { destinatarios: destinatarios.length, confirmados, falhados: falhas.length, motivos: falhas },
+              });
+            } catch {
+              // Auditoria indisponível não pode derrubar a varredura de resumos.
+            }
+          }
         } catch (erro) {
           console.error(`[resumo] conversa ${conversa.id} falhou: ${erro.message}`);
         }
       }
 
       if (enviados > 0) console.log(`[resumo] ${enviados} atendimento(s) resumido(s) para a equipe`);
-      return { enviados };
+      if (naoEntregues > 0) {
+        console.error(`[resumo] ${naoEntregues} atendimento(s) sem entrega nenhuma — serão tentados no próximo ciclo`);
+      }
+      return { enviados, nao_entregues: naoEntregues };
     },
   };
 }
