@@ -23,6 +23,9 @@ const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
 const { criarServicoDeMetricas } = require('../dominio/metricas');
 const { criarGatewayDeIA } = require('../ia/gateway');
 const { criarMotorDeAgentes } = require('../dominio/agentes/motor');
+const { criarServicoDeAgentes } = require('../dominio/agentes/servico');
+const { criarRotasDeAgentes } = require('./rotas-agentes');
+const { criarDespachoDeAgentes } = require('./despacho-agentes');
 const { criarExtratorDeQualificacao } = require('../dominio/qualificacao-ia');
 const { criarServicoDeAvaliacao } = require('../dominio/avaliacao-ia');
 const { criarRotasDeIA } = require('./rotas-ia');
@@ -372,6 +375,16 @@ function criarAplicacao(dependencias = {}) {
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
   const rotasDeBloqueios = criarRotasDeBloqueios({ repositorio });
   const rotasDeAuditoria = criarRotasDeAuditoria({ repositorio });
+
+  // Agentes configuráveis (docs/AGENTES.md): cadastro, treinamentos, canais e
+  // conversa de teste. O despacho vive em arquivo próprio; aqui só se liga.
+  const servicoDeAgentes = dependencias.servicoDeAgentes
+    || criarServicoDeAgentes({ repositorio, motor: motorDeAgentes });
+  const despachoDeAgentes = criarDespachoDeAgentes({
+    rotas: criarRotasDeAgentes({ servico: servicoDeAgentes, gateway: gatewayDeIA }),
+    lerJson,
+    responderJson,
+  });
 
   // Gestão de usuários, termos, deduplicação, qualidade e onboarding. O
   // segredo que cifra os documentos é o do JWT: derivar dele as chaves de
@@ -1565,6 +1578,7 @@ function criarAplicacao(dependencias = {}) {
     if (await tratarRotasDeUsuarios(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeBloqueios(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeSincronia(req, res, rota, metodo, url, usuario)) return true;
+    if (await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario)) return true;
 
     const partes = rota.split('/').filter(Boolean);
 
@@ -2187,6 +2201,14 @@ function criarAplicacao(dependencias = {}) {
       if (rota.startsWith('/api/serena/teste')) {
         const tratouTeste = await tratarRotasDaSerena(req, res, rota, metodo, url, usuario);
         if (tratouTeste) return;
+      }
+
+      // Agentes: a conversa de teste chama a IA e o treinamento por website
+      // busca a página — segundos de rede, pela mesma razão do teste da Serena
+      // logo acima ficam fora da transação.
+      if (despachoDeAgentes.ehRotaLenta(rota, metodo)) {
+        const tratouLenta = await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario);
+        if (tratouLenta) return;
       }
 
       // Daqui para baixo, tudo que toca o banco corre numa transação com o
