@@ -193,6 +193,7 @@ const CONSTRAINTS = [
   ['ia_chamadas', 'ia_chamadas_chave_unica', 'retry de IA devolve o mesmo resultado, sem custo dobrado'],
   ['ia_avaliacoes', 'ia_avaliacoes_unicas', 'reavaliar não duplica avaliação'],
   ['notificacoes', 'notificacoes_chave_unica', 'reprocessar não duplica aviso no sino'],
+  ['agentes', 'agentes_slug_uk', 'dois agentes não dividem o mesmo identificador'],
 ];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
@@ -221,6 +222,8 @@ const TABELAS_COM_RLS = [
   'ia_modelos', 'ia_chamadas', 'ia_avaliacoes', 'notificacoes', 'serena_ativacao_contatos',
   'google_outbox', 'google_sincronia_estado', 'google_eventos_externos',
   'google_sincronia_conflitos', 'termos', 'termo_assinaturas',
+  // Agentes configuráveis (migration 046, docs/AGENTES.md).
+  'agentes', 'agente_comportamentos', 'agente_treinamentos', 'agente_acoes_inatividade', 'agente_canais',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
