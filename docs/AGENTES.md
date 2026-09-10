@@ -186,9 +186,18 @@ quando não `ativo`, os motivos de `decidirAutomacao` (conversa) e
 ### Evolution com várias instâncias
 
 - `normalizarEventoEvolution(payload, { instanciaPadrao })` inclui
-  `instancia` (campo `instance` do webhook da Evolution). Na instância padrão
-  (ou sem instância) o `id_externo` fica idêntico ao de hoje; nas outras vira
-  `whatsapp:{instancia}:{remetente}:{id}`.
+  `instancia` (campo `instance` do webhook da Evolution). O formato novo de
+  `id_externo` (`whatsapp:{instancia}:{remetente}:{id}`) só vale quando
+  `instanciaPadrao` é informada e difere da instância. **O servidor não
+  informa `instanciaPadrao`**: se `EVOLUTION_INSTANCE` da Vercel não bater
+  exatamente com o nome que a Evolution manda, a própria clínica passaria a
+  gerar outro `id_externo` e a deduplicação com a ponte do OpenClaw quebraria.
+  O `key.id` do WhatsApp é gerado por mensagem, e a mesma mensagem não chega
+  por duas instâncias; o `remetente` na chave já separa conversas.
+- **Quem é dono da mensagem** é decidido no atendimento, não no formato:
+  `obterAgentePorCanal(canal, instancia, { incluirInativos: true })`. Achou
+  agente → conversa do agente (mesmo com o canal desligado, que só impede o
+  envio). Não achou → caminho da clínica, idêntico ao de hoje.
 - `normalizarEcoDeEnvioEvolution` inclui `instancia`.
 - `validarEvento` aceita `instancia` opcional (≤ 100) sem mudar a chave de
   idempotência.
