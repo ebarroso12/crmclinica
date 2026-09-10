@@ -11,6 +11,7 @@ const TITULOS = {
   metricas: 'Métricas',
   serena: 'Serena',
   instagram: 'Instagram',
+  agentes: 'Agentes',
   contatos: 'Contatos',
   auditoria: 'Auditoria',
   bloqueios: 'Bloqueio de Contato',
@@ -41,6 +42,7 @@ function abrirTela(tela) {
   if (tela === 'metricas') carregarMetricas();
   if (tela === 'serena') carregarSerena();
   if (tela === 'instagram') carregarInstagram();
+  if (tela === 'agentes') carregarAgentes();
   if (tela === 'contatos') carregarContatos();
   if (tela === 'auditoria') carregarAuditoria();
   if (tela === 'bloqueios') carregarBloqueios();
@@ -1652,6 +1654,10 @@ function mostrarAplicacao() {
   // Bloqueio de contato: admin/gestor, mesma regra de contatos:editar.
   const itemBloqueios = seletor('#item-bloqueios');
   if (itemBloqueios) itemBloqueios.hidden = !podeFazer('bloqueios:gerenciar');
+
+  // Agentes: admin e gestor veem; o atendente não tem nada para operar ali.
+  const itemAgentes = seletor('#item-agentes');
+  if (itemAgentes) itemAgentes.hidden = !podeFazer('agentes:ler');
 
   // O inbox começa a carregar de qualquer forma: a faixa de saúde não pode ficar
   // em "verificando…" só porque a pessoa foi levada ao perfil.
@@ -3729,6 +3735,614 @@ function abrirEditorDeGatilho(gatilho = null) {
   seletor('#gatilho-cta-whatsapp').checked = gatilho ? gatilho.cta_whatsapp === true : true;
   form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
+
+// ---------------------------------------------------------------------------
+// Agentes configuráveis (docs/AGENTES.md): lista, editor por abas e teste.
+//
+// A tela só fala com /api/agentes*; quem valida é o servidor (regras.js). O
+// que a pessoa não pode mudar aparece desabilitado (fieldset) em vez de deixar
+// o clique descobrir o 403. Ligar um agente pede confirmação: a partir dali
+// ele responde clientes de verdade.
+// ---------------------------------------------------------------------------
+
+const ROTULO_STATUS_AGENTE = { ativo: 'Ativo', treinamento: 'Em treinamento', desativado: 'Desativado' };
+const TOM_STATUS_AGENTE = { ativo: 'ok', treinamento: 'alerta', desativado: '' };
+const ROTULO_TIPO_TREINAMENTO = { texto: 'Texto', website: 'Website', documento: 'Documento', video: 'Vídeo' };
+const BOOLEANAS_DO_AGENTE = [
+  'transferir_para_humano', 'resumo_ao_transferir', 'usar_emojis', 'assinar_nome',
+  'restringir_temas', 'dividir_resposta', 'consultar_dados_contato', 'busca_inteligente',
+];
+const MINUTOS_DE_INATIVIDADE = [
+  [2, '2 minutos'], [5, '5 minutos'], [10, '10 minutos'], [15, '15 minutos'], [30, '30 minutos'],
+  [60, '1 hora'], [120, '2 horas'], [240, '4 horas'], [480, '8 horas'], [1440, '1 dia'],
+  [2880, '2 dias'], [4320, '3 dias'], [5760, '4 dias'], [7200, '5 dias'], [8640, '6 dias'], [10080, '7 dias'],
+];
+const LIMITE_TREINAMENTO_CARACTERES = 50000;
+
+let agentesPainel = null;
+let agenteAberto = null;
+let conversaDeTesteDoAgente = [];
+
+// `escapar` passa por textContent/innerHTML, que não escapa aspas: serve para
+// texto, não para valor de atributo. Tudo que vai entre aspas usa este.
+function escaparAtributo(texto) {
+  return escapar(texto).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function mensagemDeErroDoAgente(erro) {
+  return erro?.detalhe || erro?.message || 'erro desconhecido';
+}
+
+async function carregarAgentes() {
+  if (!podeFazer('agentes:ler')) return;
+  try {
+    agentesPainel = await pedirJson('/api/agentes');
+    const acoes = seletor('#agentes-acoes');
+    if (acoes) acoes.hidden = !agentesPainel.pode_gerenciar;
+    desenharListaDeAgentes(agentesPainel.agentes ?? []);
+    if (agenteAberto) await abrirAgente(agenteAberto.agente.id);
+  } catch (erro) {
+    informar(`Não foi possível carregar os agentes: ${mensagemDeErroDoAgente(erro)}`);
+  }
+}
+
+function desenharListaDeAgentes(agentes) {
+  const lista = seletor('#lista-agentes');
+  if (!lista) return;
+
+  if (agentes.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhum agente cadastrado.</li>';
+    return;
+  }
+
+  lista.innerHTML = agentes.map((agente) => {
+    const canais = (agente.canais ?? []).map((canal) => `${canal.canal}: ${canal.instancia}`).join(', ') || 'sem canal';
+    return `
+    <li class="${agente.status === 'ativo' ? '' : 'desligada'}">
+      <div>
+        <strong>${escapar(agente.nome)} <span class="pilula pequena" data-tom="${TOM_STATUS_AGENTE[agente.status] ?? ''}">${escapar(ROTULO_STATUS_AGENTE[agente.status] ?? agente.status)}</span></strong>
+        <small>${escapar(agente.descricao ?? agente.slug)} · ${escapar(canais)}</small>
+      </div>
+      <div class="linha-acoes">
+        <button type="button" class="secundario" data-abrir-agente="${Number(agente.id)}">Abrir</button>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+async function abrirAgente(id) {
+  try {
+    const dados = await pedirJson(`/api/agentes/${Number(id)}`);
+    const trocouDeAgente = agenteAberto?.agente?.id !== dados.agente.id;
+    agenteAberto = dados;
+    if (trocouDeAgente) {
+      conversaDeTesteDoAgente = [];
+      selecionarAbaDoAgente('perfil');
+    }
+    preencherEditorDeAgente();
+    const editor = seletor('#agente-editor');
+    editor.hidden = false;
+    if (trocouDeAgente) editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (erro) {
+    informar(`Não foi possível abrir o agente: ${mensagemDeErroDoAgente(erro)}`);
+  }
+}
+
+function selecionarAbaDoAgente(nome) {
+  for (const aba of document.querySelectorAll('[data-aba-agente]')) {
+    const ativa = aba.dataset.abaAgente === nome;
+    aba.classList.toggle('selecionada', ativa);
+    aba.setAttribute('aria-selected', String(ativa));
+  }
+  for (const painel of document.querySelectorAll('[data-painel-agente]')) {
+    painel.hidden = painel.dataset.painelAgente !== nome;
+  }
+}
+
+function preencherEditorDeAgente() {
+  const { agente, treinamentos = [], historico = [], pode_gerenciar: pode } = agenteAberto;
+
+  definirTexto('#agente-editor-titulo', agente.nome);
+  definirTexto('#agente-editor-resumo', `${agente.slug}${agente.descricao ? ` · ${agente.descricao}` : ''}`);
+  const pilula = seletor('#agente-status-pilula');
+  if (pilula) {
+    pilula.textContent = ROTULO_STATUS_AGENTE[agente.status] ?? agente.status;
+    pilula.dataset.tom = TOM_STATUS_AGENTE[agente.status] ?? '';
+  }
+
+  for (const conjunto of document.querySelectorAll('#agente-editor .agente-campos')) conjunto.disabled = !pode;
+  // O teste gasta uma chamada de IA por mensagem: é parte de configurar.
+  const abaTeste = seletor('[data-aba-agente="teste"]');
+  if (abaTeste) abaTeste.hidden = !pode;
+
+  seletor('#agente-nome').value = agente.nome ?? '';
+  seletor('#agente-descricao').value = agente.descricao ?? '';
+  seletor('#agente-status').value = agente.status;
+  seletor('#agente-comunicacao').value = agente.comunicacao;
+  seletor('#agente-comportamento').value = agente.comportamento ?? '';
+  atualizarContadorDoComportamento();
+  preencherModelosDoAgente(agente);
+  desenharHistoricoDoComportamento(historico, pode);
+
+  seletor('#agente-finalidade').value = agente.finalidade;
+  seletor('#agente-empresa-nome').value = agente.empresa_nome ?? '';
+  seletor('#agente-empresa-site').value = agente.empresa_site ?? '';
+  seletor('#agente-empresa-descricao').value = agente.empresa_descricao ?? '';
+
+  desenharTreinamentosDoAgente(treinamentos, pode);
+  alternarCamposDeTreinamento();
+
+  const configuracoes = agente.configuracoes ?? {};
+  for (const chave of BOOLEANAS_DO_AGENTE) {
+    const caixa = seletor(`#agente-cfg-${chave}`);
+    if (caixa) caixa.checked = configuracoes[chave] === true;
+  }
+  seletor('#agente-cfg-fuso').value = configuracoes.fuso ?? '';
+  seletor('#agente-cfg-tempo_resposta_segundos').value = configuracoes.tempo_resposta_segundos ?? '';
+  seletor('#agente-cfg-limite_interacoes').value = configuracoes.limite_interacoes ?? '';
+  seletor('#agente-cfg-acao_limite').value = configuracoes.acao_limite ?? 'transferir';
+  seletor('#agente-cfg-horario').value = configuracoes.horario ? JSON.stringify(configuracoes.horario, null, 2) : '';
+
+  desenharLinhasDeInatividade(agente.acoes_inatividade ?? [], pode);
+  desenharLinhasDeCanais(agente.canais ?? [], pode);
+  desenharConversaDeTeste();
+}
+
+function preencherModelosDoAgente(agente) {
+  const campo = seletor('#agente-modelo');
+  if (!campo) return;
+
+  const atual = agente.provedor || agente.modelo ? `${agente.provedor ?? ''}|${agente.modelo ?? ''}` : '';
+  let encontrado = atual === '';
+  const opcoes = ['<option value="">Padrão do catálogo</option>'];
+  for (const grupo of agentesPainel?.catalogo ?? []) {
+    for (const modelo of grupo.modelos ?? []) {
+      const valor = `${grupo.provedor}|${modelo.modelo}`;
+      if (valor === atual) encontrado = true;
+      const rotulo = `${modelo.rotulo ?? modelo.modelo} (${grupo.provedor}${grupo.disponivel ? '' : ', sem chave no servidor'})`;
+      opcoes.push(`<option value="${escaparAtributo(valor)}"${grupo.disponivel ? '' : ' disabled'}>${escapar(rotulo)}</option>`);
+    }
+  }
+  // Modelo gravado que saiu do catálogo continua visível: sumir com ele da
+  // lista faria o próximo "salvar" trocar o modelo sem ninguém ter decidido.
+  if (!encontrado) {
+    opcoes.push(`<option value="${escaparAtributo(atual)}">${escapar(`${agente.modelo ?? '?'} (${agente.provedor ?? '?'}, fora do catálogo)`)}</option>`);
+  }
+  campo.innerHTML = opcoes.join('');
+  campo.value = atual;
+}
+
+function atualizarContadorDoComportamento() {
+  const campo = seletor('#agente-comportamento');
+  definirTexto('#agente-comportamento-contador', `${campo?.value.length ?? 0}/20000`);
+}
+
+function desenharHistoricoDoComportamento(historico, pode) {
+  const lista = seletor('#agente-historico');
+  if (!lista) return;
+
+  if (historico.length === 0) {
+    lista.innerHTML = '<li class="vazio">Sem versões anteriores.</li>';
+    return;
+  }
+
+  lista.innerHTML = historico.map((versao, indice) => {
+    const quando = versao.criado_em ? new Date(versao.criado_em).toLocaleString('pt-BR') : 'data desconhecida';
+    return `
+    <li>
+      <div>
+        <strong>${indice === 0 ? 'Versão atual' : `Versão de ${escapar(quando)}`}</strong>
+        <small>${escapar(resumirTexto(versao.comportamento, 140))}</small>
+      </div>
+      <div class="linha-acoes">
+        ${pode && indice > 0 ? `<button type="button" class="secundario" data-restaurar-comportamento="${Number(versao.id)}">Restaurar</button>` : ''}
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function desenharTreinamentosDoAgente(treinamentos, pode) {
+  const lista = seletor('#agente-treinamentos');
+  if (!lista) return;
+  definirTexto('#agente-treinamentos-total', `Treinamentos cadastrados (${treinamentos.length})`);
+
+  if (treinamentos.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhum treinamento.</li>';
+    return;
+  }
+
+  lista.innerHTML = treinamentos.map((treinamento) => {
+    const tipo = ROTULO_TIPO_TREINAMENTO[treinamento.tipo] ?? treinamento.tipo;
+    return `
+    <li class="${treinamento.status === 'erro' ? 'desligada' : ''}">
+      <div>
+        <strong>${escapar(treinamento.titulo || tipo)} <span class="pilula pequena">${escapar(tipo)}</span></strong>
+        <small>${escapar(resumirTexto(treinamento.conteudo, 180))}${treinamento.origem ? ` · ${escapar(treinamento.origem)}` : ''}</small>
+      </div>
+      <div class="linha-acoes">
+        ${pode ? `<button type="button" class="perigo" data-remover-treinamento="${Number(treinamento.id)}">Remover</button>` : ''}
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function alternarCamposDeTreinamento() {
+  const tipo = seletor('#agente-treino-tipo')?.value ?? 'texto';
+  for (const bloco of document.querySelectorAll('[data-campo-treino]')) {
+    bloco.hidden = bloco.dataset.campoTreino !== tipo;
+  }
+}
+
+function opcoesDeMinutos(selecionado) {
+  const conhecido = MINUTOS_DE_INATIVIDADE.some(([valor]) => valor === selecionado);
+  const lista = conhecido ? MINUTOS_DE_INATIVIDADE : [[selecionado, `${selecionado} minutos`], ...MINUTOS_DE_INATIVIDADE];
+  return lista
+    .map(([valor, rotulo]) => `<option value="${Number(valor)}"${valor === selecionado ? ' selected' : ''}>${escapar(rotulo)}</option>`)
+    .join('');
+}
+
+function desenharLinhasDeInatividade(acoes, pode = agenteAberto?.pode_gerenciar) {
+  const lista = seletor('#agente-inatividade-linhas');
+  if (!lista) return;
+
+  if (acoes.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhuma ação: a conversa fica aberta até alguém agir.</li>';
+    return;
+  }
+
+  lista.innerHTML = acoes.map((acao, indice) => `
+    <li class="linha-inatividade">
+      <span>Se o cliente não responder em</span>
+      <select data-campo="apos_minutos" aria-label="Tempo sem resposta">${opcoesDeMinutos(Number(acao.apos_minutos))}</select>
+      <span>o agente deve</span>
+      <select data-campo="acao" aria-label="Ação">
+        <option value="finalizar"${acao.acao === 'finalizar' ? ' selected' : ''}>Finalizar atendimento</option>
+        <option value="interagir"${acao.acao === 'interagir' ? ' selected' : ''}>Interagir com o cliente</option>
+      </select>
+      <input type="text" data-campo="instrucao" maxlength="512" aria-label="Instrução" placeholder="Instrução (obrigatória em Interagir)" value="${escaparAtributo(acao.instrucao ?? '')}">
+      ${pode ? `<button type="button" class="perigo" data-remover-inatividade="${indice}">Remover</button>` : ''}
+    </li>`).join('');
+}
+
+function lerLinhasDeInatividade() {
+  return [...document.querySelectorAll('#agente-inatividade-linhas .linha-inatividade')].map((linha) => ({
+    apos_minutos: Number(linha.querySelector('[data-campo="apos_minutos"]').value),
+    acao: linha.querySelector('[data-campo="acao"]').value,
+    instrucao: linha.querySelector('[data-campo="instrucao"]').value.trim() || null,
+  }));
+}
+
+function desenharLinhasDeCanais(canais, pode = agenteAberto?.pode_gerenciar) {
+  const lista = seletor('#agente-canais-linhas');
+  if (!lista) return;
+
+  if (canais.length === 0) {
+    lista.innerHTML = '<li class="vazio">Nenhum canal: o agente não recebe nem envia mensagens.</li>';
+    return;
+  }
+
+  lista.innerHTML = canais.map((canal, indice) => `
+    <li class="linha-canal">
+      <select data-campo="canal" aria-label="Canal">
+        <option value="whatsapp"${canal.canal === 'whatsapp' ? ' selected' : ''}>WhatsApp</option>
+        <option value="instagram"${canal.canal === 'instagram' ? ' selected' : ''}>Instagram (ainda sem atendimento)</option>
+      </select>
+      <input type="text" data-campo="instancia" maxlength="100" aria-label="Nome da instância" placeholder="nome da instância (ex.: alpins)" value="${escaparAtributo(canal.instancia ?? '')}">
+      <label class="marcador"><input type="checkbox" data-campo="ativo"${canal.ativo === false ? '' : ' checked'}> ativo</label>
+      ${pode ? `<button type="button" class="perigo" data-remover-canal="${indice}">Remover</button>` : ''}
+    </li>`).join('');
+}
+
+function lerLinhasDeCanais() {
+  return [...document.querySelectorAll('#agente-canais-linhas .linha-canal')].map((linha) => ({
+    canal: linha.querySelector('[data-campo="canal"]').value,
+    instancia: linha.querySelector('[data-campo="instancia"]').value.trim(),
+    ativo: linha.querySelector('[data-campo="ativo"]').checked,
+  }));
+}
+
+function desenharConversaDeTeste() {
+  const registro = seletor('#agente-teste-log');
+  if (!registro) return;
+
+  if (conversaDeTesteDoAgente.length === 0) {
+    registro.innerHTML = '<li data-autor="aviso">Escreva a primeira mensagem como se fosse o cliente.</li>';
+    return;
+  }
+
+  registro.innerHTML = conversaDeTesteDoAgente.map((item) => {
+    const autor = item.autor === 'cliente' || item.autor === 'agente' ? item.autor : 'aviso';
+    return `<li data-autor="${autor}">${escapar(item.texto)}</li>`;
+  }).join('');
+  registro.scrollTop = registro.scrollHeight;
+}
+
+async function salvarAgenteAberto(campos) {
+  if (!agenteAberto) return false;
+  try {
+    await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}`, { metodo: 'PUT', corpo: campos });
+    await carregarAgentes();
+    return true;
+  } catch (erro) {
+    informar(`Não foi possível salvar o agente: ${mensagemDeErroDoAgente(erro)}`);
+    return false;
+  }
+}
+
+seletor('#agente-novo')?.addEventListener('click', () => {
+  seletor('#form-agente-novo').hidden = false;
+  seletor('#agente-novo-nome').focus();
+});
+
+seletor('#agente-novo-cancelar')?.addEventListener('click', () => {
+  const formulario = seletor('#form-agente-novo');
+  formulario.reset();
+  seletor('#agente-novo-slug').dataset.editado = '';
+  formulario.hidden = true;
+});
+
+// O identificador sai do nome enquanto a pessoa não mexe nele à mão.
+seletor('#agente-novo-nome')?.addEventListener('input', () => {
+  const campoSlug = seletor('#agente-novo-slug');
+  if (campoSlug.dataset.editado === 'sim') return;
+  campoSlug.value = seletor('#agente-novo-nome').value
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+});
+seletor('#agente-novo-slug')?.addEventListener('input', (evento) => { evento.target.dataset.editado = 'sim'; });
+
+seletor('#form-agente-novo')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  try {
+    const { agente } = await pedirJson('/api/agentes', {
+      metodo: 'POST',
+      corpo: { nome: seletor('#agente-novo-nome').value.trim(), slug: seletor('#agente-novo-slug').value.trim() },
+    });
+    evento.target.reset();
+    seletor('#agente-novo-slug').dataset.editado = '';
+    evento.target.hidden = true;
+    await carregarAgentes();
+    await abrirAgente(agente.id);
+  } catch (erro) {
+    informar(`Não foi possível criar o agente: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
+
+seletor('#lista-agentes')?.addEventListener('click', (evento) => {
+  const botao = evento.target.closest('[data-abrir-agente]');
+  if (botao) abrirAgente(botao.dataset.abrirAgente);
+});
+
+seletor('#agente-fechar')?.addEventListener('click', () => {
+  agenteAberto = null;
+  conversaDeTesteDoAgente = [];
+  seletor('#agente-editor').hidden = true;
+});
+
+for (const aba of document.querySelectorAll('[data-aba-agente]')) {
+  aba.addEventListener('click', () => selecionarAbaDoAgente(aba.dataset.abaAgente));
+}
+
+seletor('#agente-comportamento')?.addEventListener('input', atualizarContadorDoComportamento);
+
+seletor('#agente-aba-perfil')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+
+  const status = seletor('#agente-status').value;
+  if (status === 'ativo' && agenteAberto.agente.status !== 'ativo') {
+    const confirmou = window.confirm('Ligar o agente faz ele responder clientes de verdade pelos canais configurados. '
+      + 'Já conferiu as respostas na aba Teste? Confirmar?');
+    if (!confirmou) return;
+  }
+
+  const [provedor, modelo] = seletor('#agente-modelo').value.split('|');
+  await salvarAgenteAberto({
+    nome: seletor('#agente-nome').value,
+    descricao: seletor('#agente-descricao').value,
+    status,
+    comunicacao: seletor('#agente-comunicacao').value,
+    comportamento: seletor('#agente-comportamento').value,
+    provedor: provedor || null,
+    modelo: modelo || null,
+  });
+});
+
+seletor('#agente-historico')?.addEventListener('click', async (evento) => {
+  const botao = evento.target.closest('[data-restaurar-comportamento]');
+  if (!botao || !agenteAberto) return;
+  if (!window.confirm('Restaurar esta versão do comportamento? A versão atual continua no histórico.')) return;
+  try {
+    const agenteId = Number(agenteAberto.agente.id);
+    await pedirJson(`/api/agentes/${agenteId}/comportamento/${Number(botao.dataset.restaurarComportamento)}/restaurar`, { metodo: 'POST' });
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível restaurar: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
+
+seletor('#agente-aba-trabalho')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  await salvarAgenteAberto({
+    finalidade: seletor('#agente-finalidade').value,
+    empresa_nome: seletor('#agente-empresa-nome').value,
+    empresa_site: seletor('#agente-empresa-site').value,
+    empresa_descricao: seletor('#agente-empresa-descricao').value,
+  });
+});
+
+seletor('#agente-treino-tipo')?.addEventListener('change', alternarCamposDeTreinamento);
+
+seletor('#agente-aba-treinamentos')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+
+  const tipo = seletor('#agente-treino-tipo').value;
+  const titulo = seletor('#agente-treino-titulo').value.trim() || null;
+  let corpo;
+  if (tipo === 'website') {
+    corpo = { tipo, titulo, url: seletor('#agente-treino-url').value.trim() };
+  } else if (tipo === 'documento') {
+    const arquivo = seletor('#agente-treino-arquivo').files?.[0];
+    if (!arquivo) {
+      informar('Escolha um arquivo .txt ou .md.');
+      return;
+    }
+    const conteudo = (await arquivo.text()).trim();
+    if (conteudo.length > LIMITE_TREINAMENTO_CARACTERES) {
+      informar(`O arquivo tem ${conteudo.length} caracteres; o limite por treinamento é ${LIMITE_TREINAMENTO_CARACTERES}. Divida em partes.`);
+      return;
+    }
+    corpo = { tipo, titulo: titulo || arquivo.name.slice(0, 200), conteudo, origem: arquivo.name.slice(0, 500) };
+  } else {
+    corpo = { tipo: 'texto', titulo, conteudo: seletor('#agente-treino-conteudo').value };
+  }
+
+  const botao = seletor('#agente-treino-cadastrar');
+  botao.disabled = true;
+  try {
+    await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/treinamentos`, { metodo: 'POST', corpo });
+    evento.target.reset();
+    alternarCamposDeTreinamento();
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível cadastrar o treinamento: ${mensagemDeErroDoAgente(erro)}`);
+  } finally {
+    botao.disabled = false;
+  }
+});
+
+seletor('#agente-treinamentos')?.addEventListener('click', async (evento) => {
+  const botao = evento.target.closest('[data-remover-treinamento]');
+  if (!botao || !agenteAberto) return;
+  if (!window.confirm('Remover este treinamento? O agente deixa de usar esse conhecimento.')) return;
+  try {
+    const agenteId = Number(agenteAberto.agente.id);
+    await pedirJson(`/api/agentes/${agenteId}/treinamentos/${Number(botao.dataset.removerTreinamento)}`, { metodo: 'DELETE' });
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível remover o treinamento: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
+
+seletor('#agente-aba-configuracoes')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  const configuracoes = {};
+  for (const chave of BOOLEANAS_DO_AGENTE) configuracoes[chave] = seletor(`#agente-cfg-${chave}`).checked;
+  configuracoes.fuso = seletor('#agente-cfg-fuso').value.trim();
+  configuracoes.tempo_resposta_segundos = Number(seletor('#agente-cfg-tempo_resposta_segundos').value || 0);
+  const limite = seletor('#agente-cfg-limite_interacoes').value.trim();
+  configuracoes.limite_interacoes = limite === '' ? null : Number(limite);
+  configuracoes.acao_limite = seletor('#agente-cfg-acao_limite').value;
+
+  const horario = seletor('#agente-cfg-horario').value.trim();
+  if (horario) {
+    try {
+      configuracoes.horario = JSON.parse(horario);
+    } catch {
+      informar('O horário não é um JSON válido — confira aspas, vírgulas e colchetes.');
+      return;
+    }
+  } else {
+    configuracoes.horario = null;
+  }
+
+  await salvarAgenteAberto({ configuracoes });
+});
+
+seletor('#agente-inatividade-adicionar')?.addEventListener('click', () => {
+  const atuais = lerLinhasDeInatividade();
+  const usados = new Set(atuais.map((acao) => acao.apos_minutos));
+  const livre = MINUTOS_DE_INATIVIDADE.map(([valor]) => valor).find((valor) => !usados.has(valor)) ?? 10080;
+  desenharLinhasDeInatividade([...atuais, { apos_minutos: livre, acao: 'finalizar', instrucao: null }]);
+});
+
+seletor('#agente-inatividade-linhas')?.addEventListener('click', (evento) => {
+  const botao = evento.target.closest('[data-remover-inatividade]');
+  if (!botao) return;
+  const atuais = lerLinhasDeInatividade();
+  atuais.splice(Number(botao.dataset.removerInatividade), 1);
+  desenharLinhasDeInatividade(atuais);
+});
+
+seletor('#agente-aba-inatividade')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+  try {
+    await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/inatividade`, {
+      metodo: 'PUT', corpo: { acoes: lerLinhasDeInatividade() },
+    });
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível salvar as ações de inatividade: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
+
+seletor('#agente-canal-adicionar')?.addEventListener('click', () => {
+  desenharLinhasDeCanais([...lerLinhasDeCanais(), { canal: 'whatsapp', instancia: '', ativo: true }]);
+});
+
+seletor('#agente-canais-linhas')?.addEventListener('click', (evento) => {
+  const botao = evento.target.closest('[data-remover-canal]');
+  if (!botao) return;
+  const atuais = lerLinhasDeCanais();
+  atuais.splice(Number(botao.dataset.removerCanal), 1);
+  desenharLinhasDeCanais(atuais);
+});
+
+seletor('#agente-aba-canais')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+  try {
+    await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/canais`, {
+      metodo: 'PUT', corpo: { canais: lerLinhasDeCanais() },
+    });
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível salvar os canais: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
+
+seletor('#agente-teste-form')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+
+  const campo = seletor('#agente-teste-mensagem');
+  const texto = campo.value.trim();
+  if (!texto) return;
+  campo.value = '';
+  conversaDeTesteDoAgente.push({ autor: 'cliente', texto });
+  desenharConversaDeTeste();
+
+  const botao = seletor('#agente-teste-enviar');
+  botao.disabled = true;
+  try {
+    const mensagens = conversaDeTesteDoAgente.filter((item) => item.autor !== 'aviso').slice(-30);
+    const resultado = await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/teste`, {
+      metodo: 'POST', corpo: { mensagens },
+    });
+    const partes = resultado.partes ?? [];
+    for (const parte of partes) conversaDeTesteDoAgente.push({ autor: 'agente', texto: parte });
+    if (partes.length === 0) conversaDeTesteDoAgente.push({ autor: 'aviso', texto: 'O agente não gerou resposta.' });
+    if (resultado.transferir) {
+      conversaDeTesteDoAgente.push({
+        autor: 'aviso',
+        texto: `O agente pediu transferência para a equipe${resultado.motivo ? `: ${resultado.motivo}` : ''}.`,
+      });
+    }
+  } catch (erro) {
+    conversaDeTesteDoAgente.push({ autor: 'aviso', texto: `Falha no teste: ${mensagemDeErroDoAgente(erro)}` });
+  } finally {
+    botao.disabled = false;
+    desenharConversaDeTeste();
+  }
+});
+
+seletor('#agente-teste-recomecar')?.addEventListener('click', () => {
+  conversaDeTesteDoAgente = [];
+  desenharConversaDeTeste();
+});
 
 // ---------------------------------------------------------------------------
 // Contatos: a base de pacientes. Excluir é soft delete — o histórico fica.

@@ -1413,6 +1413,42 @@ button.perigo:hover { background: #fecaca; }
 .marcador { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--apoio); }
 .marcador input { width: auto; }
 
+/* ------------------------------------------------ agentes configuráveis */
+/* O fieldset só existe para desabilitar tudo de uma vez para quem só lê. */
+.agente-campos { border: 0; padding: 0; margin: 0; min-width: 0; }
+.agente-campos:disabled { opacity: 0.75; }
+.agente-aba h4 { margin: 18px 0 6px; font-size: 14px; }
+.contador-texto { display: block; text-align: right; color: var(--apoio); font-size: 12px; margin-top: 2px; }
+.grade-marcadores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px 16px;
+  margin: 10px 0 4px;
+}
+.grade-marcadores .marcador { align-items: flex-start; color: inherit; }
+.grade-marcadores .marcador input { margin-top: 3px; }
+.grade-marcadores .marcador small { display: block; color: var(--apoio); font-size: 12px; }
+.linhas-editaveis { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 8px; }
+.linhas-editaveis li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.form-regra .linhas-editaveis select, .form-regra .linhas-editaveis input { width: auto; }
+.form-regra .linhas-editaveis input[type="text"] { flex: 1 1 220px; }
+.agente-teste-log {
+  list-style: none;
+  padding: 12px;
+  margin: 10px 0;
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  background: var(--superficie);
+}
+.agente-teste-log li { max-width: 80%; padding: 8px 10px; border-radius: 10px; white-space: pre-wrap; font-size: 13px; }
+.agente-teste-log li[data-autor='cliente'] { justify-self: end; background: #e0f2fe; }
+.agente-teste-log li[data-autor='agente'] { justify-self: start; background: #f1f5f9; }
+.agente-teste-log li[data-autor='aviso'] { justify-self: center; background: #fef3c7; color: #92400e; }
+
 /* ------------------------------------------------ laboratório de voz */
 .voz-card { border-left: 4px solid var(--ambar); }
 .aviso-voz {
