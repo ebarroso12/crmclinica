@@ -36,6 +36,11 @@ const { normalizarConfiguracoes } = require('./regras');
 // processos só se prova contra PostgreSQL real.
 
 const MARCA_INATIVIDADE = ':inatividade:';
+
+/** Desfecho de quem perdeu a posse do trabalho: a outbox não conclui, não reagenda, não escala. */
+function possePerdidaEm(conversaId) {
+  return { acao: 'posse_perdida', conversa_id: conversaId, possePerdida: true };
+}
 const ESCALONAR_COMO_AGENTE = Object.freeze({ acaoDeAuditoria: 'agente_escalonada' });
 
 function textoValido(parte) {
@@ -186,6 +191,14 @@ function criarFluxoDeAgentes({
     let todasEnviadas = true;
 
     for (const [indice, parte] of partes.entries()) {
+      // Achados N1 e N4 da reauditoria: o lease da outbox só protege pelo tempo.
+      // Se este worker demorou além dele e outro retomou o trabalho, qualquer
+      // efeito desta parte — gravar, escalar por divergência, entregar — pisaria
+      // no trabalho do outro. `renovarPosse` confere que o trabalho ainda é deste
+      // worker e renova o prazo: um trabalho vivo não perde a posse no meio.
+      if (renovarPosse && !(await renovarPosse())) {
+        return { parada: possePerdidaEm(conversa.id), mensagemIds, todasEnviadas: false };
+      }
       const { mensagem, duplicada } = await repositorio.registrarMensagem(conversa.id, {
         direcao: 'saida',
         conteudo: parte,
@@ -230,18 +243,6 @@ function criarFluxoDeAgentes({
         emissor?.publicarMensagem(conversa.id, mensagem);
       }
 
-      // Achado N1 da reauditoria: o lease da outbox só protege pelo tempo. Se
-      // este worker demorou além dele e outro retomou o trabalho, entregar agora
-      // duplicaria a mensagem. `renovarPosse` confere que o trabalho ainda é
-      // deste worker e renova o prazo — um trabalho vivo, com várias partes e
-      // chamadas de IA lentas, não perde a posse no meio.
-      if (renovarPosse && !(await renovarPosse())) {
-        return {
-          parada: { acao: 'posse_perdida', conversa_id: conversa.id, possePerdida: true },
-          mensagemIds,
-          todasEnviadas: false,
-        };
-      }
       const { enviada, parada } = await entregarParte(conversa, mensagem);
       if (parada) return { parada, mensagemIds, todasEnviadas: false };
       if (!enviada) todasEnviadas = false;
@@ -380,9 +381,14 @@ function criarFluxoDeAgentes({
         agente, treinamentos, mensagens, contato, chaveIdempotencia: chave,
       });
     } catch (erro) {
+      // A geração pode ter passado do lease: sem posse, escalar é decisão de quem retomou.
+      if (renovarPosse && !(await renovarPosse())) return possePerdidaEm(conversaId);
       await escalonarAgente(conversaId, 'falha_no_motor_do_agente');
       return { acao: 'escalonada_por_falha', conversa_id: conversaId, codigo: erro.codigo || 'desconhecido' };
     }
+
+    // Geração lenta pode passar do lease (achado N4): nenhum efeito sem conferir a posse.
+    if (renovarPosse && !(await renovarPosse())) return possePerdidaEm(conversaId);
 
     const partes = (geracao?.partes ?? []).filter(textoValido);
     const pediuTransferencia = geracao?.transferir === true;
@@ -397,6 +403,7 @@ function criarFluxoDeAgentes({
     if (parada) return parada;
 
     if (pediuTransferencia) {
+      if (renovarPosse && !(await renovarPosse())) return possePerdidaEm(conversaId);
       await transferir(conversa, agente, configuracoes, 'pedido_do_agente', geracao.motivo ?? null);
     }
 

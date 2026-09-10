@@ -523,15 +523,43 @@ test('achado N1 da reauditoria: outro worker retomou o trabalho — para antes d
   const { fluxo, entregas } = montar({ repositorio, motor });
   let conferencias = 0;
 
+  // Conferências: depois da geração (1), antes da parte um (2), antes da parte dois (3).
   const resultado = await fluxo.responder(conversaBase(), {
     mensagemEntradaId: 1,
-    renovarPosse: async () => { conferencias += 1; return conferencias === 1; },
+    renovarPosse: async () => { conferencias += 1; return conferencias <= 2; },
   });
 
   assert.equal(resultado.possePerdida, true);
-  assert.equal(conferencias, 2, 'a posse é conferida antes de cada parte');
+  assert.equal(conferencias, 3, 'a posse é conferida depois da geração e antes de cada parte');
   assert.deepEqual(entregas.map((item) => item.texto), ['Parte um'], 'quem perdeu a posse não entrega a parte seguinte');
   assert.equal(repositorio.estado.conversas.get(50).assumida_por_humano, false, 'nem transfere: quem retomou conclui');
+});
+
+test('achado N4 da reconferência: sem posse, a retomada divergente não escala nem conclui o trabalho alheio', async () => {
+  const gravada = mensagem(9, {
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Texto do outro worker', id_externo: 'agente:7:resposta:50:1',
+  });
+  const motor = criarMotorFalso({ resposta: { partes: ['Texto deste worker'], transferir: false } });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA, gravada] });
+  const { fluxo, entregas, escalonamentos } = montar({ repositorio, motor });
+
+  const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1, renovarPosse: async () => false });
+
+  assert.equal(resultado.possePerdida, true);
+  assert.equal(entregas.length, 0);
+  assert.equal(escalonamentos.length, 0, 'escalar é decisão de quem tem a posse');
+  assert.equal(acoesAuditadas(repositorio).includes('agente_retomada_divergente'), false);
+});
+
+test('achado N4 da reconferência: falha do motor sem posse também não escala', async () => {
+  const motor = criarMotorFalso({ lanca: Object.assign(new Error('timeout'), { codigo: 'ia_timeout' }) });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA] });
+  const { fluxo, escalonamentos } = montar({ repositorio, motor });
+
+  const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1, renovarPosse: async () => false });
+
+  assert.equal(resultado.possePerdida, true);
+  assert.equal(escalonamentos.length, 0);
 });
 
 test('achado N2 da reauditoria: retomada com texto regerado diferente do já gravado para e escala, sem misturar gerações', async () => {

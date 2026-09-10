@@ -262,7 +262,15 @@ não enviada — nunca duplicada.
 
 O lease da outbox (5 min) protege pelo tempo. O fluxo do agente confere e renova
 a posse antes de cada parte entregue (`renovarPosse`); se outro worker já retomou,
-para sem entregar e a outbox não conclui o trabalho (`outbox_lease_perdido`).
+para sem entregar e a outbox não conclui o trabalho (`outbox_lease_perdido`). A
+posse é conferida antes de QUALQUER efeito: depois da geração, antes de escalar
+por falha, no começo de cada parte (antes de gravar, escalar por divergência ou
+entregar) e antes de transferir.
+
+Resíduo conhecido: numa retomada, a resposta a uma mensagem NOVA do cliente pode
+sair no meio das partes que faltavam — a outbox pega trabalhos por
+`disponivel_em`, e a espera da retentativa pode ser maior que o tempo de resposta
+do agente. Nada se perde nem duplica; só a ordem fica estranha.
 
 ## Colocar um agente no ar — nesta ordem
 
