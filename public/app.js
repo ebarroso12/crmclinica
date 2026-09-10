@@ -3885,7 +3885,7 @@ function preencherEditorDeAgente() {
 
   desenharLinhasDeInatividade(agente.acoes_inatividade ?? [], pode);
   desenharLinhasDeCanais(agente.canais ?? [], pode);
-  desenharConversaDeTeste();
+  desenharConversaDeTesteDoAgente();
 }
 
 function preencherModelosDoAgente(agente) {
@@ -4041,7 +4041,7 @@ function lerLinhasDeCanais() {
   }));
 }
 
-function desenharConversaDeTeste() {
+function desenharConversaDeTesteDoAgente() {
   const registro = seletor('#agente-teste-log');
   if (!registro) return;
 
@@ -4313,7 +4313,7 @@ seletor('#agente-teste-form')?.addEventListener('submit', async (evento) => {
   if (!texto) return;
   campo.value = '';
   conversaDeTesteDoAgente.push({ autor: 'cliente', texto });
-  desenharConversaDeTeste();
+  desenharConversaDeTesteDoAgente();
 
   const botao = seletor('#agente-teste-enviar');
   botao.disabled = true;
@@ -4335,13 +4335,13 @@ seletor('#agente-teste-form')?.addEventListener('submit', async (evento) => {
     conversaDeTesteDoAgente.push({ autor: 'aviso', texto: `Falha no teste: ${mensagemDeErroDoAgente(erro)}` });
   } finally {
     botao.disabled = false;
-    desenharConversaDeTeste();
+    desenharConversaDeTesteDoAgente();
   }
 });
 
 seletor('#agente-teste-recomecar')?.addEventListener('click', () => {
   conversaDeTesteDoAgente = [];
-  desenharConversaDeTeste();
+  desenharConversaDeTesteDoAgente();
 });
 
 // ---------------------------------------------------------------------------

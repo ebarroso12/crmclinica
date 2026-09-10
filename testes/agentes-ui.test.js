@@ -119,6 +119,40 @@ test('a seção não tem script, estilo ou manipulador inline (CSP estrita)', ()
   assert.doesNotMatch(secao, /\son[a-z]+="/i);
 });
 
+/**
+ * Nomes de função declarados no nível superior de um script clássico (sem
+ * módulo). Num script assim, a ÚLTIMA declaração com o mesmo nome vence em
+ * silêncio — foi o que quebrou a tela: a `desenharConversaDeTeste` do
+ * laboratório da Serena sobrescrevia a dos agentes, e abrir um agente lançava
+ * "Cannot read properties of undefined (reading 'length')".
+ */
+function funcoesDuplicadas(fonte) {
+  const contagem = new Map();
+  for (const achado of fonte.matchAll(/^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/gm)) {
+    contagem.set(achado[1], (contagem.get(achado[1]) ?? 0) + 1);
+  }
+  return [...contagem].filter(([, vezes]) => vezes > 1).map(([nome, vezes]) => `${nome} (${vezes}x)`);
+}
+
+test('o detector de função duplicada pega o caso que quebrou a tela', () => {
+  const comOBug = [
+    'function desenharConversaDeTeste() {', '  return 1;', '}',
+    'async function outra() {}',
+    'function desenharConversaDeTeste(mensagens) {', '  return mensagens.length;', '}',
+  ].join('\n');
+  assert.deepEqual(funcoesDuplicadas(comOBug), ['desenharConversaDeTeste (2x)']);
+});
+
+test('app.js não declara a mesma função de nível superior duas vezes', () => {
+  assert.deepEqual(funcoesDuplicadas(APP_JS), [], 'a declaração de baixo sobrescreve a de cima em silêncio');
+});
+
+test('abrir um agente desenha a conversa de teste DO AGENTE, não a do laboratório da Serena', () => {
+  const bloco = blocoDeAgentes();
+  assert.match(bloco, /function desenharConversaDeTesteDoAgente\(\)/);
+  assert.doesNotMatch(bloco, /desenharConversaDeTeste\(/, 'o bloco de agentes não chama a função da Serena');
+});
+
 test('o teste de agente não reaproveita os rótulos dos botões órfãos removidos', () => {
   const bloco = blocoDeAgentes();
   for (const rotulo of ['Nova tarefa', 'Nova conversa', 'Novo lead']) {
