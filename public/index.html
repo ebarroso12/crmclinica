@@ -165,6 +165,9 @@
         <ul aria-labelledby="grupo-controle">
           <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
           <li><button type="button" data-tela="instagram"><span class="icone-menu" aria-hidden="true">◘</span> Instagram</button></li>
+          <li id="item-agentes" hidden>
+            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Agentes</button>
+          </li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
           <li id="item-bloqueios" hidden>
             <button type="button" data-tela="bloqueios"><span class="icone-menu" aria-hidden="true">⊘</span> Bloqueio de Contato</button>
@@ -1025,6 +1028,269 @@
           <ul class="lista-regras" id="instagram-regras">
             <li class="vazio">carregando…</li>
           </ul>
+        </article>
+      </section>
+
+      <!-- Agentes configuráveis (docs/AGENTES.md). Admin muda; gestor só vê
+           (os campos ficam desabilitados pelo fieldset). Agente novo nasce
+           desligado, e ligar pede confirmação. -->
+      <section id="agentes" class="tela" hidden aria-labelledby="titulo-agentes">
+        <div class="cabecalho">
+          <div>
+            <h2 id="titulo-agentes">Agentes</h2>
+            <p>Assistentes de atendimento montados aqui: perfil, trabalho, treinamentos, configurações e canais. Agente novo nasce desligado.</p>
+          </div>
+          <div class="linha-acoes" id="agentes-acoes" hidden>
+            <button type="button" class="primario" id="agente-novo">Novo agente</button>
+          </div>
+        </div>
+
+        <article class="card">
+          <form id="form-agente-novo" class="form-regra" hidden>
+            <div class="grade-form">
+              <div>
+                <label for="agente-novo-nome">Nome</label>
+                <input id="agente-novo-nome" type="text" maxlength="80" required>
+              </div>
+              <div>
+                <label for="agente-novo-slug">Identificador (letras minúsculas, números e hífen)</label>
+                <input id="agente-novo-slug" type="text" maxlength="40" pattern="[a-z0-9\-]{2,40}" required>
+              </div>
+            </div>
+            <div class="linha-acoes">
+              <button type="submit" class="primario">Criar agente</button>
+              <button type="button" class="secundario" id="agente-novo-cancelar">Cancelar</button>
+            </div>
+          </form>
+
+          <ul class="lista-regras" id="lista-agentes">
+            <li class="vazio">carregando…</li>
+          </ul>
+        </article>
+
+        <article class="card" id="agente-editor" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3 id="agente-editor-titulo">Agente</h3>
+              <p id="agente-editor-resumo"></p>
+            </div>
+            <div class="linha-acoes">
+              <span class="pilula pequena" id="agente-status-pilula">—</span>
+              <button type="button" class="secundario" id="agente-fechar">Fechar</button>
+            </div>
+          </div>
+
+          <div class="abas" role="tablist" aria-label="Seções do agente">
+            <button type="button" class="aba selecionada" role="tab" data-aba-agente="perfil" aria-selected="true">Perfil</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="trabalho" aria-selected="false">Trabalho</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="treinamentos" aria-selected="false">Treinamentos</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="configuracoes" aria-selected="false">Configurações</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="inatividade" aria-selected="false">Ações de inatividade</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="canais" aria-selected="false">Canais</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="teste" aria-selected="false">Teste</button>
+          </div>
+
+          <!-- Perfil -->
+          <form id="agente-aba-perfil" class="form-regra agente-aba" data-painel-agente="perfil">
+            <fieldset class="agente-campos">
+              <div class="grade-form">
+                <div>
+                  <label for="agente-nome">Nome do agente</label>
+                  <input id="agente-nome" type="text" maxlength="80" required>
+                </div>
+                <div>
+                  <label for="agente-descricao">Descrição curta</label>
+                  <input id="agente-descricao" type="text" maxlength="160">
+                </div>
+                <div>
+                  <label for="agente-status">Status</label>
+                  <select id="agente-status">
+                    <option value="desativado">Desativado</option>
+                    <option value="treinamento">Em treinamento (não responde)</option>
+                    <option value="ativo">Ativo (responde clientes)</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="agente-comunicacao">Comunicação</label>
+                  <select id="agente-comunicacao">
+                    <option value="formal">Formal</option>
+                    <option value="normal">Normal</option>
+                    <option value="descontraida">Descontraída</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="agente-modelo">Modelo de IA</label>
+                  <select id="agente-modelo">
+                    <option value="">Padrão do catálogo</option>
+                  </select>
+                </div>
+              </div>
+              <label for="agente-comportamento">Comportamento — como o agente deve se portar na conversa</label>
+              <textarea id="agente-comportamento" rows="14" maxlength="20000"></textarea>
+              <small class="contador-texto" id="agente-comportamento-contador">0/20000</small>
+              <div class="linha-acoes">
+                <button type="submit" class="primario">Salvar perfil</button>
+              </div>
+            </fieldset>
+            <h4>Histórico do comportamento</h4>
+            <ul class="lista-regras" id="agente-historico">
+              <li class="vazio">Sem versões anteriores.</li>
+            </ul>
+          </form>
+
+          <!-- Trabalho -->
+          <form id="agente-aba-trabalho" class="form-regra agente-aba" data-painel-agente="trabalho" hidden>
+            <fieldset class="agente-campos">
+              <div class="grade-form">
+                <div>
+                  <label for="agente-finalidade">Finalidade</label>
+                  <select id="agente-finalidade">
+                    <option value="suporte">Suporte</option>
+                    <option value="vendas">Vendas</option>
+                    <option value="pessoal">Uso pessoal</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="agente-empresa-nome">Empresa ou produto</label>
+                  <input id="agente-empresa-nome" type="text" maxlength="120">
+                </div>
+                <div>
+                  <label for="agente-empresa-site">Site oficial (opcional)</label>
+                  <input id="agente-empresa-site" type="url" maxlength="300" placeholder="https://">
+                </div>
+              </div>
+              <label for="agente-empresa-descricao">Sobre a empresa</label>
+              <textarea id="agente-empresa-descricao" rows="6" maxlength="2000"></textarea>
+              <div class="linha-acoes">
+                <button type="submit" class="primario">Salvar trabalho</button>
+              </div>
+            </fieldset>
+          </form>
+
+          <!-- Treinamentos -->
+          <form id="agente-aba-treinamentos" class="form-regra agente-aba" data-painel-agente="treinamentos" hidden>
+            <fieldset class="agente-campos">
+              <div class="grade-form">
+                <div>
+                  <label for="agente-treino-tipo">Tipo</label>
+                  <select id="agente-treino-tipo">
+                    <option value="texto">Texto</option>
+                    <option value="documento">Documento (.txt ou .md)</option>
+                    <option value="website">Website</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="agente-treino-titulo">Título (opcional)</label>
+                  <input id="agente-treino-titulo" type="text" maxlength="200">
+                </div>
+              </div>
+              <div data-campo-treino="texto">
+                <label for="agente-treino-conteudo">Conteúdo — afirmações diretas funcionam melhor ("O tênis custa R$ 249,67").</label>
+                <textarea id="agente-treino-conteudo" rows="5" maxlength="50000"></textarea>
+              </div>
+              <div data-campo-treino="documento" hidden>
+                <label for="agente-treino-arquivo">Arquivo de texto — PDF ainda não é lido: cole o texto dele no tipo Texto</label>
+                <input id="agente-treino-arquivo" type="file" accept=".txt,.md,text/plain,text/markdown">
+              </div>
+              <div data-campo-treino="website" hidden>
+                <label for="agente-treino-url">Endereço https da página</label>
+                <input id="agente-treino-url" type="url" maxlength="500" placeholder="https://">
+              </div>
+              <div class="linha-acoes">
+                <button type="submit" class="primario" id="agente-treino-cadastrar">Cadastrar treinamento</button>
+              </div>
+            </fieldset>
+            <h4 id="agente-treinamentos-total">Treinamentos</h4>
+            <ul class="lista-regras" id="agente-treinamentos">
+              <li class="vazio">Nenhum treinamento.</li>
+            </ul>
+          </form>
+
+          <!-- Configurações -->
+          <form id="agente-aba-configuracoes" class="form-regra agente-aba" data-painel-agente="configuracoes" hidden>
+            <fieldset class="agente-campos">
+              <div class="grade-marcadores">
+                <label class="marcador"><input type="checkbox" id="agente-cfg-transferir_para_humano"><span>Transferir para humano<small>O agente pode passar a conversa para a equipe.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-resumo_ao_transferir"><span>Resumo ao transferir<small>Grava uma nota privada com o resumo do atendimento.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-usar_emojis"><span>Usar emojis nas respostas<small>Desligado, o agente não usa emojis.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-assinar_nome"><span>Assinar o nome do agente<small>Acrescenta o nome ao fim de cada resposta.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-restringir_temas"><span>Restringir temas<small>Recusa assunto fora do trabalho e dos treinamentos.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-dividir_resposta"><span>Dividir resposta em partes<small>Resposta longa sai em várias mensagens.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-consultar_dados_contato"><span>Consultar dados do contato<small>Nome e telefone do contato entram no contexto.</small></span></label>
+                <label class="marcador"><input type="checkbox" id="agente-cfg-busca_inteligente"><span>Busca inteligente do treinamento<small>Usa só os treinamentos relevantes à conversa.</small></span></label>
+              </div>
+              <div class="grade-form">
+                <div>
+                  <label for="agente-cfg-fuso">Fuso horário</label>
+                  <input id="agente-cfg-fuso" type="text" maxlength="60" placeholder="America/Sao_Paulo">
+                </div>
+                <div>
+                  <label for="agente-cfg-tempo_resposta_segundos">Tempo de resposta (segundos)</label>
+                  <input id="agente-cfg-tempo_resposta_segundos" type="number" min="0" max="120" step="1">
+                </div>
+                <div>
+                  <label for="agente-cfg-limite_interacoes">Limite de respostas por conversa (vazio = sem limite)</label>
+                  <input id="agente-cfg-limite_interacoes" type="number" min="1" max="1000" step="1">
+                </div>
+                <div>
+                  <label for="agente-cfg-acao_limite">Ao atingir o limite</label>
+                  <select id="agente-cfg-acao_limite">
+                    <option value="transferir">Transferir para humanos</option>
+                    <option value="finalizar">Finalizar atendimento</option>
+                  </select>
+                </div>
+              </div>
+              <label for="agente-cfg-horario">Horário de atendimento — grade no mesmo formato da Serena (JSON). Vazio = atende sempre.</label>
+              <textarea id="agente-cfg-horario" rows="4" placeholder='{"ativa": true, "fuso": "America/Sao_Paulo", "dias": {"1": [["08:00", "18:00"]]}}'></textarea>
+              <div class="linha-acoes">
+                <button type="submit" class="primario">Salvar configurações</button>
+              </div>
+            </fieldset>
+          </form>
+
+          <!-- Ações de inatividade -->
+          <form id="agente-aba-inatividade" class="form-regra agente-aba" data-painel-agente="inatividade" hidden>
+            <p>O que o agente faz quando o cliente para de responder. A lista inteira é salva de uma vez.</p>
+            <fieldset class="agente-campos">
+              <ul class="linhas-editaveis" id="agente-inatividade-linhas">
+                <li class="vazio">Nenhuma ação.</li>
+              </ul>
+              <div class="linha-acoes">
+                <button type="button" class="secundario" id="agente-inatividade-adicionar">Adicionar ação</button>
+                <button type="submit" class="primario">Salvar ações</button>
+              </div>
+            </fieldset>
+          </form>
+
+          <!-- Canais -->
+          <form id="agente-aba-canais" class="form-regra agente-aba" data-painel-agente="canais" hidden>
+            <p>WhatsApp: informe o nome da instância na Evolution. O número conectado a essa instância é o número do agente — conversa que chega por ele é deste agente, nunca da clínica.</p>
+            <fieldset class="agente-campos">
+              <ul class="linhas-editaveis" id="agente-canais-linhas">
+                <li class="vazio">Nenhum canal.</li>
+              </ul>
+              <div class="linha-acoes">
+                <button type="button" class="secundario" id="agente-canal-adicionar">Adicionar canal</button>
+                <button type="submit" class="primario">Salvar canais</button>
+              </div>
+            </fieldset>
+          </form>
+
+          <!-- Teste -->
+          <div class="agente-aba" data-painel-agente="teste" hidden>
+            <p>Converse como se fosse o cliente. Nada é gravado nem enviado — mas cada resposta é uma chamada de IA.</p>
+            <ul class="agente-teste-log" id="agente-teste-log" aria-live="polite">
+              <li data-autor="aviso">Escreva a primeira mensagem como se fosse o cliente.</li>
+            </ul>
+            <form id="agente-teste-form" class="form-regra">
+              <label for="agente-teste-mensagem">Mensagem do cliente</label>
+              <textarea id="agente-teste-mensagem" rows="2" maxlength="2000" required></textarea>
+              <div class="linha-acoes">
+                <button type="submit" class="primario" id="agente-teste-enviar">Enviar</button>
+                <button type="button" class="secundario" id="agente-teste-recomecar">Recomeçar teste</button>
+              </div>
+            </form>
+          </div>
         </article>
       </section>
 
