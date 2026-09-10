@@ -30,6 +30,7 @@
     "parear-openclaw": "node bin/parear-openclaw.js",
     "semear-serena": "node bin/semear-serena.js",
     "semear-instagram": "node bin/semear-instagram.js",
+    "semear-agentes": "node bin/semear-agentes.js",
     "verificar-dominio": "node bin/verificar-dominio.js"
   },
   "dependencies": {
