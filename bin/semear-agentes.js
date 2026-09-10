@@ -23,8 +23,12 @@
 // painel, depois do teste, por quem responde pelo que o agente diz.
 //
 // Idempotente por slug: cria se não existe; se existe, atualiza só os campos
-// que diferem do arquivo, acrescenta só os treinamentos cujo conteúdo ainda
-// não está lá, e substitui ações de inatividade e canais pelo que o arquivo diz.
+// que diferem do arquivo e acrescenta só os treinamentos cujo conteúdo ainda
+// não está lá. Canais e ações de inatividade de um agente EXISTENTE ficam como
+// estão no banco, a menos que `--substituir-canais` / `--substituir-inatividade`
+// sejam passados: o painel pode ter desligado o canal ou apagado uma ação, e
+// ressemear religava o número sem ninguém decidir isso (achado MÉDIO da
+// auditoria de segurança).
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -39,7 +43,12 @@ const CAMPOS_DO_AGENTE = Object.freeze([
 function lerArgumentos(argv) {
   const prefixo = '--arquivo=';
   const arquivo = argv.find((argumento) => argumento.startsWith(prefixo))?.slice(prefixo.length) || null;
-  return { arquivo, aplicar: argv.includes('--aplicar') };
+  return {
+    arquivo,
+    aplicar: argv.includes('--aplicar'),
+    substituirCanais: argv.includes('--substituir-canais'),
+    substituirInatividade: argv.includes('--substituir-inatividade'),
+  };
 }
 
 function chaveDeConteudo(treinamento) {
@@ -95,7 +104,9 @@ function validarArquivo(dados) {
 }
 
 /** Plano puro: o que gravar, comparando o arquivo validado com o que existe (ou nada). */
-function planejarSemeadura(validado, existente = null, treinamentosExistentes = []) {
+function planejarSemeadura(validado, existente = null, treinamentosExistentes = [], {
+  substituirCanais = false, substituirInatividade = false,
+} = {}) {
   const conhecidos = new Set(treinamentosExistentes.map(chaveDeConteudo));
   const treinamentosNovos = validado.treinamentos.filter((treinamento) => !conhecidos.has(chaveDeConteudo(treinamento)));
 
@@ -124,8 +135,9 @@ function planejarSemeadura(validado, existente = null, treinamentosExistentes = 
     campos: Object.fromEntries(camposAlterados.map((campo) => [campo, semStatus[campo]])),
     camposAlterados,
     treinamentosNovos,
-    acoes: validado.acoes,
-    canais: validado.canais,
+    // `null` = manter o que está no banco.
+    acoes: substituirInatividade ? validado.acoes : null,
+    canais: substituirCanais ? validado.canais : null,
     avisos: [...validado.avisos, `status atual mantido: "${existente.status}"`],
   };
 }
@@ -145,8 +157,8 @@ async function aplicarPlano(repositorio, plano) {
     for (const treinamento of plano.treinamentosNovos) {
       await repositorio.criarTreinamento(agente.id, treinamento);
     }
-    await repositorio.definirAcoesDeInatividade(agente.id, plano.acoes);
-    await repositorio.definirCanaisDoAgente(agente.id, plano.canais);
+    if (plano.acoes !== null) await repositorio.definirAcoesDeInatividade(agente.id, plano.acoes);
+    if (plano.canais !== null) await repositorio.definirCanaisDoAgente(agente.id, plano.canais);
 
     await repositorio.registrarAuditoria({
       entidade: 'agente',
@@ -156,6 +168,8 @@ async function aplicarPlano(repositorio, plano) {
         slug: agente.slug,
         campos: plano.camposAlterados,
         treinamentos_novos: plano.treinamentosNovos.length,
+        inatividade_substituida: plano.acoes !== null,
+        canais_substituidos: plano.canais !== null,
       },
     });
     return agente;
@@ -173,18 +187,26 @@ function descrever(plano) {
       : 'nenhum campo diferente'}.`);
   }
   linhas.push(`Treinamentos a acrescentar: ${plano.treinamentosNovos.length}.`);
-  linhas.push(`Ações de inatividade (substituem as atuais): ${plano.acoes
-    .map((acao) => `${acao.apos_minutos} min → ${acao.acao}`).join('; ') || 'nenhuma'}.`);
-  linhas.push(`Canais (substituem os atuais): ${plano.canais
-    .map((canal) => `${canal.canal}:${canal.instancia}${canal.ativo ? '' : ' (inativo)'}`).join('; ') || 'nenhum'}.`);
+  if (plano.acoes === null) {
+    linhas.push('Ações de inatividade: mantidas como estão no banco (para trocar pelas do arquivo, use --substituir-inatividade).');
+  } else {
+    linhas.push(`Ações de inatividade (substituem as atuais): ${plano.acoes
+      .map((acao) => `${acao.apos_minutos} min → ${acao.acao}`).join('; ') || 'nenhuma'}.`);
+  }
+  if (plano.canais === null) {
+    linhas.push('Canais: mantidos como estão no banco (para trocar pelos do arquivo, use --substituir-canais).');
+  } else {
+    linhas.push(`Canais (substituem os atuais): ${plano.canais
+      .map((canal) => `${canal.canal}:${canal.instancia}${canal.ativo ? '' : ' (inativo)'}`).join('; ') || 'nenhum'}.`);
+  }
   for (const aviso of plano.avisos) linhas.push(`Aviso: ${aviso}`);
   return linhas.join('\n');
 }
 
 async function main() {
-  const { arquivo, aplicar } = lerArgumentos(process.argv.slice(2));
+  const { arquivo, aplicar, substituirCanais, substituirInatividade } = lerArgumentos(process.argv.slice(2));
   if (!arquivo) {
-    console.error('uso: npm run semear-agentes -- --arquivo=configuracao/agentes/<slug>.json [--aplicar]');
+    console.error('uso: npm run semear-agentes -- --arquivo=configuracao/agentes/<slug>.json [--aplicar] [--substituir-canais] [--substituir-inatividade]');
     process.exit(1);
   }
 
@@ -195,7 +217,8 @@ async function main() {
     // Sem banco: descreve como se o slug ainda não existisse.
     console.log(descrever(planejarSemeadura(validado)));
     console.log('\nSimulação: nada foi gravado e nenhum banco foi consultado.');
-    console.log('Se o slug já existir, --aplicar atualiza só o que difere e mantém o status atual.');
+    console.log('Se o slug já existir, --aplicar atualiza só o que difere, mantém o status atual e mantém canais e');
+    console.log('ações de inatividade do banco (salvo --substituir-canais / --substituir-inatividade).');
     return;
   }
 
@@ -215,12 +238,15 @@ async function main() {
 
   const pool = criarPool(configuracao.banco);
   try {
-    await exigirConexaoSegura(pool, { producao: configuracao.producao });
+    // `producao: true` sempre: gravar agente com a credencial do dono das
+    // tabelas desliga o RLS em silêncio, e rodar de uma máquina "fora de
+    // produção" contra o banco real não torna isso aceitável.
+    await exigirConexaoSegura(pool, { producao: true });
     const repositorio = criarRepositorio(pool);
 
     const existente = await repositorio.obterAgentePorSlug(validado.agente.slug);
     const treinamentosExistentes = existente ? await repositorio.listarTreinamentos(existente.id) : [];
-    const plano = planejarSemeadura(validado, existente, treinamentosExistentes);
+    const plano = planejarSemeadura(validado, existente, treinamentosExistentes, { substituirCanais, substituirInatividade });
 
     console.log(descrever(plano));
     const agente = await aplicarPlano(repositorio, plano);

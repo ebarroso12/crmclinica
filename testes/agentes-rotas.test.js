@@ -103,7 +103,7 @@ async function subir({ gateway } = {}) {
   });
 
   return {
-    servico, despacho, pedir,
+    servico, despacho, pedir, base,
     encerrar: () => new Promise((resolve) => servidor.close(resolve)),
   };
 }
@@ -132,6 +132,28 @@ test('sem sessão, toda rota responde 401 — inclusive com id inválido', async
   }
   assert.equal((await app.pedir('/api/agentes/abc')).status, 401, 'sem sessão não se confirma a forma da rota');
   assert.equal(app.servico.chamadas.length, 0, 'nada chega ao serviço sem sessão');
+});
+
+test('a permissão é conferida ANTES de ler o corpo: corpo inválido não vira 400 para quem não pode', async (t) => {
+  const app = await subir();
+  t.after(() => app.encerrar());
+
+  const pedirComCorpoQuebrado = (rota, metodo, papel = null) => fetch(`${app.base}${rota}`, {
+    method: metodo,
+    headers: { 'content-type': 'application/json', ...(papel ? { 'x-papel-teste': papel } : {}) },
+    body: '{',
+  });
+
+  for (const [rota, metodo] of [
+    ['/api/agentes', 'POST'], ['/api/agentes/1', 'PUT'], ['/api/agentes/1/treinamentos', 'POST'],
+    ['/api/agentes/1/inatividade', 'PUT'], ['/api/agentes/1/canais', 'PUT'], ['/api/agentes/1/teste', 'POST'],
+  ]) {
+    assert.equal((await pedirComCorpoQuebrado(rota, metodo)).status, 401, `anônimo em ${metodo} ${rota}`);
+    assert.equal((await pedirComCorpoQuebrado(rota, metodo, 'atendente')).status, 403, `atendente em ${metodo} ${rota}`);
+    assert.equal((await pedirComCorpoQuebrado(rota, metodo, 'gestor')).status, 403, `gestor em ${metodo} ${rota}`);
+    assert.equal((await pedirComCorpoQuebrado(rota, metodo, 'admin')).status, 400, `admin em ${metodo} ${rota}`);
+  }
+  assert.equal(app.servico.chamadas.length, 0, 'corpo quebrado nunca chega ao serviço');
 });
 
 test('cada papel recebe exatamente o que a matriz permite', async (t) => {

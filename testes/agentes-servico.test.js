@@ -424,8 +424,12 @@ test('importar o seeder não conecta em banco: só expõe funções puras', () =
   for (const nome of ['lerArgumentos', 'validarArquivo', 'planejarSemeadura', 'aplicarPlano', 'descrever']) {
     assert.equal(typeof seeder[nome], 'function');
   }
-  assert.deepEqual(seeder.lerArgumentos(['--arquivo=a.json']), { arquivo: 'a.json', aplicar: false });
-  assert.deepEqual(seeder.lerArgumentos(['--aplicar', '--arquivo=a.json']), { arquivo: 'a.json', aplicar: true });
+  assert.deepEqual(seeder.lerArgumentos(['--arquivo=a.json']), {
+    arquivo: 'a.json', aplicar: false, substituirCanais: false, substituirInatividade: false,
+  });
+  assert.deepEqual(seeder.lerArgumentos(['--aplicar', '--arquivo=a.json']), {
+    arquivo: 'a.json', aplicar: true, substituirCanais: false, substituirInatividade: false,
+  });
 });
 
 function alpins() {

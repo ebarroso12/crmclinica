@@ -14,6 +14,8 @@
 // identidade — prenderia uma conexão do pool por segundos. Quem integra decide
 // onde chamá-la; este arquivo só diz quais são.
 
+const { exigirPermissao } = require('../seguranca/rbac');
+
 const PREFIXO = '/api/agentes';
 const SEM_CACHE = Object.freeze({ 'cache-control': 'no-store' });
 
@@ -48,6 +50,13 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
 
   async function tratar(req, res, rota, metodo, url, usuario) {
     if (!ehDoPrefixo(rota)) return false;
+
+    // Permissão ANTES de ler o corpo. Sem isto, anônimo ou atendente com corpo
+    // inválido recebia 400 (ou 413) em vez de 401/403 — a leitura do corpo
+    // vinha antes de a rota conferir quem pede. Ler é `agentes:ler`; todo o
+    // resto (inclusive o teste, que gasta IA) é `agentes:gerenciar`. As rotas
+    // continuam conferindo por conta própria: esta é a primeira porta, não a única.
+    exigirPermissao(usuario, metodo === 'GET' ? 'agentes:ler' : 'agentes:gerenciar');
 
     const partes = rota.split('/').filter(Boolean);
     // partes: ['api', 'agentes', id, sub, alvo, acao]

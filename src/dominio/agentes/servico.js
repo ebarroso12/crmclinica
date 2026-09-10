@@ -38,6 +38,16 @@ function erroComStatus(mensagem, status, codigo = null) {
   return erro;
 }
 
+/** Falha de rede ou tempo esgotado ao buscar/ler o site: sempre 422, nunca 500. */
+function erroDeAcesso(erro, timeoutMs, mensagemPadrao) {
+  const expirou = erro?.name === 'TimeoutError' || erro?.name === 'AbortError';
+  return erroComStatus(
+    expirou ? `o site não respondeu em ${Math.round(timeoutMs / 1000)}s` : mensagemPadrao,
+    422,
+    'site_inacessivel',
+  );
+}
+
 // ------------------------------------------------ guarda de endereço (SSRF)
 //
 // O treinamento por website faz o SERVIDOR buscar uma URL digitada na tela.
@@ -51,6 +61,8 @@ function erroComStatus(mensagem, status, codigo = null) {
 // e a conexão que o `fetch` abre existe uma janela (DNS rebinding). Fechá-la
 // exige fixar o IP na conexão, o que o `fetch` nativo não expõe sem
 // dependência. A rota é só de admin, o que reduz — não elimina — o risco.
+// O host é comparado sem o ponto final (`localhost.` é `localhost`), e a
+// consulta de DNS tem o mesmo tempo limite da busca.
 
 function ipv4ParaNumero(ip) {
   return ip.split('.').reduce((acumulado, parte) => (acumulado * 256) + Number(parte), 0);
@@ -105,6 +117,14 @@ function ipv6Reservado(ip) {
     return ipv4Reservado(ipv4DosDoisUltimosGrupos(grupos));
   }
   if (grupos[0] === 0x64 && grupos[1] === 0xff9b) return ipv4Reservado(ipv4DosDoisUltimosGrupos(grupos)); // NAT64
+  // Faixas de transição e legadas: embrulham IPv4 arbitrário ou nunca são
+  // destino público de site. Negadas inteiras — decidir pelo IPv4 de dentro
+  // em cada formato é superfície de erro sem ganho para treinamento de agente.
+  if (grupos.slice(0, 4).every((grupo) => grupo === 0) && grupos[4] === 0xffff && grupos[5] === 0) return true; // ::ffff:0:0/96 — IPv4-translated
+  if (grupos[0] === 0x2002) return true; // 2002::/16 — 6to4
+  if (grupos[0] === 0x2001 && grupos[1] === 0) return true; // 2001::/32 — Teredo
+  if ((grupos[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 — site-local (legado)
+  if (grupos[0] === 0x100 && grupos[1] === 0 && grupos[2] === 0 && grupos[3] === 0) return true; // 100::/64 — descarte
   if ((grupos[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 — rede local única
   if ((grupos[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 — link-local
   if ((grupos[0] & 0xff00) === 0xff00) return true; // multicast
@@ -137,7 +157,9 @@ function validarUrlPublica(texto) {
     throw erroComStatus('só a porta padrão do https é aceita', 422, 'url_porta');
   }
 
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // Ponto final é o mesmo nome (`localhost.` = `localhost`): sem tirá-lo, a
+  // lista de nomes locais abaixo não reconhecia e só o DNS barrava.
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
   const ehIp = net.isIP(host) !== 0;
   if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')
       || host.endsWith('.internal') || (!ehIp && !host.includes('.'))) {
@@ -149,13 +171,23 @@ function validarUrlPublica(texto) {
   return url;
 }
 
-async function conferirResolucao(host, lookup) {
+async function conferirResolucao(host, lookup, timeoutMs) {
   if (net.isIP(host)) return; // IP literal já passou por validarUrlPublica
   let enderecos;
+  let relogio = null;
   try {
-    enderecos = await lookup(host, { all: true, verbatim: true });
+    // DNS que não responde não pode segurar a requisição além do tempo
+    // limite: a consulta do sistema ocupa a threadpool do Node enquanto espera.
+    enderecos = await Promise.race([
+      lookup(host, { all: true, verbatim: true }),
+      new Promise((_resolver, rejeitar) => {
+        relogio = setTimeout(() => rejeitar(new Error('dns sem resposta')), timeoutMs);
+      }),
+    ]);
   } catch {
     throw erroComStatus('não foi possível encontrar o site', 422, 'site_nao_encontrado');
+  } finally {
+    clearTimeout(relogio);
   }
   if (!Array.isArray(enderecos) || enderecos.length === 0) {
     throw erroComStatus('não foi possível encontrar o site', 422, 'site_nao_encontrado');
@@ -210,23 +242,114 @@ function decodificarEntidades(texto) {
   });
 }
 
+// Teto de caracteres de HTML convertidos. A página já chega limitada a 2 MB,
+// mas o treinamento guarda no máximo 50 mil caracteres de texto: converter
+// megabytes para jogar quase tudo fora só dá tempo de CPU a quem manda o HTML.
+const LIMITE_HTML_CARACTERES = 300_000;
+
+const ELEMENTOS_SEM_TEXTO = new Set(['script', 'style', 'noscript', 'template', 'svg', 'head', 'title']);
+const FECHAMENTOS_DE_BLOCO = new Set([
+  'p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer',
+  'ul', 'ol', 'table', 'blockquote',
+]);
+
+/** Posição de `</nome` como fechamento de verdade (seguido de `>`, espaço ou fim), a partir de `desde`. */
+function acharFechamento(minusculo, nome, desde) {
+  const alvo = `</${nome}`;
+  for (let busca = desde; ;) {
+    const posicao = minusculo.indexOf(alvo, busca);
+    if (posicao < 0) return -1;
+    const seguinte = minusculo[posicao + alvo.length];
+    if (seguinte === undefined || seguinte === '>' || seguinte === '/' || seguinte.trim() === '') return posicao;
+    busca = posicao + alvo.length;
+  }
+}
+
+function extrairTitulo(bruto, minusculo) {
+  for (let busca = 0; ;) {
+    const inicio = minusculo.indexOf('<title', busca);
+    if (inicio < 0) return null;
+    const seguinte = minusculo[inicio + 6];
+    if (seguinte === '>' || (seguinte !== undefined && seguinte.trim() === '')) {
+      const abertura = minusculo.indexOf('>', inicio + 6);
+      if (abertura < 0) return null;
+      const fim = acharFechamento(minusculo, 'title', abertura + 1);
+      return bruto.slice(abertura + 1, fim < 0 ? bruto.length : fim);
+    }
+    busca = inicio + 6;
+  }
+}
+
 /**
  * HTML → texto para treinamento. Não é um parser: é o suficiente para tirar o
  * que não é conteúdo (script, estilo, cabeçalho técnico) e manter a leitura em
  * linhas. Página que depende de JavaScript para mostrar texto chega vazia — e
  * quem chama recusa com mensagem clara em vez de gravar um treinamento oco.
+ *
+ * Varredura linear com `indexOf`, de propósito. A versão anterior usava
+ * expressões com retrocesso (`[\s\S]*?`, `<[^>]+>`) que ficavam quadráticas
+ * com aberturas sem fechamento: 160 KB de `<!--` repetido travavam o processo
+ * por 13 s, e o limite de tempo da busca não interrompe código síncrono
+ * (achado MÉDIO da auditoria de segurança). Aqui cada caractere é visitado um
+ * número constante de vezes, e a entrada é cortada antes de começar.
+ *
+ * Diferenças deliberadas: elemento sem texto (script, estilo…) ou comentário
+ * sem fechamento leva o resto da página junto — script nunca vira treinamento.
  */
 function htmlParaTexto(html) {
-  const bruto = String(html ?? '');
-  const tituloBruto = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(bruto)?.[1];
-  const semMarcacao = bruto
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    // `title` sai do texto porque já volta separado; página sem <head> (comum
-    // em HTML mal formado) repetiria o título como primeira linha do treinamento.
-    .replace(/<(script|style|noscript|template|svg|head|title)\b[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|tr|h[1-6]|section|article|header|footer|ul|ol|table|blockquote)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ');
+  const bruto = String(html ?? '').slice(0, LIMITE_HTML_CARACTERES);
+  const minusculo = bruto.toLowerCase();
+  const tituloBruto = extrairTitulo(bruto, minusculo);
+
+  const partes = [];
+  let posicao = 0;
+  while (posicao < bruto.length) {
+    const abre = bruto.indexOf('<', posicao);
+    if (abre < 0) {
+      partes.push(bruto.slice(posicao));
+      break;
+    }
+    partes.push(bruto.slice(posicao, abre));
+
+    if (minusculo.startsWith('<!--', abre)) {
+      const fimDoComentario = bruto.indexOf('-->', abre + 4);
+      if (fimDoComentario < 0) break;
+      partes.push(' ');
+      posicao = fimDoComentario + 3;
+      continue;
+    }
+
+    const fecha = bruto.indexOf('>', abre + 1);
+    if (fecha < 0) {
+      // Nenhum `>` daqui para frente: nenhum `<` seguinte fecha tag também.
+      // O resto é texto — e a varredura acaba aqui, sem voltar a procurar.
+      partes.push(bruto.slice(abre));
+      break;
+    }
+
+    const conteudoDaTag = minusculo.slice(abre + 1, fecha);
+    const fechamento = conteudoDaTag.startsWith('/');
+    const nome = /^\/?\s*([a-z][a-z0-9]*)/.exec(conteudoDaTag)?.[1] ?? '';
+
+    if (!fechamento && ELEMENTOS_SEM_TEXTO.has(nome)) {
+      // `title` sai do texto porque já volta separado; página sem <head> (comum
+      // em HTML mal formado) repetiria o título como primeira linha do treinamento.
+      const fimDoElemento = acharFechamento(minusculo, nome, fecha + 1);
+      if (fimDoElemento < 0) break;
+      const fimDaTag = bruto.indexOf('>', fimDoElemento);
+      if (fimDaTag < 0) break;
+      partes.push(' ');
+      posicao = fimDaTag + 1;
+      continue;
+    }
+
+    if (nome === 'br') partes.push('\n');
+    else if (fechamento && FECHAMENTOS_DE_BLOCO.has(nome)) partes.push('\n');
+    else partes.push(' ');
+    posicao = fecha + 1;
+  }
+
+  const semMarcacao = partes.join('');
   const texto = decodificarEntidades(semMarcacao)
     .split('\n')
     .map((linha) => linha.replace(/[ \t\f\v ]+/g, ' ').trim())
@@ -247,7 +370,7 @@ function criarBuscadorDePagina({
     let url = validarUrlPublica(endereco);
 
     for (let saltos = 0; ; saltos += 1) {
-      await conferirResolucao(url.hostname.replace(/^\[|\]$/g, ''), lookup);
+      await conferirResolucao(url.hostname.replace(/^\[|\]$/g, ''), lookup, timeoutMs);
 
       let resposta;
       try {
@@ -259,12 +382,7 @@ function criarBuscadorDePagina({
           headers: { accept: 'text/html, text/plain;q=0.9', 'user-agent': 'crmclinica-treinamento/1.0' },
         });
       } catch (erro) {
-        const expirou = erro?.name === 'TimeoutError' || erro?.name === 'AbortError';
-        throw erroComStatus(
-          expirou ? `o site não respondeu em ${Math.round(timeoutMs / 1000)}s` : 'não foi possível acessar o site',
-          422,
-          'site_inacessivel',
-        );
+        throw erroDeAcesso(erro, timeoutMs, 'não foi possível acessar o site');
       }
 
       if (resposta.status >= 300 && resposta.status < 400) {
@@ -286,11 +404,20 @@ function criarBuscadorDePagina({
       if (!resposta.ok) throw erroComStatus(`o site respondeu HTTP ${resposta.status}`, 422, 'site_http');
 
       const tipo = (resposta.headers.get('content-type') || '').toLowerCase();
-      const ehHtml = tipo.includes('text/html') || tipo.includes('application/xhtml+xml');
-      const ehTexto = tipo.includes('text/plain');
+      // Só o tipo antes do `;` decide: `application/json; x=text/html` não é HTML.
+      const tipoPrincipal = tipo.split(';')[0].trim();
+      const ehHtml = tipoPrincipal === 'text/html' || tipoPrincipal === 'application/xhtml+xml';
+      const ehTexto = tipoPrincipal === 'text/plain';
       if (!ehHtml && !ehTexto) throw erroComStatus('a página não é HTML nem texto', 422, 'site_tipo');
 
-      const conteudo = decodificar(await lerCorpoLimitado(resposta, maxBytes), tipo);
+      let conteudo;
+      try {
+        // O tempo limite também vale para o corpo: um site que manda o
+        // cabeçalho e goteja o resto estourava aqui fora do try e virava 500.
+        conteudo = decodificar(await lerCorpoLimitado(resposta, maxBytes), tipo);
+      } catch (erro) {
+        throw erroDeAcesso(erro, timeoutMs, 'não foi possível ler a página');
+      }
       const { titulo, texto } = ehHtml ? htmlParaTexto(conteudo) : { titulo: null, texto: conteudo.trim() };
       return { titulo, texto: texto.slice(0, LIMITES.conteudoTreinamento), urlFinal: url.href };
     }
@@ -526,6 +653,7 @@ module.exports = {
   validarUrlPublica,
   ehEnderecoPrivado,
   htmlParaTexto,
+  LIMITE_HTML_CARACTERES,
   PAGINA_PADRAO,
   LIMITE_MENSAGENS_DE_TESTE,
 };
