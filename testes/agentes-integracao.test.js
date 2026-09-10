@@ -16,11 +16,19 @@ const { validarAgente } = require('../src/dominio/agentes/regras');
 
 const CLIENTE = '5516991112222';
 
-function montar({ serena = null } = {}) {
+function montar({ serena = null, instanciasDaClinica = [] } = {}) {
   const repositorio = criarRepositorioEmMemoria();
   const chamadasDeIA = [];
   const envios = [];
   const despachosDaSerena = [];
+  const auditoria = [];
+
+  // Espião sobre a auditoria real: registra o nome da ação e segue gravando.
+  const registrarOriginal = repositorio.registrarAuditoria.bind(repositorio);
+  repositorio.registrarAuditoria = async (entrada) => {
+    auditoria.push(entrada);
+    return registrarOriginal(entrada);
+  };
 
   const gateway = {
     async gerar(argumentos) {
@@ -53,9 +61,10 @@ function montar({ serena = null } = {}) {
       },
     },
     agentes: criarMotorDeAgentes({ gateway }),
+    instanciasDaClinica,
   });
 
-  return { repositorio, atendimento, chamadasDeIA, envios, despachosDaSerena };
+  return { repositorio, atendimento, chamadasDeIA, envios, despachosDaSerena, auditoria };
 }
 
 async function criarAlpins(repositorio, { status = 'ativo', canalAtivo = true, configuracoes = {} } = {}) {
@@ -73,7 +82,7 @@ async function criarAlpins(repositorio, { status = 'ativo', canalAtivo = true, c
   return repositorio.obterAgente(agente.id);
 }
 
-function evento(idNativo, { instancia = null, texto = 'Tem tênis 42?' } = {}) {
+function evento(idNativo, { instancia = null, texto = 'Tem tênis 42?', estrategia = 'crm_despacha' } = {}) {
   return {
     tipo: 'mensagem.recebida',
     canal: 'whatsapp',
@@ -81,13 +90,13 @@ function evento(idNativo, { instancia = null, texto = 'Tem tênis 42?' } = {}) {
     nome: 'Cliente Teste',
     texto,
     id_externo: `whatsapp:${CLIENTE}:${idNativo}`,
-    estrategia_ia: 'crm_despacha',
+    estrategia_ia: estrategia,
     instancia,
   };
 }
 
 test('mensagem para o número do agente: conversa do agente, resposta do motor, envio pela instância do agente', async () => {
-  const { repositorio, atendimento, chamadasDeIA, envios, despachosDaSerena } = montar();
+  const { repositorio, atendimento, chamadasDeIA, envios, despachosDaSerena, auditoria } = montar();
   const alpins = await criarAlpins(repositorio);
 
   const resultado = await atendimento.receberMensagem(evento('A1', { instancia: 'alpins' }));
@@ -106,6 +115,10 @@ test('mensagem para o número do agente: conversa do agente, resposta do motor, 
 
   const contato = await repositorio.obterContato(conversa.contato_id);
   assert.equal(await repositorio.obterLeadPorContato(contato.id), null, 'cliente do agente não entra no funil da clínica');
+
+  const acoes = auditoria.map((item) => item.acao);
+  assert.ok(acoes.includes('agente_respondida'));
+  assert.equal(acoes.includes('respondida_pela_automacao'), false, 'métrica da Serena não conta resposta do agente');
 });
 
 test('o mesmo cliente escrevendo para a clínica abre outra conversa, respondida pelo caminho da Serena', async () => {
@@ -123,7 +136,7 @@ test('o mesmo cliente escrevendo para a clínica abre outra conversa, respondida
     'envio da clínica continua exatamente com a mesma forma de antes');
 });
 
-test('instância sem agente dono segue o caminho da clínica, como antes', async () => {
+test('instância sem agente dono e SEM lista da clínica configurada segue o caminho da clínica, como antes', async () => {
   const { repositorio, atendimento, despachosDaSerena, envios } = montar();
   await criarAlpins(repositorio);
 
@@ -132,6 +145,57 @@ test('instância sem agente dono segue o caminho da clínica, como antes', async
   assert.equal((await repositorio.obterConversa(resultado.conversa_id)).agente_id, null);
   assert.equal(despachosDaSerena.length, 1);
   assert.equal(Object.prototype.hasOwnProperty.call(envios[0], 'instancia'), false);
+});
+
+test('achado MÉDIO 4: com a lista da clínica configurada, instância sem dono grava e escala — ninguém responde', async () => {
+  const { repositorio, atendimento, despachosDaSerena, envios, chamadasDeIA, auditoria } = montar({
+    instanciasDaClinica: ['clinica'],
+  });
+  await criarAlpins(repositorio);
+
+  const resultado = await atendimento.receberMensagem(evento('X1', { instancia: 'loja-sem-cadastro' }));
+
+  assert.equal(resultado.acao, 'instancia_sem_agente');
+  assert.equal(despachosDaSerena.length, 0, 'a Serena não responde pelo número da clínica');
+  assert.equal(chamadasDeIA.length, 0);
+  assert.equal(envios.length, 0);
+  const mensagens = await repositorio.listarMensagens(resultado.conversa_id);
+  assert.ok(mensagens.some((item) => item.direcao === 'entrada'), 'a mensagem do cliente não se perde');
+  const semDono = auditoria.find((item) => item.acao === 'instancia_sem_dono');
+  assert.deepEqual(semDono.detalhe, { canal: 'whatsapp', instancia: 'loja-sem-cadastro' });
+});
+
+test('com a lista configurada, a instância da clínica (sem diferenciar maiúsculas) continua com a Serena', async () => {
+  const { repositorio, atendimento, despachosDaSerena } = montar({ instanciasDaClinica: ['clinica'] });
+  await criarAlpins(repositorio);
+
+  const resultado = await atendimento.receberMensagem(evento('C1', { instancia: 'CLINICA', texto: 'Oi clínica' }));
+
+  assert.equal((await repositorio.obterConversa(resultado.conversa_id)).agente_id, null);
+  assert.equal(despachosDaSerena.length, 1);
+});
+
+test('nome da instância do agente com maiúscula diferente continua sendo do agente', async () => {
+  const { repositorio, atendimento, envios, despachosDaSerena } = montar();
+  const alpins = await criarAlpins(repositorio);
+
+  const resultado = await atendimento.receberMensagem(evento('A1', { instancia: 'Alpins' }));
+
+  assert.equal((await repositorio.obterConversa(resultado.conversa_id)).agente_id, alpins.id);
+  assert.equal(despachosDaSerena.length, 0);
+  assert.equal(envios[0].instancia, 'alpins', 'o envio usa o nome cadastrado');
+});
+
+test('evento de importação ("o agente do canal já respondeu") nunca vira resposta de agente', async () => {
+  const { repositorio, atendimento, chamadasDeIA, envios } = montar();
+  await criarAlpins(repositorio);
+
+  const resultado = await atendimento.receberMensagem(evento('I1', { instancia: 'alpins', estrategia: 'openclaw_gerencia' }));
+
+  assert.equal(resultado.acao, 'importada_do_canal');
+  assert.equal((await repositorio.obterConversa(resultado.conversa_id)).agente_id, null);
+  assert.equal(chamadasDeIA.length, 0);
+  assert.equal(envios.length, 0);
 });
 
 test('Serena desligada não cala o agente — e continua calando a clínica', async () => {
@@ -163,7 +227,7 @@ test('agente desativado grava a mensagem e não gera nem envia nada', async () =
 });
 
 test('canal do agente desligado: a conversa continua do agente e nada sai por número nenhum', async () => {
-  const { repositorio, atendimento, envios, despachosDaSerena } = montar();
+  const { repositorio, atendimento, envios, despachosDaSerena, auditoria } = montar();
   const alpins = await criarAlpins(repositorio, { canalAtivo: false });
 
   const resultado = await atendimento.receberMensagem(evento('A1', { instancia: 'alpins' }));
@@ -172,6 +236,10 @@ test('canal do agente desligado: a conversa continua do agente e nada sai por n�
   assert.equal(despachosDaSerena.length, 0, 'não cai na Serena só porque o canal está desligado');
   assert.equal(envios.length, 0, 'não sai pela instância padrão (número da clínica)');
   assert.equal(resultado.entregue, false);
+  const acoes = auditoria.map((item) => item.acao);
+  assert.ok(acoes.includes('agente_escalonada'));
+  assert.equal(acoes.includes('escalonada'), false, 'escalonamento do agente não entra na métrica da clínica');
+  assert.equal(acoes.includes('resposta_nao_entregue'), false, 'nem no alerta crítico da Serena');
 });
 
 test('pela porta de ingresso, o trabalho da outbox espera o tempo de resposta do agente', async () => {

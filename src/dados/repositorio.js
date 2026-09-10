@@ -1353,7 +1353,7 @@ function criarRepositorio(pool) {
       const { rows } = await consultar(`
         SELECT a.* FROM agentes a
           JOIN agente_canais ac ON ac.agente_id = a.id
-         WHERE ac.canal = $1 AND ac.instancia = $2
+         WHERE ac.canal = $1 AND lower(ac.instancia) = lower($2)
            ${incluirInativos ? '' : 'AND ac.ativo'}
          LIMIT 1
       `, [canal, instancia]);
@@ -1613,7 +1613,7 @@ function criarRepositorio(pool) {
      * privada não conta como "última mensagem": ela não chega ao cliente.
      * Quem decide se o tempo já passou é o chamador, com o instante dele.
      */
-    async listarConversasDeAgenteParaInatividade({ limite = 50 } = {}) {
+    async listarConversasDeAgenteParaInatividade({ limite = 50, aposConversaId = 0 } = {}) {
       const { rows } = await consultar(`
         SELECT c.id AS conversa_id, c.agente_id,
                m.id AS ultima_mensagem_id, m.criado_em AS ultima_mensagem_em, m.autor_tipo AS ultima_mensagem_autor
@@ -1624,14 +1624,18 @@ function criarRepositorio(pool) {
              ORDER BY criado_em DESC, id DESC
              LIMIT 1
           ) m ON true
-         WHERE c.agente_id IS NOT NULL
+          -- Só agente ativo com ação configurada: os demais nunca vão agir, e
+          -- ocupar o topo da lista com eles escondia as conversas que agem.
+          JOIN agentes a ON a.id = c.agente_id AND a.status = 'ativo'
+         WHERE c.id > $2
+           AND EXISTS (SELECT 1 FROM agente_acoes_inatividade ai WHERE ai.agente_id = c.agente_id)
            AND c.status <> 'resolvida'
            AND c.assumida_por_humano IS NOT TRUE
            AND c.atribuido_a IS NULL
            AND m.autor_tipo = 'automacao'
-         ORDER BY m.criado_em, c.id
+         ORDER BY c.id
          LIMIT $1
-      `, [limite]);
+      `, [limite, Number(aposConversaId) || 0]);
       return rows.map((linha) => ({
         conversa_id: Number(linha.conversa_id),
         agente_id: Number(linha.agente_id),
@@ -1901,6 +1905,8 @@ function criarRepositorio(pool) {
         FROM conversas c JOIN contatos ct ON ct.id = c.contato_id
         WHERE c.aguardando_resposta_desde IS NOT NULL
           AND c.status <> 'resolvida'
+          -- Fila de SLA é da clínica: conversa de agente não entra (docs/AGENTES.md).
+          AND c.agente_id IS NULL
         ORDER BY c.aguardando_resposta_desde
         LIMIT $1
       `, [limite]);

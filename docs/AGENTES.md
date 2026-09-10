@@ -90,12 +90,16 @@ tela chama de "Histórico" e permite restaurar.
 
 `id`, `agente_id` (FK CASCADE), `canal` (`whatsapp`, `instagram`),
 `instancia` text NOT NULL (≤ 100 — nome da instância da Evolution no WhatsApp),
-`ativo` boolean DEFAULT true, UNIQUE (`canal`, `instancia`).
+`ativo` boolean DEFAULT true, UNIQUE (`canal`, `lower(instancia)`) — a busca do
+dono não diferencia maiúsculas, então a unicidade também não pode.
 
 ### `conversas.agente_id`
 
-`bigint NULL REFERENCES agentes(id) ON DELETE SET NULL`, com índice parcial
-`WHERE agente_id IS NOT NULL`.
+`bigint NULL REFERENCES agentes(id) ON DELETE RESTRICT`, com índice parcial
+`WHERE agente_id IS NOT NULL`. **RESTRICT, não SET NULL**: apagar um agente
+com `SET NULL` transformaria as conversas dele em conversas da clínica, e a
+mensagem seguinte do cliente iria para a Serena e sairia pelo número da
+clínica. Agente sai de uso por `status = 'desativado'`, nunca por DELETE.
 
 RLS/GRANT no mesmo desenho de `db/045` (política `app_trabalho` para
 `crmclinica_app`, REVOKE de `anon`/`authenticated`). Par `_rollback.sql`.
@@ -225,6 +229,43 @@ Permissões: `agentes:ler` (admin, gestor) e `agentes:gerenciar` (admin).
 
 Treinamento por website: só `https`, recusa host local/privado, teto de
 tamanho e de tempo, HTML reduzido a texto.
+
+## Sinais da clínica não misturam agente
+
+Métricas (`src/dominio/metricas.js`), a view `vw_serena_por_dia` (db/026) e o
+alerta crítico do centro operacional contam `escalonada`,
+`respondida_pela_automacao`, `automacao_silenciada` e `resposta_nao_entregue`.
+O fluxo do agente audita com nomes próprios — `agente_escalonada`,
+`agente_respondida`, `agente_automacao_silenciada`,
+`agente_resposta_nao_entregue`, `agente_sem_resposta` — e a fila de SLA
+(`listarConversasAguardando`) ignora conversa de agente. Resíduo conhecido: a
+outbox, ao expirar ou esgotar um trabalho, escala pelo `escalonar` padrão
+(`escalonada`), porque não sabe de quem é a conversa.
+
+## Ações de inatividade no worker
+
+A varredura roda no `bin/worker-outbox.js` em relógio PRÓPRIO (uma passada
+por minuto, até 20 conversas, teto de 20 s), nunca dentro do ciclo da fila: uma
+ação "interagir" chama a IA, e com o provedor lento seguraria o lote da
+clínica. Cursor por id de conversa: nenhuma conversa fica para sempre fora.
+
+## Colocar um agente no ar — nesta ordem
+
+Cada passo abaixo que toca produção exige autorização própria.
+
+1. Aplicar a migration 046 no SQL Editor do Supabase e confirmar com leitura
+   (tabelas, RLS, policies, grants) usando a credencial da aplicação.
+2. Definir `EVOLUTION_INSTANCIAS_CLINICA` com o nome **exato** da instância da
+   clínica, na Vercel **e** no `.env` do VPS (são cópias separadas).
+3. Merge e deploy.
+4. Cadastrar o agente e o canal (`npm run semear-agentes -- --arquivo=… --aplicar`
+   ou pela tela), ainda `desativado`.
+5. Criar a instância do agente na Evolution e ligar o webhook dela (instância
+   nova nunca vem com webhook ligado) — só DEPOIS do passo 4, senão as primeiras
+   mensagens chegam sem dono.
+6. Chaves de IA no `.env` do VPS e reiniciar `crmclinica-outbox.service`;
+   confirmar pelo heartbeat no banco.
+7. Testar pela aba Teste, depois ligar o agente (`status = 'ativo'`).
 
 ## Fora desta entrega (fase 2)
 

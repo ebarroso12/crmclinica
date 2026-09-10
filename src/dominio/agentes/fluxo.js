@@ -15,31 +15,46 @@ const { normalizarConfiguracoes } = require('./regras');
 // O que este fluxo garante, e onde:
 //   - um inbound → no máximo uma resposta: `id_externo` determinístico
 //     (`agente:{id}:resposta:{conversa}:{entrada}`, partes com `:pN`) e a
-//     mesma chave na chamada de IA; retentativa reaproveita o texto gravado;
-//   - rajada de mensagens vira uma resposta só: o trabalho de uma mensagem
-//     que já tem outra mais nova do cliente não responde — o da mais nova
-//     responde a todas (o atraso de `tempo_resposta_segundos` é aplicado na
-//     hora de enfileirar, ver `atrasoDeResposta`);
+//     mesma chave na chamada de IA;
+//   - retentativa depois de queda no meio do caminho refaz a geração pela
+//     MESMA chave (o gateway devolve o resultado gravado, sem nova cobrança),
+//     retoma as partes que não saíram e conclui a transferência pedida — antes
+//     ela reentregava só o que estava gravado e dava por "respondida",
+//     perdendo transferência e partes (achado ALTO 1 da auditoria);
+//   - rajada de mensagens vira uma resposta só (o atraso de
+//     `tempo_resposta_segundos` é aplicado ao enfileirar, `atrasoDeResposta`);
 //   - limite de interações e ação ao atingir;
 //   - transferência para a equipe com resumo em nota privada;
-//   - ações de inatividade (interagir/finalizar), idempotentes por chave.
+//   - ações de inatividade idempotentes por chave, com cursor (nenhuma
+//     conversa fica para sempre fora da varredura) e teto de tempo por passada;
+//   - auditoria com nomes próprios (`agente_*`): as métricas, a view analítica
+//     e o alerta crítico da Serena contam `respondida_pela_automacao`,
+//     `resposta_nao_entregue` etc. — o agente não pode acender sinal da clínica.
 //
 // O que NÃO está provado aqui: nada disto chama modelo ou Evolution de
-// verdade — os testes usam motor e canal falsos.
+// verdade — os testes usam motor e canal falsos, e a concorrência entre
+// processos só se prova contra PostgreSQL real.
 
 const MARCA_INATIVIDADE = ':inatividade:';
+const ESCALONAR_COMO_AGENTE = Object.freeze({ acaoDeAuditoria: 'agente_escalonada' });
 
 function textoValido(parte) {
   return typeof parte === 'string' && parte.trim().length > 0;
 }
 
 function criarFluxoDeAgentes({
-  repositorio, agentes = null, emissor = null, entregar, escalonar, agora = () => new Date(),
+  repositorio, agentes = null, emissor = null, entregar, escalonar,
+  instanciasDaClinica = [], agora = () => new Date(),
 }) {
   if (!repositorio) throw new Error('o fluxo de agentes exige o repositório');
   if (typeof entregar !== 'function' || typeof escalonar !== 'function') {
     throw new Error('o fluxo de agentes exige entregar e escalonar');
   }
+
+  const instanciasConhecidasDaClinica = new Set(
+    (instanciasDaClinica ?? []).map((nome) => String(nome).trim().toLowerCase()).filter(Boolean),
+  );
+  let cursorDeInatividade = 0;
 
   /** Auditoria nunca derruba o atendimento — e nunca carrega texto de conversa. */
   async function auditar(conversaId, acao, detalhe) {
@@ -48,6 +63,10 @@ function criarFluxoDeAgentes({
     } catch (erro) {
       console.error(`[agentes] falha ao auditar "${acao}": ${erro.message}`);
     }
+  }
+
+  function escalonarAgente(conversaId, motivo) {
+    return escalonar(conversaId, motivo, ESCALONAR_COMO_AGENTE);
   }
 
   async function registrarAvisoPrivado(conversaId, conteudo, idExterno = null) {
@@ -72,6 +91,18 @@ function criarFluxoDeAgentes({
   async function agenteDoCanal(canal, instancia) {
     if (!instancia || !repositorio.obterAgentePorCanal) return null;
     return repositorio.obterAgentePorCanal(canal, instancia, { incluirInativos: true });
+  }
+
+  /**
+   * Instância que não é da clínica e (quem chama já conferiu) não é de agente
+   * nenhum. Só decide quando a lista da clínica foi configurada: sem ela, a
+   * única resposta segura é "não sei" — tratar a instância da própria clínica
+   * como estranha, por um nome de configuração diferente do real, calaria o
+   * atendimento de pacientes.
+   */
+  function instanciaSemDono(instancia) {
+    if (!instancia || instanciasConhecidasDaClinica.size === 0) return false;
+    return !instanciasConhecidasDaClinica.has(String(instancia).trim().toLowerCase());
   }
 
   /** Quando o trabalho da outbox deve ficar disponível: agora + tempo de resposta do agente. */
@@ -118,10 +149,10 @@ function criarFluxoDeAgentes({
     // Sem canal nenhum configurado (desenvolvimento) não é falha de envio — mesma
     // leitura do caminho da Serena.
     if (!entrega.enviada && entrega.motivo !== 'canal_nao_configurado') {
-      await auditar(conversa.id, 'resposta_nao_entregue', {
-        mensagem_id: mensagem.id, motivo: entrega.motivo, autor: 'automacao', indeterminado: entrega.indeterminado === true,
+      await auditar(conversa.id, 'agente_resposta_nao_entregue', {
+        mensagem_id: mensagem.id, motivo: entrega.motivo, indeterminado: entrega.indeterminado === true,
       });
-      await escalonar(conversa.id, 'falha_na_entrega_da_automacao');
+      await escalonarAgente(conversa.id, 'falha_na_entrega_da_automacao');
       return {
         enviada: false,
         parada: {
@@ -137,8 +168,20 @@ function criarFluxoDeAgentes({
     return { enviada: entrega.enviada === true, parada: null };
   }
 
-  /** Grava e entrega as partes em ordem. Parte duplicada = outra execução já cuida dela. */
-  async function gravarEEntregar(conversa, agente, partes, chave) {
+  /**
+   * Grava e entrega as partes em ordem.
+   *
+   * Parte que já existe (`duplicada`) tem dois significados, e quem chama diz
+   * qual vale:
+   *   - `retomar: true` (resposta a um inbound): é a MESMA resposta de uma
+   *     tentativa anterior que caiu no meio — o trabalho da outbox só volta a
+   *     um worker quando o anterior perdeu o lease. Parte já entregue fica como
+   *     está; entrega incerta nunca é repetida sozinha; o resto é entregue agora.
+   *   - `retomar: false` (inatividade): não há lease protegendo a varredura, e
+   *     duplicada ali é outra cópia do worker no meio da mesma ação — quem
+   *     gravou primeiro entrega, esta desiste.
+   */
+  async function gravarEEntregar(conversa, agente, partes, chave, { retomar }) {
     const mensagemIds = [];
     let todasEnviadas = true;
 
@@ -150,11 +193,30 @@ function criarFluxoDeAgentes({
         autor_nome: agente.nome,
         id_externo: indice === 0 ? chave : `${chave}:p${indice + 1}`,
       });
-      // Duplicada aqui é execução concorrente do mesmo trabalho: entregar de
-      // novo seria a mensagem chegando duas vezes. Quem gravou primeiro entrega.
-      if (duplicada) return { parada: null, mensagemIds, todasEnviadas: false, concorrente: true };
 
-      emissor?.publicarMensagem(conversa.id, mensagem);
+      if (duplicada) {
+        if (!retomar) return { parada: null, mensagemIds, todasEnviadas: false, concorrente: true };
+        if (mensagem.entregue_em) {
+          mensagemIds.push(mensagem.id);
+          continue;
+        }
+        if (mensagem.entrega_indeterminada) {
+          return {
+            parada: {
+              acao: 'escalonada_por_falha_entrega',
+              conversa_id: conversa.id,
+              motivo: 'entrega_indeterminada',
+              entregue: false,
+              entregaIncerta: true,
+            },
+            mensagemIds,
+            todasEnviadas: false,
+          };
+        }
+      } else {
+        emissor?.publicarMensagem(conversa.id, mensagem);
+      }
+
       const { enviada, parada } = await entregarParte(conversa, mensagem);
       if (parada) return { parada, mensagemIds, todasEnviadas: false };
       if (!enviada) todasEnviadas = false;
@@ -164,32 +226,12 @@ function criarFluxoDeAgentes({
     return { parada: null, mensagemIds, todasEnviadas };
   }
 
-  /** Retentativa depois de queda entre gravar e entregar: só entrega o que falta. */
-  async function reentregar(conversa, anteriores) {
-    for (const parte of [...anteriores].sort((a, b) => Number(a.id) - Number(b.id))) {
-      if (parte.entregue_em) continue;
-      // Entrega incerta nunca é retentada sozinha (ver automacao-outbox.js): a
-      // escalação para a equipe já aconteceu quando a incerteza nasceu.
-      if (parte.entrega_indeterminada) {
-        return {
-          acao: 'escalonada_por_falha_entrega',
-          conversa_id: conversa.id,
-          motivo: 'entrega_indeterminada',
-          entregue: false,
-          entregaIncerta: true,
-        };
-      }
-      const { parada } = await entregarParte(conversa, parte);
-      if (parada) return parada;
-    }
-    return { acao: 'respondida_pela_automacao', conversa_id: conversa.id, duplicada: true, entregue: true };
-  }
-
   /**
    * Passa a conversa para a equipe. É `assumir` sem dono: a automação cala
-   * até alguém devolver. O resumo vai em nota privada — o motivo em prosa do
-   * modelo pode repetir o que o cliente disse, então fica na conversa (que a
-   * equipe já lê) e nunca na auditoria.
+   * até alguém devolver. Idempotente: conversa já com a equipe não recebe
+   * segundo aviso nem segundo resumo. O resumo vai em nota privada — o motivo
+   * em prosa do modelo pode repetir o que o cliente disse, então fica na
+   * conversa (que a equipe já lê) e nunca na auditoria.
    */
   async function transferir(conversa, agente, configuracoes, motivo, motivoDoModelo = null) {
     const conversaId = conversa.id;
@@ -228,8 +270,17 @@ function criarFluxoDeAgentes({
     return true;
   }
 
+  /**
+   * Resolve a conversa. A transição é atômica (`definirStatusSeNecessario`):
+   * duas cópias do worker chegando juntas produzem UM aviso e UMA auditoria,
+   * não dois (achado BAIXO 6 da auditoria).
+   */
   async function finalizar(conversa, agente, motivo, extra = {}) {
-    await repositorio.atualizarConversa(conversa.id, { status: 'resolvida' });
+    const transicao = repositorio.definirStatusSeNecessario
+      ? await repositorio.definirStatusSeNecessario(conversa.id, 'resolvida')
+      : await repositorio.atualizarConversa(conversa.id, { status: 'resolvida' });
+    if (!transicao) return false;
+
     const texto = motivo === 'inatividade'
       ? `Atendimento finalizado por ${agente.nome}: o cliente não respondeu em ${extra.apos_minutos} min.`
       : `Atendimento finalizado por ${agente.nome}: limite de interações atingido.`;
@@ -237,6 +288,7 @@ function criarFluxoDeAgentes({
     await auditar(conversa.id, motivo === 'inatividade' ? 'finalizada_por_inatividade' : 'finalizada_por_limite', {
       agente_id: agente.id, ...extra,
     });
+    return true;
   }
 
   /** Responde a um inbound de uma conversa de agente. Mesmos desfechos do caminho da Serena. */
@@ -245,15 +297,15 @@ function criarFluxoDeAgentes({
 
     if (!agentes) {
       // Falta de configuração não é transitória: escala, não retenta.
-      await escalonar(conversaId, 'motor_de_agentes_nao_configurado');
+      await escalonarAgente(conversaId, 'motor_de_agentes_nao_configurado');
       return { acao: 'escalonada_para_equipe', conversa_id: conversaId, motivo: 'motor_de_agentes_nao_configurado' };
     }
 
     const agente = await repositorio.obterAgente(conversa.agente_id);
     const decisao = agentes.decidir(conversa, agente);
     if (!decisao.responder) {
-      await auditar(conversaId, 'automacao_silenciada', {
-        motivo: decisao.motivo, escopo: 'agente', agente_id: conversa.agente_id,
+      await auditar(conversaId, 'agente_automacao_silenciada', {
+        motivo: decisao.motivo, agente_id: conversa.agente_id,
       });
       return { acao: 'aguardando_equipe', conversa_id: conversaId, motivo: decisao.motivo, escopo: 'agente' };
     }
@@ -270,13 +322,14 @@ function criarFluxoDeAgentes({
     }
 
     const chave = `agente:${agente.id}:resposta:${conversaId}:${entradaId}`;
-    const anteriores = mensagens.filter((mensagem) => mensagem.id_externo === chave
+    const retomada = mensagens.some((mensagem) => mensagem.id_externo === chave
       || String(mensagem.id_externo ?? '').startsWith(`${chave}:p`));
-    if (anteriores.length > 0) return reentregar(conversa, anteriores);
 
-    // Partes de uma resposta dividida contam uma a uma — o limite é de mensagens
-    // automáticas, que é o que o cliente vê chegar.
-    if (configuracoes.limite_interacoes !== null && repositorio.contarRespostasDaAutomacao) {
+    // Na retomada o limite não é reavaliado: a resposta que está sendo
+    // concluída já foi autorizada, e as partes dela já contam no total.
+    // Partes de uma resposta dividida contam uma a uma — o limite é de
+    // mensagens automáticas, que é o que o cliente vê chegar.
+    if (!retomada && configuracoes.limite_interacoes !== null && repositorio.contarRespostasDaAutomacao) {
       const respostas = await repositorio.contarRespostasDaAutomacao(conversaId);
       if (respostas >= configuracoes.limite_interacoes) {
         if (configuracoes.acao_limite === 'finalizar') {
@@ -293,11 +346,13 @@ function criarFluxoDeAgentes({
 
     let geracao;
     try {
+      // Mesma chave na retomada: o gateway devolve a resposta já gerada, e é
+      // ela que diz quantas partes existem e se havia transferência a concluir.
       geracao = await agentes.gerarResposta({
         agente, treinamentos, mensagens, contato, chaveIdempotencia: chave,
       });
     } catch (erro) {
-      await escalonar(conversaId, 'falha_no_motor_do_agente');
+      await escalonarAgente(conversaId, 'falha_no_motor_do_agente');
       return { acao: 'escalonada_por_falha', conversa_id: conversaId, codigo: erro.codigo || 'desconhecido' };
     }
 
@@ -305,27 +360,27 @@ function criarFluxoDeAgentes({
     const pediuTransferencia = geracao?.transferir === true;
 
     if (partes.length === 0 && !pediuTransferencia) {
-      await auditar(conversaId, 'automacao_sem_resposta', { motivo: 'motor_ia_sem_resposta', agente_id: agente.id });
-      await escalonar(conversaId, 'motor_ia_sem_resposta');
+      await auditar(conversaId, 'agente_sem_resposta', { motivo: 'motor_ia_sem_resposta', agente_id: agente.id });
+      await escalonarAgente(conversaId, 'motor_ia_sem_resposta');
       return { acao: 'sem_resposta_do_agente', conversa_id: conversaId, motivo: 'motor_ia_sem_resposta' };
     }
 
-    const { parada, mensagemIds, todasEnviadas, concorrente } = await gravarEEntregar(conversa, agente, partes, chave);
+    const { parada, mensagemIds, todasEnviadas } = await gravarEEntregar(conversa, agente, partes, chave, { retomar: true });
     if (parada) return parada;
-    if (concorrente) return { acao: 'respondida_pela_automacao', conversa_id: conversaId, duplicada: true };
 
     if (pediuTransferencia) {
       await transferir(conversa, agente, configuracoes, 'pedido_do_agente', geracao.motivo ?? null);
     }
 
-    await auditar(conversaId, 'respondida_pela_automacao', {
-      agente_id: agente.id, mensagem_ids: mensagemIds, transferida: pediuTransferencia,
+    await auditar(conversaId, 'agente_respondida', {
+      agente_id: agente.id, mensagem_ids: mensagemIds, transferida: pediuTransferencia, retomada,
     });
     return {
       acao: pediuTransferencia ? 'respondida_e_transferida' : 'respondida_pela_automacao',
       conversa_id: conversaId,
       entregue: todasEnviadas,
       partes: mensagemIds.length,
+      ...(retomada ? { duplicada: true } : {}),
     };
   }
 
@@ -371,8 +426,8 @@ function criarFluxoDeAgentes({
     if (!devida) return 'ignorada';
 
     if (devida.acao === 'finalizar') {
-      await finalizar(conversa, agente, 'inatividade', { apos_minutos: devida.apos_minutos });
-      return 'finalizada';
+      const finalizou = await finalizar(conversa, agente, 'inatividade', { apos_minutos: devida.apos_minutos });
+      return finalizou ? 'finalizada' : 'ignorada';
     }
 
     // Falar com o cliente passa pelas mesmas regras de uma resposta (horário, controle).
@@ -387,21 +442,39 @@ function criarFluxoDeAgentes({
     const partes = (gerado?.partes ?? []).filter(textoValido);
     if (partes.length === 0) return 'ignorada';
 
-    const { parada, concorrente } = await gravarEEntregar(conversa, agente, partes, chave);
+    const { parada, concorrente } = await gravarEEntregar(conversa, agente, partes, chave, { retomar: false });
     if (parada || concorrente) return 'ignorada';
 
     await auditar(conversa.id, 'interacao_por_inatividade', { agente_id: agente.id, apos_minutos: devida.apos_minutos });
     return 'interagiu';
   }
 
-  /** Uma passada de inatividade. Uma conversa que falha não leva as outras junto. */
-  async function processarInatividade({ limite = 50 } = {}) {
-    const resumo = { verificadas: 0, finalizadas: 0, interacoes: 0, ignoradas: 0, falhas: 0 };
+  /**
+   * Uma passada de inatividade.
+   *
+   * Cursor por id de conversa: cada passada continua de onde a anterior parou
+   * e volta ao começo ao chegar no fim. Sem isso, conversas que nunca terão
+   * ação ocupavam o topo da lista para sempre e escondiam as outras (achado
+   * MÉDIO 3 da auditoria). O teto de tempo impede uma passada lenta (IA fora
+   * do ar em "interagir") de virar um laço de minutos. Uma conversa que falha
+   * não leva as outras junto.
+   */
+  async function processarInatividade({ limite = 20, orcamentoMs = 20000 } = {}) {
+    const resumo = { verificadas: 0, finalizadas: 0, interacoes: 0, ignoradas: 0, falhas: 0, adiadas: 0 };
     if (!agentes || !repositorio.listarConversasDeAgenteParaInatividade) return resumo;
 
-    const candidatas = await repositorio.listarConversasDeAgenteParaInatividade({ limite });
+    const inicio = Date.now();
+    const candidatas = await repositorio.listarConversasDeAgenteParaInatividade({
+      limite, aposConversaId: cursorDeInatividade,
+    });
     const cacheDeAgentes = new Map();
+    let ultimaTratada = cursorDeInatividade;
+
     for (const candidata of candidatas) {
+      if (Date.now() - inicio > orcamentoMs) {
+        resumo.adiadas = candidatas.length - resumo.verificadas;
+        break;
+      }
       resumo.verificadas += 1;
       try {
         const desfecho = await tratarInatividade(candidata, cacheDeAgentes);
@@ -412,12 +485,17 @@ function criarFluxoDeAgentes({
         resumo.falhas += 1;
         console.error(`[agentes] inatividade da conversa ${candidata.conversa_id} falhou: ${erro.message}`);
       }
+      ultimaTratada = candidata.conversa_id;
     }
+
+    // Lista incompleta e tudo tratado = chegou ao fim: a próxima passada recomeça.
+    cursorDeInatividade = resumo.adiadas === 0 && candidatas.length < limite ? 0 : ultimaTratada;
     return resumo;
   }
 
   return {
     agenteDoCanal,
+    instanciaSemDono,
     atrasoDeResposta,
     decidir,
     instanciaDeEnvio,

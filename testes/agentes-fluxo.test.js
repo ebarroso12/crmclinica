@@ -7,9 +7,9 @@ const { criarFluxoDeAgentes } = require('../src/dominio/agentes/fluxo');
 
 // Fluxo das conversas de agente com repositório, motor, entrega e
 // escalonamento FALSOS. Prova as decisões do fluxo (quando responde, agrupa,
-// retenta, transfere, finaliza) — NÃO prova o repositório real, o motor real
-// nem a entrega pela Evolution; isso tem suíte própria e a integração com o
-// atendimento tem a sua.
+// retoma, transfere, finaliza, varre) — NÃO prova o repositório real, o motor
+// real, a entrega pela Evolution nem concorrência entre processos; isso tem
+// suíte própria, e a integração com o atendimento tem a sua.
 
 const AGENTE = Object.freeze({
   id: 7,
@@ -35,11 +35,11 @@ function mensagem(id, extra) {
   };
 }
 
-function criarRepositorioFalso({ agente = AGENTE, conversa = conversaBase(), mensagens = [] } = {}) {
+function criarRepositorioFalso({ agente = AGENTE, conversa = conversaBase(), conversas = null, mensagens = [] } = {}) {
   const estado = {
     mensagens: mensagens.map((item) => ({ ...item })),
     auditoria: [],
-    conversas: new Map([[conversa.id, { ...conversa }]]),
+    conversas: new Map((conversas ?? [conversa]).map((item) => [item.id, { ...item }])),
     buscasDeCanal: [],
     proximoId: 1000,
   };
@@ -54,6 +54,12 @@ function criarRepositorioFalso({ agente = AGENTE, conversa = conversaBase(), men
     async atualizarConversa(id, campos) {
       Object.assign(estado.conversas.get(Number(id)), campos);
       return estado.conversas.get(Number(id));
+    },
+    async definirStatusSeNecessario(id, status) {
+      const alvo = estado.conversas.get(Number(id));
+      if (!alvo || alvo.status === status) return null;
+      alvo.status = status;
+      return alvo;
     },
     async assumirConversaSeNecessario(id, { usuarioId }) {
       const alvo = estado.conversas.get(Number(id));
@@ -83,9 +89,11 @@ function criarRepositorioFalso({ agente = AGENTE, conversa = conversaBase(), men
     },
     async listarTreinamentos() { return [{ id: 1, tipo: 'texto', conteudo: 'Tênis do 34 ao 44.' }]; },
     async obterContato() { return { id: 1, nome: 'Cliente', telefone: '5516900000000' }; },
-    async listarConversasDeAgenteParaInatividade() {
+    async listarConversasDeAgenteParaInatividade({ limite = 50, aposConversaId = 0 } = {}) {
       return [...estado.conversas.values()]
-        .filter((item) => item.agente_id && item.status !== 'resolvida')
+        .filter((item) => item.agente_id && item.status !== 'resolvida' && item.id > aposConversaId)
+        .sort((a, b) => a.id - b.id)
+        .slice(0, limite)
         .map((item) => ({ conversa_id: item.id, agente_id: item.agente_id }));
     },
   };
@@ -117,7 +125,9 @@ function criarMotorFalso({ resposta = { partes: ['Olá! AHU!'], transferir: fals
   };
 }
 
-function montar({ repositorio = criarRepositorioFalso(), motor = criarMotorFalso(), entrega = null, agora } = {}) {
+function montar({
+  repositorio = criarRepositorioFalso(), motor = criarMotorFalso(), entrega = null, agora, instanciasDaClinica,
+} = {}) {
   const entregas = [];
   const escalonamentos = [];
   const fluxo = criarFluxoDeAgentes({
@@ -127,15 +137,21 @@ function montar({ repositorio = criarRepositorioFalso(), motor = criarMotorFalso
       entregas.push({ conversaId: conversa.id, texto, mensagemId, opcoes });
       return entrega ? entrega(texto) : { enviada: true, identificador: `id-${mensagemId}` };
     },
-    escalonar: async (conversaId, motivo) => { escalonamentos.push({ conversaId, motivo }); },
+    escalonar: async (conversaId, motivo, opcoes) => { escalonamentos.push({ conversaId, motivo, opcoes }); },
     ...(agora ? { agora } : {}),
+    ...(instanciasDaClinica ? { instanciasDaClinica } : {}),
   });
   return { fluxo, repositorio, motor, entregas, escalonamentos };
 }
 
 const ENTRADA = mensagem(1, { direcao: 'entrada', autor_tipo: 'contato', conteudo: 'Quero um tênis' });
+const ACOES_DA_CLINICA = ['escalonada', 'respondida_pela_automacao', 'automacao_silenciada', 'resposta_nao_entregue'];
 
-test('responde: grava cada parte com id_externo determinístico e entrega com origem "agente"', async () => {
+function acoesAuditadas(repositorio) {
+  return repositorio.estado.auditoria.map((item) => item.acao);
+}
+
+test('responde: grava cada parte com id_externo determinístico, entrega com origem "agente" e audita com nome próprio', async () => {
   const motor = criarMotorFalso({ resposta: { partes: ['Parte um', 'Parte dois'], transferir: false } });
   const { fluxo, repositorio, entregas } = montar({ repositorio: criarRepositorioFalso({ mensagens: [ENTRADA] }), motor });
 
@@ -148,6 +164,9 @@ test('responde: grava cada parte com id_externo determinístico e entrega com or
   assert.ok(saidas.every((item) => item.autor_nome === 'Agente Alpins'));
   assert.deepEqual(entregas.map((item) => item.opcoes.origem), ['agente', 'agente']);
   assert.equal(motor.chamadas.gerarResposta[0].chaveIdempotencia, 'agente:7:resposta:50:1');
+  assert.ok(acoesAuditadas(repositorio).includes('agente_respondida'));
+  assert.equal(acoesAuditadas(repositorio).some((acao) => ACOES_DA_CLINICA.includes(acao)), false,
+    'o agente não pode acender métrica nem alerta da Serena');
 });
 
 test('agente desativado não gera nem entrega: fica aguardando a equipe, com auditoria sem texto', async () => {
@@ -160,7 +179,8 @@ test('agente desativado não gera nem entrega: fica aguardando a equipe, com aud
   assert.equal(resultado.motivo, 'agente_desativado');
   assert.equal(motor.chamadas.gerarResposta.length, 0);
   assert.equal(entregas.length, 0);
-  assert.deepEqual(repositorio.estado.auditoria[0].detalhe, { motivo: 'agente_desativado', escopo: 'agente', agente_id: 7 });
+  assert.equal(repositorio.estado.auditoria[0].acao, 'agente_automacao_silenciada');
+  assert.deepEqual(repositorio.estado.auditoria[0].detalhe, { motivo: 'agente_desativado', agente_id: 7 });
 });
 
 test('rajada: o trabalho de uma mensagem que já tem outra mais nova não responde', async () => {
@@ -174,22 +194,48 @@ test('rajada: o trabalho de uma mensagem que já tem outra mais nova não respon
   assert.equal(entregas.length, 0);
 });
 
-test('retentativa reaproveita a resposta gravada e só entrega o que falta, sem nova chamada de IA', async () => {
+test('retomada: refaz a geração pela MESMA chave e só entrega a parte gravada que não saiu', async () => {
   const gravada = mensagem(9, {
-    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Olá', id_externo: 'agente:7:resposta:50:1', entregue_em: null,
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Olá! AHU!', id_externo: 'agente:7:resposta:50:1', entregue_em: null,
   });
-  const { fluxo, motor, entregas } = montar({ repositorio: criarRepositorioFalso({ mensagens: [ENTRADA, gravada] }) });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA, gravada] });
+  const { fluxo, motor, entregas } = montar({ repositorio });
 
   const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
 
   assert.equal(resultado.duplicada, true);
-  assert.equal(motor.chamadas.gerarResposta.length, 0);
+  assert.equal(motor.chamadas.gerarResposta.length, 1);
+  assert.equal(motor.chamadas.gerarResposta[0].chaveIdempotencia, 'agente:7:resposta:50:1',
+    'mesma chave: o gateway devolve a resposta já gerada, sem nova cobrança');
   assert.deepEqual(entregas.map((item) => item.mensagemId), [9]);
+  assert.equal(repositorio.estado.mensagens.filter((item) => item.autor_tipo === 'automacao').length, 1,
+    'nenhuma mensagem nova gravada');
 });
 
-test('retentativa com entrega incerta não reenvia e sinaliza incerteza para a outbox', async () => {
+test('retomada (achado ALTO 1): parte entregue fica, a que faltou sai e a transferência pedida é concluída', async () => {
+  const primeira = mensagem(9, {
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Parte um', id_externo: 'agente:7:resposta:50:1',
+    entregue_em: '2026-09-10T12:00:05.000Z',
+  });
+  const motor = criarMotorFalso({
+    resposta: { partes: ['Parte um', 'Parte dois'], transferir: true, motivo: 'situação sensível' },
+  });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA, primeira] });
+  const { fluxo, entregas } = montar({ repositorio, motor });
+
+  const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
+
+  assert.equal(resultado.acao, 'respondida_e_transferida');
+  assert.equal(entregas.length, 1, 'a parte já entregue não é reenviada');
+  assert.equal(entregas[0].texto, 'Parte dois');
+  assert.ok(repositorio.estado.mensagens.some((item) => item.id_externo === 'agente:7:resposta:50:1:p2'));
+  assert.equal(repositorio.estado.conversas.get(50).assumida_por_humano, true, 'a transferência não se perde na retentativa');
+  assert.ok(acoesAuditadas(repositorio).includes('transferida_para_humano'));
+});
+
+test('retomada com entrega incerta não reenvia e sinaliza incerteza para a outbox', async () => {
   const incerta = mensagem(9, {
-    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Olá', id_externo: 'agente:7:resposta:50:1', entrega_indeterminada: true,
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Olá! AHU!', id_externo: 'agente:7:resposta:50:1', entrega_indeterminada: true,
   });
   const { fluxo, entregas } = montar({ repositorio: criarRepositorioFalso({ mensagens: [ENTRADA, incerta] }) });
 
@@ -197,6 +243,21 @@ test('retentativa com entrega incerta não reenvia e sinaliza incerteza para a o
 
   assert.equal(resultado.entregaIncerta, true);
   assert.equal(entregas.length, 0);
+});
+
+test('retomada não reavalia o limite de interações: conclui a resposta já autorizada', async () => {
+  const agente = { ...AGENTE, configuracoes: { ...AGENTE.configuracoes, limite_interacoes: 1 } };
+  const gravada = mensagem(9, {
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Olá! AHU!', id_externo: 'agente:7:resposta:50:1',
+  });
+  const repositorio = criarRepositorioFalso({ agente, mensagens: [ENTRADA, gravada] });
+  const { fluxo, entregas } = montar({ repositorio });
+
+  const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
+
+  assert.equal(resultado.acao, 'respondida_pela_automacao');
+  assert.equal(entregas.length, 1);
+  assert.equal(repositorio.estado.conversas.get(50).assumida_por_humano, false);
 });
 
 test('limite de interações atingido: transfere para a equipe com resumo privado, sem gerar resposta', async () => {
@@ -250,14 +311,16 @@ test('o agente pede transferência: entrega a resposta e depois passa para a equ
   assert.equal(JSON.stringify(auditoria.detalhe).includes('cliente pediu humano'), false, 'motivo em prosa nunca vai para a auditoria');
 });
 
-test('falha do motor escala para a equipe; resposta vazia também', async () => {
+test('falha do motor e resposta vazia escalam para a equipe com o nome de auditoria do agente', async () => {
   const falha = montar({
     repositorio: criarRepositorioFalso({ mensagens: [ENTRADA] }),
     motor: criarMotorFalso({ lanca: Object.assign(new Error('timeout'), { codigo: 'ia_timeout' }) }),
   });
   const resultado = await falha.fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
   assert.equal(resultado.acao, 'escalonada_por_falha');
-  assert.deepEqual(falha.escalonamentos, [{ conversaId: 50, motivo: 'falha_no_motor_do_agente' }]);
+  assert.deepEqual(falha.escalonamentos, [
+    { conversaId: 50, motivo: 'falha_no_motor_do_agente', opcoes: { acaoDeAuditoria: 'agente_escalonada' } },
+  ]);
 
   const vazio = montar({
     repositorio: criarRepositorioFalso({ mensagens: [ENTRADA] }),
@@ -265,7 +328,8 @@ test('falha do motor escala para a equipe; resposta vazia também', async () => 
   });
   const semResposta = await vazio.fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
   assert.equal(semResposta.acao, 'sem_resposta_do_agente');
-  assert.deepEqual(vazio.escalonamentos, [{ conversaId: 50, motivo: 'motor_ia_sem_resposta' }]);
+  assert.equal(vazio.escalonamentos[0].motivo, 'motor_ia_sem_resposta');
+  assert.ok(acoesAuditadas(vazio.repositorio).includes('agente_sem_resposta'));
 });
 
 test('entrega que falha escala e propaga a incerteza; controle mudado aborta sem escalar aqui', async () => {
@@ -276,7 +340,10 @@ test('entrega que falha escala e propaga a incerteza; controle mudado aborta sem
   const resultado = await incerta.fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
   assert.equal(resultado.acao, 'escalonada_por_falha_entrega');
   assert.equal(resultado.entregaIncerta, true);
-  assert.deepEqual(incerta.escalonamentos, [{ conversaId: 50, motivo: 'falha_na_entrega_da_automacao' }]);
+  assert.equal(incerta.escalonamentos[0].motivo, 'falha_na_entrega_da_automacao');
+  assert.ok(acoesAuditadas(incerta.repositorio).includes('agente_resposta_nao_entregue'));
+  assert.equal(acoesAuditadas(incerta.repositorio).includes('resposta_nao_entregue'), false,
+    'falha do agente não acende o alerta crítico da Serena');
 
   const abortada = montar({
     repositorio: criarRepositorioFalso({ mensagens: [ENTRADA] }),
@@ -312,6 +379,17 @@ test('dono do canal: busca inclui canal inativo; sem instância nem consulta o r
   assert.deepEqual(repositorio.estado.buscasDeCanal[0].opcoes, { incluirInativos: true });
 });
 
+test('instância sem dono só é decidida com a lista da clínica configurada (e sem diferenciar maiúsculas)', () => {
+  const semLista = montar();
+  assert.equal(semLista.fluxo.instanciaSemDono('qualquer'), false, 'sem lista, "não sei" — nunca calar a clínica');
+
+  const comLista = montar({ instanciasDaClinica: ['Clinica', ' clinica-2 '] });
+  assert.equal(comLista.fluxo.instanciaSemDono('clinica'), false);
+  assert.equal(comLista.fluxo.instanciaSemDono('CLINICA-2'), false);
+  assert.equal(comLista.fluxo.instanciaSemDono('alpins'), true);
+  assert.equal(comLista.fluxo.instanciaSemDono(null), false);
+});
+
 test('instância de envio: só canal ativo do agente; canal desligado não envia por nenhuma instância', async () => {
   const { fluxo } = montar();
   assert.equal(await fluxo.instanciaDeEnvio(conversaBase()), 'alpins');
@@ -329,6 +407,17 @@ test('atraso de resposta vem de tempo_resposta_segundos; zero não atrasa', () =
   const { fluxo } = montar({ agora });
   assert.equal(fluxo.atrasoDeResposta(AGENTE), '2026-09-10T12:00:10.000Z');
   assert.equal(fluxo.atrasoDeResposta({ ...AGENTE, configuracoes: { tempo_resposta_segundos: 0 } }), null);
+});
+
+test('finalizar é idempotente: duas chamadas (duas cópias do worker) geram UM aviso e UMA auditoria', async () => {
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA] });
+  const { fluxo } = montar({ repositorio });
+
+  assert.equal(await fluxo.finalizar(conversaBase(), AGENTE, 'inatividade', { apos_minutos: 10 }), true);
+  assert.equal(await fluxo.finalizar(conversaBase(), AGENTE, 'inatividade', { apos_minutos: 10 }), false);
+
+  assert.equal(repositorio.estado.mensagens.filter((item) => item.privada).length, 1);
+  assert.equal(acoesAuditadas(repositorio).filter((acao) => acao === 'finalizada_por_inatividade').length, 1);
 });
 
 test('inatividade: finaliza depois do prazo contado da última resposta do agente', async () => {
@@ -390,4 +479,40 @@ test('inatividade: a equipe escreveu depois do cliente — o agente não age', a
   const resumo = await fluxo.processarInatividade();
   assert.equal(resumo.finalizadas, 0);
   assert.equal(repositorio.estado.conversas.get(50).status, 'aberta');
+});
+
+test('inatividade (achado MÉDIO 3): o cursor avança e nenhuma conversa fica para sempre fora da varredura', async () => {
+  // Conversas 1 e 2: resposta recente, sem ação vencida (ocupariam o topo para
+  // sempre). Conversa 3: prazo vencido — precisa ser alcançada.
+  const conversas = [1, 2, 3].map((id) => conversaBase({ id }));
+  const mensagensDeTodas = [1, 2, 3].flatMap((id) => [
+    { ...ENTRADA, id: id * 10, conversa_id: id },
+    mensagem(id * 10 + 1, {
+      conversa_id: id, direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Olá',
+      id_externo: `agente:7:resposta:${id}:${id * 10}`,
+      criado_em: id === 3 ? '2026-09-10T11:00:00.000Z' : '2026-09-10T12:55:00.000Z',
+    }),
+  ]);
+  const repositorio = criarRepositorioFalso({ conversas, mensagens: mensagensDeTodas });
+  const { fluxo } = montar({ repositorio, agora: () => new Date('2026-09-10T13:00:00.000Z') });
+
+  const primeira = await fluxo.processarInatividade({ limite: 2 });
+  assert.deepEqual([primeira.verificadas, primeira.finalizadas], [2, 0]);
+
+  const segunda = await fluxo.processarInatividade({ limite: 2 });
+  assert.deepEqual([segunda.verificadas, segunda.finalizadas], [1, 1], 'a passada seguinte continua de onde parou');
+  assert.equal(repositorio.estado.conversas.get(3).status, 'resolvida');
+
+  const terceira = await fluxo.processarInatividade({ limite: 2 });
+  assert.equal(terceira.verificadas, 2, 'chegou ao fim: recomeça do início');
+});
+
+test('inatividade: teto de tempo adia o resto da lista em vez de prender a passada', async () => {
+  const conversas = [1, 2].map((id) => conversaBase({ id }));
+  const repositorio = criarRepositorioFalso({ conversas });
+  const { fluxo } = montar({ repositorio });
+
+  const resumo = await fluxo.processarInatividade({ limite: 10, orcamentoMs: -1 });
+  assert.equal(resumo.verificadas, 0);
+  assert.equal(resumo.adiadas, 2);
 });
