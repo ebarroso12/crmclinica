@@ -516,3 +516,56 @@ test('inatividade: teto de tempo adia o resto da lista em vez de prender a passa
   assert.equal(resumo.verificadas, 0);
   assert.equal(resumo.adiadas, 2);
 });
+
+test('achado N1 da reauditoria: outro worker retomou o trabalho — para antes da próxima entrega, sem transferir', async () => {
+  const motor = criarMotorFalso({ resposta: { partes: ['Parte um', 'Parte dois'], transferir: true, motivo: 'x' } });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA] });
+  const { fluxo, entregas } = montar({ repositorio, motor });
+  let conferencias = 0;
+
+  const resultado = await fluxo.responder(conversaBase(), {
+    mensagemEntradaId: 1,
+    renovarPosse: async () => { conferencias += 1; return conferencias === 1; },
+  });
+
+  assert.equal(resultado.possePerdida, true);
+  assert.equal(conferencias, 2, 'a posse é conferida antes de cada parte');
+  assert.deepEqual(entregas.map((item) => item.texto), ['Parte um'], 'quem perdeu a posse não entrega a parte seguinte');
+  assert.equal(repositorio.estado.conversas.get(50).assumida_por_humano, false, 'nem transfere: quem retomou conclui');
+});
+
+test('achado N2 da reauditoria: retomada com texto regerado diferente do já gravado para e escala, sem misturar gerações', async () => {
+  const gravada = mensagem(9, {
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Texto da primeira geração', id_externo: 'agente:7:resposta:50:1',
+    entregue_em: '2026-09-10T12:00:05.000Z',
+  });
+  const motor = criarMotorFalso({ resposta: { partes: ['Texto de outra geração', 'Outra parte'], transferir: false } });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA, gravada] });
+  const { fluxo, entregas, escalonamentos } = montar({ repositorio, motor });
+
+  const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
+
+  assert.equal(resultado.motivo, 'retomada_divergente');
+  assert.equal(entregas.length, 0, 'nenhum pedaço da segunda geração chega ao cliente');
+  assert.equal(escalonamentos[0].motivo, 'retomada_divergente');
+  assert.ok(acoesAuditadas(repositorio).includes('agente_retomada_divergente'));
+});
+
+test('achado N3 da reauditoria: mensagem nova do cliente não descarta a retomada — parte e transferência pendentes saem', async () => {
+  const primeira = mensagem(9, {
+    direcao: 'saida', autor_tipo: 'automacao', conteudo: 'Parte um', id_externo: 'agente:7:resposta:50:1',
+    entregue_em: '2026-09-10T12:00:05.000Z',
+  });
+  const nova = mensagem(20, { direcao: 'entrada', autor_tipo: 'contato', conteudo: 'Oi, estou aqui!' });
+  const motor = criarMotorFalso({
+    resposta: { partes: ['Parte um', 'Parte dois'], transferir: true, motivo: 'situação sensível' },
+  });
+  const repositorio = criarRepositorioFalso({ mensagens: [ENTRADA, primeira, nova] });
+  const { fluxo, entregas } = montar({ repositorio, motor });
+
+  const resultado = await fluxo.responder(conversaBase(), { mensagemEntradaId: 1 });
+
+  assert.equal(resultado.acao, 'respondida_e_transferida');
+  assert.deepEqual(entregas.map((item) => item.texto), ['Parte dois']);
+  assert.equal(repositorio.estado.conversas.get(50).assumida_por_humano, true);
+});

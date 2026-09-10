@@ -181,7 +181,7 @@ function criarFluxoDeAgentes({
    *     duplicada ali é outra cópia do worker no meio da mesma ação — quem
    *     gravou primeiro entrega, esta desiste.
    */
-  async function gravarEEntregar(conversa, agente, partes, chave, { retomar }) {
+  async function gravarEEntregar(conversa, agente, partes, chave, { retomar, renovarPosse = null }) {
     const mensagemIds = [];
     let todasEnviadas = true;
 
@@ -196,6 +196,19 @@ function criarFluxoDeAgentes({
 
       if (duplicada) {
         if (!retomar) return { parada: null, mensagemIds, todasEnviadas: false, concorrente: true };
+        // Achado N2 da reauditoria: sem o resultado gravado no gateway (falha ao
+        // registrar a telemetria), a "mesma" chave gera texto NOVO — e o cliente
+        // receberia pedaços de duas respostas diferentes. Texto divergente: para e
+        // passa à equipe. Cobre também configuração mudada entre as tentativas.
+        if (mensagem.conteudo !== parte) {
+          await auditar(conversa.id, 'agente_retomada_divergente', { mensagem_id: mensagem.id, parte: indice + 1 });
+          await escalonarAgente(conversa.id, 'retomada_divergente');
+          return {
+            parada: { acao: 'escalonada_para_equipe', conversa_id: conversa.id, motivo: 'retomada_divergente' },
+            mensagemIds,
+            todasEnviadas: false,
+          };
+        }
         if (mensagem.entregue_em) {
           mensagemIds.push(mensagem.id);
           continue;
@@ -217,6 +230,18 @@ function criarFluxoDeAgentes({
         emissor?.publicarMensagem(conversa.id, mensagem);
       }
 
+      // Achado N1 da reauditoria: o lease da outbox só protege pelo tempo. Se
+      // este worker demorou além dele e outro retomou o trabalho, entregar agora
+      // duplicaria a mensagem. `renovarPosse` confere que o trabalho ainda é
+      // deste worker e renova o prazo — um trabalho vivo, com várias partes e
+      // chamadas de IA lentas, não perde a posse no meio.
+      if (renovarPosse && !(await renovarPosse())) {
+        return {
+          parada: { acao: 'posse_perdida', conversa_id: conversa.id, possePerdida: true },
+          mensagemIds,
+          todasEnviadas: false,
+        };
+      }
       const { enviada, parada } = await entregarParte(conversa, mensagem);
       if (parada) return { parada, mensagemIds, todasEnviadas: false };
       if (!enviada) todasEnviadas = false;
@@ -292,7 +317,7 @@ function criarFluxoDeAgentes({
   }
 
   /** Responde a um inbound de uma conversa de agente. Mesmos desfechos do caminho da Serena. */
-  async function responder(conversa, { mensagemEntradaId = null } = {}) {
+  async function responder(conversa, { mensagemEntradaId = null, renovarPosse = null } = {}) {
     const conversaId = conversa.id;
 
     if (!agentes) {
@@ -315,15 +340,18 @@ function criarFluxoDeAgentes({
     const entradaMaisNova = mensagens.filter((mensagem) => mensagem.direcao === 'entrada').at(-1) ?? null;
     const entradaId = mensagemEntradaId ?? entradaMaisNova?.id ?? 0;
 
-    if (mensagemEntradaId && entradaMaisNova && Number(entradaMaisNova.id) > Number(mensagemEntradaId)) {
+    const chave = `agente:${agente.id}:resposta:${conversaId}:${entradaId}`;
+    const retomada = mensagens.some((mensagem) => mensagem.id_externo === chave
+      || String(mensagem.id_externo ?? '').startsWith(`${chave}:p`));
+
+    // Achado N3 da reauditoria: resposta já começada NÃO é agrupada. Agrupar
+    // aqui descartava as partes que faltavam e a transferência pedida (inclusive
+    // por situação sensível) só porque o cliente escreveu de novo no meio.
+    if (!retomada && mensagemEntradaId && entradaMaisNova && Number(entradaMaisNova.id) > Number(mensagemEntradaId)) {
       return {
         acao: 'agrupada_com_mensagem_posterior', conversa_id: conversaId, mensagem_entrada_id: Number(mensagemEntradaId),
       };
     }
-
-    const chave = `agente:${agente.id}:resposta:${conversaId}:${entradaId}`;
-    const retomada = mensagens.some((mensagem) => mensagem.id_externo === chave
-      || String(mensagem.id_externo ?? '').startsWith(`${chave}:p`));
 
     // Na retomada o limite não é reavaliado: a resposta que está sendo
     // concluída já foi autorizada, e as partes dela já contam no total.
@@ -365,7 +393,7 @@ function criarFluxoDeAgentes({
       return { acao: 'sem_resposta_do_agente', conversa_id: conversaId, motivo: 'motor_ia_sem_resposta' };
     }
 
-    const { parada, mensagemIds, todasEnviadas } = await gravarEEntregar(conversa, agente, partes, chave, { retomar: true });
+    const { parada, mensagemIds, todasEnviadas } = await gravarEEntregar(conversa, agente, partes, chave, { retomar: true, renovarPosse });
     if (parada) return parada;
 
     if (pediuTransferencia) {

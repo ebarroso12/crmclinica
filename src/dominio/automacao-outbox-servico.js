@@ -125,7 +125,7 @@ function criarServicoDeOutbox({
     return idadeMs > idadeMaximaRespostaMs;
   }
 
-  async function processarUm(trabalho) {
+  async function processarUm(trabalho, { worker = null } = {}) {
     if (trabalhoExpirado(trabalho)) {
       await atendimento.escalonar(trabalho.conversa_id, 'outbox_expirado_sem_resposta_automatica').catch((erroDeEscalonamento) => {
         console.error(`[outbox] falha ao escalonar trabalho expirado (${trabalho.id}): ${erroDeEscalonamento.message}`);
@@ -145,9 +145,22 @@ function criarServicoDeOutbox({
     try {
       resultado = await atendimento.responderSePossivel(trabalho.conversa_id, {
         mensagemEntradaId: trabalho.mensagem_entrada_id,
+        // Conferência de posse antes de cada entrega (usada só pelo fluxo dos
+        // agentes, ver src/dominio/agentes/fluxo.js): renovar o lease prova que o
+        // trabalho ainda é deste worker e estende o prazo de um trabalho vivo.
+        ...(worker && repositorio.renovarReivindicacaoDeOutbox ? {
+          renovarPosse: () => repositorio.renovarReivindicacaoDeOutbox(trabalho.id, { worker, agora: agora().toISOString() }),
+        } : {}),
       });
     } catch (excecao) {
       erro = excecao;
+    }
+
+    // O fluxo parou porque outro worker retomou o trabalho no meio: concluir,
+    // reagendar ou escalonar aqui pisaria no trabalho que agora é dele.
+    if (!erro && resultado?.possePerdida) {
+      await auditar('outbox_lease_perdido', trabalho.id, { conversa_id: trabalho.conversa_id, worker, durante: 'processamento' });
+      return { id: trabalho.id, status: 'lease_perdido', acao: resultado.acao };
     }
 
     const desfecho = decidirDesfecho(resultado, erro);
@@ -243,7 +256,7 @@ function criarServicoDeOutbox({
           continue;
         }
       }
-      resultados.push(await processarUm(trabalho));
+      resultados.push(await processarUm(trabalho, { worker }));
     }
 
     return {

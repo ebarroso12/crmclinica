@@ -240,14 +240,29 @@ O fluxo do agente audita com nomes próprios — `agente_escalonada`,
 `agente_resposta_nao_entregue`, `agente_sem_resposta` — e a fila de SLA
 (`listarConversasAguardando`) ignora conversa de agente. Resíduo conhecido: a
 outbox, ao expirar ou esgotar um trabalho, escala pelo `escalonar` padrão
-(`escalonada`), porque não sabe de quem é a conversa.
+(`escalonada`), porque não sabe de quem é a conversa. Também não filtram agente,
+e ficam como resíduo documentado: `vw_primeira_resposta` e os picos de
+atendimento (db/026 e `metricasPicos`), e o alerta de trabalhos mortos/incertos da
+outbox no centro operacional. A equipe assumindo ou falhando ao responder numa
+conversa de agente audita `agente_assumida_por_humano` /
+`agente_resposta_nao_entregue`.
 
 ## Ações de inatividade no worker
 
 A varredura roda no `bin/worker-outbox.js` em relógio PRÓPRIO (uma passada
 por minuto, até 20 conversas, teto de 20 s), nunca dentro do ciclo da fila: uma
 ação "interagir" chama a IA, e com o provedor lento seguraria o lote da
-clínica. Cursor por id de conversa: nenhuma conversa fica para sempre fora.
+clínica. Cursor por id de conversa: nenhuma conversa fica para sempre fora. O teto
+é conferido ENTRE conversas: uma conversa cuja IA percorre o catálogo inteiro pode
+passar dele (até ~30 s por modelo). Dimensione `TimeoutStopSec` da unit do worker
+com folga (ex.: 300 s); matar no meio deixa a mensagem de "interagir" gravada e
+não enviada — nunca duplicada.
+
+## Posse do trabalho da outbox
+
+O lease da outbox (5 min) protege pelo tempo. O fluxo do agente confere e renova
+a posse antes de cada parte entregue (`renovarPosse`); se outro worker já retomou,
+para sem entregar e a outbox não conclui o trabalho (`outbox_lease_perdido`).
 
 ## Colocar um agente no ar — nesta ordem
 
@@ -257,6 +272,11 @@ Cada passo abaixo que toca produção exige autorização própria.
    (tabelas, RLS, policies, grants) usando a credencial da aplicação.
 2. Definir `EVOLUTION_INSTANCIAS_CLINICA` com o nome **exato** da instância da
    clínica, na Vercel **e** no `.env` do VPS (são cópias separadas).
+   **Nome errado cala a Serena para todo paciente** que chega pela Evolution:
+   cada mensagem vira `instancia_sem_agente` e vai para a equipe. O valor de
+   `EVOLUTION_INSTANCE` entra na lista sozinho; mesmo assim, logo depois, mande
+   uma mensagem de teste para o número da clínica e confira que a Serena responde
+   e que não surge `instancia_sem_dono` no `audit_log`.
 3. Merge e deploy.
 4. Cadastrar o agente e o canal (`npm run semear-agentes -- --arquivo=… --aplicar`
    ou pela tela), ainda `desativado`.

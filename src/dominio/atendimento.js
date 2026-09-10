@@ -200,6 +200,9 @@ function criarAtendimento({
         acao: 'instancia_sem_dono',
         detalhe: { canal: evento.canal, instancia: evento.instancia },
       });
+      // Visível no log do processo, além da auditoria: nome errado na lista da
+      // clínica transformaria TODO paciente em "instância sem dono".
+      console.warn(`[atendimento] instância "${evento.instancia}" não é da clínica nem de agente: conversa ${conversa.id} foi para a equipe sem resposta automática`);
       await escalonar(conversa.id, 'instancia_sem_agente');
       return { acao: 'instancia_sem_agente', conversa_id: conversa.id, mensagem_id: mensagem.id };
     }
@@ -326,12 +329,13 @@ function criarAtendimento({
    * inbound chegar entre a falha e a retentativa e faria o retry parecer um
    * evento novo.
    */
-  async function responderSePossivel(conversaId, { mensagemEntradaId = null } = {}) {
+  // `renovarPosse` (opcional, vem da outbox): só o fluxo do agente usa — ver fluxo.js.
+  async function responderSePossivel(conversaId, { mensagemEntradaId = null, renovarPosse = null } = {}) {
     const conversa = await repositorio.obterConversa(conversaId);
 
     // Conversa de agente nunca passa pela Serena nem pelo OpenClaw, nem pela
     // lista de bloqueio da secretária da clínica (docs/AGENTES.md).
-    if (conversa?.agente_id) return fluxoDeAgentes.responder(conversa, { mensagemEntradaId });
+    if (conversa?.agente_id) return fluxoDeAgentes.responder(conversa, { mensagemEntradaId, renovarPosse });
 
     // Contato bloqueado: intercepta ANTES de qualquer decisão de automação
     // normal, sempre — cada mensagem que chega dele recebe a mensagem fixa,
@@ -733,7 +737,9 @@ function criarAtendimento({
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
-      acao: 'assumida_por_humano',
+      // Conversa de agente com nome próprio: `assumida_por_humano` conta nos
+      // handoffs da Serena (metricas.js e vw_serena_por_dia).
+      acao: conversa.agente_id ? 'agente_assumida_por_humano' : 'assumida_por_humano',
       detalhe: { usuario_id: usuarioId },
       usuarioId,
     });
@@ -822,7 +828,9 @@ function criarAtendimento({
         await repositorio.registrarAuditoria({
           entidade: 'conversa',
           entidadeId: conversaId,
-          acao: 'resposta_nao_entregue',
+          // `resposta_nao_entregue` acende o alerta crítico da Serena no centro
+          // operacional: falha numa conversa de agente audita com nome próprio.
+          acao: conversa.agente_id ? 'agente_resposta_nao_entregue' : 'resposta_nao_entregue',
           detalhe: { mensagem_id: mensagem.id, motivo: entrega.motivo },
           usuarioId,
         }).catch(() => {});

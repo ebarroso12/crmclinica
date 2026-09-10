@@ -279,3 +279,27 @@ test('eco de envio feito por fora no número do agente vai para a conversa do ag
   assert.equal(eco.conversa_id, conversaDoAgente);
   assert.equal((await repositorio.obterConversa(eco.conversa_id)).agente_id, alpins.id);
 });
+
+test('equipe numa conversa de agente: assumir e falha de entrega auditam com nome do agente — alerta e métricas da clínica intactos', async () => {
+  const { repositorio, atendimento, auditoria } = montar();
+  await criarAlpins(repositorio, { status: 'desativado', canalAtivo: false });
+  const { conversa_id: conversaId } = await atendimento.receberMensagem(evento('A1', { instancia: 'alpins' }));
+
+  const resposta = await atendimento.responderComoEquipe(conversaId, 'Oi, aqui é a equipe da loja.', { autorNome: 'Equipe' });
+
+  assert.equal(resposta.enviada, false, 'canal do agente desligado: nada sai');
+  const acoes = auditoria.map((item) => item.acao);
+  assert.ok(acoes.includes('agente_assumida_por_humano'));
+  assert.ok(acoes.includes('agente_resposta_nao_entregue'));
+  assert.equal(acoes.includes('assumida_por_humano'), false, 'não conta nos handoffs da Serena');
+  assert.equal(acoes.includes('resposta_nao_entregue'), false, 'não acende o alerta crítico da Serena');
+});
+
+test('na clínica, assumir continua auditando exatamente como antes', async () => {
+  const { atendimento, auditoria } = montar();
+
+  const { conversa_id: conversaId } = await atendimento.receberMensagem(evento('C1', { texto: 'Oi clínica' }));
+  await atendimento.assumir(conversaId, null);
+
+  assert.ok(auditoria.map((item) => item.acao).includes('assumida_por_humano'));
+});
