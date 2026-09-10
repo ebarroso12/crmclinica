@@ -160,6 +160,7 @@ async function main() {
     canal: canalDeConversas,
     emissor: emissorDeConversas,
     agentes: motorDeAgentes,
+    instanciasDaClinica: configuracao.evolution.instanciasDaClinica,
   });
 
   const outbox = criarServicoDeOutbox({
@@ -245,23 +246,24 @@ async function main() {
     return;
   }
 
-  // Ações de inatividade dos agentes. Uma passada por minuto basta (o menor
-  // prazo configurável é 1 minuto), e falha aqui nunca derruba a fila. Usa a
-  // mesma marca `rodando` do lote: o desligamento gracioso espera as duas.
-  let ultimaVarreduraMs = 0;
+  // Ações de inatividade dos agentes em relógio PRÓPRIO, nunca dentro do
+  // ciclo da fila: "interagir" chama a IA e, com provedor lento, seguraria o
+  // lote da clínica e o heartbeat por minutos — e trabalho parado 30 min é
+  // escalonado em massa como expirado (achado ALTO 2 da auditoria). Uma
+  // passada por minuto, com teto de tempo; falha aqui nunca derruba a fila.
+  let varrendoInatividade = false;
   async function varrerInatividadeDeAgentes() {
-    if (rodando || encerrando || Date.now() - ultimaVarreduraMs < 60_000) return;
-    ultimaVarreduraMs = Date.now();
-    rodando = true;
+    if (varrendoInatividade || encerrando) return;
+    varrendoInatividade = true;
     try {
-      const resumo = await atendimento.processarInatividadeDeAgentes({ limite: 50 });
-      if (resumo.finalizadas || resumo.interacoes || resumo.falhas) {
+      const resumo = await atendimento.processarInatividadeDeAgentes({ limite: 20, orcamentoMs: 20_000 });
+      if (resumo.finalizadas || resumo.interacoes || resumo.falhas || resumo.adiadas) {
         console.log('[outbox] inatividade de agentes', JSON.stringify(resumo));
       }
     } catch (erro) {
       console.error(`[outbox] falha na varredura de inatividade de agentes: ${erro.message}`);
     } finally {
-      rodando = false;
+      varrendoInatividade = false;
     }
   }
 
@@ -272,13 +274,13 @@ async function main() {
     try {
       const resultado = await umLote();
       await marcarHeartbeat(resultado);
-      await varrerInatividadeDeAgentes();
     } finally {
       cicloEmAndamento = false;
     }
   };
 
   const relogio = setInterval(cicloCompleto, intervaloMs);
+  const relogioDeInatividade = setInterval(varrerInatividadeDeAgentes, 60_000);
   await cicloCompleto();
 
   const encerrar = async (sinal) => {
@@ -286,10 +288,11 @@ async function main() {
     encerrando = true;
     console.log(`[outbox] ${sinal}: encerrando depois do lote corrente…`);
     clearInterval(relogio);
+    clearInterval(relogioDeInatividade);
 
     // Espera o lote em andamento. Matar no meio deixaria trabalhos em
     // 'processando' — recuperáveis, mas só depois do lease expirar.
-    while (rodando) await new Promise((resolve) => setTimeout(resolve, 100));
+    while (rodando || varrendoInatividade) await new Promise((resolve) => setTimeout(resolve, 100));
 
     await encerrarPool();
     console.log('[outbox] encerrado');

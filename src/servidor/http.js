@@ -222,6 +222,7 @@ function criarAplicacao(dependencias = {}) {
       qualificacaoIa,
       storage: clienteStorage,
       agentes: motorDeAgentes,
+      instanciasDaClinica: configuracao.evolution.instanciasDaClinica,
     });
 
   // Instagram: regras de palavra-gatilho (comentário -> DM + resposta pública).

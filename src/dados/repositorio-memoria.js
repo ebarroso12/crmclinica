@@ -944,7 +944,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     },
 
     async obterAgentePorCanal(canal, instancia, { incluirInativos = false } = {}) {
-      const registro = agenteCanais.find((item) => item.canal === canal && item.instancia === instancia
+      const registro = agenteCanais.find((item) => item.canal === canal && String(item.instancia).toLowerCase() === String(instancia ?? '').toLowerCase()
         && (incluirInativos || item.ativo === true));
       return registro ? montarAgenteEmMemoria(agentes.get(registro.agente_id)) : null;
     },
@@ -1111,10 +1111,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         && mensagem.autor_tipo === 'automacao' && !mensagem.privada).length;
     },
 
-    async listarConversasDeAgenteParaInatividade({ limite = 50 } = {}) {
+    async listarConversasDeAgenteParaInatividade({ limite = 50, aposConversaId = 0 } = {}) {
       const itens = [];
       for (const conversa of conversas.values()) {
         if ((conversa.agente_id ?? null) === null) continue;
+        if (conversa.id <= (Number(aposConversaId) || 0)) continue;
+        // Paridade com o SQL: só agente ativo com ação de inatividade configurada.
+        const agenteDaConversa = agentes.get(Number(conversa.agente_id));
+        if (!agenteDaConversa || agenteDaConversa.status !== 'ativo') continue;
+        if ((montarAgenteEmMemoria(agenteDaConversa).acoes_inatividade ?? []).length === 0) continue;
         if (conversa.status === 'resolvida' || conversa.assumida_por_humano === true) continue;
         if (conversa.atribuido_a !== null && conversa.atribuido_a !== undefined) continue;
 
@@ -1132,7 +1137,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         });
       }
       return itens
-        .sort((a, b) => new Date(a.ultima_mensagem_em) - new Date(b.ultima_mensagem_em) || a.conversa_id - b.conversa_id)
+        .sort((a, b) => a.conversa_id - b.conversa_id)
         .slice(0, Number(limite));
     },
 
@@ -1404,7 +1409,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
 
     async listarConversasAguardando({ limite = 100 } = {}) {
       return [...conversas.values()]
-        .filter((conversa) => conversa.aguardando_resposta_desde && conversa.status !== 'resolvida')
+        .filter((conversa) => conversa.aguardando_resposta_desde && conversa.status !== 'resolvida'
+          && (conversa.agente_id ?? null) === null)
         .sort((a, b) => new Date(a.aguardando_resposta_desde) - new Date(b.aguardando_resposta_desde))
         .slice(0, limite)
         .map((conversa) => ({

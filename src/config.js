@@ -196,6 +196,15 @@ function carregarConfiguracao(ambiente = process.env) {
       apiUrl: urlValida(ambiente.EVOLUTION_API_URL),
       apiKey: texto(ambiente.EVOLUTION_API_KEY),
       instancia: texto(ambiente.EVOLUTION_INSTANCE) || 'clinica',
+      // Nomes das instâncias que são da CLÍNICA, exatamente como a Evolution os
+      // manda no webhook (sem diferenciar maiúsculas). Com a lista preenchida,
+      // mensagem de uma instância que não é da clínica nem de agente nenhum é
+      // gravada e passada à equipe, sem resposta automática — responder pela
+      // Serena sairia pelo número da clínica (docs/AGENTES.md). Vazia, nada muda:
+      // sem saber o nome real, tratar a própria clínica como estranha calaria o
+      // atendimento de pacientes.
+      instanciasDaClinica: texto(ambiente.EVOLUTION_INSTANCIAS_CLINICA)
+        .split(',').map((nome) => nome.trim()).filter(Boolean),
       timeoutMs: inteiro(ambiente.EVOLUTION_API_TIMEOUT_MS, 15000),
     },
     // Integração de Instagram (DM + comentário), em construção 23/08. Os

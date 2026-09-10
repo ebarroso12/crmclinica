@@ -81,6 +81,8 @@ function criarAtendimento({
   // Motor dos agentes configuráveis (src/dominio/agentes/motor.js), opcional.
   // Sem ele, conversa de agente escala para a equipe em vez de responder.
   agentes = null,
+  // Instâncias da Evolution que são da clínica (EVOLUTION_INSTANCIAS_CLINICA).
+  instanciasDaClinica = [],
 }) {
   // Quem opera a clínica não é atendido por ela. A lista sai de
   // `CRMCLINICA_NUMEROS_INTERNOS` + `CRMCLINICA_RESUMO_DESTINATARIOS` +
@@ -91,7 +93,7 @@ function criarAtendimento({
   // reaproveita a barreira final e o escalonamento daqui. `entregarAoPaciente`
   // e `escalonar` são declarações de função: já existem neste ponto.
   const fluxoDeAgentes = criarFluxoDeAgentes({
-    repositorio, agentes, emissor, entregar: entregarAoPaciente, escalonar,
+    repositorio, agentes, emissor, entregar: entregarAoPaciente, escalonar, instanciasDaClinica,
   });
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
@@ -127,7 +129,17 @@ function criarAtendimento({
     // só nesse caso. Instância sem dono cadastrado segue o caminho da clínica
     // exatamente como antes, inclusive quando o nome da instância padrão da
     // configuração não bate com o que a Evolution manda.
-    const agente = await fluxoDeAgentes.agenteDoCanal(evento.canal, evento.instancia ?? null);
+    //
+    // Só evento que o CRM despacha pode ser de agente: importação ("o agente
+    // do canal já respondeu") nunca vira resposta nova de ninguém.
+    const agente = evento.estrategia_ia === 'crm_despacha'
+      ? await fluxoDeAgentes.agenteDoCanal(evento.canal, evento.instancia ?? null)
+      : null;
+    // Instância que não é da clínica nem de agente nenhum (webhook ligado antes
+    // do cadastro, nome digitado diferente): grava e passa à equipe, sem
+    // resposta automática — a Serena responderia pelo número da clínica.
+    const instanciaSemDono = !agente && evento.estrategia_ia === 'crm_despacha'
+      && fluxoDeAgentes.instanciaSemDono(evento.instancia ?? null);
 
     // Administrador não é paciente: ele comanda a Serena e recebe os resumos.
     // A guarda existia desde sempre em `sincronia-conversas.js`, mas essa
@@ -181,6 +193,17 @@ function criarAtendimento({
 
     // Conversa de agente: lembretes de consulta, funil de leads e temperatura
     // são da clínica e ficam de fora (invariante 7 de docs/AGENTES.md).
+    if (instanciaSemDono) {
+      await repositorio.registrarAuditoria({
+        entidade: 'conversa',
+        entidadeId: conversa.id,
+        acao: 'instancia_sem_dono',
+        detalhe: { canal: evento.canal, instancia: evento.instancia },
+      });
+      await escalonar(conversa.id, 'instancia_sem_agente');
+      return { acao: 'instancia_sem_agente', conversa_id: conversa.id, mensagem_id: mensagem.id };
+    }
+
     if (agente) {
       if (despachoEmSegundoPlano) {
         const disponivelEm = fluxoDeAgentes.atrasoDeResposta(agente);
@@ -904,7 +927,11 @@ function criarAtendimento({
         // em silêncio, e a conversa segue do jeito que estava como se nada
         // tivesse acontecido.
         if (bloqueioDaBarreiraPrecisaEscalar(controle.motivo)) {
-          await escalonar(conversa.id, `barreira_final:${controle.motivo}`).catch((erro) => {
+          await escalonar(
+            conversa.id,
+            `barreira_final:${controle.motivo}`,
+            ...(conversa.agente_id ? [{ acaoDeAuditoria: 'agente_escalonada' }] : []),
+          ).catch((erro) => {
             console.error(`[atendimento] falha ao escalonar bloqueio da barreira final: ${erro.message}`);
           });
         }
@@ -1038,7 +1065,9 @@ function criarAtendimento({
   // equipe (mensagem de sistema + auditoria — nada se perde em silêncio),
   // só não desliga mais a automação: a próxima mensagem do paciente tenta de
   // novo, e se a causa raiz já foi corrigida, a conversa se resolve sozinha.
-  async function escalonar(conversaId, motivo) {
+  // `acaoDeAuditoria`: conversa de agente escala com nome próprio — métricas,
+  // view analítica e alerta da Serena contam `escalonada` (docs/AGENTES.md).
+  async function escalonar(conversaId, motivo, { acaoDeAuditoria = 'escalonada' } = {}) {
     await repositorio.atualizarConversa(conversaId, { status: 'aberta' });
     const { mensagem: avisoDeEscalonamento } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
@@ -1051,7 +1080,7 @@ function criarAtendimento({
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
-      acao: 'escalonada',
+      acao: acaoDeAuditoria,
       detalhe: { motivo },
     });
   }

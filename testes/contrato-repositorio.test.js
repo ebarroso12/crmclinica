@@ -1092,6 +1092,9 @@ for (const { nome, montar } of implementacoes) {
         dono.id,
       );
       assert.equal(await repositorio.obterAgentePorCanal('whatsapp', 'inst-sem-dono', { incluirInativos: true }), null);
+      // O nome que a Evolution manda pode vir com outra caixa do que foi cadastrado.
+      assert.equal((await repositorio.obterAgentePorCanal('whatsapp', 'CONTRATO-Inst-1')).id, dono.id,
+        'a busca do dono não diferencia maiúsculas');
       assert.equal(await repositorio.obterAgentePorCanal('instagram', 'contrato-inst-1'), null);
 
       await assert.rejects(
@@ -1159,7 +1162,11 @@ for (const { nome, montar } of implementacoes) {
     });
 
     await t.test('inatividade: só conversa de agente aberta, sem humano, cuja última mensagem visível é da automação', async () => {
+      // Só agente ativo com ação configurada entra na varredura (achado MÉDIO 3 da
+      // auditoria): os demais nunca agem e ocupavam o topo da lista para sempre.
       const agente = await criarAgenteDeTeste('contrato-ocioso');
+      await repositorio.atualizarAgente(agente.id, { status: 'ativo' });
+      await repositorio.definirAcoesDeInatividade(agente.id, [{ apos_minutos: 10, acao: 'finalizar', instrucao: null, ordem: 0 }]);
       const saida = (conversaId) => repositorio.registrarMensagem(conversaId, {
         direcao: 'saida', conteudo: 'alguma dúvida?', autor_tipo: 'automacao',
       });
@@ -1205,6 +1212,55 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(typeof item.ultima_mensagem_id, 'number');
       assert.equal(item.ultima_mensagem_autor, 'automacao');
       assert.ok(item.ultima_mensagem_em);
+    });
+
+    await t.test('inatividade: agente sem ação ou desligado fica fora, e o cursor pula o que já foi visto', async () => {
+      const saidaDaAutomacao = (conversaId) => repositorio.registrarMensagem(conversaId, {
+        direcao: 'saida', conteudo: 'posso ajudar em algo mais?', autor_tipo: 'automacao',
+      });
+
+      const semAcao = await criarAgenteDeTeste('contrato-sem-acao');
+      await repositorio.atualizarAgente(semAcao.id, { status: 'ativo' });
+      const desligado = await criarAgenteDeTeste('contrato-desligado');
+      await repositorio.definirAcoesDeInatividade(desligado.id, [{ apos_minutos: 5, acao: 'finalizar', instrucao: null, ordem: 0 }]);
+      const ativo = await criarAgenteDeTeste('contrato-com-acao');
+      await repositorio.atualizarAgente(ativo.id, { status: 'ativo' });
+      await repositorio.definirAcoesDeInatividade(ativo.id, [{ apos_minutos: 5, acao: 'finalizar', instrucao: null, ordem: 0 }]);
+
+      const doSemAcao = await conversaDoAgente(semAcao.id, '5516900001031');
+      await saidaDaAutomacao(doSemAcao.id);
+      const doDesligado = await conversaDoAgente(desligado.id, '5516900001032');
+      await saidaDaAutomacao(doDesligado.id);
+      const primeira = await conversaDoAgente(ativo.id, '5516900001033');
+      await saidaDaAutomacao(primeira.id);
+      const segunda = await conversaDoAgente(ativo.id, '5516900001034');
+      await saidaDaAutomacao(segunda.id);
+
+      const todas = (await repositorio.listarConversasDeAgenteParaInatividade({ limite: 1000 })).map((item) => item.conversa_id);
+      assert.ok(!todas.includes(doSemAcao.id), 'agente sem ação de inatividade nunca age: não ocupa a lista');
+      assert.ok(!todas.includes(doDesligado.id), 'agente desligado não age');
+      assert.ok(todas.includes(primeira.id) && todas.includes(segunda.id));
+      assert.deepEqual([...todas].sort((a, b) => a - b), todas, 'ordem por id de conversa, para o cursor funcionar');
+
+      const depoisDaPrimeira = (await repositorio.listarConversasDeAgenteParaInatividade({
+        limite: 1000, aposConversaId: primeira.id,
+      })).map((item) => item.conversa_id);
+      assert.ok(!depoisDaPrimeira.includes(primeira.id));
+      assert.ok(depoisDaPrimeira.includes(segunda.id));
+    });
+
+    await t.test('fila de SLA da clínica ignora conversa de agente', async () => {
+      const agente = await criarAgenteDeTeste('contrato-sla');
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001041', nome: 'SLA Duplo' });
+      const doAgente = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      for (const conversa of [doAgente, daClinica]) {
+        await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'alguém aí?', autor_tipo: 'contato' });
+      }
+
+      const aguardando = (await repositorio.listarConversasAguardando({ limite: 1000 })).map((item) => Number(item.id));
+      assert.ok(aguardando.includes(daClinica.id), 'a conversa da clínica continua na fila de SLA');
+      assert.ok(!aguardando.includes(doAgente.id), 'a do agente não entra na fila da clínica');
     });
 
     await t.test('resumo da equipe e liberação em massa ignoram conversas de agente', async () => {
