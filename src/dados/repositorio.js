@@ -10,10 +10,18 @@ const crypto = require('node:crypto');
 const contexto = require('./contexto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+const { normalizarConfiguracoes } = require('../dominio/agentes/regras');
 
+// Migration 046 (agentes, ver docs/AGENTES.md): `c.agente_id` e a junção com
+// `agentes` entram em TODA leitura de conversa. Isso tem consequência de
+// deploy: sem a migration aplicada, estas consultas falham — por isso a
+// ordem obrigatória do contrato é migration primeiro, código depois. Não há
+// fallback `42703` aqui de propósito: uma conversa lida sem saber de qual
+// agente é poderia ser respondida pelo agente errado.
 const SELECAO_CONVERSA = `
   c.id, c.contato_id, c.canal, c.status, c.prioridade, c.atribuido_a,
   c.assumida_por_humano, c.ia_pausada_ate, c.ultima_msg_em, c.criado_em,
+  c.agente_id, ag.nome AS agente_nome,
   ct.nome AS contato_nome, ct.telefone AS contato_telefone,
   ct.email AS contato_email, ct.identificador AS contato_identificador,
   u.nome AS responsavel_nome,
@@ -28,6 +36,7 @@ const JUNCOES_CONVERSA = `
   JOIN contatos ct ON ct.id = c.contato_id
   LEFT JOIN usuarios u ON u.id = c.atribuido_a
   LEFT JOIN leads l ON l.contato_id = c.contato_id
+  LEFT JOIN agentes ag ON ag.id = c.agente_id
 `;
 
 // Prévia e etiquetas acompanham a conversa em **toda** consulta, não só na lista.
@@ -56,6 +65,10 @@ function montarConversa(linha) {
     ia_pausada_ate: linha.ia_pausada_ate,
     ultima_msg_em: linha.ultima_msg_em,
     criado_em: linha.criado_em,
+    // Migration 046: de qual agente é a conversa (`null` = clínica). As
+    // leituras com `RETURNING *` não trazem o nome — sai `null` ali.
+    agente_id: linha.agente_id !== null && linha.agente_id !== undefined ? Number(linha.agente_id) : null,
+    agente_nome: linha.agente_nome ?? null,
     previa: linha.previa || null,
     lead_id: linha.lead_id ? Number(linha.lead_id) : null,
     temperatura: linha.temperatura || null,
@@ -78,6 +91,90 @@ function montarConversa(linha) {
     },
   };
 }
+
+// ---------------------------------------------------------------- agentes (046)
+//
+// Forma única de agente para as duas implementações (docs/AGENTES.md). O
+// repositório em memória monta exatamente os mesmos campos — a suíte de
+// contrato compara.
+
+/** Conflito de unicidade traduzido para o que a rota devolve (409 + código). */
+function erroDeConflito(mensagem, codigo) {
+  const erro = new Error(mensagem);
+  erro.status = 409;
+  erro.codigo = codigo;
+  return erro;
+}
+
+function montarCanalDoAgente(linha) {
+  return {
+    id: Number(linha.id),
+    canal: linha.canal,
+    instancia: linha.instancia,
+    ativo: linha.ativo === true,
+  };
+}
+
+function montarAcaoDeInatividade(linha) {
+  return {
+    id: Number(linha.id),
+    apos_minutos: Number(linha.apos_minutos),
+    acao: linha.acao,
+    instrucao: linha.instrucao ?? null,
+    ordem: Number(linha.ordem ?? 0),
+  };
+}
+
+function montarTreinamento(linha) {
+  if (!linha) return null;
+  return {
+    id: Number(linha.id),
+    tipo: linha.tipo,
+    titulo: linha.titulo ?? null,
+    conteudo: linha.conteudo,
+    origem: linha.origem ?? null,
+    status: linha.status,
+    criado_em: linha.criado_em,
+    atualizado_em: linha.atualizado_em,
+  };
+}
+
+function montarAgente(linha, { canais = [], acoes = [] } = {}) {
+  if (!linha) return null;
+  return {
+    id: Number(linha.id),
+    slug: linha.slug,
+    nome: linha.nome,
+    descricao: linha.descricao ?? null,
+    status: linha.status,
+    comunicacao: linha.comunicacao,
+    comportamento: linha.comportamento ?? '',
+    finalidade: linha.finalidade,
+    empresa_nome: linha.empresa_nome ?? null,
+    empresa_site: linha.empresa_site ?? null,
+    empresa_descricao: linha.empresa_descricao ?? null,
+    provedor: linha.provedor ?? null,
+    modelo: linha.modelo ?? null,
+    // Sempre mesclado com os padrões: quem lê (motor, tela) nunca precisa
+    // adivinhar o valor de uma chave que a linha antiga não tinha.
+    configuracoes: normalizarConfiguracoes(linha.configuracoes),
+    criado_em: linha.criado_em,
+    atualizado_em: linha.atualizado_em,
+    canais: canais.map(montarCanalDoAgente),
+    acoes_inatividade: acoes.map(montarAcaoDeInatividade),
+  };
+}
+
+// Colunas do agente que a aplicação pode gravar diretamente. `configuracoes`
+// fica de fora: é mesclada com a atual, nunca sobrescrita por um parcial.
+const COLUNAS_DO_AGENTE = Object.freeze([
+  'slug', 'nome', 'descricao', 'status', 'comunicacao', 'comportamento', 'finalidade',
+  'empresa_nome', 'empresa_site', 'empresa_descricao', 'provedor', 'modelo',
+]);
+
+// Colunas NOT NULL com padrão no esquema: `null` recebido nelas quer dizer
+// "use o padrão", não um valor — gravá-lo violaria a restrição.
+const COLUNAS_COM_PADRAO = Object.freeze(['status', 'comunicacao', 'comportamento', 'finalidade']);
 
 // Campos de usuário devolvidos por padrão. `senha_hash` e `totp_segredo_cifrado`
 // ficam de fora: só as consultas que precisam deles os pedem explicitamente.
@@ -361,6 +458,28 @@ function criarRepositorio(pool) {
     }
   }
 
+  /**
+   * Junta canais e ações de inatividade aos agentes lidos: duas consultas para
+   * o lote inteiro, não duas por agente. Ordem das listas igual à da memória
+   * (canais por id; ações por tempo, depois id).
+   */
+  async function completarAgentes(linhas) {
+    if (!linhas || linhas.length === 0) return [];
+    const ids = linhas.map((linha) => Number(linha.id));
+
+    const { rows: canais } = await consultar(
+      'SELECT * FROM agente_canais WHERE agente_id = ANY($1::bigint[]) ORDER BY id', [ids],
+    );
+    const { rows: acoes } = await consultar(
+      'SELECT * FROM agente_acoes_inatividade WHERE agente_id = ANY($1::bigint[]) ORDER BY apos_minutos, id', [ids],
+    );
+
+    return linhas.map((linha) => montarAgente(linha, {
+      canais: canais.filter((canal) => Number(canal.agente_id) === Number(linha.id)),
+      acoes: acoes.filter((acao) => Number(acao.agente_id) === Number(linha.id)),
+    }));
+  }
+
   return {
     tipo: 'postgres',
 
@@ -521,12 +640,17 @@ function criarRepositorio(pool) {
     async listarConversas({
       status = null, busca = null, contatoId = null, limite = 50,
       dataInicio = null, dataFim = null, ordenacao = 'desc',
+      // Migration 046: `undefined` (padrão) não filtra; `null` traz só as
+      // conversas da clínica; um id traz só as daquele agente.
+      agenteId = undefined,
     } = {}) {
       const condicoes = [];
       const valores = [];
 
       if (status) { valores.push(status); condicoes.push(`c.status = $${valores.length}`); }
       if (contatoId) { valores.push(contatoId); condicoes.push(`c.contato_id = $${valores.length}`); }
+      if (agenteId === null) condicoes.push('c.agente_id IS NULL');
+      else if (agenteId !== undefined) { valores.push(agenteId); condicoes.push(`c.agente_id = $${valores.length}`); }
       if (busca) {
         valores.push(`%${busca}%`);
         condicoes.push(`(ct.nome ILIKE $${valores.length} OR ct.telefone ILIKE $${valores.length})`);
@@ -610,7 +734,11 @@ function criarRepositorio(pool) {
      */
     async listarConversasEscalonadasSemDono() {
       const { rows } = await consultar(`
-        SELECT id FROM conversas WHERE assumida_por_humano = true AND atribuido_a IS NULL
+        SELECT id FROM conversas
+         WHERE assumida_por_humano = true AND atribuido_a IS NULL
+           -- Migration 046: conversa de agente transferida para humano é
+           -- decisão do agente, não trava por falha — não entra na liberação.
+           AND agente_id IS NULL
       `);
       return rows.map((linha) => Number(linha.id));
     },
@@ -1163,21 +1291,354 @@ function criarRepositorio(pool) {
       return this.obterContato(rows[0].id);
     },
 
-    /** Conversa aberta do contato, ou uma nova. Evita abrir uma conversa por mensagem. */
-    async encontrarOuCriarConversaAberta(contatoId, canal = 'whatsapp') {
+    /**
+     * Conversa aberta do contato, ou uma nova. Evita abrir uma conversa por mensagem.
+     *
+     * Migration 046: a busca é escopada por agente. `agenteId` nulo é a
+     * clínica e só enxerga conversas sem agente — o mesmo contato falando com
+     * o número da clínica e com o de um agente nunca cai na mesma conversa, o
+     * que faria um responder pelo outro. A chamada antiga, sem o terceiro
+     * argumento, continua sendo a clínica.
+     */
+    async encontrarOuCriarConversaAberta(contatoId, canal = 'whatsapp', { agenteId = null } = {}) {
+      const escopo = agenteId === null || agenteId === undefined ? null : Number(agenteId);
       const abertas = await consultar(`
         SELECT id FROM conversas
         WHERE contato_id = $1 AND status <> 'resolvida'
+          AND agente_id IS NOT DISTINCT FROM $2::bigint
         ORDER BY criado_em DESC LIMIT 1
-      `, [contatoId]);
+      `, [contatoId, escopo]);
 
       if (abertas.rows[0]) return this.obterConversa(abertas.rows[0].id);
 
       const { rows } = await consultar(
-        'INSERT INTO conversas (contato_id, canal) VALUES ($1, $2) RETURNING id',
-        [contatoId, canal],
+        'INSERT INTO conversas (contato_id, canal, agente_id) VALUES ($1, $2, $3) RETURNING id',
+        [contatoId, canal, escopo],
       );
       return this.obterConversa(rows[0].id);
+    },
+
+    // ---------------------------------------------------------- agentes (046)
+    //
+    // SQL escrito contra o esquema de docs/AGENTES.md. Honestidade sobre a
+    // prova: quando isto foi escrito a migration 046 ainda não existia, e
+    // NENHUM destes comandos foi executado contra PostgreSQL real. A suíte de
+    // contrato só os cobre com CRMCLINICA_TEST_DATABASE_URL apontando para um
+    // banco com a 046 aplicada — até lá, o que passou foi a versão em memória.
+
+    async listarAgentes() {
+      const { rows } = await consultar('SELECT * FROM agentes ORDER BY nome, id');
+      return completarAgentes(rows);
+    },
+
+    async obterAgente(id) {
+      const { rows } = await consultar('SELECT * FROM agentes WHERE id = $1', [id]);
+      return (await completarAgentes(rows))[0] ?? null;
+    },
+
+    async obterAgentePorSlug(slug) {
+      const { rows } = await consultar('SELECT * FROM agentes WHERE slug = $1', [slug]);
+      return (await completarAgentes(rows))[0] ?? null;
+    },
+
+    /**
+     * O agente dono de um canal (ex.: a instância da Evolution de onde veio a
+     * mensagem). Por padrão só canal ligado — é o que o roteamento de resposta
+     * quer. `incluirInativos` existe para a RECEPÇÃO: uma instância que é de
+     * um agente, com o canal desligado, continua sendo dele. Sem isso, a
+     * mensagem cairia no fluxo da clínica e o número da clínica responderia
+     * por um canal que não é dela.
+     */
+    async obterAgentePorCanal(canal, instancia, { incluirInativos = false } = {}) {
+      const { rows } = await consultar(`
+        SELECT a.* FROM agentes a
+          JOIN agente_canais ac ON ac.agente_id = a.id
+         WHERE ac.canal = $1 AND ac.instancia = $2
+           ${incluirInativos ? '' : 'AND ac.ativo'}
+         LIMIT 1
+      `, [canal, instancia]);
+      return (await completarAgentes(rows))[0] ?? null;
+    },
+
+    /**
+     * Cria o agente. Comportamento inicial não vazio já entra no histórico:
+     * é o primeiro ponto de restauração, e sem ele a primeira edição apagaria
+     * o texto original sem volta.
+     */
+    async criarAgente(dados, { usuarioId = null } = {}) {
+      // Checagem antes do INSERT: dentro da transação da requisição, um 23505
+      // aborta a transação inteira. O catch mais abaixo cobre a corrida entre
+      // dois cadastros simultâneos, que a checagem sozinha não fecha.
+      const { rows: existentes } = await consultar('SELECT 1 FROM agentes WHERE slug = $1', [dados.slug]);
+      if (existentes.length > 0) {
+        throw erroDeConflito(`já existe agente com o slug "${dados.slug}"`, 'agente_slug_duplicado');
+      }
+
+      const colunas = [];
+      const valores = [];
+      for (const coluna of COLUNAS_DO_AGENTE) {
+        const valor = dados[coluna];
+        if (valor === undefined) continue;
+        // Coluna NOT NULL com padrão: nulo é "use o padrão", não um valor.
+        if (valor === null && COLUNAS_COM_PADRAO.includes(coluna)) continue;
+        colunas.push(coluna);
+        valores.push(valor);
+      }
+      colunas.push('configuracoes');
+      valores.push(JSON.stringify(dados.configuracoes ?? {}));
+      const marcadores = colunas.map((coluna, indice) => (
+        coluna === 'configuracoes' ? `$${indice + 1}::jsonb` : `$${indice + 1}`
+      ));
+
+      let id;
+      try {
+        id = await executarNaTransacao(async (cliente) => {
+          const { rows } = await cliente.query(
+            `INSERT INTO agentes (${colunas.join(', ')}) VALUES (${marcadores.join(', ')}) RETURNING id, comportamento`,
+            valores,
+          );
+          if (rows[0].comportamento) {
+            await cliente.query(
+              'INSERT INTO agente_comportamentos (agente_id, comportamento, criado_por) VALUES ($1, $2, $3)',
+              [rows[0].id, rows[0].comportamento, usuarioId ?? null],
+            );
+          }
+          return rows[0].id;
+        });
+      } catch (erro) {
+        if (erro.code === '23505') {
+          throw erroDeConflito(`já existe agente com o slug "${dados.slug}"`, 'agente_slug_duplicado');
+        }
+        throw erro;
+      }
+      return this.obterAgente(id);
+    },
+
+    /**
+     * Edita o agente. `configuracoes` chega PARCIAL e é mesclada com a atual
+     * (a tela manda só o interruptor que mudou). Comportamento diferente do
+     * atual grava uma linha no histórico — igual, não.
+     *
+     * `FOR UPDATE` na linha do agente: duas abas salvando ao mesmo tempo
+     * leriam a mesma configuração antiga e a segunda mescla apagaria a
+     * primeira. Com o lock, a segunda lê o que a primeira gravou.
+     */
+    async atualizarAgente(id, campos = {}, { usuarioId = null } = {}) {
+      let existe;
+      try {
+        existe = await executarNaTransacao(async (cliente) => {
+          const { rows } = await cliente.query('SELECT * FROM agentes WHERE id = $1 FOR UPDATE', [id]);
+          const atual = rows[0];
+          if (!atual) return false;
+
+          if (campos.slug !== undefined && campos.slug !== null && campos.slug !== atual.slug) {
+            const { rows: outro } = await cliente.query(
+              'SELECT 1 FROM agentes WHERE slug = $1 AND id <> $2', [campos.slug, id],
+            );
+            if (outro.length > 0) {
+              throw erroDeConflito(`já existe agente com o slug "${campos.slug}"`, 'agente_slug_duplicado');
+            }
+          }
+
+          const partes = ['atualizado_em = now()'];
+          const valores = [];
+          for (const coluna of COLUNAS_DO_AGENTE) {
+            const valor = campos[coluna];
+            if (valor === undefined) continue;
+            if (valor === null && COLUNAS_COM_PADRAO.includes(coluna)) continue;
+            valores.push(valor);
+            partes.push(`${coluna} = $${valores.length}`);
+          }
+          if (campos.configuracoes && typeof campos.configuracoes === 'object') {
+            const mescladas = { ...normalizarConfiguracoes(atual.configuracoes), ...campos.configuracoes };
+            valores.push(JSON.stringify(mescladas));
+            partes.push(`configuracoes = $${valores.length}::jsonb`);
+          }
+          valores.push(id);
+          await cliente.query(`UPDATE agentes SET ${partes.join(', ')} WHERE id = $${valores.length}`, valores);
+
+          if (typeof campos.comportamento === 'string' && campos.comportamento !== (atual.comportamento ?? '')) {
+            await cliente.query(
+              'INSERT INTO agente_comportamentos (agente_id, comportamento, criado_por) VALUES ($1, $2, $3)',
+              [id, campos.comportamento, usuarioId ?? null],
+            );
+          }
+          return true;
+        });
+      } catch (erro) {
+        if (erro.code === '23505') {
+          throw erroDeConflito(`já existe agente com o slug "${campos.slug}"`, 'agente_slug_duplicado');
+        }
+        throw erro;
+      }
+      return existe ? this.obterAgente(id) : null;
+    },
+
+    /** Mais recente primeiro. `id` desempata linhas gravadas no mesmo instante. */
+    async listarHistoricoDeComportamento(agenteId, { limite = 20 } = {}) {
+      const { rows } = await consultar(`
+        SELECT id, comportamento, criado_por, criado_em FROM agente_comportamentos
+         WHERE agente_id = $1
+         ORDER BY criado_em DESC, id DESC
+         LIMIT $2
+      `, [agenteId, limite]);
+      return rows.map((linha) => ({
+        id: Number(linha.id),
+        comportamento: linha.comportamento,
+        criado_por: linha.criado_por !== null && linha.criado_por !== undefined ? Number(linha.criado_por) : null,
+        criado_em: linha.criado_em,
+      }));
+    },
+
+    /** Em ordem de cadastro: é a ordem em que a equipe (ou a semeadura) os escreveu. */
+    async listarTreinamentos(agenteId) {
+      const { rows } = await consultar(
+        'SELECT * FROM agente_treinamentos WHERE agente_id = $1 ORDER BY id', [agenteId],
+      );
+      return rows.map(montarTreinamento);
+    },
+
+    /** Agente inexistente devolve `null` em vez de estourar a chave estrangeira. */
+    async criarTreinamento(agenteId, {
+      tipo = 'texto', titulo = null, conteudo, origem = null, status = 'treinado',
+    } = {}) {
+      const { rows: existe } = await consultar('SELECT 1 FROM agentes WHERE id = $1', [agenteId]);
+      if (existe.length === 0) return null;
+
+      const { rows } = await consultar(`
+        INSERT INTO agente_treinamentos (agente_id, tipo, titulo, conteudo, origem, status)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [agenteId, tipo, titulo, conteudo, origem, status]);
+      return montarTreinamento(rows[0]);
+    },
+
+    /** Escopado pelo agente: o id do treinamento sozinho não remove o de outro agente. */
+    async removerTreinamento(agenteId, treinamentoId) {
+      const { rowCount } = await consultar(
+        'DELETE FROM agente_treinamentos WHERE id = $1 AND agente_id = $2', [treinamentoId, agenteId],
+      );
+      return rowCount > 0;
+    },
+
+    /**
+     * Substitui a lista inteira, numa transação. O `FOR UPDATE` no agente
+     * serializa duas gravações simultâneas: sem ele, DELETE e INSERT de duas
+     * abas intercalados deixariam a união das duas listas.
+     */
+    async definirAcoesDeInatividade(agenteId, acoes = []) {
+      const existe = await executarNaTransacao(async (cliente) => {
+        const { rows } = await cliente.query('SELECT id FROM agentes WHERE id = $1 FOR UPDATE', [agenteId]);
+        if (rows.length === 0) return false;
+
+        await cliente.query('DELETE FROM agente_acoes_inatividade WHERE agente_id = $1', [agenteId]);
+        for (const [indice, acao] of acoes.entries()) {
+          await cliente.query(`
+            INSERT INTO agente_acoes_inatividade (agente_id, apos_minutos, acao, instrucao, ordem)
+            VALUES ($1, $2, $3, $4, $5)
+          `, [agenteId, acao.apos_minutos, acao.acao, acao.instrucao ?? null, acao.ordem ?? indice]);
+        }
+        return true;
+      });
+      if (!existe) return null;
+
+      const { rows } = await consultar(
+        'SELECT * FROM agente_acoes_inatividade WHERE agente_id = $1 ORDER BY apos_minutos, id', [agenteId],
+      );
+      return rows.map(montarAcaoDeInatividade);
+    },
+
+    /**
+     * Substitui os canais do agente, numa transação. Canal+instância que já é
+     * de OUTRO agente é recusado (409) ANTES de apagar qualquer coisa — a
+     * recusa não mexe nem nos canais atuais deste agente. O 23505 do índice
+     * único cobre a corrida entre dois agentes pegando a mesma instância ao
+     * mesmo tempo (e uma lista com a mesma instância repetida, que a
+     * validação da API já recusa antes de chegar aqui).
+     */
+    async definirCanaisDoAgente(agenteId, canais = []) {
+      let existe;
+      try {
+        existe = await executarNaTransacao(async (cliente) => {
+          const { rows } = await cliente.query('SELECT id FROM agentes WHERE id = $1 FOR UPDATE', [agenteId]);
+          if (rows.length === 0) return false;
+
+          if (canais.length > 0) {
+            const { rows: tomados } = await cliente.query(`
+              SELECT ac.canal, ac.instancia FROM agente_canais ac
+               WHERE ac.agente_id <> $1
+                 AND (ac.canal, ac.instancia) IN (SELECT * FROM unnest($2::text[], $3::text[]))
+               LIMIT 1
+            `, [agenteId, canais.map((item) => item.canal), canais.map((item) => item.instancia)]);
+            if (tomados.length > 0) {
+              throw erroDeConflito(
+                `o canal ${tomados[0].canal}:${tomados[0].instancia} já pertence a outro agente`,
+                'canal_de_outro_agente',
+              );
+            }
+          }
+
+          await cliente.query('DELETE FROM agente_canais WHERE agente_id = $1', [agenteId]);
+          for (const item of canais) {
+            await cliente.query(
+              'INSERT INTO agente_canais (agente_id, canal, instancia, ativo) VALUES ($1, $2, $3, $4)',
+              [agenteId, item.canal, item.instancia, item.ativo !== false],
+            );
+          }
+          return true;
+        });
+      } catch (erro) {
+        if (erro.code === '23505') throw erroDeConflito('o canal já pertence a outro agente', 'canal_de_outro_agente');
+        throw erro;
+      }
+      if (!existe) return null;
+
+      const { rows } = await consultar('SELECT * FROM agente_canais WHERE agente_id = $1 ORDER BY id', [agenteId]);
+      return rows.map(montarCanalDoAgente);
+    },
+
+    /** O que conta para o limite de interações: resposta visível da automação. */
+    async contarRespostasDaAutomacao(conversaId) {
+      const { rows } = await consultar(`
+        SELECT count(*)::int AS total FROM mensagens
+         WHERE conversa_id = $1 AND autor_tipo = 'automacao' AND NOT privada
+      `, [conversaId]);
+      return Number(rows[0]?.total ?? 0);
+    },
+
+    /**
+     * Candidatas às ações de inatividade: conversa de agente, aberta, sem
+     * humano (nem assumida nem atribuída), cuja última mensagem VISÍVEL é da
+     * automação — ou seja, é o cliente quem está devendo resposta. Nota
+     * privada não conta como "última mensagem": ela não chega ao cliente.
+     * Quem decide se o tempo já passou é o chamador, com o instante dele.
+     */
+    async listarConversasDeAgenteParaInatividade({ limite = 50 } = {}) {
+      const { rows } = await consultar(`
+        SELECT c.id AS conversa_id, c.agente_id,
+               m.id AS ultima_mensagem_id, m.criado_em AS ultima_mensagem_em, m.autor_tipo AS ultima_mensagem_autor
+          FROM conversas c
+          JOIN LATERAL (
+            SELECT id, criado_em, autor_tipo FROM mensagens
+             WHERE conversa_id = c.id AND NOT privada
+             ORDER BY criado_em DESC, id DESC
+             LIMIT 1
+          ) m ON true
+         WHERE c.agente_id IS NOT NULL
+           AND c.status <> 'resolvida'
+           AND c.assumida_por_humano IS NOT TRUE
+           AND c.atribuido_a IS NULL
+           AND m.autor_tipo = 'automacao'
+         ORDER BY m.criado_em, c.id
+         LIMIT $1
+      `, [limite]);
+      return rows.map((linha) => ({
+        conversa_id: Number(linha.conversa_id),
+        agente_id: Number(linha.agente_id),
+        ultima_mensagem_id: Number(linha.ultima_mensagem_id),
+        ultima_mensagem_em: linha.ultima_mensagem_em,
+        ultima_mensagem_autor: linha.ultima_mensagem_autor,
+      }));
     },
 
     // ---------------------------------------------------------------- etiquetas
@@ -2005,6 +2466,9 @@ function criarRepositorio(pool) {
            FROM conversas c
           WHERE (c.resumo_enviado_em IS NULL OR c.resumo_enviado_em < c.ultima_msg_em)
             AND c.ultima_msg_em < now() - ($1 || ' minutes')::interval
+            -- Migration 046: o resumo vai para a equipe da CLÍNICA; conversa
+            -- de agente (outro negócio, outro número) não entra.
+            AND c.agente_id IS NULL
             AND EXISTS (
               SELECT 1 FROM mensagens m
                WHERE m.conversa_id = c.id AND m.autor_tipo = 'contato'
@@ -3275,13 +3739,17 @@ function criarRepositorio(pool) {
     /** Enfileira um trabalho. Repetir com a mesma chave não cria segunda linha. */
     async enfileirarTrabalhoDeOutbox({
       conversaId, mensagemEntradaId = null, chaveIdempotencia, maxTentativas = 5,
+      // Agentes (docs/AGENTES.md): `tempo_resposta_segundos` agenda o trabalho
+      // para depois, e as mensagens da rajada que chegarem antes são lidas
+      // juntas. Sem o valor, fica disponível já — o comportamento de sempre.
+      disponivelEm = null,
     }) {
       const { rows } = await consultar(`
-        INSERT INTO automacao_outbox (conversa_id, mensagem_entrada_id, chave_idempotencia, max_tentativas)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO automacao_outbox (conversa_id, mensagem_entrada_id, chave_idempotencia, max_tentativas, disponivel_em)
+        VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, now()))
         ON CONFLICT (chave_idempotencia) DO NOTHING
         RETURNING *
-      `, [conversaId, mensagemEntradaId, chaveIdempotencia, maxTentativas]);
+      `, [conversaId, mensagemEntradaId, chaveIdempotencia, maxTentativas, disponivelEm]);
 
       if (rows.length > 0) return { trabalho: montarTrabalhoDeOutbox(rows[0]), criado: true };
 

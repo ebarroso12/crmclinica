@@ -7,6 +7,7 @@
 const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+const { normalizarConfiguracoes } = require('../dominio/agentes/regras');
 
 const ETIQUETAS_INICIAIS = [
   { nome: 'lead_quente', descricao: 'Lead quente', cor: '#dc2626', do_sistema: true },
@@ -75,6 +76,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   // src/dominio/automacao-outbox.js. Um Map, não um array: reivindicar e
   // concluir mexem numa linha por id, e Map é O(1) para isso.
   const automacaoOutbox = new Map();
+  // Agentes configuráveis (migration 046, docs/AGENTES.md). Cada lista espelha
+  // uma tabela: `agentes`, `agente_comportamentos`, `agente_treinamentos`,
+  // `agente_acoes_inatividade` e `agente_canais`.
+  const agentes = new Map();
+  const agenteComportamentos = [];
+  const agenteTreinamentos = [];
+  const agenteAcoesInatividade = [];
+  const agenteCanais = [];
   // O catálogo em memória espelha o seed da migration 027.
   const iaModelos = [
     { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
@@ -160,6 +169,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     profissional: 1, disponibilidade: 1, bloqueio: 1, agendamento: 1, lembrete: 1,
     serenaPrompt: 1, serenaRegra: 1, tarefa: 1, formulario: 1, automacaoOutbox: 1,
     instagramRegraGatilho: 1, instagramComentario: 1,
+    agente: 1, agenteComportamento: 1, agenteTreinamento: 1, agenteAcao: 1, agenteCanal: 1,
     // Nome distinto de `bloqueio` (que já é usado por bloqueios de agenda,
     // outro conceito) — contato bloqueado é desvio de atendimento automático.
     contatoBloqueado: 1,
@@ -234,6 +244,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       urgencia: lead?.urgencia ?? null,
       disponibilidade: lead?.disponibilidade ?? null,
       perdido_motivo: lead?.perdido_motivo ?? null,
+      // Migration 046 — paridade com repositorio.js (LEFT JOIN agentes).
+      agente_id: conversa.agente_id ?? null,
+      agente_nome: conversa.agente_id ? (agentes.get(conversa.agente_id)?.nome ?? null) : null,
       etiquetas: [...(etiquetasDaConversa.get(conversa.id) ?? [])].sort(),
       contato: {
         id: contato.id,
@@ -242,6 +255,85 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         email: contato.email,
         identificador: contato.identificador,
       },
+    };
+  }
+
+  // ---------------------------------------------------------- agentes (046)
+  // Mesma forma de agente que `montarAgente` em repositorio.js.
+
+  const COLUNAS_DO_AGENTE_EM_MEMORIA = Object.freeze([
+    'slug', 'nome', 'descricao', 'status', 'comunicacao', 'comportamento', 'finalidade',
+    'empresa_nome', 'empresa_site', 'empresa_descricao', 'provedor', 'modelo',
+  ]);
+  const COLUNAS_COM_PADRAO_EM_MEMORIA = Object.freeze(['status', 'comunicacao', 'comportamento', 'finalidade']);
+
+  function erroDeConflitoDeAgente(mensagem, codigo) {
+    const erro = new Error(mensagem);
+    erro.status = 409;
+    erro.codigo = codigo;
+    return erro;
+  }
+
+  function registrarComportamentoDoAgente(agenteId, comportamento, usuarioId) {
+    agenteComportamentos.push({
+      id: proximoId.agenteComportamento++,
+      agente_id: Number(agenteId),
+      comportamento,
+      criado_por: usuarioId !== null && usuarioId !== undefined ? Number(usuarioId) : null,
+      criado_em: agora().toISOString(),
+    });
+  }
+
+  function montarTreinamentoEmMemoria(treinamento) {
+    return {
+      id: treinamento.id,
+      tipo: treinamento.tipo,
+      titulo: treinamento.titulo,
+      conteudo: treinamento.conteudo,
+      origem: treinamento.origem,
+      status: treinamento.status,
+      criado_em: treinamento.criado_em,
+      atualizado_em: treinamento.atualizado_em,
+    };
+  }
+
+  function canaisDoAgenteEmMemoria(agenteId) {
+    return agenteCanais
+      .filter((canal) => canal.agente_id === Number(agenteId))
+      .sort((a, b) => a.id - b.id)
+      .map((canal) => ({ id: canal.id, canal: canal.canal, instancia: canal.instancia, ativo: canal.ativo === true }));
+  }
+
+  function acoesDoAgenteEmMemoria(agenteId) {
+    return agenteAcoesInatividade
+      .filter((acao) => acao.agente_id === Number(agenteId))
+      .sort((a, b) => a.apos_minutos - b.apos_minutos || a.id - b.id)
+      .map((acao) => ({
+        id: acao.id, apos_minutos: acao.apos_minutos, acao: acao.acao, instrucao: acao.instrucao, ordem: acao.ordem,
+      }));
+  }
+
+  function montarAgenteEmMemoria(agente) {
+    if (!agente) return null;
+    return {
+      id: agente.id,
+      slug: agente.slug,
+      nome: agente.nome,
+      descricao: agente.descricao ?? null,
+      status: agente.status,
+      comunicacao: agente.comunicacao,
+      comportamento: agente.comportamento ?? '',
+      finalidade: agente.finalidade,
+      empresa_nome: agente.empresa_nome ?? null,
+      empresa_site: agente.empresa_site ?? null,
+      empresa_descricao: agente.empresa_descricao ?? null,
+      provedor: agente.provedor ?? null,
+      modelo: agente.modelo ?? null,
+      configuracoes: normalizarConfiguracoes(agente.configuracoes),
+      criado_em: agente.criado_em,
+      atualizado_em: agente.atualizado_em,
+      canais: canaisDoAgenteEmMemoria(agente.id),
+      acoes_inatividade: acoesDoAgenteEmMemoria(agente.id),
     };
   }
 
@@ -314,11 +406,18 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     async listarConversas({
       status = null, busca = null, contatoId = null, limite = 50,
       dataInicio = null, dataFim = null, ordenacao = 'desc',
+      // Migration 046 — paridade com repositorio.js: `undefined` não filtra,
+      // `null` é só a clínica, id é só aquele agente.
+      agenteId = undefined,
     } = {}) {
       let lista = [...conversas.values()];
 
       if (status) lista = lista.filter((conversa) => conversa.status === status);
       if (contatoId) lista = lista.filter((conversa) => conversa.contato_id === Number(contatoId));
+      if (agenteId === null) lista = lista.filter((conversa) => (conversa.agente_id ?? null) === null);
+      else if (agenteId !== undefined) {
+        lista = lista.filter((conversa) => (conversa.agente_id ?? null) === Number(agenteId));
+      }
       if (busca) {
         const termo = busca.toLowerCase();
         lista = lista.filter((conversa) => {
@@ -394,7 +493,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     async listarConversasEscalonadasSemDono() {
       return [...conversas.values()]
         .filter((conversa) => conversa.assumida_por_humano === true
-          && (conversa.atribuido_a === null || conversa.atribuido_a === undefined))
+          && (conversa.atribuido_a === null || conversa.atribuido_a === undefined)
+          // Migration 046 — paridade com repositorio.js.
+          && (conversa.agente_id ?? null) === null)
         .map((conversa) => Number(conversa.id));
     },
 
@@ -790,9 +891,12 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return contato;
     },
 
-    async encontrarOuCriarConversaAberta(contatoId, canal = 'whatsapp') {
+    // Migration 046 — paridade com repositorio.js: escopo por agente (`null` = clínica).
+    async encontrarOuCriarConversaAberta(contatoId, canal = 'whatsapp', { agenteId = null } = {}) {
+      const escopo = agenteId === null || agenteId === undefined ? null : Number(agenteId);
       const aberta = [...conversas.values()]
         .filter((conversa) => conversa.contato_id === Number(contatoId) && conversa.status !== 'resolvida')
+        .filter((conversa) => (conversa.agente_id ?? null) === escopo)
         .sort((a, b) => b.id - a.id)[0];
       if (aberta) return montarConversa(aberta);
 
@@ -800,6 +904,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         id: proximoId.conversa++,
         contato_id: Number(contatoId),
         canal,
+        agente_id: escopo,
         status: 'aberta',
         prioridade: null,
         atribuido_a: null,
@@ -818,6 +923,219 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return montarConversa(conversa);
     },
 
+    // ---------------------------------------------------------- agentes (046)
+    //
+    // Paridade com repositorio.js — os comentários de porquê estão lá. Aqui
+    // não há rollback: toda recusa é decidida ANTES de mexer nos arrays, para
+    // a recusa não deixar meia gravação para trás.
+
+    async listarAgentes() {
+      return [...agentes.values()]
+        .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR') || a.id - b.id)
+        .map(montarAgenteEmMemoria);
+    },
+
+    async obterAgente(id) {
+      return montarAgenteEmMemoria(agentes.get(Number(id)));
+    },
+
+    async obterAgentePorSlug(slug) {
+      return montarAgenteEmMemoria([...agentes.values()].find((agente) => agente.slug === slug));
+    },
+
+    async obterAgentePorCanal(canal, instancia, { incluirInativos = false } = {}) {
+      const registro = agenteCanais.find((item) => item.canal === canal && item.instancia === instancia
+        && (incluirInativos || item.ativo === true));
+      return registro ? montarAgenteEmMemoria(agentes.get(registro.agente_id)) : null;
+    },
+
+    async criarAgente(dados, { usuarioId = null } = {}) {
+      if ([...agentes.values()].some((agente) => agente.slug === dados.slug)) {
+        throw erroDeConflitoDeAgente(`já existe agente com o slug "${dados.slug}"`, 'agente_slug_duplicado');
+      }
+
+      const instante = agora().toISOString();
+      const agente = {
+        id: proximoId.agente++,
+        slug: dados.slug,
+        nome: dados.nome,
+        descricao: dados.descricao ?? null,
+        status: dados.status ?? 'desativado',
+        comunicacao: dados.comunicacao ?? 'normal',
+        comportamento: dados.comportamento ?? '',
+        finalidade: dados.finalidade ?? 'suporte',
+        empresa_nome: dados.empresa_nome ?? null,
+        empresa_site: dados.empresa_site ?? null,
+        empresa_descricao: dados.empresa_descricao ?? null,
+        provedor: dados.provedor ?? null,
+        modelo: dados.modelo ?? null,
+        configuracoes: { ...(dados.configuracoes ?? {}) },
+        criado_em: instante,
+        atualizado_em: instante,
+      };
+      agentes.set(agente.id, agente);
+      if (agente.comportamento) registrarComportamentoDoAgente(agente.id, agente.comportamento, usuarioId);
+      return montarAgenteEmMemoria(agente);
+    },
+
+    async atualizarAgente(id, campos = {}, { usuarioId = null } = {}) {
+      const agente = agentes.get(Number(id));
+      if (!agente) return null;
+
+      if (campos.slug !== undefined && campos.slug !== null && campos.slug !== agente.slug
+        && [...agentes.values()].some((outro) => outro.id !== agente.id && outro.slug === campos.slug)) {
+        throw erroDeConflitoDeAgente(`já existe agente com o slug "${campos.slug}"`, 'agente_slug_duplicado');
+      }
+
+      const comportamentoAnterior = agente.comportamento ?? '';
+      for (const coluna of COLUNAS_DO_AGENTE_EM_MEMORIA) {
+        const valor = campos[coluna];
+        if (valor === undefined) continue;
+        if (valor === null && COLUNAS_COM_PADRAO_EM_MEMORIA.includes(coluna)) continue;
+        agente[coluna] = valor;
+      }
+      if (campos.configuracoes && typeof campos.configuracoes === 'object') {
+        agente.configuracoes = { ...normalizarConfiguracoes(agente.configuracoes), ...campos.configuracoes };
+      }
+      agente.atualizado_em = agora().toISOString();
+
+      if (typeof campos.comportamento === 'string' && campos.comportamento !== comportamentoAnterior) {
+        registrarComportamentoDoAgente(agente.id, campos.comportamento, usuarioId);
+      }
+      return montarAgenteEmMemoria(agente);
+    },
+
+    async listarHistoricoDeComportamento(agenteId, { limite = 20 } = {}) {
+      return agenteComportamentos
+        .filter((registro) => registro.agente_id === Number(agenteId))
+        .sort((a, b) => new Date(b.criado_em) - new Date(a.criado_em) || b.id - a.id)
+        .slice(0, Number(limite))
+        .map((registro) => ({
+          id: registro.id,
+          comportamento: registro.comportamento,
+          criado_por: registro.criado_por,
+          criado_em: registro.criado_em,
+        }));
+    },
+
+    async listarTreinamentos(agenteId) {
+      return agenteTreinamentos
+        .filter((treinamento) => treinamento.agente_id === Number(agenteId))
+        .sort((a, b) => a.id - b.id)
+        .map(montarTreinamentoEmMemoria);
+    },
+
+    async criarTreinamento(agenteId, {
+      tipo = 'texto', titulo = null, conteudo, origem = null, status = 'treinado',
+    } = {}) {
+      if (!agentes.has(Number(agenteId))) return null;
+      const instante = agora().toISOString();
+      const treinamento = {
+        id: proximoId.agenteTreinamento++,
+        agente_id: Number(agenteId),
+        tipo,
+        titulo: titulo ?? null,
+        conteudo,
+        origem: origem ?? null,
+        status,
+        criado_em: instante,
+        atualizado_em: instante,
+      };
+      agenteTreinamentos.push(treinamento);
+      return montarTreinamentoEmMemoria(treinamento);
+    },
+
+    async removerTreinamento(agenteId, treinamentoId) {
+      const indice = agenteTreinamentos.findIndex((treinamento) => treinamento.id === Number(treinamentoId)
+        && treinamento.agente_id === Number(agenteId));
+      if (indice === -1) return false;
+      agenteTreinamentos.splice(indice, 1);
+      return true;
+    },
+
+    async definirAcoesDeInatividade(agenteId, acoes = []) {
+      const id = Number(agenteId);
+      if (!agentes.has(id)) return null;
+
+      for (let indice = agenteAcoesInatividade.length - 1; indice >= 0; indice -= 1) {
+        if (agenteAcoesInatividade[indice].agente_id === id) agenteAcoesInatividade.splice(indice, 1);
+      }
+      for (const [indice, acao] of acoes.entries()) {
+        agenteAcoesInatividade.push({
+          id: proximoId.agenteAcao++,
+          agente_id: id,
+          apos_minutos: Number(acao.apos_minutos),
+          acao: acao.acao,
+          instrucao: acao.instrucao ?? null,
+          ordem: Number(acao.ordem ?? indice),
+        });
+      }
+      return acoesDoAgenteEmMemoria(id);
+    },
+
+    async definirCanaisDoAgente(agenteId, canais = []) {
+      const id = Number(agenteId);
+      if (!agentes.has(id)) return null;
+
+      // Tudo decidido antes de mexer: um array não tem rollback.
+      const vistos = new Set();
+      for (const item of canais) {
+        const chave = `${item.canal}:${item.instancia}`;
+        const tomado = agenteCanais.some((canal) => canal.agente_id !== id
+          && canal.canal === item.canal && canal.instancia === item.instancia);
+        // Instância repetida na própria lista bate no mesmo índice único do
+        // PostgreSQL — mesmo código de erro dos dois lados.
+        if (tomado || vistos.has(chave)) {
+          throw erroDeConflitoDeAgente(`o canal ${chave} já pertence a outro agente`, 'canal_de_outro_agente');
+        }
+        vistos.add(chave);
+      }
+
+      for (let indice = agenteCanais.length - 1; indice >= 0; indice -= 1) {
+        if (agenteCanais[indice].agente_id === id) agenteCanais.splice(indice, 1);
+      }
+      for (const item of canais) {
+        agenteCanais.push({
+          id: proximoId.agenteCanal++,
+          agente_id: id,
+          canal: item.canal,
+          instancia: item.instancia,
+          ativo: item.ativo !== false,
+        });
+      }
+      return canaisDoAgenteEmMemoria(id);
+    },
+
+    async contarRespostasDaAutomacao(conversaId) {
+      return mensagens.filter((mensagem) => mensagem.conversa_id === Number(conversaId)
+        && mensagem.autor_tipo === 'automacao' && !mensagem.privada).length;
+    },
+
+    async listarConversasDeAgenteParaInatividade({ limite = 50 } = {}) {
+      const itens = [];
+      for (const conversa of conversas.values()) {
+        if ((conversa.agente_id ?? null) === null) continue;
+        if (conversa.status === 'resolvida' || conversa.assumida_por_humano === true) continue;
+        if (conversa.atribuido_a !== null && conversa.atribuido_a !== undefined) continue;
+
+        const ultima = mensagens
+          .filter((mensagem) => mensagem.conversa_id === conversa.id && !mensagem.privada)
+          .sort((a, b) => new Date(b.criado_em) - new Date(a.criado_em) || b.id - a.id)[0];
+        if (!ultima || ultima.autor_tipo !== 'automacao') continue;
+
+        itens.push({
+          conversa_id: conversa.id,
+          agente_id: Number(conversa.agente_id),
+          ultima_mensagem_id: ultima.id,
+          ultima_mensagem_em: ultima.criado_em,
+          ultima_mensagem_autor: ultima.autor_tipo,
+        });
+      }
+      return itens
+        .sort((a, b) => new Date(a.ultima_mensagem_em) - new Date(b.ultima_mensagem_em) || a.conversa_id - b.conversa_id)
+        .slice(0, Number(limite));
+    },
+
     /**
      * Espelha a consulta do PostgreSQL. Sem esta implementação, a regra de
      * quem ainda deve resumo só era exercitável contra banco real — e foi
@@ -829,6 +1147,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return [...conversas.values()]
         .filter((conversa) => {
           if (!conversa.ultima_msg_em) return false;
+          // Migration 046 — paridade com repositorio.js: agente não gera resumo à clínica.
+          if ((conversa.agente_id ?? null) !== null) return false;
           const ultima = new Date(conversa.ultima_msg_em).getTime();
           if (!(ultima < limiteMs)) return false;
 
@@ -1316,12 +1636,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     /** Enfileira um trabalho. Repetir com a mesma chave não cria segunda linha. */
     async enfileirarTrabalhoDeOutbox({
       conversaId, mensagemEntradaId = null, chaveIdempotencia, maxTentativas = 5,
+      // Paridade com repositorio.js: agenda o trabalho; sem valor, disponível já.
+      disponivelEm = null,
     }) {
       const existente = [...automacaoOutbox.values()]
         .find((trabalho) => trabalho.chave_idempotencia === chaveIdempotencia);
       if (existente) return { trabalho: { ...existente }, criado: false };
 
       const agoraIso = agora().toISOString();
+      // ISO normalizado: a reivindicação em memória compara `disponivel_em` como texto.
+      const disponivelIso = disponivelEm ? new Date(disponivelEm).toISOString() : agoraIso;
       const trabalho = {
         id: proximoId.automacaoOutbox++,
         conversa_id: Number(conversaId),
@@ -1330,7 +1654,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         status: 'pendente',
         tentativas: 0,
         max_tentativas: maxTentativas,
-        disponivel_em: agoraIso,
+        disponivel_em: disponivelIso,
         reivindicado_por: null,
         reivindicado_em: null,
         ultimo_erro: null,
