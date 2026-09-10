@@ -71,7 +71,14 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
      * Quando `canal === 'instagram'`, o envio vai pela Graph API do Instagram
      * (instagram-envio.js) em vez das vias de WhatsApp.
      */
-    async enviar({ canal: canalDestino = 'whatsapp', telefone, texto, chave }) {
+    async enviar({ canal: canalDestino = 'whatsapp', telefone, texto, chave, instancia = null }) {
+      // Conversa de agente (docs/AGENTES.md, invariante 2): ela só pode sair
+      // pelo número do próprio agente. O Instagram daqui é a conta da clínica —
+      // Instagram de agente ainda não existe, então recusar é o único seguro.
+      if (instancia && canalDestino === 'instagram') {
+        throw new Error('Instagram de agente ainda não é suportado: a conversa não pode sair pela conta da clínica');
+      }
+
       if (canalDestino === 'instagram') {
         if (!instagram?.disponivel) throw new Error('Instagram API não configurada');
         // No Instagram o "telefone" é o PSID (page-scoped id) — quem chama
@@ -84,6 +91,18 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
       // Feito uma vez só: as duas vias recebem o mesmo dado normalizado.
       const destino = normalizarTelefone(telefone);
       if (!destino) throw new Error('telefone inválido para envio');
+
+      if (instancia) {
+        // Só a Evolution, e sem reserva. O gateway do OpenClaw é o WhatsApp DA
+        // CLÍNICA: cair nele aqui mandaria a resposta do agente a partir do
+        // número da clínica — pior que não entregar, porque o cliente recebe
+        // de um número que não conhece e a conversa se parte em duas. A falha
+        // sobe inteira (inclusive `indeterminado`) para quem chama decidir.
+        if (!evolucao?.disponivel) {
+          throw new Error('Evolution API não configurada: a conversa do agente só sai pela instância dele');
+        }
+        return evolucao.enviar({ telefone: destino, texto, chave, instancia });
+      }
 
       if (evolucao?.disponivel) {
         try {
@@ -110,16 +129,23 @@ function criarCanalDeConversas(configuracao = {}, dependencias = {}) {
      * do que este projeto testa) — arriscar mandar um anexo por um canal sem
      * contrato conhecido é pior do que recusar com um erro claro.
      */
-    async enviarMidia({ canal: canalDestino = 'whatsapp', telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+    async enviarMidia({
+      canal: canalDestino = 'whatsapp', telefone, mediaUrl, tipo, legenda, nomeArquivo, instancia = null,
+    }) {
       if (canalDestino === 'instagram') {
-        throw new Error('envio de anexo pelo Instagram ainda não é suportado');
+        throw new Error(instancia
+          ? 'Instagram de agente ainda não é suportado: a conversa não pode sair pela conta da clínica'
+          : 'envio de anexo pelo Instagram ainda não é suportado');
       }
 
       const destino = normalizarTelefone(telefone);
       if (!destino) throw new Error('telefone inválido para envio');
       if (!evolucao?.disponivel) throw new Error('envio de anexo exige a Evolution API configurada');
 
-      return evolucao.enviarMidia({ telefone: destino, mediaUrl, tipo, legenda, nomeArquivo });
+      // Mídia já não tinha reserva no gateway; com instância, só muda o número de origem.
+      return evolucao.enviarMidia({
+        telefone: destino, mediaUrl, tipo, legenda, nomeArquivo, ...(instancia ? { instancia } : {}),
+      });
     },
 
     async encerrar() {
