@@ -68,7 +68,7 @@ function textoDaMensagem(mensagem) {
  * tem texto reconhecível — mídia sem legenda, por exemplo, fica de fora nesta
  * primeira versão).
  */
-function normalizarEventoEvolution(payload = {}) {
+function normalizarEventoEvolution(payload = {}, { instanciaPadrao = null } = {}) {
   if (!payload || typeof payload !== 'object') return null;
   if (!ehEventoDeMensagem(payload)) return null;
 
@@ -84,6 +84,19 @@ function normalizarEventoEvolution(payload = {}) {
 
   const idNativo = texto(dado.key?.id);
   const ocorridoEm = instanteIso(dado.messageTimestamp);
+
+  // Agentes (docs/AGENTES.md): cada agente tem o próprio número numa instância
+  // própria da Evolution, e o campo `instance` do webhook diz de qual número a
+  // mensagem veio. É ele que o atendimento usa para achar o agente dono.
+  const instancia = instanciaDoPayload(payload);
+  // O formato do `id_externo` só muda para uma instância DIFERENTE da padrão, e
+  // só quando quem chama diz qual é a padrão. Sem `instanciaPadrao`, o formato é
+  // o de sempre mesmo com `instance` no payload: a ponte do OpenClaw grava a
+  // mesma mensagem da clínica com `whatsapp:<remetente>:<id>`, e mudar isso aqui
+  // desfaria a deduplicação entre as duas portas (ver o comentário abaixo).
+  // Uma instância de agente nunca passa pela ponte do OpenClaw, então nela o
+  // nome da instância pode — e deve — escopar a chave.
+  const instanciaPropria = Boolean(instanciaPadrao && instancia && instancia !== instanciaPadrao);
 
   return {
     tipo: 'mensagem.recebida',
@@ -122,12 +135,13 @@ function normalizarEventoEvolution(payload = {}) {
     // que concordam faria mensagens DIFERENTES colidirem — perder mensagem de
     // paciente é pior que gravar duas.
     id_externo: (idNativo
-      ? `whatsapp:${remetente}:${idNativo}`
-      : `evolution:${remetente}|${ocorridoEm}`).slice(0, 200),
+      ? (instanciaPropria ? `whatsapp:${instancia}:${remetente}:${idNativo}` : `whatsapp:${remetente}:${idNativo}`)
+      : `evolution:${instanciaPropria ? `${instancia}:` : ''}${remetente}|${ocorridoEm}`).slice(0, 200),
     remetente,
     nome: texto(dado.pushName).slice(0, 160) || null,
     texto: conteudo.slice(0, LIMITE_TEXTO),
     origem: 'evolution_webhook',
+    instancia,
     ocorrido_em: ocorridoEm,
   };
 }
@@ -172,7 +186,15 @@ function normalizarEcoDeEnvioEvolution(payload = {}) {
     telefone: paraQuem,
     texto: conteudo.slice(0, LIMITE_TEXTO),
     id_provedor: `whatsapp:${paraQuem}:${idNativo}`.slice(0, 200),
+    // O eco também diz de qual número saiu — sem isso, uma resposta dada
+    // direto no WhatsApp do agente não teria como achar a conversa do agente.
+    instancia: instanciaDoPayload(payload),
   };
+}
+
+/** Nome da instância da Evolution que mandou o webhook, ou `null`. */
+function instanciaDoPayload(payload) {
+  return texto(payload?.instance).slice(0, 100) || null;
 }
 
 module.exports = { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution };
