@@ -22,6 +22,7 @@ const { criarAtendimento } = require('../dominio/atendimento');
 const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
 const { criarServicoDeMetricas } = require('../dominio/metricas');
 const { criarGatewayDeIA } = require('../ia/gateway');
+const { criarMotorDeAgentes } = require('../dominio/agentes/motor');
 const { criarExtratorDeQualificacao } = require('../dominio/qualificacao-ia');
 const { criarServicoDeAvaliacao } = require('../dominio/avaliacao-ia');
 const { criarRotasDeIA } = require('./rotas-ia');
@@ -199,6 +200,11 @@ function criarAplicacao(dependencias = {}) {
       ? criarExtratorDeQualificacao({ gateway: gatewayDeIA })
       : null);
 
+  // Motor dos agentes configuráveis (docs/AGENTES.md), sobre o mesmo gateway
+  // multi-IA. Sem chave de IA ele existe do mesmo jeito: a falha aparece na
+  // conversa do agente (escalonada para a equipe), nunca como silêncio.
+  const motorDeAgentes = dependencias.motorDeAgentes || criarMotorDeAgentes({ gateway: gatewayDeIA });
+
   const atendimento = dependencias.atendimento
     || criarAtendimento({
       repositorio,
@@ -212,6 +218,7 @@ function criarAplicacao(dependencias = {}) {
       emissor: emissorDeConversas,
       qualificacaoIa,
       storage: clienteStorage,
+      agentes: motorDeAgentes,
     });
 
   // Instagram: regras de palavra-gatilho (comentário -> DM + resposta pública).
@@ -481,6 +488,8 @@ function criarAplicacao(dependencias = {}) {
               telefone: eco.telefone,
               texto: eco.texto,
               idProvedor: eco.id_provedor,
+              // Eco de um número de agente vai para a conversa do agente.
+              ...(eco.instancia ? { instancia: eco.instancia } : {}),
             });
           } catch (erro) {
             // Falha aqui é best-effort por natureza — a mensagem já saiu de

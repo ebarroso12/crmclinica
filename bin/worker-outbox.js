@@ -46,6 +46,8 @@ const { criarClienteInstagramEnvio } = require('../src/integracoes/instagram-env
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
 const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
+const { criarGatewayDeIA } = require('../src/ia/gateway');
+const { criarMotorDeAgentes } = require('../src/dominio/agentes/motor');
 
 function lerArgumento(nome, padrao = null) {
   const prefixo = `--${nome}=`;
@@ -141,6 +143,12 @@ async function main() {
   // fica sem o que reler. O emissor grava no banco mesmo sem conexões SSE
   // (o empurrão local simplesmente não alcança ninguém).
   const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+
+  // Agentes configuráveis (docs/AGENTES.md): quem gera a resposta de uma
+  // conversa de agente é este worker, pelo gateway multi-IA — então as chaves
+  // de IA precisam existir no .env DESTE processo (o do VPS), não só na Vercel.
+  const motorDeAgentes = criarMotorDeAgentes({ gateway: criarGatewayDeIA({ configuracao, repositorio }) });
+
   const atendimento = criarAtendimento({
     repositorio,
     orquestrador: criarClienteOpenClaw(configuracao.openclaw),
@@ -151,6 +159,7 @@ async function main() {
     serena: servicoDaSerena,
     canal: canalDeConversas,
     emissor: emissorDeConversas,
+    agentes: motorDeAgentes,
   });
 
   const outbox = criarServicoDeOutbox({
@@ -236,6 +245,26 @@ async function main() {
     return;
   }
 
+  // Ações de inatividade dos agentes. Uma passada por minuto basta (o menor
+  // prazo configurável é 1 minuto), e falha aqui nunca derruba a fila. Usa a
+  // mesma marca `rodando` do lote: o desligamento gracioso espera as duas.
+  let ultimaVarreduraMs = 0;
+  async function varrerInatividadeDeAgentes() {
+    if (rodando || encerrando || Date.now() - ultimaVarreduraMs < 60_000) return;
+    ultimaVarreduraMs = Date.now();
+    rodando = true;
+    try {
+      const resumo = await atendimento.processarInatividadeDeAgentes({ limite: 50 });
+      if (resumo.finalizadas || resumo.interacoes || resumo.falhas) {
+        console.log('[outbox] inatividade de agentes', JSON.stringify(resumo));
+      }
+    } catch (erro) {
+      console.error(`[outbox] falha na varredura de inatividade de agentes: ${erro.message}`);
+    } finally {
+      rodando = false;
+    }
+  }
+
   let cicloEmAndamento = false;
   const cicloCompleto = async () => {
     if (cicloEmAndamento) return;
@@ -243,6 +272,7 @@ async function main() {
     try {
       const resultado = await umLote();
       await marcarHeartbeat(resultado);
+      await varrerInatividadeDeAgentes();
     } finally {
       cicloEmAndamento = false;
     }
