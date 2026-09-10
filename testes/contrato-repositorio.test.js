@@ -41,6 +41,8 @@ if (URL_DE_TESTE) {
       // início, o que mantém os identificadores previsíveis entre as duas suítes.
       await pool.query(`
         TRUNCATE serena_prompts, serena_regras, lembretes, agendamentos, disponibilidades, agenda_bloqueios, profissionais,
+                 agente_canais, agente_acoes_inatividade, agente_treinamentos, agente_comportamentos, agentes,
+                 automacao_outbox,
                  conversa_etiquetas, mensagens, notas_internas, leads, conversas,
                  contatos, sessoes, audit_log, eventos_recebidos, usuarios
         RESTART IDENTITY CASCADE
@@ -925,6 +927,335 @@ for (const { nome, montar } of implementacoes) {
       });
       await respirar();
       assert.equal(await ehEsta(), true, 'mensagem nova depois do resumo devolve a conversa à varredura');
+    });
+
+    // ---------------------------------------------------------- agentes (046)
+    //
+    // Contrato dos agentes configuráveis (docs/AGENTES.md). Em memória isto
+    // roda sempre. Contra PostgreSQL só roda com CRMCLINICA_TEST_DATABASE_URL
+    // apontando para um banco de teste COM a migration 046 aplicada — sem
+    // isso, o SQL de agentes em repositorio.js não foi executado por esta
+    // suíte, e passar aqui não prova nada sobre ele.
+
+    const { normalizarConfiguracoes } = require('../src/dominio/agentes/regras');
+    const criarAgenteDeTeste = (slug, extras = {}) => repositorio.criarAgente(
+      { slug, nome: `Agente ${slug}`, ...extras },
+      { usuarioId: null },
+    );
+    const conversaDoAgente = async (agenteId, telefone) => {
+      const contato = await repositorio.encontrarOuCriarContato({ telefone, nome: `Contato ${telefone}` });
+      return repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId });
+    };
+
+    await t.test('agente: criar, obter por id e slug, listar — com padrões e listas vazias', async () => {
+      const criado = await criarAgenteDeTeste('contrato-a', { descricao: 'Vendedor', comportamento: 'Seja cordial.' });
+
+      assert.equal(typeof criado.id, 'number');
+      assert.equal(criado.slug, 'contrato-a');
+      assert.equal(criado.nome, 'Agente contrato-a');
+      assert.equal(criado.descricao, 'Vendedor');
+      assert.equal(criado.status, 'desativado', 'agente novo nunca nasce respondendo');
+      assert.equal(criado.comunicacao, 'normal');
+      assert.equal(criado.finalidade, 'suporte');
+      assert.equal(criado.comportamento, 'Seja cordial.');
+      assert.equal(criado.empresa_nome, null);
+      assert.equal(criado.provedor, null);
+      assert.equal(criado.modelo, null);
+      assert.deepEqual(criado.configuracoes, normalizarConfiguracoes({}));
+      assert.deepEqual(criado.canais, []);
+      assert.deepEqual(criado.acoes_inatividade, []);
+      assert.ok(criado.criado_em);
+      assert.ok(criado.atualizado_em);
+
+      assert.deepEqual(await repositorio.obterAgente(criado.id), criado);
+      assert.equal((await repositorio.obterAgentePorSlug('contrato-a')).id, criado.id);
+      assert.equal(await repositorio.obterAgente(999999), null);
+      assert.equal(await repositorio.obterAgentePorSlug('nao-existe'), null);
+      assert.ok((await repositorio.listarAgentes()).some((agente) => agente.id === criado.id));
+    });
+
+    await t.test('agente: slug duplicado é 409 agente_slug_duplicado, na criação e na edição', async () => {
+      const primeiro = await criarAgenteDeTeste('contrato-dup');
+      await assert.rejects(() => criarAgenteDeTeste('contrato-dup'),
+        (erro) => erro.status === 409 && erro.codigo === 'agente_slug_duplicado');
+
+      const segundo = await criarAgenteDeTeste('contrato-dup-2');
+      await assert.rejects(() => repositorio.atualizarAgente(segundo.id, { slug: 'contrato-dup' }),
+        (erro) => erro.status === 409 && erro.codigo === 'agente_slug_duplicado');
+      assert.equal((await repositorio.obterAgente(segundo.id)).slug, 'contrato-dup-2', 'recusa não grava nada');
+      assert.equal((await repositorio.obterAgente(primeiro.id)).slug, 'contrato-dup');
+    });
+
+    await t.test('agente: edição mescla configurações parciais e só grava histórico quando o comportamento muda', async () => {
+      const agente = await criarAgenteDeTeste('contrato-edicao', {
+        comportamento: 'v1', configuracoes: { usar_emojis: true },
+      });
+      assert.equal(agente.configuracoes.usar_emojis, true);
+      assert.deepEqual((await repositorio.listarHistoricoDeComportamento(agente.id)).map((h) => h.comportamento), ['v1'],
+        'o comportamento inicial já é um ponto de restauração');
+
+      const mesmo = await repositorio.atualizarAgente(agente.id, { comportamento: 'v1', status: 'ativo' });
+      assert.equal(mesmo.status, 'ativo');
+      assert.equal((await repositorio.listarHistoricoDeComportamento(agente.id)).length, 1, 'comportamento igual não gera histórico');
+
+      const editado = await repositorio.atualizarAgente(agente.id, {
+        comportamento: 'v2', configuracoes: { assinar_nome: true }, nome: 'Agente Editado',
+      }, { usuarioId: null });
+      assert.equal(editado.comportamento, 'v2');
+      assert.equal(editado.nome, 'Agente Editado');
+      assert.equal(editado.configuracoes.usar_emojis, true, 'configuração não informada é preservada');
+      assert.equal(editado.configuracoes.assinar_nome, true);
+      assert.ok(new Date(editado.atualizado_em).getTime() >= new Date(agente.atualizado_em).getTime());
+
+      const historico = await repositorio.listarHistoricoDeComportamento(agente.id);
+      assert.deepEqual(historico.map((h) => h.comportamento), ['v2', 'v1'], 'mais recente primeiro');
+      assert.equal(typeof historico[0].id, 'number');
+      assert.equal(historico[0].criado_por, null);
+      assert.ok(historico[0].criado_em);
+      assert.equal((await repositorio.listarHistoricoDeComportamento(agente.id, { limite: 1 })).length, 1);
+
+      const ignorado = await repositorio.atualizarAgente(agente.id, { id: 424242, criado_em: '2000-01-01T00:00:00Z' });
+      assert.equal(ignorado.id, agente.id, 'coluna fora da lista não é gravada');
+      assert.equal(await repositorio.atualizarAgente(999999, { nome: 'Fantasma' }), null);
+    });
+
+    await t.test('agente: treinamentos em ordem de cadastro, escopados pelo agente', async () => {
+      const agente = await criarAgenteDeTeste('contrato-treino');
+      const outro = await criarAgenteDeTeste('contrato-treino-outro');
+
+      const primeiro = await repositorio.criarTreinamento(agente.id, { tipo: 'texto', conteudo: 'Frete grátis.' });
+      const segundo = await repositorio.criarTreinamento(agente.id, {
+        tipo: 'website', titulo: 'Site', conteudo: 'Texto do site', origem: 'https://exemplo.com',
+      });
+      assert.equal(typeof primeiro.id, 'number');
+      assert.equal(primeiro.tipo, 'texto');
+      assert.equal(primeiro.status, 'treinado');
+      assert.equal(primeiro.titulo, null);
+      assert.equal(primeiro.origem, null);
+      assert.equal(segundo.origem, 'https://exemplo.com');
+
+      assert.deepEqual((await repositorio.listarTreinamentos(agente.id)).map((item) => item.id), [primeiro.id, segundo.id]);
+      assert.deepEqual(await repositorio.listarTreinamentos(outro.id), []);
+
+      assert.equal(await repositorio.removerTreinamento(outro.id, primeiro.id), false, 'não remove treinamento de outro agente');
+      assert.equal(await repositorio.removerTreinamento(agente.id, primeiro.id), true);
+      assert.equal(await repositorio.removerTreinamento(agente.id, primeiro.id), false);
+      assert.deepEqual((await repositorio.listarTreinamentos(agente.id)).map((item) => item.id), [segundo.id]);
+      assert.equal(await repositorio.criarTreinamento(999999, { tipo: 'texto', conteudo: 'x' }), null);
+    });
+
+    await t.test('agente: ações de inatividade substituem todas as anteriores', async () => {
+      const agente = await criarAgenteDeTeste('contrato-inatividade');
+
+      const primeiras = await repositorio.definirAcoesDeInatividade(agente.id, [
+        { apos_minutos: 5, acao: 'interagir', instrucao: 'Ainda tem interesse?', ordem: 0 },
+        { apos_minutos: 30, acao: 'finalizar', instrucao: null, ordem: 1 },
+      ]);
+      assert.deepEqual(primeiras.map((a) => [a.apos_minutos, a.acao, a.instrucao, a.ordem]), [
+        [5, 'interagir', 'Ainda tem interesse?', 0], [30, 'finalizar', null, 1],
+      ]);
+      assert.equal(typeof primeiras[0].id, 'number');
+
+      const trocadas = await repositorio.definirAcoesDeInatividade(agente.id, [
+        { apos_minutos: 10, acao: 'finalizar', instrucao: null, ordem: 0 },
+      ]);
+      assert.deepEqual(trocadas.map((a) => a.apos_minutos), [10]);
+      assert.deepEqual((await repositorio.obterAgente(agente.id)).acoes_inatividade.map((a) => a.apos_minutos), [10]);
+
+      assert.deepEqual(await repositorio.definirAcoesDeInatividade(agente.id, []), []);
+      assert.equal(await repositorio.definirAcoesDeInatividade(999999, []), null);
+    });
+
+    await t.test('agente: canais substituem; só canal ativo roteia; canal de outro agente é 409 sem gravar nada', async () => {
+      const dono = await criarAgenteDeTeste('contrato-canal-dono');
+      const intruso = await criarAgenteDeTeste('contrato-canal-intruso');
+
+      const canais = await repositorio.definirCanaisDoAgente(dono.id, [
+        { canal: 'whatsapp', instancia: 'contrato-inst-1', ativo: true },
+        { canal: 'whatsapp', instancia: 'contrato-inst-2', ativo: false },
+      ]);
+      assert.deepEqual(canais.map((c) => [c.canal, c.instancia, c.ativo]), [
+        ['whatsapp', 'contrato-inst-1', true], ['whatsapp', 'contrato-inst-2', false],
+      ]);
+      assert.equal(typeof canais[0].id, 'number');
+      assert.equal((await repositorio.obterAgentePorCanal('whatsapp', 'contrato-inst-1')).id, dono.id);
+      assert.equal(await repositorio.obterAgentePorCanal('whatsapp', 'contrato-inst-2'), null,
+        'canal desligado não tem dono para o roteamento');
+      // Na recepção a instância desligada continua sendo do agente: cair no
+      // fluxo da clínica faria o número da clínica responder por ela.
+      assert.equal(
+        (await repositorio.obterAgentePorCanal('whatsapp', 'contrato-inst-2', { incluirInativos: true })).id,
+        dono.id,
+      );
+      assert.equal(
+        (await repositorio.obterAgentePorCanal('whatsapp', 'contrato-inst-1', { incluirInativos: true })).id,
+        dono.id,
+      );
+      assert.equal(await repositorio.obterAgentePorCanal('whatsapp', 'inst-sem-dono', { incluirInativos: true }), null);
+      assert.equal(await repositorio.obterAgentePorCanal('instagram', 'contrato-inst-1'), null);
+
+      await assert.rejects(
+        () => repositorio.definirCanaisDoAgente(intruso.id, [{ canal: 'whatsapp', instancia: 'contrato-inst-2', ativo: true }]),
+        (erro) => erro.status === 409 && erro.codigo === 'canal_de_outro_agente',
+      );
+      assert.deepEqual((await repositorio.obterAgente(intruso.id)).canais, [], 'a recusa não grava nada');
+      assert.equal((await repositorio.obterAgente(dono.id)).canais.length, 2, 'a recusa não apaga os do dono');
+
+      // O que o dono deixa de ter fica livre para outro agente.
+      await repositorio.definirCanaisDoAgente(dono.id, [{ canal: 'whatsapp', instancia: 'contrato-inst-1', ativo: true }]);
+      const liberado = await repositorio.definirCanaisDoAgente(intruso.id, [
+        { canal: 'whatsapp', instancia: 'contrato-inst-2', ativo: true },
+      ]);
+      assert.equal(liberado.length, 1);
+      assert.equal((await repositorio.obterAgentePorCanal('whatsapp', 'contrato-inst-2')).id, intruso.id);
+      assert.equal(await repositorio.definirCanaisDoAgente(999999, []), null);
+    });
+
+    await t.test('conversa escopada por agente: clínica e agente separadas para o mesmo contato', async () => {
+      const agente = await criarAgenteDeTeste('contrato-escopo');
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001001', nome: 'Duplo Contato' });
+
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      const doAgente = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id });
+      assert.notEqual(doAgente.id, daClinica.id);
+      assert.equal(daClinica.agente_id, null);
+      assert.equal(daClinica.agente_nome, null);
+      assert.equal(doAgente.agente_id, agente.id);
+      assert.equal(doAgente.agente_nome, agente.nome);
+
+      assert.equal((await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp')).id, daClinica.id,
+        'a chamada antiga, sem agente, continua achando a conversa da clínica');
+      assert.equal(
+        (await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id })).id,
+        doAgente.id,
+      );
+
+      const obtida = await repositorio.obterConversa(doAgente.id);
+      const listada = (await repositorio.listarConversas({ limite: 1000 })).find((item) => item.id === doAgente.id);
+      for (const campo of ['agente_id', 'agente_nome']) {
+        assert.deepEqual(obtida[campo], listada[campo], `campo "${campo}" difere entre obter e listar`);
+      }
+
+      const soDoAgente = await repositorio.listarConversas({ agenteId: agente.id, limite: 1000 });
+      assert.deepEqual(soDoAgente.map((c) => c.id), [doAgente.id]);
+      const soDaClinica = await repositorio.listarConversas({ agenteId: null, limite: 1000 });
+      assert.ok(soDaClinica.some((c) => c.id === daClinica.id));
+      assert.ok(!soDaClinica.some((c) => c.id === doAgente.id), 'agenteId null filtra só a clínica');
+    });
+
+    await t.test('contarRespostasDaAutomacao conta só a automação visível', async () => {
+      const agente = await criarAgenteDeTeste('contrato-contagem');
+      const conversa = await conversaDoAgente(agente.id, '5516900001002');
+
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'oi', autor_tipo: 'contato' });
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'olá', autor_tipo: 'automacao' });
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'posso ajudar?', autor_tipo: 'automacao' });
+      await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'saida', conteudo: 'nota', autor_tipo: 'automacao', privada: true,
+      });
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'sou da equipe', autor_tipo: 'equipe' });
+
+      assert.equal(await repositorio.contarRespostasDaAutomacao(conversa.id), 2);
+    });
+
+    await t.test('inatividade: só conversa de agente aberta, sem humano, cuja última mensagem visível é da automação', async () => {
+      const agente = await criarAgenteDeTeste('contrato-ocioso');
+      const saida = (conversaId) => repositorio.registrarMensagem(conversaId, {
+        direcao: 'saida', conteudo: 'alguma dúvida?', autor_tipo: 'automacao',
+      });
+      const entrada = (conversaId) => repositorio.registrarMensagem(conversaId, {
+        direcao: 'entrada', conteudo: 'oi', autor_tipo: 'contato',
+      });
+
+      const esperandoCliente = await conversaDoAgente(agente.id, '5516900001011');
+      await entrada(esperandoCliente.id);
+      await saida(esperandoCliente.id);
+
+      const clienteFalouPorUltimo = await conversaDoAgente(agente.id, '5516900001012');
+      await saida(clienteFalouPorUltimo.id);
+      await entrada(clienteFalouPorUltimo.id);
+
+      const assumida = await conversaDoAgente(agente.id, '5516900001013');
+      await saida(assumida.id);
+      await repositorio.atualizarConversa(assumida.id, { assumida_por_humano: true });
+
+      const resolvida = await conversaDoAgente(agente.id, '5516900001014');
+      await saida(resolvida.id);
+      await repositorio.atualizarConversa(resolvida.id, { status: 'resolvida' });
+
+      const notaPorUltimo = await conversaDoAgente(agente.id, '5516900001015');
+      await saida(notaPorUltimo.id);
+      await repositorio.registrarMensagem(notaPorUltimo.id, {
+        direcao: 'saida', tipo: 'sistema', conteudo: 'nota interna', autor_tipo: 'sistema', privada: true,
+      });
+
+      const daClinica = await conversaDoAgente(null, '5516900001016');
+      await saida(daClinica.id);
+
+      const lista = await repositorio.listarConversasDeAgenteParaInatividade({ limite: 1000 });
+      const ids = lista.map((item) => item.conversa_id);
+      assert.ok(ids.includes(esperandoCliente.id));
+      assert.ok(ids.includes(notaPorUltimo.id), 'nota privada não conta como última mensagem');
+      for (const fora of [clienteFalouPorUltimo, assumida, resolvida, daClinica]) {
+        assert.ok(!ids.includes(fora.id), `conversa ${fora.id} não deveria entrar na varredura`);
+      }
+
+      const item = lista.find((registro) => registro.conversa_id === esperandoCliente.id);
+      assert.equal(item.agente_id, agente.id);
+      assert.equal(typeof item.ultima_mensagem_id, 'number');
+      assert.equal(item.ultima_mensagem_autor, 'automacao');
+      assert.ok(item.ultima_mensagem_em);
+    });
+
+    await t.test('resumo da equipe e liberação em massa ignoram conversas de agente', async () => {
+      const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
+      const agente = await criarAgenteDeTeste('contrato-sem-resumo');
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001021', nome: 'Resumo Duplo' });
+      const doAgente = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+
+      for (const conversa of [doAgente, daClinica]) {
+        await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'olá', autor_tipo: 'contato' });
+      }
+      await respirar();
+
+      const semResumo = (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 }))
+        .map((item) => Number(item.id));
+      assert.ok(semResumo.includes(daClinica.id));
+      assert.ok(!semResumo.includes(doAgente.id), 'conversa de agente não gera resumo para a equipe da clínica');
+
+      await repositorio.atualizarConversa(doAgente.id, { assumida_por_humano: true });
+      await repositorio.atualizarConversa(daClinica.id, { assumida_por_humano: true });
+      const escalonadas = await repositorio.listarConversasEscalonadasSemDono();
+      assert.ok(escalonadas.includes(daClinica.id));
+      assert.ok(!escalonadas.includes(doAgente.id), 'transferência do agente para humano não é liberada em massa');
+    });
+
+    await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001031', nome: 'Fila Agendada' });
+      const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      const base = Date.now();
+      const futuro = new Date(base + 60 * 60 * 1000).toISOString();
+
+      const { trabalho: agendado } = await repositorio.enfileirarTrabalhoDeOutbox({
+        conversaId: conversa.id, chaveIdempotencia: `contrato:agendado:${conversa.id}`, disponivelEm: futuro,
+      });
+      const { trabalho: imediato } = await repositorio.enfileirarTrabalhoDeOutbox({
+        conversaId: conversa.id, chaveIdempotencia: `contrato:imediato:${conversa.id}`,
+      });
+      assert.equal(new Date(agendado.disponivel_em).getTime(), new Date(futuro).getTime());
+      assert.ok(new Date(imediato.disponivel_em).getTime() <= Date.now() + 1000);
+
+      const logo = await repositorio.reivindicarTrabalhosDeOutbox({
+        agora: new Date(base + 5000).toISOString(), limite: 1000, worker: 'contrato',
+      });
+      assert.ok(logo.some((trabalho) => trabalho.id === imediato.id));
+      assert.ok(!logo.some((trabalho) => trabalho.id === agendado.id), 'trabalho agendado não sai antes da hora');
+
+      const depois = await repositorio.reivindicarTrabalhosDeOutbox({
+        agora: new Date(base + 2 * 60 * 60 * 1000).toISOString(), limite: 1000, worker: 'contrato',
+      });
+      assert.ok(depois.some((trabalho) => trabalho.id === agendado.id));
     });
   });
 }
