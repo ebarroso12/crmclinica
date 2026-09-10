@@ -140,8 +140,8 @@ Forma de agente devolvida por todos os métodos que devolvem agente:
 | `listarAgentes()` | agentes (ordem por nome) |
 | `obterAgente(id)` | agente ou `null` |
 | `obterAgentePorSlug(slug)` | agente ou `null` |
-| `obterAgentePorCanal(canal, instancia)` | agente dono do canal ativo, ou `null` |
-| `criarAgente(dados, { usuarioId })` | agente (slug duplicado → erro com `status = 409`) |
+| `obterAgentePorCanal(canal, instancia, { incluirInativos = false })` | agente dono do canal (só canal ativo, salvo `incluirInativos`), ou `null` |
+| `criarAgente(dados, { usuarioId })` | agente (slug duplicado → erro com `status = 409`); comportamento inicial não vazio já entra no histórico |
 | `atualizarAgente(id, campos, { usuarioId })` | agente; se `comportamento` mudou, grava histórico |
 | `listarHistoricoDeComportamento(agenteId, { limite = 20 })` | `[{ id, comportamento, criado_por, criado_em }]` mais recente primeiro |
 | `listarTreinamentos(agenteId)` | `[{ id, tipo, titulo, conteudo, origem, status, criado_em, atualizado_em }]` |
