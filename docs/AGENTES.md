@@ -219,7 +219,7 @@ Permissões: `agentes:ler` (admin, gestor) e `agentes:gerenciar` (admin).
 | `GET /api/agentes` | ler — lista + catálogo de modelos |
 | `POST /api/agentes` | gerenciar |
 | `GET /api/agentes/:id` | ler — agente + treinamentos + histórico |
-| `PUT /api/agentes/:id` | gerenciar — perfil, trabalho, modelo, status, configurações |
+| `PUT /api/agentes/:id` | gerenciar — perfil, trabalho, modelo, configurações; `status` igual ao atual é ignorado e diferente é recusado com 409 (pausar e retomar são rotas próprias) |
 | `POST /api/agentes/:id/comportamento/:historicoId/restaurar` | gerenciar |
 | `POST /api/agentes/:id/treinamentos` | gerenciar — `texto`, `documento` (texto), `website` (URL buscada no servidor) |
 | `DELETE /api/agentes/:id/treinamentos/:treinamentoId` | gerenciar |
