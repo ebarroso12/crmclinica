@@ -36,7 +36,9 @@ test('046 é aditiva: cria as cinco tabelas e só ACRESCENTA conversas.agente_id
     assert.match(corpo, new RegExp(`CREATE TABLE IF NOT EXISTS ${tabela} \\(`), `falta ${tabela}`);
   }
   assert.ok(!/DROP\s+(TABLE|COLUMN)/i.test(corpo), '046 não remove tabela nem coluna');
-  assert.ok(!/\bTRUNCATE\b/i.test(corpo));
+  // Comando TRUNCATE, não a palavra: `REVOKE TRUNCATE, ... FROM crmclinica_app`
+  // (achado B2) TIRA o privilégio de truncar, e precisa continuar permitido.
+  assert.ok(!/\bTRUNCATE\s+(TABLE\s+)?(ONLY\s+)?(public\.)?\w+\s*(,\s*\w+\s*)*(CASCADE|RESTRICT)?\s*;/i.test(corpo));
   assert.ok(!/\bDELETE\s+FROM\b/i.test(corpo));
   assert.ok(!/\bUPDATE\s+\w+\s+SET\b/i.test(corpo), '046 não altera linha existente');
   assert.match(corpo, /ALTER TABLE conversas\s+ADD COLUMN IF NOT EXISTS agente_id bigint REFERENCES agentes\(id\) ON DELETE RESTRICT/);
@@ -88,7 +90,7 @@ test('limites do SQL batem com os limites da validação da aplicação', () => 
     `char_length(origem) <= ${LIMITES.origemTreinamento}`,
     `char_length(instrucao) <= ${LIMITES.instrucaoInatividade}`,
     `apos_minutos BETWEEN 1 AND ${LIMITES.minutosInatividade}`,
-    `char_length(instancia) BETWEEN 1 AND ${LIMITES.instancia}`,
+    // instancia: expressão regular idêntica à da API (ver teste B4 abaixo).
   ];
   for (const trecho of esperados) assert.ok(SQL.includes(trecho), `falta no SQL: ${trecho}`);
 });
@@ -134,4 +136,53 @@ test('rollback recusa rodar com conversa de agente e só então remove coluna e 
   assert.ok(posDropColuna > posRecusa, 'a recusa vem antes de apagar a coluna');
   for (const tabela of TABELAS) assert.match(corpo, new RegExp(`DROP TABLE IF EXISTS ${tabela};`));
   assert.ok(corpo.indexOf('DROP TABLE IF EXISTS agentes;') > posDropColuna, 'a coluna com FK sai antes da tabela agentes');
+});
+
+// ---------------------------------------------- achados da auditoria da 046
+
+test('M1: lock_timeout curto logo depois do BEGIN — na migration e no rollback', () => {
+  for (const [nome, texto] of [['046', SQL], ['rollback', ROLLBACK]]) {
+    const corpo = semComentarios(texto);
+    const posBegin = corpo.indexOf('BEGIN;');
+    const posTimeout = corpo.indexOf("SET LOCAL lock_timeout = '5s';");
+    assert.ok(posTimeout > posBegin, `${nome}: lock_timeout depois do BEGIN`);
+    assert.ok(posTimeout < corpo.indexOf('ALTER TABLE conversas'), `${nome}: lock_timeout antes de mexer em conversas`);
+  }
+});
+
+test('M3/B1: rollback trava conversas, enxerga todas as linhas e não manda "resolver"', () => {
+  const corpo = semComentarios(ROLLBACK);
+  assert.match(corpo, /SET LOCAL row_security = off;/);
+  const posLock = corpo.indexOf('LOCK TABLE conversas IN SHARE ROW EXCLUSIVE MODE;');
+  assert.ok(posLock > 0 && posLock < corpo.indexOf('RAISE EXCEPTION'), 'o lock vem antes da checagem');
+  assert.match(ROLLBACK, /Resolver não basta: exporte e remova essas conversas/);
+  assert.ok(!/Resolva-as antes/.test(ROLLBACK));
+});
+
+test('B2: nada herdado — PUBLIC revogado, aplicação sem TRUNCATE, sequences fechadas para anon/authenticated', () => {
+  const corpo = semComentarios(SQL);
+  assert.match(corpo, /REVOKE ALL ON public\.%I FROM PUBLIC/);
+  assert.match(corpo, /REVOKE ALL ON SEQUENCE public\.%I FROM PUBLIC/);
+  assert.match(corpo, /REVOKE TRUNCATE, REFERENCES, TRIGGER ON public\.%I FROM crmclinica_app/);
+  assert.match(corpo, /REVOKE ALL ON SEQUENCE public\.%I FROM %I/);
+  assert.ok(!/GRANT[^;]*TRUNCATE/.test(corpo));
+});
+
+test('B4: instância só com ASCII seguro (igual à API) e textos obrigatórios não aceitam só espaços', () => {
+  const fonteRegras = fs.readFileSync(path.join(RAIZ, 'src', 'dominio', 'agentes', 'regras.js'), 'utf8');
+  const regexDaApi = fonteRegras.match(/const INSTANCIA = \/(.+)\/;/)[1];
+  assert.equal(regexDaApi, `^[A-Za-z0-9_.-]{1,${regras.LIMITES.instancia}}$`);
+  assert.ok(SQL.includes(`instancia ~ '${regexDaApi}'`), 'o banco valida a instância com a mesma expressão da API');
+  assert.match(SQL, /btrim\(nome\) <> ''/);
+  assert.match(SQL, /btrim\(coalesce\(instrucao, ''\)\) <> ''/);
+  assert.match(SQL, /ordem\s+integer NOT NULL DEFAULT 0 CHECK \(ordem >= 0\)/);
+});
+
+test('M2: verificar-banco cobra a 046 inteira — coluna, índice de canal, FK RESTRICT e SELECT da aplicação', () => {
+  const verificador = fs.readFileSync(path.join(RAIZ, 'bin', 'verificar-banco.js'), 'utf8');
+  assert.match(verificador, /'046_agentes': \{/);
+  assert.match(verificador, /\['conversas', 'agente_id'\]/);
+  assert.match(verificador, /agente_canais_instancia_uk/);
+  assert.match(verificador, /confdeltype/);
+  assert.match(verificador, /has_table_privilege\('crmclinica_app', \$1, 'SELECT'\)/);
 });

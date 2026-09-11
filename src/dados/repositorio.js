@@ -1427,7 +1427,10 @@ function criarRepositorio(pool) {
       let existe;
       try {
         existe = await executarNaTransacao(async (cliente) => {
-          const { rows } = await cliente.query('SELECT * FROM agentes WHERE id = $1 FOR UPDATE', [id]);
+          // NO KEY UPDATE, não UPDATE: serializa duas abas salvando igual, mas
+          // não conflita com o FOR KEY SHARE que a FK de conversas.agente_id
+          // (046) pega — criar conversa do agente não espera o admin salvar.
+          const { rows } = await cliente.query('SELECT * FROM agentes WHERE id = $1 FOR NO KEY UPDATE', [id]);
           const atual = rows[0];
           if (!atual) return false;
 
@@ -1528,7 +1531,7 @@ function criarRepositorio(pool) {
      */
     async definirAcoesDeInatividade(agenteId, acoes = []) {
       const existe = await executarNaTransacao(async (cliente) => {
-        const { rows } = await cliente.query('SELECT id FROM agentes WHERE id = $1 FOR UPDATE', [agenteId]);
+        const { rows } = await cliente.query('SELECT id FROM agentes WHERE id = $1 FOR NO KEY UPDATE', [agenteId]);
         if (rows.length === 0) return false;
 
         await cliente.query('DELETE FROM agente_acoes_inatividade WHERE agente_id = $1', [agenteId]);
@@ -1560,7 +1563,7 @@ function criarRepositorio(pool) {
       let existe;
       try {
         existe = await executarNaTransacao(async (cliente) => {
-          const { rows } = await cliente.query('SELECT id FROM agentes WHERE id = $1 FOR UPDATE', [agenteId]);
+          const { rows } = await cliente.query('SELECT id FROM agentes WHERE id = $1 FOR NO KEY UPDATE', [agenteId]);
           if (rows.length === 0) return false;
 
           if (canais.length > 0) {

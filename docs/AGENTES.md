@@ -278,6 +278,19 @@ Cada passo abaixo que toca produção exige autorização própria.
 
 1. Aplicar a migration 046 no SQL Editor do Supabase e confirmar com leitura
    (tabelas, RLS, policies, grants) usando a credencial da aplicação.
+   Antes de aplicar, no mesmo editor:
+   - `SELECT to_regclass('public.agentes'), to_regclass('public.agente_canais'),
+     to_regclass('public.agente_canais_instancia_uk'), to_regclass('public.agentes_id_seq');`
+     — todos precisam voltar NULL. Objeto já existente com outra forma seria
+     pulado em silêncio pelo `IF NOT EXISTS`.
+   - `SELECT pid, state, now() - xact_start AS idade, left(query, 80) FROM pg_stat_activity
+     WHERE datname = current_database() AND xact_start IS NOT NULL ORDER BY xact_start;`
+     — transação longa segura o `ALTER TABLE conversas`. A migration tem
+     `lock_timeout` de 5 s: se estourar, nada muda; espere e aplique de novo.
+   - Fora do pico de atendimento.
+   Depois de aplicar, `npm run verificar-banco` precisa acusar a 046 inteira
+   (tabelas, `conversas.agente_id` com FK RESTRICT, índice de canal e SELECT da
+   aplicação em `agentes`) — sem isso, não publique o código.
 2. Definir `EVOLUTION_INSTANCIAS_CLINICA` com o nome **exato** da instância da
    clínica, na Vercel **e** no `.env` do VPS (são cópias separadas).
    **Nome errado cala a Serena para todo paciente** que chega pela Evolution:
@@ -294,6 +307,20 @@ Cada passo abaixo que toca produção exige autorização própria.
 6. Chaves de IA no `.env` do VPS e reiniciar `crmclinica-outbox.service`;
    confirmar pelo heartbeat no banco.
 7. Testar pela aba Teste, depois ligar o agente (`status = 'ativo'`).
+
+## Voltar atrás
+
+1. **Antes de reverter o deploy**, desligue o webhook e a instância do agente na
+   Evolution. O código antigo não conhece agente: com conversa de agente aberta
+   e webhook ligado, ele reaproveitaria a conversa do agente e a Serena
+   responderia o cliente pelo número da clínica.
+2. Reverta o deploy (versão anterior do código).
+3. A 046 pode ficar aplicada: é compatível com o código antigo enquanto não
+   existir conversa de agente. O rollback (`db/046_agentes_rollback.sql`)
+   recusa rodar enquanto existir QUALQUER conversa com `agente_id` — inclusive
+   resolvida, porque o resumo automático do código antigo não filtra status e
+   mandaria conversa de cliente do agente para a equipe da clínica. **Resolver
+   não basta:** é preciso exportar e remover essas conversas antes.
 
 ## Fora desta entrega (fase 2)
 
