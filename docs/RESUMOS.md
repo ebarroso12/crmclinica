@@ -129,7 +129,12 @@ pessoa e do conteúdo da parte (ids das conversas e da última entrada, com hash
 - `enviado` → já chegou: não reenvia e conta como entregue;
 - `enviando` encontrado depois → **incerto** (o processo morreu no meio, ou a Evolution não
   confirmou — timeout/ECONNRESET): não reenvia, mesma política de `evolution-envio.js`, e
-  conta como entregue;
+  conta como entregue. **Deixa rastro (reconferência M-n1)**:
+  - auditoria `resumo_envio_incerto` por destinatário e parte, com entidade `sistema` ou
+    `agente` e detalhe `grupo`, `agente_id`, `usuario_id`, `conversas`, `parte` e `motivo`
+    (`timeout` ou `reserva_orfa`), sem telefone e sem texto;
+  - uma linha de log com grupo e conversas;
+  - o total do ciclo no log do worker (`envio(s) incerto(s) neste ciclo`);
 - sem registro (banco indisponível), não envia.
 
 Um restart entre a parte 1 e a parte 2 não reenvia a parte 1 nem a incerta.
@@ -156,7 +161,7 @@ chegou a **pelo menos uma** pessoa (enviado ou incerto).
 | Ninguém do grupo recebeu nada (canal fora do ar) | Nada é marcado, o relógio não anda: o ciclo seguinte (1 min) tenta de novo; as chaves com `falhou` voltam a ser tentadas |
 | Uma parte não chegou a ninguém, outra parte do mesmo resumo chegou | O relógio anda, então a parte que falhou **espera o intervalo** e volta nos resumos seguintes enquanto a entrada tiver menos de 24 h; depois disso fica só na auditoria |
 | Uma pessoa falhou e outra recebeu | O atendimento é marcado e não volta para quem falhou (auditoria "parcial") |
-| Envio incerto | Não é repetido; o atendimento é marcado |
+| Envio incerto | Não é repetido; o atendimento é marcado; auditoria `resumo_envio_incerto` |
 
 A marca não esconde entrada que chegou depois do resumo montado
 (`marcarResumoEnviado(id, { ultimaEntradaId })`).
@@ -241,7 +246,15 @@ autorizado no cadastro (`docs/AGENTES.md`, "Colocar um agente no ar").
 4. **Com o worker parado**, o admin cadastra e autoriza os WhatsApps de quem deve receber
    (tela Usuários → WhatsApp → DDI, DDD, número → Salvar → "WhatsApp autorizado para avisos
    e resumos") e **espera 2 minutos** (validade do cache de números internos nas instâncias
-   já quentes). O painel "Quem recebe os resumos" confirma. Leitura de agregados em
+   já quentes). O painel "Quem recebe os resumos" confirma.
+   **Custo e resíduo desse cache (reconferência B-n4, sem mudança de comportamento):**
+   - no **eco**, todo "não é da equipe" do cache é conferido no banco: **uma consulta por
+     eco** de número fora da equipe;
+   - no **ingresso**, **contato que já existe não é reconferido**: um número autorizado há
+     menos de 1 minuto que já era contato ainda é tratado como cliente (a mensagem entra na
+     conversa dele) até o cache da instância vencer.
+
+   É por isso que este passo espera 2 minutos com o worker parado. Leitura de agregados em
    produção (11/09): 4 usuários ativos, **nenhum** com WhatsApp cadastrado ou autorizado —
    até este passo, ninguém recebe resumo; a lista `CRMCLINICA_RESUMO_DESTINATARIOS` não é
    usada como reserva, por decisão.
