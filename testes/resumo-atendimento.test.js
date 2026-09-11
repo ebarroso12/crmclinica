@@ -330,15 +330,16 @@ test('parte que não chegou a ninguém não marca os atendimentos dela; a que ch
   assert.equal(resultado.enviados, 4);
   assert.equal(resultado.nao_entregues, 2);
 
+  // Auditoria B5: uma auditoria para o grupo, com os atendimentos sem entrega.
   const falhas = c.auditoria.filter((registro) => registro.acao === 'resumo_nao_entregue');
-  assert.deepEqual(falhas.map((registro) => registro.entidadeId).sort(), [...pendentes].sort());
-  for (const registro of falhas) {
-    assert.equal(registro.entidade, 'conversa');
-    assert.equal(registro.detalhe.grupo, 'clinica');
-    assert.equal(registro.detalhe.confirmados, 0);
-    assert.equal(registro.detalhe.falhados, 2);
-    assert.ok(!/990000071|990000072/.test(JSON.stringify(registro.detalhe)), 'telefone de pessoa não entra na auditoria');
-  }
+  assert.equal(falhas.length, 1, 'uma auditoria para o grupo, não uma por atendimento');
+  const [registro] = falhas;
+  assert.equal(registro.entidade, 'sistema');
+  assert.equal(registro.detalhe.grupo, 'clinica');
+  assert.deepEqual([...registro.detalhe.conversas_sem_entrega].sort(), [...pendentes].sort());
+  assert.deepEqual(registro.detalhe.conversas_parciais, []);
+  assert.equal(registro.detalhe.envios_falhados, 4, 'a parte 2 falhou para as duas pessoas: 2 atendimentos x 2 pessoas');
+  assert.ok(!/990000071|990000072/.test(JSON.stringify(registro.detalhe)), 'telefone de pessoa não entra na auditoria');
 });
 
 test('quando NINGUÉM recebe, nada é marcado e o ciclo seguinte tenta de novo — sem esperar as 2 h', async () => {
@@ -373,8 +374,35 @@ test('entrega parcial marca o atendimento e registra quem ficou de fora', async 
   assert.equal(resultado.enviados, 1);
   assert.deepEqual(await c.pendentes(), []);
   const [registro] = c.auditoria.filter((item) => item.acao === 'resumo_parcialmente_entregue');
-  assert.equal(registro.detalhe.confirmados, 1);
+  assert.equal(registro.detalhe.conversas_parciais.length, 1);
+  assert.deepEqual(registro.detalhe.conversas_sem_entrega, []);
   assert.equal(registro.detalhe.destinatarios, 2);
+});
+
+test('canal fora do ar grava no máximo uma auditoria por grupo por intervalo, não uma por atendimento a cada ciclo (auditoria B5)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000161' });
+  const conversas = [];
+  for (const final of ['8001', '8002', '8003']) conversas.push(await c.conversa(`551690001${final}`));
+  c.relogio.avancar(31);
+
+  const resumo = c.resumo({ canal: canalFalso({ falhar: () => true }) });
+  for (let ciclo = 0; ciclo < 10; ciclo += 1) {
+    await resumo.enviarPendentes();
+    c.relogio.avancar(1);
+  }
+  const falhas = () => c.auditoria.filter((item) => item.acao === 'resumo_nao_entregue');
+  assert.equal(falhas().length, 1, '10 ciclos com o canal fora do ar: uma auditoria do grupo');
+  assert.equal(falhas()[0].detalhe.conversas_sem_entrega.length, 3);
+  assert.equal(falhas()[0].detalhe.envios_falhados, 3);
+  assert.ok(!/990000161/.test(JSON.stringify(falhas())), 'sem telefone');
+
+  // Passado o intervalo, a falha que continua é registrada de novo (a entrada
+  // nova mantém o atendimento dentro da janela).
+  await c.repositorio.registrarMensagem(conversas[0].id, { direcao: 'entrada', conteudo: 'alguém aí?', autor_tipo: 'contato' });
+  c.relogio.avancar(120);
+  await resumo.enviarPendentes();
+  assert.equal(falhas().length, 2);
 });
 
 // ---------------------------------------------------------- repetição (11/09)

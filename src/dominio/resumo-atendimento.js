@@ -329,6 +329,11 @@ function criarResumoDeAtendimento({
     };
   }
 
+  // Última auditoria de falha por grupo (auditoria B5): no máximo uma por
+  // intervalo. Vive no processo — reiniciar o worker pode antecipar UMA
+  // auditoria, nunca um envio (o relógio dos envios é o banco).
+  const ultimaAuditoriaDoGrupo = new Map();
+
   async function resumirGrupo({ agenteId, conversas, pessoas }) {
     const doAgente = agenteId !== null;
     const relatorio = {
@@ -459,9 +464,16 @@ function criarResumoDeAtendimento({
       }
     }
 
+    const semEntrega = [];
+    const parciais = [];
+    const motivosDoGrupo = [];
     for (const bloco of blocos) {
       const confirmados = recebidas.get(bloco.conversaId);
       const motivos = falhas.get(bloco.conversaId);
+      if (motivos.length > 0) {
+        (confirmados > 0 ? parciais : semEntrega).push(bloco.conversaId);
+        motivosDoGrupo.push(...motivos);
+      }
 
       // Marca quando ALGUÉM recebeu: repetir para todos por causa de um que
       // falhou mandaria o mesmo resumo duas vezes a quem já leu. Ninguém
@@ -477,22 +489,31 @@ function criarResumoDeAtendimento({
         relatorio.nao_entregues += 1;
       }
 
-      if (motivos.length > 0) {
-        console.error(`[resumo] conversa ${bloco.conversaId}: ${motivos.length} entrega(s) sem confirmação — ${[...new Set(motivos)].join('; ')}`);
-        // Auditoria porque o log do worker vive no VPS e ninguém o lê. Nenhum
-        // telefone entra no detalhe — número de pessoa não é diagnóstico.
+    }
+
+    if (motivosDoGrupo.length > 0) {
+      const motivos = [...new Set(motivosDoGrupo)];
+      console.error(`[resumo] ${nome}: ${semEntrega.length} atendimento(s) sem entrega e ${parciais.length} com entrega parcial — ${motivos.join('; ')}`);
+      // Auditoria porque o log do worker vive no VPS e ninguém o lê — mas UMA
+      // por grupo por intervalo (auditoria B5): com o canal fora do ar, cada
+      // ciclo de 1 min gravava uma por atendimento. Nenhum telefone no detalhe.
+      const instante = agora().getTime();
+      const ultima = ultimaAuditoriaDoGrupo.get(grupo);
+      if (ultima === undefined || instante - ultima >= intervaloMs) {
+        ultimaAuditoriaDoGrupo.set(grupo, instante);
         try {
           await repositorio.registrarAuditoria?.({
-            entidade: 'conversa',
-            entidadeId: bloco.conversaId,
-            acao: confirmados > 0 ? 'resumo_parcialmente_entregue' : 'resumo_nao_entregue',
+            entidade: doAgente ? 'agente' : 'sistema',
+            entidadeId: doAgente ? agenteId : 1,
+            acao: semEntrega.length > 0 ? 'resumo_nao_entregue' : 'resumo_parcialmente_entregue',
             detalhe: {
-              grupo: doAgente ? 'agente' : 'clinica',
+              grupo: tipoDeGrupo,
               agente_id: agenteId,
               destinatarios: destinatarios.length,
-              confirmados,
-              falhados: motivos.length,
-              motivos: [...new Set(motivos)],
+              conversas_sem_entrega: semEntrega,
+              conversas_parciais: parciais,
+              envios_falhados: motivosDoGrupo.length,
+              motivos,
             },
           });
         } catch {
