@@ -153,6 +153,42 @@ test('abrir um agente desenha a conversa de teste DO AGENTE, não a do laborató
   assert.doesNotMatch(bloco, /desenharConversaDeTeste\(/, 'o bloco de agentes não chama a função da Serena');
 });
 
+// ------------------------------------------------ inbox: de quem é a conversa
+
+function funcaoDoApp(nome) {
+  const inicio = APP_JS.search(new RegExp(`^(?:async\\s+)?function ${nome}\\(`, 'm'));
+  assert.ok(inicio >= 0, `function ${nome} precisa existir em app.js`);
+  const proxima = APP_JS.slice(inicio + 1).search(/^(?:async\s+)?function\s/m);
+  return APP_JS.slice(inicio, proxima < 0 ? undefined : inicio + 1 + proxima);
+}
+
+test('a linha do inbox mostra o selo do agente antes dos outros selos', () => {
+  const linha = funcaoDoApp('montarLinhaDaLista');
+  const seloAgente = linha.indexOf('conversa.agente_nome');
+  const seloHumano = linha.indexOf('conversa.assumida_por_humano');
+  assert.ok(seloAgente >= 0, 'a linha precisa ler agente_nome');
+  assert.ok(seloAgente < seloHumano, 'o selo do agente vem primeiro');
+  assert.match(linha, /selo\.className = 'etiqueta agente'/);
+  assert.match(linha, /selo\.textContent = conversa\.agente_nome/, 'nome do agente por textContent, nunca innerHTML');
+});
+
+test('o inbox filtra por quem atende e o seletor existe no HTML', () => {
+  assert.match(HTML, /<select id="filtro-agente-conversas"[^>]*hidden>/);
+  assert.match(HTML, /<option value="clinica">/);
+  const carregar = funcaoDoApp('carregarConversas');
+  assert.match(carregar, /parametros\.set\('agente', agente\)/);
+  assert.match(APP_JS, /seletor\('#filtro-agente-conversas'\)\?\.addEventListener\('change', carregarConversas\)/);
+  assert.match(funcaoDoApp('prepararFiltroDeAgentesDaConversa'), /podeFazer\('agentes:ler'\)/);
+});
+
+test('conversa de agente não é assinada nem avisada como Serena', () => {
+  assert.match(funcaoDoApp('desenharThread'), /agenteDaConversaAberta \|\| 'Serena'/);
+  const abrir = funcaoDoApp('abrirConversa');
+  assert.match(abrir, /agenteDaConversaAberta = conversa\.agente_nome \|\| null/);
+  assert.match(abrir, /Atendida pelo \$\{agenteDaConversaAberta\}/);
+  assert.match(funcaoDoApp('desenharFicha'), /atendida pelo \$\{conversa\.agente_nome\}/);
+});
+
 test('o teste de agente não reaproveita os rótulos dos botões órfãos removidos', () => {
   const bloco = blocoDeAgentes();
   for (const rotulo of ['Nova tarefa', 'Nova conversa', 'Novo lead']) {

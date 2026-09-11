@@ -482,6 +482,8 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
   white-space: nowrap;
 }
 .etiqueta.amarela { background: #fdf0d2; color: #7a5100; }
+/* Conversa de agente: outro negócio, outro número — não pode parecer da clínica. */
+.etiqueta.agente { background: #e0e7ff; color: #3730a3; }
 
 .compromissos li, .agenda-lista li {
   display: flex;

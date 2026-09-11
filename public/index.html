@@ -330,6 +330,13 @@
                       aria-label="Ordenar por data, mais recentes primeiro" title="Ordenar por data">
                 Mais recentes ↓
               </button>
+              <!-- Quem atende: a clínica (Serena) ou um agente. Só aparece para quem
+                   enxerga a tela de Agentes; o selo na linha vale para todos. -->
+              <label class="oculto-visual" for="filtro-agente-conversas">Filtrar por quem atende</label>
+              <select id="filtro-agente-conversas" title="Quem atende a conversa" hidden>
+                <option value="">Todas as conversas</option>
+                <option value="clinica">Só da clínica</option>
+              </select>
             </div>
             <div class="abas" role="tablist" aria-label="Filas do inbox">
               <button type="button" class="aba" role="tab" data-fila="minhas" aria-selected="false">Minhas</button>

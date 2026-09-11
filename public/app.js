@@ -334,6 +334,10 @@ let conversaAberta = null;
 let contatoAberto = null;
 let ordenacaoConversas = 'desc';
 let etiquetasDisponiveis = [];
+// Nome do agente dono da conversa aberta (docs/AGENTES.md); null = clínica.
+// A thread usa para não assinar como "Serena" o que um agente respondeu.
+let agenteDaConversaAberta = null;
+let filtroDeAgentesPreparado = false;
 
 function iniciais(nome) {
   return (nome || '?')
@@ -385,6 +389,9 @@ async function carregarConversas() {
   if (busca) parametros.set('busca', busca);
   const data = seletor('#filtro-data-conversas')?.value;
   if (data) parametros.set('data', data);
+  prepararFiltroDeAgentesDaConversa();
+  const agente = seletor('#filtro-agente-conversas')?.value;
+  if (agente) parametros.set('agente', agente);
 
   try {
     const dados = await pedirJson(`/api/conversas?${parametros}`);
@@ -405,6 +412,31 @@ async function carregarConversas() {
   } catch (erro) {
     avisar(lista, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar as conversas.');
   }
+}
+
+/**
+ * Seletor "quem atende" do inbox: Todas / Só da clínica / cada agente. Os
+ * agentes vêm de /api/agentes, que só gestor e admin leem — para os demais o
+ * seletor fica escondido e o selo na linha continua dizendo de quem é a conversa.
+ * Monta uma vez por sessão; falhar aqui não pode travar a lista.
+ */
+function prepararFiltroDeAgentesDaConversa() {
+  const campo = seletor('#filtro-agente-conversas');
+  if (!campo || filtroDeAgentesPreparado || !podeFazer('agentes:ler')) return;
+  filtroDeAgentesPreparado = true;
+  pedirJson('/api/agentes').then((dados) => {
+    const agentes = dados.agentes ?? [];
+    if (agentes.length === 0) return;
+    for (const agente of agentes) {
+      const opcao = document.createElement('option');
+      opcao.value = String(Number(agente.id));
+      opcao.textContent = `Só do ${agente.nome}`;
+      campo.append(opcao);
+    }
+    campo.hidden = false;
+  }).catch(() => {
+    filtroDeAgentesPreparado = false;
+  });
 }
 
 /** Painel Hoje: as conversas que ainda esperam a equipe, com dado real. */
@@ -547,6 +579,14 @@ function montarLinhaDaLista(conversa) {
   const selos = document.createElement('span');
   selos.className = 'selos';
 
+  // Primeiro selo: de quem é a conversa. Cliente de agente é de outro negócio
+  // e sai por outro número — quem tria o inbox precisa ver isso antes de tudo.
+  if (conversa.agente_nome) {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta agente';
+    selo.textContent = conversa.agente_nome;
+    selos.append(selo);
+  }
   if (conversa.assumida_por_humano) {
     const selo = document.createElement('span');
     selo.className = 'etiqueta amarela';
@@ -611,19 +651,29 @@ async function abrirConversa(conversaId) {
 
     const { conversa, ficha } = detalhe;
     contatoAberto = conversa.contato_id;
+    agenteDaConversaAberta = conversa.agente_nome || null;
 
     definirTexto('#thread-nome', conversa.contato?.nome || `Conversa ${conversa.id}`);
     definirTexto(
       '#thread-detalhe',
-      `${conversa.canal} · ${conversa.status}${conversa.prioridade ? ` · ${conversa.prioridade}` : ''}`,
+      `${conversa.canal} · ${conversa.status}${conversa.prioridade ? ` · ${conversa.prioridade}` : ''}`
+        + `${agenteDaConversaAberta ? ` · ${agenteDaConversaAberta}` : ''}`,
     );
 
     // A pausa da IA é a informação mais importante da tela: quem responde agora?
+    // Em conversa de agente a resposta é do agente, pelo número dele — nunca da Serena.
     const aviso = seletor('#aviso-ia');
-    aviso.hidden = !conversa.assumida_por_humano;
-    aviso.textContent = conversa.assumida_por_humano
-      ? 'Conversa assumida pela equipe. A resposta automática está pausada.'
-      : '';
+    if (agenteDaConversaAberta) {
+      aviso.hidden = false;
+      aviso.textContent = conversa.assumida_por_humano
+        ? `Conversa assumida pela equipe. O ${agenteDaConversaAberta} está pausado nesta conversa.`
+        : `Atendida pelo ${agenteDaConversaAberta}. As respostas saem pelo número do agente, não pelo da clínica.`;
+    } else {
+      aviso.hidden = !conversa.assumida_por_humano;
+      aviso.textContent = conversa.assumida_por_humano
+        ? 'Conversa assumida pela equipe. A resposta automática está pausada.'
+        : '';
+    }
     seletor('.acao[data-acao="assumir"]').hidden = conversa.assumida_por_humano;
     seletor('.acao[data-acao="liberar"]').hidden = !conversa.assumida_por_humano;
 
@@ -734,7 +784,9 @@ function desenharThread(mensagens) {
     corpo.textContent = mensagem.conteudo || '';
 
     const rodape = document.createElement('small');
-    const autor = mensagem.autor_tipo === 'automacao' ? 'Serena' : mensagem.autor_nome || '';
+    const autor = mensagem.autor_tipo === 'automacao'
+      ? (agenteDaConversaAberta || 'Serena')
+      : mensagem.autor_nome || '';
     rodape.textContent = [mensagem.privada ? 'nota interna' : autor, hora(mensagem.criado_em)]
       .filter(Boolean)
       .join(' · ');
@@ -761,7 +813,8 @@ function desenharThread(mensagens) {
 
 function desenharFicha(conversa, ficha, temperatura) {
   definirTexto('#ficha-nome', ficha?.nome || 'Sem nome');
-  definirTexto('#ficha-canal', `${conversa.canal}${temperatura ? ` · lead ${temperatura}` : ''}`);
+  definirTexto('#ficha-canal', `${conversa.canal}${conversa.agente_nome ? ` · atendida pelo ${conversa.agente_nome}` : ''}`
+    + `${temperatura ? ` · lead ${temperatura}` : ''}`);
   definirTexto('#ficha-telefone', ficha?.telefone || '—');
   definirTexto('#ficha-identificador', ficha?.identificador || '—');
   definirTexto('#ficha-email', ficha?.email || '—');
@@ -1332,6 +1385,8 @@ for (const aba of document.querySelectorAll('.aba[data-fila]')) {
     carregarConversas();
   });
 }
+
+seletor('#filtro-agente-conversas')?.addEventListener('change', carregarConversas);
 
 let buscaAgendada = null;
 seletor('#busca-conversas')?.addEventListener('input', () => {

@@ -161,6 +161,14 @@ function criarRotasDeConversas({
       }
       const { inicio: dataInicio, fim: dataFim } = dataParam ? limitesDoDia(dataParam) : {};
 
+      // De quem é a conversa (docs/AGENTES.md): sem parâmetro, todas; `clinica`,
+      // só as sem agente; um id, só as daquele agente. Valor estranho é 400 —
+      // ignorar o filtro mostraria a lista inteira como se fosse o recorte pedido.
+      const agenteParam = parametros.get('agente');
+      const agenteId = !agenteParam
+        ? undefined
+        : agenteParam === 'clinica' ? null : exigirIdentificador(agenteParam, 'agente');
+
       const contatoParam = parametros.get('contato');
       const conversas = await repositorio.listarConversas({
         status: status || null,
@@ -170,6 +178,7 @@ function criarRotasDeConversas({
         dataFim: dataFim || null,
         ordenacao,
         limite: 50,
+        agenteId,
       });
 
       // A fila é um recorte de quem responde, não um filtro do banco.
