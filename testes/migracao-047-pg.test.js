@@ -70,6 +70,11 @@ test('[pg] 047: privilégios mínimos, RLS, FKs em cascata e gatilho de acesso_c
   assert.ok(!registro.apaga && !registro.trunca, 'a aplicação nunca apaga o registro');
   assert.equal(registro.anon, false);
   assert.equal(registro.sensiveis, 0, 'sem coluna de telefone ou texto');
+  const { rows: indicesDoRegistro } = await db.query(
+    "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'resumo_envios' AND indexname = 'resumo_envios_usuario_idx'",
+  );
+  assert.equal(indicesDoRegistro.length, 1, 'índice por usuario_id: a FK com CASCADE não varre a tabela ao apagar usuário');
+  assert.match(indicesDoRegistro[0].indexdef, /\(usuario_id\)/);
 
   // ------------------------------------------------------------ FKs em cascata
   const sufixo = `${process.pid}-${Date.now()}`;

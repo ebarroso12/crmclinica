@@ -135,6 +135,10 @@ CREATE TABLE IF NOT EXISTS resumo_envios (
   atualizado_em timestamptz NOT NULL DEFAULT now()
 );
 
+-- Apagar um usuário apaga os envios dele (CASCADE): sem índice, varria a tabela.
+-- Sem índice por criado_em: não há limpeza no código (docs/RESUMOS.md, resíduos).
+CREATE INDEX IF NOT EXISTS resumo_envios_usuario_idx ON resumo_envios (usuario_id);
+
 -- ---------------------------------------------------------------- RLS/GRANT
 
 ALTER TABLE public.agente_equipe ENABLE ROW LEVEL SECURITY;

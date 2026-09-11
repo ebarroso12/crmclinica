@@ -71,6 +71,15 @@ test('047 cria resumo_envios sem telefone nem texto, com RLS, política e GRANT 
   assert.match(verificador, /has_table_privilege\('crmclinica_app', 'public\.resumo_envios', 'DELETE'\)/);
 });
 
+test('resumo_envios: índice por usuario_id (FK com CASCADE), dentro da transação; o DROP TABLE do rollback o leva (reconferência)', () => {
+  const corpo = semComentarios(SQL);
+  assert.match(corpo, /CREATE INDEX IF NOT EXISTS resumo_envios_usuario_idx ON resumo_envios \(usuario_id\);/);
+  const posicao = corpo.indexOf('resumo_envios_usuario_idx');
+  assert.ok(posicao > corpo.indexOf('CREATE TABLE IF NOT EXISTS resumo_envios ('), 'depois da tabela');
+  assert.ok(posicao < corpo.indexOf('COMMIT;'), 'dentro da transação');
+  assert.match(semComentarios(ROLLBACK), /DROP TABLE IF EXISTS resumo_envios;/);
+});
+
 test('agente_equipe: chave (agente, usuário), CASCADE nas duas FKs e índice por usuário', () => {
   const bloco = SQL.match(/CREATE TABLE IF NOT EXISTS agente_equipe \(([\s\S]*?)\n\);/)[1];
   assert.match(bloco, /agente_id\s+bigint NOT NULL REFERENCES agentes\(id\) ON DELETE CASCADE/);

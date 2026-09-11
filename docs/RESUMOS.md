@@ -270,7 +270,19 @@ autorizado no cadastro (`docs/AGENTES.md`, "Colocar um agente no ar").
   worker pode antecipar uma auditoria — nunca um envio.
 - Parte que falhou para todos volta a cada resumo do grupo enquanto a entrada tiver menos de
   24 h (no máximo ~12 tentativas com intervalo de 2 h); depois fica só na auditoria.
-- `resumo_envios` cresce sem limpeza automática (poucas linhas por dia: resumos × pessoas ×
-  partes).
+- **`resumo_envios` cresce sem limpeza** (resíduo aceito na reconferência de acesso).
+  - **Crescimento:** cerca de uma linha por pessoa × parte a cada resumo do grupo. Com
+    intervalo de 2 h são até 12 resumos por grupo por dia; com 5 pessoas e 1–2 partes, dá
+    ~60–120 linhas por dia por grupo (~22–44 mil por ano). A linha é pequena (chave, ids,
+    status, datas), sem telefone e sem texto.
+  - **Sem limpeza no código:** o `crmclinica_app` não tem DELETE na tabela (a reconferência
+    viu `42501`) e não ganha só por isso.
+  - **Índice:** já existe por `usuario_id` (`resumo_envios_usuario_idx`), para a FK com
+    CASCADE.
+  - **Rotina futura sugerida** (com autorização própria, como toda escrita em produção):
+    - um job do dono das tabelas apaga linhas com `criado_em < now() - interval '30 days'`;
+    - o registro só protege contra reenviar o mesmo resumo, e nenhuma conversa volta ao
+      resumo depois de 24 h (a janela), então 30 dias é folga;
+    - a mesma mudança cria o índice por `criado_em` que o job precisar.
 - Funcionário que também seja cliente/paciente, escrevendo do WhatsApp autorizado dele, não
   é atendido automaticamente (é tratado como equipe).
