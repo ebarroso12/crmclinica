@@ -261,9 +261,17 @@ function dividirEmMensagens({ titulo, blocos, rodape, limite = LIMITE_POR_MENSAG
   });
 }
 
-/** Motivo de falha sem número de pessoa: sequência longa de dígitos vira asterisco. */
+/**
+ * Motivo de falha sem número de pessoa (auditoria B7): qualquer trecho com
+ * dígitos e separadores de telefone (espaço, ponto, hífen, parênteses, +) que
+ * some 8 ou mais dígitos vira `***` — "99294-3215", "(16) 99294-3215",
+ * "+55 16 99294-3215", "5516992943215". Trechos curtos (código HTTP,
+ * contagem de tentativas) continuam.
+ */
 function motivoSemTelefone(mensagem) {
-  return String(mensagem ?? 'falha sem mensagem').replace(/\d{8,}/g, '***').slice(0, 300);
+  return String(mensagem ?? 'falha sem mensagem')
+    .replace(/\+?\(?\d[\d\s().-]*\d\)?/g, (trecho) => (trecho.replace(/\D/g, '').length >= 8 ? '***' : trecho))
+    .slice(0, 300);
 }
 
 /**
@@ -575,6 +583,6 @@ function criarResumoDeAtendimento({
 
 module.exports = {
   criarResumoDeAtendimento, montarResumo, montarCabecalho, montarCabecalhoDoAgente, corpoDeReserva,
-  dividirEmMensagens, extrairIdade, extrairQueixa, ofereceuFormulario,
+  dividirEmMensagens, extrairIdade, extrairQueixa, ofereceuFormulario, motivoSemTelefone,
   LIMITE_POR_MENSAGEM, INTERVALO_PADRAO_MIN,
 };

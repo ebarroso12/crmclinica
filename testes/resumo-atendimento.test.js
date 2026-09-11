@@ -287,6 +287,18 @@ test('divisão: uma parte só não leva numeração e leva o rodapé', () => {
   assert.deepEqual(parte.conversas, [1]);
 });
 
+test('motivo de falha mascara telefone formatado; código HTTP e contagens continuam (auditoria B7)', () => {
+  const { motivoSemTelefone } = require('../src/dominio/resumo-atendimento');
+  for (const numero of ['99294-3215', '(16) 99294-3215', '+55 16 99294-3215', '5516992943215', '+55 (16) 9 9294-3215']) {
+    const motivo = motivoSemTelefone(`Evolution recusou o envio para ${numero}: HTTP 500 em 3 tentativas`);
+    assert.ok(!/9294|3215/.test(motivo), `"${numero}" vazou: ${motivo}`);
+    assert.match(motivo, /\*\*\*/);
+    assert.match(motivo, /HTTP 500 em 3 tentativas/, 'o que não é telefone continua legível');
+  }
+  assert.equal(motivoSemTelefone(null), 'falha sem mensagem');
+  assert.ok(motivoSemTelefone('x'.repeat(400)).length <= 300);
+});
+
 test('bloco grande é cortado por code point: emoji nunca partido ao meio (auditoria B4)', () => {
   const partes = dividirEmMensagens({
     titulo: 'RESUMO DA CLÍNICA',
