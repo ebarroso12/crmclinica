@@ -4,7 +4,7 @@ const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
 const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
 const { ehPedidoDeOptOut } = require('./lembretes');
-const { criarNumerosInternos } = require('./numeros-internos');
+const { criarNumerosInternos, criarNumerosInternosDoCadastro } = require('./numeros-internos');
 const { ErroDeEstrategia } = require('../contratos/erros');
 const { criarFluxoDeAgentes } = require('./agentes/fluxo');
 
@@ -89,6 +89,9 @@ function criarAtendimento({
   // `WHATSAPP_BUSINESS_PHONE` (ver src/config.js). Vazia por padrão: sem
   // configuração, ninguém é filtrado.
   const equipe = criarNumerosInternos(numerosInternos);
+  // E os do CADASTRO (docs/RESUMOS.md): o WhatsApp autorizado de cada pessoa da
+  // equipe, que é para onde o resumo vai. Lido do banco no máximo uma vez por minuto.
+  const equipeDoCadastro = criarNumerosInternosDoCadastro({ repositorio });
   // Conversas de agente (docs/AGENTES.md) seguem por um fluxo próprio, que
   // reaproveita a barreira final e o escalonamento daqui. `entregarAoPaciente`
   // e `escalonar` são declarações de função: já existem neste ponto.
@@ -152,9 +155,14 @@ function criarAtendimento({
     //
     // Antes de gravar qualquer coisa, de propósito: uma linha criada e depois
     // escondida continua sendo uma linha no banco.
-    // Os números internos são da equipe da CLÍNICA: escrever para o número de
-    // um agente é conversa legítima com ele (inclusive para testar).
-    if (!agente && !semTelefone && equipe.ehInterno(evento.remetente)) {
+    // Os números internos do AMBIENTE são da equipe da CLÍNICA: escrever com
+    // eles para o número de um agente é conversa legítima (inclusive para
+    // testar). Os do CADASTRO valem nos dois lados (docs/RESUMOS.md): o resumo
+    // vai para o WhatsApp autorizado de cada pessoa, e quem recebe resumo não é
+    // cliente de agente nenhum — sem isto, o funcionário que responde o resumo
+    // pelo número do Alpins seria atendido pelo próprio agente.
+    if (!semTelefone && ((!agente && equipe.ehInterno(evento.remetente))
+      || await equipeDoCadastro.ehInterno(evento.remetente))) {
       return {
         acao: 'mensagem_interna_ignorada',
         motivo: 'número da equipe — comanda, não é atendido',
@@ -1157,6 +1165,15 @@ function criarAtendimento({
     // Mesmo critério da entrada: o eco de um número de agente vai para a
     // conversa do agente, nunca para a da clínica.
     const agente = await fluxoDeAgentes.agenteDoCanal('whatsapp', instancia);
+
+    // O eco do RESUMO (docs/RESUMOS.md): a mensagem que saiu para o WhatsApp de
+    // alguém da equipe volta como `fromMe`. Registrá-la criaria um contato com o
+    // número da própria equipe — na clínica ou no agente — a cada resumo. Mesmo
+    // critério da entrada: lista do ambiente só na clínica; cadastro nos dois.
+    if ((!agente && equipe.ehInterno(telefone)) || await equipeDoCadastro.ehInterno(telefone)) {
+      return { acao: 'eco_interno_ignorado', motivo: 'número da equipe — não é atendimento', conversa_id: null };
+    }
+
     const contato = await repositorio.encontrarOuCriarContato({
       telefone, nome, canal: 'whatsapp', identificador: null,
     });

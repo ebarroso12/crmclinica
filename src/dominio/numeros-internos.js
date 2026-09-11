@@ -49,4 +49,50 @@ function criarNumerosInternos(lista = []) {
   };
 }
 
-module.exports = { criarNumerosInternos };
+/**
+ * Os números da equipe que vêm do CADASTRO (docs/RESUMOS.md): com o resumo indo
+ * para o WhatsApp de cada pessoa, a resposta dela ao resumo — e o eco do próprio
+ * resumo — chegam pelos webhooks como qualquer mensagem. Sem esta lista, cada
+ * resumo abriria um "atendimento" com a própria equipe, na clínica e no agente.
+ *
+ * Lida do banco no máximo uma vez por `validadeMs` (por processo). Se a leitura
+ * falhar, fica a última lista conhecida — nunca derruba o ingresso, e nunca
+ * cala paciente por uma falha de banco.
+ */
+function criarNumerosInternosDoCadastro({ repositorio, validadeMs = 60_000, relogio = () => Date.now() } = {}) {
+  // Carregado aqui, não no topo: destinatarios-resumo não depende deste módulo,
+  // mas manter a dependência preguiçosa evita ciclo se um dia depender.
+  const { telefonesInternosDoCadastro } = require('./destinatarios-resumo');
+  let conhecidos = criarNumerosInternos([]);
+  let lidoEm = null;
+  let leitura = null;
+
+  async function atualizar() {
+    if (!repositorio?.listarDestinatariosDeResumo) return conhecidos;
+    if (lidoEm !== null && relogio() - lidoEm < validadeMs) return conhecidos;
+    if (!leitura) {
+      leitura = (async () => {
+        try {
+          conhecidos = criarNumerosInternos(telefonesInternosDoCadastro(await repositorio.listarDestinatariosDeResumo()));
+        } catch (erro) {
+          console.error(`[numeros-internos] cadastro indisponível, segue a última lista: ${erro.message}`);
+        } finally {
+          lidoEm = relogio();
+          leitura = null;
+        }
+      })();
+    }
+    await leitura;
+    return conhecidos;
+  }
+
+  return {
+    /** É WhatsApp autorizado de alguém da equipe? */
+    async ehInterno(telefone) {
+      if (!telefone) return false;
+      return (await atualizar()).ehInterno(telefone);
+    },
+  };
+}
+
+module.exports = { criarNumerosInternos, criarNumerosInternosDoCadastro };

@@ -3,7 +3,7 @@
 const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
 const { ehFalhaDoAgente } = require('../integracoes/openclaw');
 const { normalizarTelefone } = require('./serena');
-const { criarNumerosInternos } = require('./numeros-internos');
+const { criarNumerosInternos, criarNumerosInternosDoCadastro } = require('./numeros-internos');
 
 // Traz para o CRM as conversas que acontecem no WhatsApp.
 //
@@ -110,6 +110,8 @@ function criarSincronizadorDeConversas({
   estrategiaIa = 'openclaw_gerencia',
 }) {
   const equipe = criarNumerosInternos(numerosInternos);
+  // Os do cadastro também (docs/RESUMOS.md): quem recebe resumo no WhatsApp não é paciente.
+  const equipeDoCadastro = criarNumerosInternosDoCadastro({ repositorio });
   if (!gateway) throw new Error('sincronizador de conversas exige o gateway');
   if (!atendimento) throw new Error('sincronizador de conversas exige o atendimento');
   if (!repositorio) throw new Error('sincronizador de conversas exige o repositório');
@@ -153,7 +155,7 @@ function criarSincronizadorDeConversas({
 
     // Administrador não é paciente: ele comanda a Serena e recebe os resumos.
     // Sem esta linha, cada resumo enviado voltaria como conversa nova.
-    if (equipe.ehInterno(telefone)) {
+    if (equipe.ehInterno(telefone) || await equipeDoCadastro.ehInterno(telefone)) {
       return { ignorada: true, motivo: 'número da equipe — comanda, não é atendido' };
     }
 
