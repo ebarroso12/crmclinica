@@ -118,6 +118,8 @@ const TESTES_DE_POSTGRES = Object.freeze([
   'testes/lembretes-concorrencia.test.js',
   'testes/conversas-eventos-pg.test.js',
   'testes/mensagens-confirmacao-entrega-pg.test.js',
+  // Migration 047 como a aplicação a usa (auditoria de acesso: o teste da 047 era só textual).
+  'testes/migracao-047-pg.test.js',
 ]);
 
 function existentes(arquivos) {

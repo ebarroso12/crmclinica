@@ -283,3 +283,49 @@ test('B3: quem não vê a clínica não cria nota na ficha do contato — 403; a
   });
   assert.equal(daClinica.status, 200, 'quem vê a clínica continua anotando a ficha');
 });
+
+// ------------------------------------------------ lacuna: SSE pela rota HTTP
+
+test('lacuna: chat ao vivo pela rota HTTP — o replay de cada perfil só traz as conversas que ele vê', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+  const daClinica = await c.repositorio.registrarEventoDeConversa({ conversaId: c.conversaClinica.id, tipo: 'mensagem_recebida', payload: {} });
+  const doAlpins = await c.repositorio.registrarEventoDeConversa({ conversaId: c.conversaPacienteLoja.id, tipo: 'mensagem_recebida', payload: {} });
+
+  async function replayDe(quem) {
+    const bilhete = await c.pedir(quem, '/api/conversas/eventos/ticket', { metodo: 'POST' });
+    assert.equal(bilhete.status, 200, `${quem}: bilhete do SSE`);
+    const controle = new AbortController();
+    const resposta = await c.app.pedirSemAuth(
+      `/api/conversas/eventos?ticket=${encodeURIComponent(bilhete.json.ticket)}&cursor=0`,
+      { signal: controle.signal },
+    );
+    assert.equal(resposta.status, 200, `${quem}: conexão do SSE`);
+    const leitor = resposta.body.getReader();
+    const decodificador = new TextDecoder();
+    let texto = '';
+    const prazo = Date.now() + 800;
+    while (Date.now() < prazo) {
+      const corrida = await Promise.race([
+        leitor.read(),
+        new Promise((resolver) => { setTimeout(() => resolver(null), 50); }),
+      ]);
+      if (corrida?.done) break;
+      if (corrida?.value) texto += decodificador.decode(corrida.value, { stream: true });
+    }
+    controle.abort();
+    await leitor.cancel().catch(() => {});
+    return texto;
+  }
+  const recebeu = (texto, evento) => new RegExp(`^id: ${evento.id}$`, 'm').test(texto);
+
+  for (const quem of ['loja', 'gestorLoja']) {
+    const texto = await replayDe(quem);
+    assert.equal(recebeu(texto, doAlpins), true, `${quem} recebe o evento do Alpins`);
+    assert.equal(recebeu(texto, daClinica), false, `${quem} NÃO recebe o evento da clínica do mesmo paciente`);
+  }
+  const daClinicaFora = await replayDe('gestorClinica');
+  assert.deepEqual([recebeu(daClinicaFora, daClinica), recebeu(daClinicaFora, doAlpins)], [true, false]);
+  const doAdmin = await replayDe('admin');
+  assert.deepEqual([recebeu(doAdmin, daClinica), recebeu(doAdmin, doAlpins)], [true, true]);
+});
