@@ -55,16 +55,22 @@ interno (o que esses números escrevem não vira contato) e pelo aviso-equipe.
 
 ## Janela e ritmo
 
-- **Janela (A1)**: uma conversa só entra no resumo do seu grupo se o contato escreveu
-  depois do **início da janela** desse grupo:
-  - início = (último resumo do grupo, ou agora se o grupo nunca recebeu) − intervalo − silêncio;
-  - **nunca antes de agora − 24 h**.
-  Conversa antiga sem nada novo nunca sai. O código anterior nunca resumia conversa de
-  agente — sem a janela, a primeira autorização de WhatsApp mandava o histórico inteiro.
-  "− silêncio": a conversa precisa esfriar para entrar; sem isso, a que ainda não tinha
-  esfriado no último resumo ficaria de fora para sempre. "− intervalo": o que não chegou a
-  ninguém, ou passou do teto por resumo, tem mais uma chance no resumo seguinte. Worker
-  parado por dias: entram só as entradas das últimas 24 h.
+- **Janela (A1; reconferência B-n1 e B-n2)**: uma conversa entra no resumo do seu grupo
+  quando tem **entrada do contato ainda não resumida** (depois da marca `resumo_enviado_em`
+  da própria conversa) **nas últimas 24 h**.
+  - Quem impede repetir é a marca por conversa.
+  - Quem protege o histórico é o teto de 24 h. Conversa antiga sem entrada nova nunca sai,
+    nem com saída recente da equipe. O código anterior nunca resumia conversa de agente, e
+    sem esse corte a primeira autorização de WhatsApp mandava o histórico inteiro. Com o
+    worker parado por dias, entram só as entradas das últimas 24 h.
+  - Por que não mais "relógio do grupo − intervalo − silêncio": essa janela perdia
+    atendimento de dois jeitos.
+    - **B-n1**: a sobra acima de 40 por resumo saía da janela no terceiro ciclo, e o rodapé
+      "Mais N" não era cumprido (90 atendimentos saíam 40 + 40 + 0).
+    - **B-n2**: a conversa com saídas por mais de intervalo + silêncio depois da última
+      entrada esfriava já fora da janela e nunca era resumida.
+  - Efeito colateral aceito: o primeiro resumo de um grupo pode trazer até 24 h de entradas
+    nunca resumidas, no máximo 40 por resumo, com o resto nos seguintes.
 - Uma conversa entra quando está em silêncio há `CRMCLINICA_RESUMO_SILENCIO_MIN` minutos
   (padrão 30; produção usa 120).
 - **Um resumo por grupo** (a clínica; cada agente) a cada `CRMCLINICA_RESUMO_INTERVALO_MIN`
@@ -118,7 +124,7 @@ chegou a **pelo menos uma** pessoa (enviado ou incerto).
 | Situação | O que acontece |
 |---|---|
 | Ninguém do grupo recebeu nada (canal fora do ar) | Nada é marcado, o relógio não anda: o ciclo seguinte (1 min) tenta de novo; as chaves com `falhou` voltam a ser tentadas |
-| Uma parte não chegou a ninguém, outra parte do mesmo resumo chegou | O relógio anda, então a parte que falhou **espera o intervalo** e tem mais uma chance no resumo seguinte (a janela olha intervalo + silêncio para trás); depois disso fica só na auditoria |
+| Uma parte não chegou a ninguém, outra parte do mesmo resumo chegou | O relógio anda, então a parte que falhou **espera o intervalo** e volta nos resumos seguintes enquanto a entrada tiver menos de 24 h; depois disso fica só na auditoria |
 | Uma pessoa falhou e outra recebeu | O atendimento é marcado e não volta para quem falhou (auditoria "parcial") |
 | Envio incerto | Não é repetido; o atendimento é marcado |
 
@@ -219,8 +225,8 @@ autorizado no cadastro (`docs/AGENTES.md`, "Colocar um agente no ar").
   (233 linhas em produção em 11/09).
 - A limitação de auditoria (uma por grupo por intervalo) vive no processo: reiniciar o
   worker pode antecipar uma auditoria — nunca um envio.
-- Parte que falhou para todos tem uma chance a mais no resumo seguinte; se falhar de novo
-  e sair da janela, fica só na auditoria.
+- Parte que falhou para todos volta a cada resumo do grupo enquanto a entrada tiver menos de
+  24 h (no máximo ~12 tentativas com intervalo de 2 h); depois fica só na auditoria.
 - `resumo_envios` cresce sem limpeza automática (poucas linhas por dia: resumos × pessoas ×
   partes).
 - Funcionário que também seja cliente/paciente, escrevendo do WhatsApp autorizado dele, não

@@ -664,6 +664,59 @@ test('worker parado 3 dias: entram só as entradas das últimas 24 h, não a fil
   assert.ok(!/Velha/.test(texto), 'o que passou de 24 h não vira enxurrada');
 });
 
+test('sobra acima de 40 por resumo sai nos resumos seguintes: 90 atendimentos em 3 ciclos, sem histórico antigo (reconferência B-n1)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000191' });
+  // Histórico nunca resumido, de 2 dias atrás — uma delas com saída recente da equipe.
+  const antigas = [];
+  for (let i = 0; i < 5; i += 1) antigas.push(await c.conversa(`55169500${String(i).padStart(5, '0')}`, { nome: `Antiga ${i}` }));
+  c.relogio.avancar(2 * 24 * 60);
+  await c.repositorio.registrarMensagem(antigas[0].id, { direcao: 'saida', conteudo: 'ainda precisa?', autor_tipo: 'equipe' });
+  for (let i = 0; i < 90; i += 1) await c.conversa(`55169600${String(i).padStart(5, '0')}`, { nome: `Fila ${i}` });
+
+  const canal = canalFalso();
+  const resumo = c.resumo({ canal });
+  const porCiclo = [];
+  for (const minutos of [31, 120, 120, 120]) {
+    c.relogio.avancar(minutos);
+    porCiclo.push((await resumo.enviarPendentes()).enviados);
+  }
+
+  assert.deepEqual(porCiclo, [40, 40, 10, 0], 'o rodapé "Mais N" é cumprido: a sobra sai nos resumos seguintes');
+  assert.ok(!canal.envios.some((envio) => envio.texto.includes('Antiga')), 'histórico de fora das 24 h não entra');
+  assert.deepEqual((await c.pendentes()).sort((a, b) => a - b), antigas.map((conversa) => conversa.id).sort((a, b) => a - b),
+    'as 90 marcadas uma vez; só o histórico continua sem resumo');
+});
+
+test('conversa com saídas por horas depois da última entrada é resumida uma vez quando esfria (reconferência B-n2)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000201' });
+  const longa = await c.conversa('5516970000001', { nome: 'Saidas Longas' });
+  const canal = canalFalso();
+  const resumo = c.resumo({ canal });
+
+  // A equipe responde a cada 20 min por 5 h: a conversa não esfria. No meio,
+  // outra conversa esfria e sai num resumo — o relógio do grupo anda.
+  for (let minuto = 20; minuto <= 300; minuto += 20) {
+    c.relogio.avancar(20);
+    await c.repositorio.registrarMensagem(longa.id, { direcao: 'saida', conteudo: `resposta ${minuto}`, autor_tipo: 'equipe' });
+    if (minuto === 160) await c.conversa('5516970000002', { nome: 'Outra Conversa' });
+    if (minuto === 200) await resumo.enviarPendentes();
+  }
+  assert.equal(canal.envios.length, 1);
+  assert.ok(!canal.envios[0].texto.includes('Saidas Longas'), 'ainda não tinha esfriado');
+
+  c.relogio.avancar(31);
+  const resultado = await resumo.enviarPendentes();
+  assert.equal(resultado.enviados, 1, 'esfriou: a entrada de 5 h atrás, nunca resumida, entra');
+  assert.match(canal.envios.at(-1).texto, /Saidas Longas/);
+  assert.deepEqual(await c.pendentes(), []);
+
+  c.relogio.avancar(24 * 60);
+  await resumo.enviarPendentes();
+  assert.equal(canal.envios.length, 2, 'não repete');
+});
+
 // ------------------------------------------------------------- ligação no worker
 
 test('sem canal de entrega o resumo fica inativo e nem consulta o banco', async () => {

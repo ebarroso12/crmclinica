@@ -555,31 +555,23 @@ function criarResumoDeAtendimento({
     return relatorio;
   }
 
-  // Janela (auditoria A1): uma conversa só entra no resumo do seu grupo se o
-  // contato escreveu depois do INÍCIO DA JANELA desse grupo:
-  //   início = (relógio do grupo ou, sem relógio, agora) − intervalo − silêncio,
-  //   nunca antes de agora − 24 h.
-  // "− silêncio": a conversa precisa esfriar para entrar — sem isso, a que
-  // ainda não tinha esfriado no último resumo ficaria de fora para sempre, e um
-  // grupo sem relógio com silêncio = intervalo nunca teria conversa elegível.
-  // "− intervalo": o que não chegou a ninguém, ou passou do teto por resumo,
-  // tem mais uma chance no resumo seguinte. O teto de 24 h impede que uma queda
-  // longa do worker — ou o histórico nunca resumido — vire enxurrada.
-  const folgaDaJanelaMs = intervaloMs + Math.max(0, Number(silencioMin) || 0) * 60_000;
-  function inicioDaJanela(ultimo, instante) {
-    return new Date(Math.max(instante - JANELA_MAXIMA_MS, (ultimo ?? instante) - folgaDaJanelaMs)).toISOString();
-  }
-
+  // Janela (auditoria A1; reconferência B-n1 e B-n2): uma conversa entra no
+  // resumo do seu grupo quando está em silêncio e tem ENTRADA do contato ainda
+  // não resumida — depois da marca da própria conversa — nas últimas 24 h.
+  //   • quem impede repetir é a marca por conversa (`resumo_enviado_em`);
+  //   • quem impede o histórico nunca resumido (conversa de agente antiga, a fila
+  //     acumulada de um worker parado) de virar enxurrada é o teto de 24 h.
+  // O início já foi (relógio do grupo) − intervalo − silêncio, e isso perdia
+  // atendimento: a sobra acima do teto por resumo saía da janela no terceiro
+  // ciclo (B-n1), e a conversa com saídas por mais de intervalo + silêncio
+  // depois da última entrada esfriava fora da janela e nunca era resumida (B-n2).
   async function varrer() {
-    // O relógio vem do banco: o último envio confirmado de cada grupo. Lido
-    // antes da fila, porque é ele que define a janela de cada grupo.
+    // O relógio vem do banco: o último envio confirmado de cada grupo. É ele
+    // que decide se o grupo já pode receber outro resumo.
     const ultimos = new Map((await repositorio.listarUltimosEnviosDeResumo?.() ?? [])
       .map((linha) => [linha.agente_id === null ? null : Number(linha.agente_id), new Date(linha.ultimo_envio).getTime()]));
     const instante = agora().getTime();
-    const janelas = {
-      padrao: inicioDaJanela(undefined, instante),
-      porGrupo: [...ultimos].map(([agenteId, ultimo]) => ({ agente_id: agenteId, desde: inicioDaJanela(ultimo, instante) })),
-    };
+    const janelas = { padrao: new Date(instante - JANELA_MAXIMA_MS).toISOString(), porGrupo: [] };
 
     const pendentes = await repositorio.listarConversasSemResumo?.({ silencioMin, limite: LIMITE_DA_VARREDURA, janelas }) ?? [];
     if (pendentes.length === 0) return { enviados: 0, nao_entregues: 0, grupos: [] };
