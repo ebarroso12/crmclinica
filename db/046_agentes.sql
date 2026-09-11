@@ -185,8 +185,11 @@ BEGIN
         CREATE POLICY app_trabalho ON public.%I
         FOR ALL TO crmclinica_app USING (true) WITH CHECK (true)
       $p$, t);
-      -- TRUNCATE ignora o RLS; REFERENCES e TRIGGER a aplicação não usa.
-      EXECUTE format('REVOKE TRUNCATE, REFERENCES, TRIGGER ON public.%I FROM crmclinica_app', t);
+      -- Zera o que veio de DEFAULT PRIVILEGES antes de conceder o mínimo:
+      -- TRUNCATE ignora o RLS, UPDATE na sequence permite setval, e no
+      -- PostgreSQL 17 existe MAINTAIN — nada disso a aplicação usa.
+      EXECUTE format('REVOKE ALL ON public.%I FROM crmclinica_app', t);
+      EXECUTE format('REVOKE ALL ON SEQUENCE public.%I FROM crmclinica_app', t || '_id_seq');
       EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO crmclinica_app', t);
       EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE public.%I TO crmclinica_app', t || '_id_seq');
     END IF;

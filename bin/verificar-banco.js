@@ -479,6 +479,10 @@ async function main() {
           [`public.${tabela}`],
         );
         marcar(!trunca.pode, `sem TRUNCATE em ${tabela}`, trunca.pode ? 'TRUNCATE ignora o RLS' : '');
+        // RLS ligada sem política da aplicação: a tabela fica invisível SEM erro
+        // (obterAgentePorCanal devolveria null e o cliente cairia na clínica).
+        const temPolitica = (politicasPorTabela.get(tabela) ?? []).includes('app_trabalho');
+        marcar(temPolitica, `política app_trabalho em ${tabela}`, temPolitica ? '' : 'a aplicação não enxerga as linhas');
       }
 
       const { rows: indices } = await pool.query(

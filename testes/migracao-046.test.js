@@ -163,7 +163,12 @@ test('B2: nada herdado — PUBLIC revogado, aplicação sem TRUNCATE, sequences 
   const corpo = semComentarios(SQL);
   assert.match(corpo, /REVOKE ALL ON public\.%I FROM PUBLIC/);
   assert.match(corpo, /REVOKE ALL ON SEQUENCE public\.%I FROM PUBLIC/);
-  assert.match(corpo, /REVOKE TRUNCATE, REFERENCES, TRIGGER ON public\.%I FROM crmclinica_app/);
+  // Zera tudo da aplicação antes do GRANT mínimo (reconferência da 046).
+  const posRevogaApp = corpo.indexOf("REVOKE ALL ON public.%I FROM crmclinica_app");
+  const posRevogaSeqApp = corpo.indexOf("REVOKE ALL ON SEQUENCE public.%I FROM crmclinica_app");
+  const posGrant = corpo.indexOf('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO crmclinica_app');
+  assert.ok(posRevogaApp > 0 && posRevogaApp < posGrant, 'REVOKE ALL da aplicação antes do GRANT');
+  assert.ok(posRevogaSeqApp > 0 && posRevogaSeqApp < posGrant, 'sequence sem setval: REVOKE ALL antes do GRANT');
   assert.match(corpo, /REVOKE ALL ON SEQUENCE public\.%I FROM %I/);
   assert.ok(!/GRANT[^;]*TRUNCATE/.test(corpo));
 });
