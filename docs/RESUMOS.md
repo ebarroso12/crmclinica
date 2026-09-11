@@ -111,10 +111,19 @@ pessoa e do conteúdo da parte (ids das conversas e da última entrada, com hash
   conta como entregue;
 - sem registro (banco indisponível), não envia.
 
-Um restart entre a parte 1 e a parte 2 não reenvia a parte 1 nem a incerta. **SIGINT/SIGTERM
-esperam o ciclo de resumo em andamento por até 60 s** (abaixo do `TimeoutStopSec` padrão do
-systemd, 90 s) antes de fechar o pool; passando disso, sai — e o registro garante que o que
-ficou `enviando` não sai duas vezes.
+Um restart entre a parte 1 e a parte 2 não reenvia a parte 1 nem a incerta.
+
+**Parada (SIGINT/SIGTERM) com teto total de 80 s (reconferência B-n3)**, abaixo do
+`TimeoutStopSec` padrão do systemd (90 s). O lote corrente, o ciclo de resumo em andamento
+(até 60 s) e o fechamento do pool dividem o mesmo prazo. `pool.end()` espera a conexão da
+trava voltar, e ela só volta quando a varredura termina, por isso também corre contra o
+prazo. Passando do prazo, o worker sai:
+
+- o lote pela metade volta pelo lease de 5 min;
+- o registro garante que o que ficou `enviando` não sai duas vezes.
+
+Uma rede de segurança encerra com código 1 em 85 s se algo travar fora dessas esperas. Não é
+preciso aumentar o `TimeoutStopSec` do serviço.
 
 ## Entrega, marca e auditoria — o que acontece em cada falha (B1)
 

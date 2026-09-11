@@ -480,24 +480,43 @@ async function main() {
     console.log(`[lembretes] ${sinal}: encerrando depois do lote corrente…`);
     clearInterval(relogio);
 
+    // Teto TOTAL da parada (reconferência B-n3): o lote, o resumo e o
+    // fechamento do pool dividem um prazo só, de 80 s, abaixo do TimeoutStopSec
+    // padrão do systemd (90 s). Eram esperas somadas — lote sem teto + 60 s do
+    // resumo + `pool.end()`, que espera a conexão da trava do resumo voltar, e
+    // ela só volta quando a varredura termina.
+    const TETO_DA_PARADA_MS = 80_000;
+    const prazoDaParada = Date.now() + TETO_DA_PARADA_MS;
+    const restanteDaParada = () => Math.max(0, prazoDaParada - Date.now());
+    const ateOPrazo = (limiteMs) => new Promise((resolve) => { setTimeout(resolve, limiteMs).unref(); });
+    // Rede de segurança: sai mesmo que algo trave fora das esperas abaixo.
+    setTimeout(() => {
+      console.error('[lembretes] teto da parada estourado: saindo sem terminar o encerramento');
+      process.exit(1);
+    }, TETO_DA_PARADA_MS + 5_000);
+
     // Espera o lote em andamento. Matar no meio deixaria linhas em
     // 'processando' — recuperáveis, mas só depois do lease de 5 minutos.
-    while (rodando) await new Promise((resolve) => setTimeout(resolve, 100));
+    while (rodando && restanteDaParada() > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+    if (rodando) console.warn('[lembretes] prazo da parada acabou com o lote em andamento: ele volta pelo lease');
 
     // O resumo em andamento também (auditoria M2): parar no meio deixaria parte
-    // entregue sem marca. Teto de 60 s, abaixo do TimeoutStopSec padrão do
-    // systemd (90 s); passando disso, sai — o registro de envios (resumo_envios)
-    // impede que o que ficou 'enviando' saia duas vezes.
+    // entregue sem marca. Até 60 s, dentro do prazo; passando disso, sai — o
+    // registro de envios (resumo_envios) impede que o que ficou 'enviando' saia
+    // duas vezes.
     const ESPERA_MAXIMA_DO_RESUMO_MS = 60_000;
     if (resumoEmAndamento) {
       console.log('[lembretes] esperando o resumo em andamento terminar…');
       await Promise.race([
         resumoEmAndamento,
-        new Promise((resolve) => { setTimeout(resolve, ESPERA_MAXIMA_DO_RESUMO_MS).unref(); }),
+        ateOPrazo(Math.min(ESPERA_MAXIMA_DO_RESUMO_MS, restanteDaParada())),
       ]);
     }
 
-    await encerrarPool();
+    await Promise.race([
+      encerrarPool().catch((erro) => { console.error(`[lembretes] o pool não fechou limpo: ${erro.message}`); }),
+      ateOPrazo(restanteDaParada()),
+    ]);
     console.log('[lembretes] encerrado');
     process.exit(0);
   };

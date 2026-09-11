@@ -602,7 +602,20 @@ test('SIGTERM espera o resumo em andamento, com teto abaixo do TimeoutStopSec do
   const encerrar = fonte.slice(fonte.indexOf('const encerrar = async (sinal) => {'), fonte.indexOf("process.on('SIGINT'"));
   assert.match(encerrar, /const ESPERA_MAXIMA_DO_RESUMO_MS = 60_000;/);
   assert.match(encerrar, /if \(resumoEmAndamento\) \{/);
-  assert.ok(encerrar.indexOf('resumoEmAndamento') < encerrar.indexOf('await encerrarPool()'), 'espera o resumo antes de fechar o pool');
+  assert.ok(encerrar.indexOf('resumoEmAndamento') < encerrar.indexOf('encerrarPool()'), 'espera o resumo antes de fechar o pool');
+});
+
+test('parada com teto TOTAL abaixo dos 90 s do systemd: lote, resumo e fechar o pool dividem um prazo (reconferência B-n3)', () => {
+  const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
+  const encerrar = fonte.slice(fonte.indexOf('const encerrar = async (sinal) => {'), fonte.indexOf("process.on('SIGINT'"));
+  assert.match(encerrar, /const TETO_DA_PARADA_MS = 80_000;/);
+  assert.match(encerrar, /const prazoDaParada = Date\.now\(\) \+ TETO_DA_PARADA_MS;/);
+  assert.match(encerrar, /while \(rodando && restanteDaParada\(\) > 0\)/, 'o lote espera só até o prazo');
+  assert.match(encerrar, /ateOPrazo\(Math\.min\(ESPERA_MAXIMA_DO_RESUMO_MS, restanteDaParada\(\)\)\)/, 'o resumo espera dentro do prazo');
+  assert.match(encerrar, /await Promise\.race\(\[\s*encerrarPool\(\)[\s\S]*?ateOPrazo\(restanteDaParada\(\)\),\s*\]\);/,
+    'fechar o pool não espera a conexão da trava além do prazo');
+  assert.match(encerrar, /process\.exit\(1\);\s*\}, TETO_DA_PARADA_MS \+ 5_000\);/, 'rede de segurança em 85 s, ainda abaixo dos 90 s');
+  assert.ok(!/await encerrarPool\(\);/.test(encerrar), 'nenhuma espera sem prazo');
 });
 
 // ------------------------------------------------------------- janela (A1)
