@@ -104,6 +104,17 @@ test('resposta normal passa e a tagarela é cortada no teto', () => {
   assert.ok(cortado.endsWith('…'));
 });
 
+test('o corte no teto não parte emoji ao meio (conferência final sobre ee2faaa, B3)', () => {
+  // 698 unidades e um emoji (par substituto) cruzando a posição 699: o corte por
+  // unidade UTF-16 deixava a metade alta do par solta antes da reticência.
+  const cortado = interpretarResumo(`${'a'.repeat(698)}😀${'b'.repeat(100)}`);
+  assert.ok(cortado.length <= 700, 'o teto em unidades continua valendo');
+  assert.ok(cortado.endsWith('…'));
+  assert.doesNotMatch(cortado, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/, 'nenhuma metade de par substituto solta');
+  assert.equal(interpretarResumo(`${'a'.repeat(697)}😀${'b'.repeat(100)}`), `${'a'.repeat(697)}😀…`,
+    'o emoji que cabe inteiro fica');
+});
+
 // ------------------------------------------------------------------ gerador
 
 test('o gerador nunca lança: gateway quebrado devolve null', async () => {

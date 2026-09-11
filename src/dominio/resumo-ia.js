@@ -122,7 +122,16 @@ function montarPromptDoResumo({ mensagens = [], qualificacao = null, contexto = 
 function interpretarResumo(resposta) {
   const texto = String(resposta ?? '').trim();
   if (texto.length < MINIMO_DO_RESUMO) return null;
-  return texto.length > MAXIMO_DO_RESUMO ? `${texto.slice(0, MAXIMO_DO_RESUMO - 1)}…` : texto;
+  if (texto.length <= MAXIMO_DO_RESUMO) return texto;
+  // Corte por caractere inteiro (conferência final sobre ee2faaa, B3): com o teto
+  // em 700 o corte passou a ser frequente, e `slice` por unidade UTF-16 deixava
+  // metade de um emoji antes da reticência. O teto continua medido em unidades.
+  let cortado = '';
+  for (const caractere of Array.from(texto)) {
+    if (cortado.length + caractere.length > MAXIMO_DO_RESUMO - 1) break;
+    cortado += caractere;
+  }
+  return `${cortado}…`;
 }
 
 /**
