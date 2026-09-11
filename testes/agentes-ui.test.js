@@ -297,6 +297,18 @@ test('abrir um agente desenha a conversa de teste DO AGENTE, não a do laborató
 
 // ------------------------------------------------ inbox: de quem é a conversa
 
+// ------------------------- BN1: código de pareamento nunca aparece em outro agente
+
+test('BN1: o código de pareamento só é desenhado se o agente aberto ainda é o que pediu', () => {
+  const gerar = tratadorDe("seletor('#agente-whatsapp-form')?.addEventListener('submit'");
+  const guardar = gerar.indexOf('const id = Number(agenteAberto.agente.id);');
+  const pedir = gerar.indexOf('/api/agentes/${id}/whatsapp/conectar');
+  const conferir = gerar.indexOf('Number(agenteAberto.agente.id) !== id');
+  const desenhar = gerar.indexOf('desenharPareamentoDoAgente(resultado);');
+  assert.ok(guardar >= 0 && guardar < pedir, 'guarda o agente antes de pedir o código');
+  assert.ok(conferir > pedir && conferir < desenhar, 'confere o agente aberto antes de desenhar o código');
+});
+
 function funcaoDoApp(nome) {
   const inicio = APP_JS.search(new RegExp(`^(?:async\\s+)?function ${nome}\\(`, 'm'));
   assert.ok(inicio >= 0, `function ${nome} precisa existir em app.js`);

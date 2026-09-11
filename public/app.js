@@ -4758,11 +4758,16 @@ seletor('#agente-whatsapp-form')?.addEventListener('submit', async (evento) => {
   if (!agenteAberto) return;
   const botao = seletor('#agente-whatsapp-gerar');
   botao.disabled = true;
+  // BN1: guarda de quem é o pedido. Trocar de agente durante a espera (até 5 s)
+  // desenharia o código da instância de um agente no painel de outro — e a
+  // pessoa parearia o celular errado.
+  const id = Number(agenteAberto.agente.id);
   try {
     const numero = seletor('#agente-whatsapp-numero').value.trim();
-    const resultado = await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/whatsapp/conectar`, {
+    const resultado = await pedirJson(`/api/agentes/${id}/whatsapp/conectar`, {
       metodo: 'POST', corpo: numero ? { numero } : {},
     });
+    if (!agenteAberto || Number(agenteAberto.agente.id) !== id) return;
     desenharPareamentoDoAgente(resultado);
     // A pessoa digita o código no celular: confere o estado de novo daqui a pouco.
     setTimeout(() => carregarOperacaoDoAgente(), 30000);
