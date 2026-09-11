@@ -290,6 +290,15 @@ autorizado no cadastro (`docs/AGENTES.md`, "Colocar um agente no ar").
   tentativa por intervalo do grupo (até ~12 por dia, dentro da janela de 24 h). Com a
   Evolution respondendo erro e entregando mesmo assim, o pior caso cai de 60 mensagens por
   hora para 1 a cada 2 h.
+- **Gravar `falhou` com erro no banco** (conferência final, item 3). Quando o envio falha
+  com erro conhecido e a gravação de `falhou` em `resumo_envios` também dá erro, a chave
+  fica `enviando`. No ciclo seguinte ela é lida como reserva órfã:
+  - não é repetida;
+  - conta como entregue, e a conversa é marcada;
+  - grava `resumo_envio_incerto` com `motivo: 'reserva_orfa'`, mesmo sem a mensagem ter
+    saído.
+
+  O log do worker registra `envio falhou não registrado` no ciclo em que isso acontece.
 - **`resumo_envios` cresce sem limpeza** (resíduo aceito na reconferência de acesso).
   - **Crescimento:** cerca de uma linha por pessoa × parte a cada resumo do grupo. Com
     intervalo de 2 h são até 12 resumos por grupo por dia; com 5 pessoas e 1–2 partes, dá
