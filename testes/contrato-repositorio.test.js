@@ -1486,6 +1486,42 @@ for (const { nome, montar } of implementacoes) {
       assert.ok(!escalonadas.includes(doAgente.id), 'transferência do agente para humano não é liberada em massa');
     });
 
+    await t.test('resumo: saída da equipe não reenfileira; só entrada nova do contato — e a marca não esconde entrada que chegou depois', async () => {
+      const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001051', nome: 'Resumo Repetido' });
+      const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      const pendente = async () => (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 }))
+        .find((item) => Number(item.id) === conversa.id) ?? null;
+
+      const { mensagem: primeira } = await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'entrada', conteudo: 'quero saber o preço', autor_tipo: 'contato',
+      });
+      await respirar();
+      assert.equal((await pendente())?.ultima_entrada_id, primeira.id);
+
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: primeira.id }), true);
+      await respirar();
+      assert.equal(await pendente(), null, 'resumida sai da fila');
+
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'custa R$ 300', autor_tipo: 'equipe' });
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'posso ajudar?', autor_tipo: 'automacao' });
+      await respirar();
+      assert.equal(await pendente(), null, 'resposta da equipe ou da automação não devolve a conversa à fila — era isso que repetia o resumo');
+
+      const { mensagem: segunda } = await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'entrada', conteudo: 'e parcela?', autor_tipo: 'contato',
+      });
+      await respirar();
+      assert.equal((await pendente())?.ultima_entrada_id, segunda.id, 'entrada nova do contato volta à fila, com chave nova');
+
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: primeira.id }), false,
+        'resumo montado antes da entrada nova não pode escondê-la');
+      await respirar();
+      assert.ok(await pendente(), 'continua na fila');
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: segunda.id }), true);
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id), true, 'sem id, marca como antes');
+    });
+
     await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001031', nome: 'Fila Agendada' });
       const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');

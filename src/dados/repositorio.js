@@ -2718,10 +2718,22 @@ function criarRepositorio(pool) {
      * O índice parcial `conversas_sem_resumo` continua atendendo o ramo
      * `IS NULL`, que é a maioria; o ramo novo faz varredura por
      * `ultima_msg_em` e não pesa nesta escala.
+     *
+     * Só ENTRADA do contato depois do último resumo devolve a conversa à fila
+     * (11/09/2026: "resumos estão sendo repetidos"). `ultima_msg_em` anda
+     * também com a SAÍDA — cada resposta da equipe ou da automação a um lead já
+     * resumido reenfileirava a conversa, e o mesmo resumo saía de novo. A
+     * condição antiga fica como pré-filtro barato (entrada nova também move
+     * `ultima_msg_em`); o EXISTS usa `mensagens_conversa_idx (conversa_id, criado_em)`.
+     *
+     * `ultima_entrada_id` compõe a chave de idempotência da IA: a mesma última
+     * entrada devolve o mesmo resumo (cache); entrada nova, resumo novo.
      */
     async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
       const { rows } = await consultar(
-        `SELECT c.id, c.contato_id, c.ultima_msg_em
+        `SELECT c.id, c.contato_id, c.ultima_msg_em, c.agente_id,
+                (SELECT max(u.id) FROM mensagens u
+                  WHERE u.conversa_id = c.id AND u.autor_tipo = 'contato') AS ultima_entrada_id
            FROM conversas c
           WHERE (c.resumo_enviado_em IS NULL OR c.resumo_enviado_em < c.ultima_msg_em)
             AND c.ultima_msg_em < now() - ($1 || ' minutes')::interval
@@ -2731,6 +2743,7 @@ function criarRepositorio(pool) {
             AND EXISTS (
               SELECT 1 FROM mensagens m
                WHERE m.conversa_id = c.id AND m.autor_tipo = 'contato'
+                 AND (c.resumo_enviado_em IS NULL OR m.criado_em > c.resumo_enviado_em)
             )
           ORDER BY c.ultima_msg_em
           LIMIT $2`,
@@ -2739,8 +2752,24 @@ function criarRepositorio(pool) {
       return rows;
     },
 
-    async marcarResumoEnviado(conversaId) {
-      await consultar('UPDATE conversas SET resumo_enviado_em = now() WHERE id = $1', [conversaId]);
+    /**
+     * Marca o resumo como entregue; `true` = marcou. Com `ultimaEntradaId`, só
+     * marca se nenhuma entrada do contato chegou depois da que foi resumida:
+     * entre montar o resumo e confirmar a entrega o contato pode ter escrito de
+     * novo, e marcar agora esconderia essa mensagem do próximo resumo.
+     */
+    async marcarResumoEnviado(conversaId, { ultimaEntradaId = null } = {}) {
+      const { rows } = await consultar(
+        `UPDATE conversas c SET resumo_enviado_em = now()
+          WHERE c.id = $1
+            AND ($2::bigint IS NULL OR NOT EXISTS (
+              SELECT 1 FROM mensagens m
+               WHERE m.conversa_id = c.id AND m.autor_tipo = 'contato' AND m.id > $2::bigint
+            ))
+          RETURNING c.id`,
+        [conversaId, ultimaEntradaId],
+      );
+      return rows.length > 0;
     },
 
     /** O agendamento futuro do contato, para o resumo dizer se ele marcou. */

@@ -215,7 +215,10 @@ function criarResumoDeAtendimento({
           const daIa = await gerador?.gerar({
             mensagens,
             qualificacao: lead,
-            chaveIdempotencia: `resumo:conversa:${conversa.id}`,
+            // A última ENTRADA compõe a chave: sem ela o cache do gateway
+            // devolvia para sempre o primeiro resumo da conversa, mesmo com o
+            // contato tendo escrito de novo (11/09/2026, resumos repetidos).
+            chaveIdempotencia: `resumo:conversa:${conversa.id}:entrada:${conversa.ultima_entrada_id ?? 'sem-entrada'}`,
           });
 
           const rodape = `Mensagens trocadas: ${mensagens.length} · ${agora().toLocaleString('pt-BR', {
@@ -253,7 +256,7 @@ function criarResumoDeAtendimento({
           // resumos. Ninguém recebeu: fica sem marca e o próximo ciclo tenta
           // de novo, que é o comportamento que faltava.
           if (confirmados > 0) {
-            await repositorio.marcarResumoEnviado(conversa.id);
+            await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: conversa.ultima_entrada_id ?? null });
             enviados += 1;
           } else {
             naoEntregues += 1;

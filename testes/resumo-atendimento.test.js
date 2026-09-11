@@ -133,6 +133,18 @@ test('sem destinatários não há resumo — e a varredura nem consulta o banco'
   assert.deepEqual(repositorio.marcadas, []);
 });
 
+test('a chave da IA leva a última entrada do contato — entrada nova, resumo novo', async () => {
+  // Defeito de 11/09/2026: a chave era `resumo:conversa:<id>` e o cache do
+  // gateway devolvia para sempre o primeiro resumo da conversa.
+  const chaves = [];
+  const gerador = { async gerar({ chaveIdempotencia }) { chaves.push(chaveIdempotencia); return null; } };
+  for (const ultimaEntrada of [41, 58]) {
+    const repositorio = repositorioFalso({ conversas: [{ id: 7, contato_id: 3, ultima_entrada_id: ultimaEntrada }] });
+    await criarResumoDeAtendimento({ repositorio, canal: canalFalso(), destinatarios: EQUIPE, gerador }).enviarPendentes();
+  }
+  assert.deepEqual(chaves, ['resumo:conversa:7:entrada:41', 'resumo:conversa:7:entrada:58']);
+});
+
 test('o worker de lembretes nunca monta o canal sem as vias de entrega', () => {
   // Regressão real: `criarCanalDeConversas(configuracao.openclaw.canalClinica)`
   // sem o segundo argumento deixa o worker preso ao gateway WebSocket da
