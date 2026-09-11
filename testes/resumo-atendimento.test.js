@@ -520,6 +520,21 @@ test('envio indeterminado (timeout da Evolution) conta como entregue e não é r
   assert.deepEqual(await c.pendentes(), []);
 });
 
+test('pool de uma conexão não roda o resumo: erro claro na subida, o resto do worker segue (auditoria B6)', () => {
+  const { problemaDoPoolParaResumo } = require('../src/dominio/resumo-atendimento');
+  assert.match(problemaDoPoolParaResumo(1), /CRMCLINICA_DB_POOL_MAX=1 é pouco para o resumo/);
+  assert.match(problemaDoPoolParaResumo(1), /Use 2 ou mais/);
+  assert.ok(problemaDoPoolParaResumo(undefined), 'sem valor também não serve');
+  assert.equal(problemaDoPoolParaResumo(2), null);
+  assert.equal(problemaDoPoolParaResumo(3), null, 'o valor do VPS hoje');
+
+  const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
+  assert.match(fonte, /const problemaDoPool = problemaDoPoolParaResumo\(configuracao\.banco\.poolMax\);/);
+  assert.match(fonte, /const resumoLigado = resumoParaEquipe\.ativo && !problemaDoPool;/);
+  assert.match(fonte, /if \(!resumoLigado \|\| encerrando\) return;/, 'sem pool suficiente, o ciclo de resumo nem começa');
+  assert.match(fonte, /console\.error\(`\[resumo\] \$\{problemaDoPool\}`\);/);
+});
+
 test('SIGTERM espera o resumo em andamento, com teto abaixo do TimeoutStopSec do systemd (auditoria M2)', () => {
   const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
   assert.match(fonte, /resumoEmAndamento = \(async \(\) => \{/, 'o ciclo de resumo fica registrado enquanto roda');

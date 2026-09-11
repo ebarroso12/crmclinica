@@ -602,7 +602,22 @@ function criarResumoDeAtendimento({
   };
 }
 
+/**
+ * O resumo pode rodar com este pool? (auditoria B6) A trava
+ * (`executarComTravaDeResumo`) segura UMA conexão durante a varredura inteira e
+ * as consultas do resumo usam outra: com pool de uma conexão só, elas esperam a
+ * conexão que a trava segura e o ciclo trava até o timeout. Mínimo: 2.
+ * Devolve o motivo em texto, ou `null` quando pode.
+ */
+function problemaDoPoolParaResumo(poolMax) {
+  const tamanho = Number(poolMax);
+  if (Number.isInteger(tamanho) && tamanho >= 2) return null;
+  return `CRMCLINICA_DB_POOL_MAX=${poolMax ?? '(vazio)'} é pouco para o resumo: a trava segura uma conexão `
+    + 'durante a varredura e as consultas precisam de outra. Use 2 ou mais — o resumo fica DESLIGADO até lá.';
+}
+
 module.exports = {
+  problemaDoPoolParaResumo,
   criarResumoDeAtendimento, montarResumo, montarCabecalho, montarCabecalhoDoAgente, corpoDeReserva,
   dividirEmMensagens, extrairIdade, extrairQueixa, ofereceuFormulario, motivoSemTelefone,
   LIMITE_POR_MENSAGEM, INTERVALO_PADRAO_MIN,

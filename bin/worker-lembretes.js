@@ -348,8 +348,17 @@ async function main() {
     gerador: geradorDeResumo,
   });
 
+  // Pool mínimo (auditoria B6): a trava do resumo segura uma conexão durante a
+  // varredura e as consultas usam outra — com 1, o ciclo travaria até o timeout.
+  // O resto do worker (lembretes, sino, retenção) segue normal.
+  const { problemaDoPoolParaResumo } = require('../src/dominio/resumo-atendimento');
+  const problemaDoPool = problemaDoPoolParaResumo(configuracao.banco.poolMax);
+  const resumoLigado = resumoParaEquipe.ativo && !problemaDoPool;
+
   if (!resumoParaEquipe.ativo) {
     console.warn('[resumo] a equipe nao recebe resumo de atendimento: nenhum canal de entrega (nem Evolution, nem gateway da clinica).');
+  } else if (problemaDoPool) {
+    console.error(`[resumo] ${problemaDoPool}`);
   } else {
     console.log(`[resumo] por equipe, um a cada ${configuracao.resumoDeAtendimento.intervaloMin} min `
       + `(silencio de ${configuracao.resumoDeAtendimento.silencioMin} min); destinatarios pelo cadastro de usuarios.`);
@@ -358,7 +367,7 @@ async function main() {
   // O ciclo de resumo em andamento (auditoria M2): o encerramento espera por ele.
   let resumoEmAndamento = null;
   async function enviarResumos() {
-    if (!resumoParaEquipe.ativo || encerrando) return;
+    if (!resumoLigado || encerrando) return;
     resumoEmAndamento = (async () => {
       try {
         await resumoParaEquipe.enviarPendentes();
