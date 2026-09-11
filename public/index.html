@@ -166,7 +166,7 @@
           <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
           <li><button type="button" data-tela="instagram"><span class="icone-menu" aria-hidden="true">◘</span> Instagram</button></li>
           <li id="item-agentes" hidden>
-            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Agentes</button>
+            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b></button>
           </li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
           <li id="item-bloqueios" hidden>
@@ -330,6 +330,13 @@
                       aria-label="Ordenar por data, mais recentes primeiro" title="Ordenar por data">
                 Mais recentes ↓
               </button>
+              <!-- Quem atende: a clínica (Serena) ou um agente. Só aparece para quem
+                   enxerga a tela de Agentes; o selo na linha vale para todos. -->
+              <label class="oculto-visual" for="filtro-agente-conversas">Filtrar por quem atende</label>
+              <select id="filtro-agente-conversas" title="Quem atende a conversa" hidden>
+                <option value="">Todas as conversas</option>
+                <option value="clinica">Só da clínica</option>
+              </select>
             </div>
             <div class="abas" role="tablist" aria-label="Filas do inbox">
               <button type="button" class="aba" role="tab" data-fila="minhas" aria-selected="false">Minhas</button>
@@ -1080,17 +1087,113 @@
             </div>
           </div>
 
-          <div class="abas" role="tablist" aria-label="Seções do agente">
-            <button type="button" class="aba selecionada" role="tab" data-aba-agente="perfil" aria-selected="true">Perfil</button>
-            <button type="button" class="aba" role="tab" data-aba-agente="trabalho" aria-selected="false">Trabalho</button>
+          <!-- Operação, no mesmo desenho da tela da Serena: estado primeiro; depois
+               quem espera a equipe, o WhatsApp do agente e o controle. -->
+          <div class="serena-estado" id="agente-op-estado">
+            <article class="cartao-estado">
+              <small>AGENTE</small>
+              <strong id="agente-op-agente">verificando…</strong>
+              <span class="nota" id="agente-op-agente-detalhe">—</span>
+            </article>
+            <article class="cartao-estado">
+              <small>WHATSAPP</small>
+              <strong id="agente-op-whatsapp">verificando…</strong>
+              <span class="nota" id="agente-op-whatsapp-detalhe">—</span>
+            </article>
+            <article class="cartao-estado">
+              <small>ENTREGA</small>
+              <strong id="agente-op-entrega">—</strong>
+              <span class="nota" id="agente-op-entrega-detalhe">—</span>
+            </article>
+            <article class="cartao-estado">
+              <small>AGUARDANDO VOCÊ</small>
+              <strong id="agente-op-aguardando">—</strong>
+              <span class="nota" id="agente-op-aguardando-detalhe">—</span>
+            </article>
+          </div>
+
+          <!-- Conversa de agente transferida para a equipe NÃO entra na fila de
+               escalonadas da clínica (046): sem este bloco ninguém a veria. -->
+          <div class="agente-bloco" role="region" id="agente-aguardando-card" aria-labelledby="agente-aguardando-titulo">
+            <div class="card-titulo">
+              <div>
+                <h4 id="agente-aguardando-titulo">Aguardando você</h4>
+                <p>Clientes que o agente passou para a equipe e ainda estão sem responsável. Eles não aparecem na fila de escalonadas da clínica.</p>
+              </div>
+              <button type="button" class="secundario" id="agente-op-atualizar">Atualizar</button>
+            </div>
+            <ul class="lista-regras" id="agente-aguardando">
+              <li class="vazio">carregando…</li>
+            </ul>
+          </div>
+
+          <div class="agente-bloco" role="region" id="agente-whatsapp-card" aria-labelledby="agente-whatsapp-titulo">
+            <div class="card-titulo">
+              <div>
+                <h4 id="agente-whatsapp-titulo">WhatsApp do agente</h4>
+                <p id="agente-whatsapp-descricao">verificando a conexão…</p>
+              </div>
+              <div class="linha-acoes" id="agente-whatsapp-acoes" hidden>
+                <button type="button" class="primario" id="agente-whatsapp-conectar">Conectar WhatsApp</button>
+              </div>
+            </div>
+            <form id="agente-whatsapp-form" class="form-regra" hidden>
+              <label for="agente-whatsapp-numero">Número do WhatsApp do agente, com DDI e DDD, para receber um código (ex.: 5516991271838). Vazio: só o QR.</label>
+              <input id="agente-whatsapp-numero" type="text" inputmode="numeric" maxlength="20" autocomplete="off">
+              <div class="linha-acoes">
+                <button type="submit" class="primario" id="agente-whatsapp-gerar">Gerar código</button>
+                <button type="button" class="secundario" id="agente-whatsapp-cancelar">Cancelar</button>
+              </div>
+            </form>
+            <div class="pareamento" id="agente-whatsapp-pareamento" hidden>
+              <p>Código: <strong id="agente-whatsapp-codigo">—</strong></p>
+              <p class="nota" id="agente-whatsapp-instrucao">No celular do agente: WhatsApp → Aparelhos conectados → Conectar aparelho → Conectar com número de telefone, e digite o código. Ele vale cerca de 1 minuto.</p>
+              <p class="nota" id="agente-whatsapp-sem-codigo" hidden>A Evolution não devolveu código nem QR agora. Gere de novo em instantes; se continuar, conecte pelo manager da Evolution, na instância cadastrada na aba Canais.</p>
+              <img id="agente-whatsapp-qr" class="qr-pareamento" alt="QR code para conectar o WhatsApp do agente" hidden>
+            </div>
+            <p class="nota">Conectar aqui só vincula o celular à instância que já existe na Evolution. Criar a instância e ligar o webhook continuam sendo feitos no servidor.</p>
+          </div>
+
+          <div class="agente-bloco" role="region" id="agente-controle" aria-labelledby="agente-controle-titulo">
+            <div class="card-titulo">
+              <div>
+                <h4 id="agente-controle-titulo">Controle da automação</h4>
+                <p>Pausado, o agente não responde — as mensagens continuam sendo gravadas nas Conversas.</p>
+              </div>
+            </div>
+            <div class="linha-acoes" id="agente-controle-acoes" hidden>
+              <label class="oculto-visual" for="agente-pausa-motivo">Motivo da pausa (opcional)</label>
+              <input id="agente-pausa-motivo" type="text" maxlength="200" placeholder="Motivo da pausa (opcional)">
+              <button type="button" class="perigo" id="agente-pausar">Pausar agente</button>
+              <button type="button" class="primario" id="agente-retomar">Retomar agente</button>
+            </div>
+            <p class="nota" id="agente-controle-estado">—</p>
+          </div>
+
+          <div class="agente-bloco" role="region" aria-labelledby="agente-numeros-titulo">
+            <h4 id="agente-numeros-titulo">Hoje e últimos 7 dias</h4>
+            <dl class="agente-numeros" id="agente-numeros"><dd>—</dd></dl>
+            <h4>Conversas recentes</h4>
+            <ul class="lista-regras" id="agente-conversas-recentes">
+              <li class="vazio">carregando…</li>
+            </ul>
+          </div>
+
+          <!-- Configuração, na ordem da tela da Serena: testar, horário,
+               comportamento no ar com as versões e os treinamentos (as "regras"). -->
+          <div class="abas agente-bloco" role="tablist" aria-label="Configuração do agente">
+            <button type="button" class="aba" role="tab" data-aba-agente="teste" aria-selected="false">Testar o agente</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="horario" aria-selected="false">Horário de atendimento</button>
+            <button type="button" class="aba selecionada" role="tab" data-aba-agente="perfil" aria-selected="true">Comportamento no ar</button>
             <button type="button" class="aba" role="tab" data-aba-agente="treinamentos" aria-selected="false">Treinamentos</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="trabalho" aria-selected="false">Trabalho</button>
             <button type="button" class="aba" role="tab" data-aba-agente="configuracoes" aria-selected="false">Configurações</button>
             <button type="button" class="aba" role="tab" data-aba-agente="inatividade" aria-selected="false">Ações de inatividade</button>
             <button type="button" class="aba" role="tab" data-aba-agente="canais" aria-selected="false">Canais</button>
-            <button type="button" class="aba" role="tab" data-aba-agente="teste" aria-selected="false">Teste</button>
           </div>
 
-          <!-- Perfil -->
+          <!-- Comportamento no ar (perfil). Ligar e desligar não moram aqui: é o
+               Controle da automação, acima, como na Serena. -->
           <form id="agente-aba-perfil" class="form-regra agente-aba" data-painel-agente="perfil">
             <fieldset class="agente-campos">
               <div class="grade-form">
@@ -1101,14 +1204,6 @@
                 <div>
                   <label for="agente-descricao">Descrição curta</label>
                   <input id="agente-descricao" type="text" maxlength="160">
-                </div>
-                <div>
-                  <label for="agente-status">Status</label>
-                  <select id="agente-status">
-                    <option value="desativado">Desativado</option>
-                    <option value="treinamento">Em treinamento (não responde)</option>
-                    <option value="ativo">Ativo (responde clientes)</option>
-                  </select>
                 </div>
                 <div>
                   <label for="agente-comunicacao">Comunicação</label>
@@ -1129,10 +1224,11 @@
               <textarea id="agente-comportamento" rows="14" maxlength="20000"></textarea>
               <small class="contador-texto" id="agente-comportamento-contador">0/20000</small>
               <div class="linha-acoes">
-                <button type="submit" class="primario">Salvar perfil</button>
+                <button type="submit" class="primario">Salvar comportamento</button>
               </div>
             </fieldset>
-            <h4>Histórico do comportamento</h4>
+            <!-- Mesmo papel das "Versões" do prompt da Serena: o que já esteve no ar, com restaurar. -->
+            <h4>Versões</h4>
             <ul class="lista-regras" id="agente-historico">
               <li class="vazio">Sem versões anteriores.</li>
             </ul>
@@ -1221,10 +1317,6 @@
               </div>
               <div class="grade-form">
                 <div>
-                  <label for="agente-cfg-fuso">Fuso horário</label>
-                  <input id="agente-cfg-fuso" type="text" maxlength="60" placeholder="America/Sao_Paulo">
-                </div>
-                <div>
                   <label for="agente-cfg-tempo_resposta_segundos">Tempo de resposta (segundos)</label>
                   <input id="agente-cfg-tempo_resposta_segundos" type="number" min="0" max="120" step="1">
                 </div>
@@ -1240,10 +1332,26 @@
                   </select>
                 </div>
               </div>
-              <label for="agente-cfg-horario">Horário de atendimento — grade no mesmo formato da Serena (JSON). Vazio = atende sempre.</label>
-              <textarea id="agente-cfg-horario" rows="4" placeholder='{"ativa": true, "fuso": "America/Sao_Paulo", "dias": {"1": [["08:00", "18:00"]]}}'></textarea>
               <div class="linha-acoes">
                 <button type="submit" class="primario">Salvar configurações</button>
+              </div>
+            </fieldset>
+          </form>
+
+          <!-- Horário de atendimento — aba própria, como na tela da Serena. -->
+          <form id="agente-aba-horario" class="form-regra agente-aba" data-painel-agente="horario" hidden>
+            <p>Fora do horário o agente não responde; a mensagem fica gravada nas Conversas. Vazio = atende sempre.</p>
+            <fieldset class="agente-campos">
+              <div class="grade-form">
+                <div>
+                  <label for="agente-cfg-fuso">Fuso horário</label>
+                  <input id="agente-cfg-fuso" type="text" maxlength="60" placeholder="America/Sao_Paulo">
+                </div>
+              </div>
+              <label for="agente-cfg-horario">Grade no mesmo formato da Serena (JSON).</label>
+              <textarea id="agente-cfg-horario" rows="6" placeholder='{"ativa": true, "fuso": "America/Sao_Paulo", "dias": {"1": [["08:00", "18:00"]]}}'></textarea>
+              <div class="linha-acoes">
+                <button type="submit" class="primario">Salvar horário</button>
               </div>
             </fieldset>
           </form>

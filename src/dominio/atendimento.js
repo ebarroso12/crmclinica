@@ -809,7 +809,13 @@ function criarAtendimento({
     // Nota interna não é atendimento: não assume a conversa nem cala a IA.
     if (!privada) {
       const conversa = await repositorio.obterConversa(conversaId);
-      if (!conversa.assumida_por_humano) await assumir(conversaId, usuarioId);
+      // Conversa de agente transferida pelo próprio agente fica assumida e SEM
+      // responsável (fluxo.js, `transferir`) — é o que a põe em "Aguardando você".
+      // Quem responde passa a ser o dono; sem isto ela ficava para sempre no
+      // painel e no selo do menu (achado M1). Na clínica nada muda: conversa já
+      // assumida continua como está, como sempre foi.
+      const agenteSemResponsavel = Boolean(conversa.agente_id) && conversa.assumida_por_humano && !conversa.atribuido_a;
+      if (!conversa.assumida_por_humano || agenteSemResponsavel) await assumir(conversaId, usuarioId);
 
       // A resposta precisa chegar ao paciente. Sem este envio, ela ficava
       // gravada no CRM e nunca saía — a equipe respondia, via a mensagem na

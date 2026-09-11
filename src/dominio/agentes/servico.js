@@ -462,8 +462,102 @@ function validarMensagensDeTeste(mensagens) {
   return normalizadas;
 }
 
+// ------------------------------------------------ painel de operação (docs/AGENTES.md)
+
+// Ações auditadas nas conversas de um agente que o painel conta. Os nomes são
+// os do fluxo (fluxo.js) e do escalonamento de agente (atendimento.js).
+const ACOES_DO_PAINEL = Object.freeze([
+  'agente_respondida', 'transferida_para_humano', 'agente_escalonada',
+  'agente_automacao_silenciada', 'agente_resposta_nao_entregue', 'agente_sem_resposta',
+]);
+
+// Auditoria do próprio agente que diz quando o status mudou e para quê.
+const ACOES_DE_STATUS = Object.freeze([
+  'agente_pausado', 'agente_retomado', 'agente_atualizado', 'agente_criado', 'agente_semeado',
+]);
+
+const LIMITE_MOTIVO_DE_PAUSA = 200;
+
+/**
+ * Meia-noite de hoje no fuso da clínica. O Brasil não tem horário de verão
+ * desde 2019 — -03:00 o ano inteiro, mesma regra de rotas-conversas.js.
+ */
+function inicioDoDiaNaClinica(instante) {
+  const data = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(instante);
+  return new Date(`${data}T00:00:00-03:00`);
+}
+
+/** Registro de auditoria do agente → `{ status, motivo, em, por }`, ou null se não mudou status. */
+function mudancaDeStatus(registro) {
+  const detalhe = registro?.detalhe ?? {};
+  const porAcao = {
+    agente_pausado: 'desativado',
+    agente_retomado: 'ativo',
+    agente_semeado: 'desativado',
+    agente_criado: detalhe.status ?? null,
+    agente_atualizado: detalhe.status_para ?? null,
+  };
+  const status = porAcao[registro?.acao] ?? null;
+  if (!status) return null;
+  return {
+    acao: registro.acao,
+    status,
+    motivo: registro.acao === 'agente_pausado' && typeof detalhe.motivo === 'string' ? detalhe.motivo : null,
+    em: registro.criado_em ?? null,
+    por: registro.usuario_nome ?? null,
+  };
+}
+
+/** O que o painel mostra de uma conversa: quem, estado e quando — nunca mensagem. */
+function resumirConversaDoPainel(conversa) {
+  return {
+    id: conversa.id,
+    status: conversa.status,
+    contato_nome: conversa.contato?.nome ?? conversa.contato_nome ?? null,
+    contato_telefone: conversa.contato?.telefone ?? conversa.contato_telefone ?? null,
+    ultima_msg_em: conversa.ultima_msg_em ?? null,
+    assumida_por_humano: conversa.assumida_por_humano === true,
+    responsavel_nome: conversa.responsavel_nome ?? null,
+  };
+}
+
+/** O canal de WhatsApp do agente: o ligado primeiro; sem ligado, o desligado (para o painel dizer isso). */
+function canalDeWhatsapp(agente) {
+  const canais = (agente?.canais ?? []).filter((canal) => canal.canal === 'whatsapp');
+  return canais.find((canal) => canal.ativo !== false) ?? canais[0] ?? null;
+}
+
+function validarNumeroDePareamento(valor) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  if (typeof valor !== 'string') throw new ErroDeContrato('campo "numero" deve ser texto', 'numero');
+  const digitos = valor.replace(/\D/g, '');
+  if (digitos.length < 10 || digitos.length > 15) {
+    throw new ErroDeContrato('campo "numero" deve ter de 10 a 15 dígitos, com DDI e DDD', 'numero');
+  }
+  return digitos;
+}
+
+function validarMotivoDePausa(valor) {
+  if (valor === undefined || valor === null) return null;
+  if (typeof valor !== 'string') throw new ErroDeContrato('campo "motivo" deve ser texto', 'motivo');
+  // Sem caractere de controle: o motivo aparece na tela e na auditoria.
+  const limpo = Array.from(valor).filter((caractere) => caractere.charCodeAt(0) >= 32).join('').trim();
+  if (limpo.length > LIMITE_MOTIVO_DE_PAUSA) {
+    throw new ErroDeContrato(`campo "motivo" excede ${LIMITE_MOTIVO_DE_PAUSA} caracteres`, 'motivo');
+  }
+  return limpo || null;
+}
+
+function exigirObjetoOuVazio(dados) {
+  if (dados === undefined || dados === null) return {};
+  if (typeof dados !== 'object' || Array.isArray(dados)) throw new ErroDeContrato('o corpo deve ser um objeto');
+  return dados;
+}
+
 function criarServicoDeAgentes({
-  repositorio, motor = null, buscarPagina = null, agora = () => new Date(),
+  repositorio, motor = null, buscarPagina = null, evolution = null, agora = () => new Date(),
 } = {}) {
   if (!repositorio) throw new Error('o serviço de agentes exige o repositório');
   const buscar = buscarPagina ?? criarBuscadorDePagina();
@@ -519,6 +613,17 @@ function criarServicoDeAgentes({
       const atual = await exigirAgente(id);
       const validado = validarAgente(campos, { parcial: true });
       if (Object.keys(validado).length === 0) throw new ErroDeContrato('nada para atualizar');
+
+      // Achado B3: status só muda por POST /pausar e /retomar, que têm a
+      // confirmação do GPTMaker na tela e auditoria própria. Uma aba antiga com
+      // o select de status no perfil não pode religar nem pausar por aqui.
+      if (Object.prototype.hasOwnProperty.call(validado, 'status')) {
+        if (validado.status !== atual.status) {
+          throw erroComStatus('para pausar ou retomar use os botões do Controle', 409, 'status_pelo_controle');
+        }
+        delete validado.status;
+        if (Object.keys(validado).length === 0) return atual;
+      }
 
       if (validado.slug && validado.slug !== atual.slug) await recusarSlugOcupado(validado.slug, atual.id);
       if (validado.configuracoes) {
@@ -606,6 +711,114 @@ function criarServicoDeAgentes({
         canais: validados.map((canal) => `${canal.canal}:${canal.instancia}`),
       }, usuarioId);
       return gravados;
+    },
+
+    // ------------------------------------------ painel de operação
+
+    /**
+     * Tudo que o painel do agente mostra de uma vez, sem conteúdo de mensagem:
+     * status e quem mudou por último, números de hoje e dos últimos 7 dias,
+     * conversas aguardando a equipe e as recentes.
+     */
+    async operacao(id) {
+      const agente = await exigirAgente(id);
+      const instante = agora();
+      const hojeDesde = inicioDoDiaNaClinica(instante).toISOString();
+      const semanaDesde = new Date(instante.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [resumo, historico, aguardando, recentes] = await Promise.all([
+        repositorio.resumirOperacaoDoAgente(agente.id, { acoes: [...ACOES_DO_PAINEL], hojeDesde, semanaDesde }),
+        repositorio.listarAuditoriaDoAgente(agente.id, { acoes: [...ACOES_DE_STATUS], limite: 50 }),
+        repositorio.listarConversasDoAgenteAguardandoEquipe(agente.id, { limite: 20 }),
+        repositorio.listarConversas({ agenteId: agente.id, limite: 10 }),
+      ]);
+
+      const porAcao = Object.fromEntries(ACOES_DO_PAINEL.map((acao) => [acao, { hoje: 0, semana: 0, ultima: null }]));
+      for (const item of resumo.acoes) {
+        if (porAcao[item.acao]) porAcao[item.acao] = { hoje: item.hoje, semana: item.semana, ultima: item.ultima };
+      }
+
+      return {
+        agente: { id: agente.id, nome: agente.nome, status: agente.status },
+        status_alterado: historico.map(mudancaDeStatus).find(Boolean) ?? null,
+        numeros: { conversas_novas: resumo.conversas_novas, por_acao: porAcao },
+        aguardando: aguardando.map(resumirConversaDoPainel),
+        conversas: recentes.map(resumirConversaDoPainel),
+      };
+    },
+
+    /** Conversas de agente esperando a equipe, contadas por agente — para o selo do menu. */
+    async aguardandoPorAgente() {
+      const por_agente = await repositorio.contarConversasAguardandoEquipePorAgente();
+      return { total: por_agente.reduce((soma, item) => soma + item.total, 0), por_agente };
+    },
+
+    /**
+     * Estado do WhatsApp do agente na Evolution. Falha da Evolution vira estado
+     * `erro` com o motivo curto, nunca exceção: o painel inteiro não pode cair
+     * porque um serviço externo piscou (já aconteceu com a tela da Serena).
+     */
+    async whatsapp(id) {
+      const agente = await exigirAgente(id);
+      const canal = canalDeWhatsapp(agente);
+      const vazio = { numero: null, perfil: null };
+      if (!canal) return { instancia: null, canal_ativo: false, estado: 'sem_canal', ...vazio };
+
+      const base = { instancia: canal.instancia, canal_ativo: canal.ativo !== false };
+      if (!evolution?.disponivel) return { ...base, estado: 'nao_configurado', ...vazio };
+      try {
+        return { ...base, ...(await evolution.estado(canal.instancia)) };
+      } catch (erro) {
+        return { ...base, estado: 'erro', ...vazio, erro: erro.message };
+      }
+    },
+
+    /**
+     * Pede à Evolution o código de pareamento (com número) e o QR da instância
+     * do agente. Não cria instância nem mexe em webhook (docs/AGENTES.md).
+     */
+    async conectarWhatsapp(id, dados, { usuarioId = null } = {}) {
+      const agente = await exigirAgente(id);
+      const numero = validarNumeroDePareamento(exigirObjetoOuVazio(dados).numero);
+      const canal = canalDeWhatsapp(agente);
+      if (!canal) {
+        throw erroComStatus('o agente não tem canal de WhatsApp — cadastre a instância na aba Canais', 422, 'agente_sem_canal');
+      }
+      if (!evolution?.disponivel) {
+        throw erroComStatus('a Evolution API não está configurada no servidor', 503, 'evolution_nao_configurada');
+      }
+
+      const resultado = await evolution.conectar(canal.instancia, { numero });
+      // Sem o número: é o do negócio, mas não é dado de diagnóstico.
+      await auditar('agente_whatsapp_conexao_pedida', agente.id, {
+        instancia: canal.instancia, por_codigo: Boolean(numero), ja_conectado: resultado.ja_conectado === true,
+      }, usuarioId);
+      return { instancia: canal.instancia, ...resultado };
+    },
+
+    /**
+     * Pausa o agente (status `desativado` — a 046 não tem estado "pausado", e
+     * para quem responde clientes pausar e desligar são o mesmo efeito). Motivo
+     * opcional, escrito pela equipe; nunca texto de cliente.
+     */
+    async pausar(id, dados, { usuarioId = null } = {}) {
+      const atual = await exigirAgente(id);
+      const motivo = validarMotivoDePausa(exigirObjetoOuVazio(dados).motivo);
+      if (atual.status === 'desativado') return { agente: atual, mudou: false };
+
+      const agente = await repositorio.atualizarAgente(atual.id, { status: 'desativado' }, { usuarioId });
+      await auditar('agente_pausado', atual.id, { status_de: atual.status, ...(motivo ? { motivo } : {}) }, usuarioId);
+      return { agente, mudou: true };
+    },
+
+    /** Retoma o atendimento automático do agente (status `ativo`). */
+    async retomar(id, { usuarioId = null } = {}) {
+      const atual = await exigirAgente(id);
+      if (atual.status === 'ativo') return { agente: atual, mudou: false };
+
+      const agente = await repositorio.atualizarAgente(atual.id, { status: 'ativo' }, { usuarioId });
+      await auditar('agente_retomado', atual.id, { status_de: atual.status }, usuarioId);
+      return { agente, mudou: true };
     },
 
     /**

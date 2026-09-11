@@ -13,6 +13,7 @@ const { criarClienteOpenClaw, assinaturaValida } = require('../integracoes/openc
 const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('../integracoes/evolution-webhook');
 const { normalizarEventosInstagram, normalizarComentariosInstagram } = require('../integracoes/instagram-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
+const { criarClienteEvolucaoInstancia } = require('../integracoes/evolution-instancia');
 const { criarClienteInstagramEnvio } = require('../integracoes/instagram-envio');
 const { criarServicoDeGatilhos } = require('../dominio/instagram-gatilhos');
 const { criarClienteStorage } = require('../integracoes/supabase-storage');
@@ -379,8 +380,12 @@ function criarAplicacao(dependencias = {}) {
 
   // Agentes configuráveis (docs/AGENTES.md): cadastro, treinamentos, canais e
   // conversa de teste. O despacho vive em arquivo próprio; aqui só se liga.
+  // A Evolution aqui só responde estado e código de pareamento da instância do
+  // agente (painel de operação); a apikey não sai do cliente.
+  const clienteEvolucaoInstancia = dependencias.clienteEvolucaoInstancia
+    || criarClienteEvolucaoInstancia(configuracao.evolution);
   const servicoDeAgentes = dependencias.servicoDeAgentes
-    || criarServicoDeAgentes({ repositorio, motor: motorDeAgentes });
+    || criarServicoDeAgentes({ repositorio, motor: motorDeAgentes, evolution: clienteEvolucaoInstancia });
   const despachoDeAgentes = criarDespachoDeAgentes({
     rotas: criarRotasDeAgentes({ servico: servicoDeAgentes, gateway: gatewayDeIA }),
     lerJson,

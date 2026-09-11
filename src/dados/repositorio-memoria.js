@@ -1144,6 +1144,84 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         .slice(0, Number(limite));
     },
 
+    // ------------------------------------------ painel de operação dos agentes
+    // Paridade com repositorio.js — os comentários de porquê estão lá.
+
+    async resumirOperacaoDoAgente(agenteId, { acoes = [], hojeDesde, semanaDesde } = {}) {
+      const id = Number(agenteId);
+      const hojeMs = new Date(hojeDesde).getTime();
+      const semanaMs = new Date(semanaDesde).getTime();
+      const porAcao = new Map();
+      for (const registro of auditoria) {
+        if (registro.entidade !== 'conversa' || !acoes.includes(registro.acao)) continue;
+        const conversa = conversas.get(Number(registro.entidadeId));
+        if (!conversa || (conversa.agente_id ?? null) !== id) continue;
+        const instante = new Date(registro.criado_em).getTime();
+        const item = porAcao.get(registro.acao) ?? { acao: registro.acao, hoje: 0, semana: 0, ultima: null };
+        if (instante >= hojeMs) item.hoje += 1;
+        if (instante >= semanaMs) item.semana += 1;
+        if (!item.ultima || instante > new Date(item.ultima).getTime()) item.ultima = new Date(instante).toISOString();
+        porAcao.set(registro.acao, item);
+      }
+      const doAgente = [...conversas.values()].filter((conversa) => (conversa.agente_id ?? null) === id);
+      const novasDesde = (limiteMs) => doAgente
+        .filter((conversa) => new Date(conversa.criado_em).getTime() >= limiteMs).length;
+      return {
+        acoes: [...porAcao.values()].sort((a, b) => (a.acao < b.acao ? -1 : a.acao > b.acao ? 1 : 0)),
+        conversas_novas: { hoje: novasDesde(hojeMs), semana: novasDesde(semanaMs) },
+      };
+    },
+
+    async listarAuditoriaDoAgente(agenteId, { acoes = [], limite = 20 } = {}) {
+      const id = Number(agenteId);
+      return auditoria
+        .map((registro, indice) => ({ registro, idDoRegistro: registro.id ?? indice + 1 }))
+        .filter(({ registro }) => registro.entidade === 'agente'
+          && Number(registro.entidadeId) === id && acoes.includes(registro.acao))
+        .sort((a, b) => b.idDoRegistro - a.idDoRegistro)
+        .slice(0, Number(limite))
+        .map(({ registro, idDoRegistro }) => ({
+          id: idDoRegistro,
+          acao: registro.acao,
+          detalhe: registro.detalhe ?? null,
+          criado_em: registro.criado_em,
+          usuario_nome: registro.usuarioId ? (usuarios.get(Number(registro.usuarioId))?.nome ?? null) : null,
+        }));
+    },
+
+    async listarConversasDoAgenteAguardandoEquipe(agenteId, { limite = 20 } = {}) {
+      const id = Number(agenteId);
+      return [...conversas.values()]
+        .filter((conversa) => (conversa.agente_id ?? null) === id
+          && conversa.status !== 'resolvida'
+          && conversa.assumida_por_humano === true
+          && (conversa.atribuido_a === null || conversa.atribuido_a === undefined))
+        .sort((a, b) => {
+          const tempoA = a.ultima_msg_em ? new Date(a.ultima_msg_em).getTime() : null;
+          const tempoB = b.ultima_msg_em ? new Date(b.ultima_msg_em).getTime() : null;
+          if (tempoA === tempoB) return b.id - a.id;
+          if (tempoA === null) return 1;
+          if (tempoB === null) return -1;
+          return tempoB - tempoA;
+        })
+        .slice(0, Number(limite))
+        .map(montarConversa);
+    },
+
+    async contarConversasAguardandoEquipePorAgente() {
+      const totais = new Map();
+      for (const conversa of conversas.values()) {
+        if ((conversa.agente_id ?? null) === null || conversa.status === 'resolvida') continue;
+        if (conversa.assumida_por_humano !== true) continue;
+        if (conversa.atribuido_a !== null && conversa.atribuido_a !== undefined) continue;
+        const agenteId = Number(conversa.agente_id);
+        totais.set(agenteId, (totais.get(agenteId) ?? 0) + 1);
+      }
+      return [...totais]
+        .sort((a, b) => a[0] - b[0])
+        .map(([agenteId, total]) => ({ agente_id: agenteId, total }));
+    },
+
     /**
      * Espelha a consulta do PostgreSQL. Sem esta implementação, a regra de
      * quem ainda deve resumo só era exercitável contra banco real — e foi
