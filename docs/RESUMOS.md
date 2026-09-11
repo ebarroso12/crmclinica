@@ -97,6 +97,21 @@ fica a última lista. A lista do ambiente continua valendo só na clínica, como
 
 ## Tela Usuários (admin)
 
+- Botão **WhatsApp** em cada linha: abre o cartão com DDI (padrão 55), DDD e número,
+  gravados pela edição completa que já existia (`PUT /api/usuarios/:id`, campo `whatsapp`,
+  validação de `whatsappValido`: DDD de 2 dígitos e número de 8 ou 9; o erro aparece no
+  cartão). DDD e número vazios tiram o WhatsApp do cadastro.
+- Chave **"WhatsApp autorizado para avisos e resumos"** no mesmo cartão, pela rota de P1-06
+  (`POST /api/usuarios/:id/whatsapp-particular`, `{ "autorizado": true|false }`), com
+  confirmação. A rota grava e audita quem autorizou e quando; o cartão mostra
+  "Autorizado por <nome> em <data>". Sem número cadastrado, a chave fica desligada.
+- O número em claro só aparece nesse cartão do admin; na lista de usuários, no painel e na
+  auditoria, nunca. Depois de salvar ou autorizar, a lista e o painel recarregam — a pessoa
+  passa de "sem WhatsApp" ou "não autorizado" para a lista de quem recebe.
+- **Meu perfil não cadastra WhatsApp nem autoriza**: `PUT /api/perfil` só aceita nome e
+  telefone livre (já era assim, e fica). Autorização é consentimento registrado pelo admin
+  (P1-06). A API antiga `GET /api/usuarios/gestao` (só admin, sem uso na tela) continua
+  devolvendo os campos do cadastro.
 - Chave **"Recebe resumos"** por pessoa (`POST /api/usuarios/:id/recebe-resumo`,
   `{ "recebe_resumo": true|false }`, auditado).
 - Aviso na linha de quem deveria receber e não recebe (sem WhatsApp ou sem autorização).
@@ -108,11 +123,13 @@ fica a última lista. A lista do ambiente continua valendo só na clínica, como
 
 1. **047 no SQL Editor antes do deploy** (já exigida pela separação clínica × agentes; agora
    inclui `recebe_resumo`, que o login passa a ler). `npm run verificar-banco` depois.
-2. **Antes do merge: cadastrar e autorizar o WhatsApp de quem deve receber.** Leitura de
-   agregados em produção (11/09): 4 usuários ativos, **nenhum** com WhatsApp cadastrado ou
-   autorizado. Com este código publicado assim, **ninguém recebe resumo** — o worker avisa
-   no log e o painel mostra o grupo vazio. A lista `CRMCLINICA_RESUMO_DESTINATARIOS` não é
-   usada como reserva, por decisão.
+2. **Logo depois do deploy, o admin cadastra e autoriza o WhatsApp de quem deve receber;
+   até lá ninguém recebe resumo.** Tela Usuários → botão WhatsApp em cada pessoa → DDI, DDD,
+   número → Salvar → "WhatsApp autorizado para avisos e resumos". O painel "Quem recebe os
+   resumos" confirma. Leitura de agregados em produção (11/09): 4 usuários ativos,
+   **nenhum** com WhatsApp cadastrado ou autorizado. A lista `CRMCLINICA_RESUMO_DESTINATARIOS`
+   não é usada como reserva, por decisão; o worker avisa no log enquanto um grupo não tiver
+   ninguém.
 3. `CRMCLINICA_RESUMO_INTERVALO_MIN` é opcional (padrão 120) no `.env` do worker de lembretes;
    reiniciar o worker depois do deploy.
 
