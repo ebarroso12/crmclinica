@@ -130,6 +130,34 @@ test('o mesmo número sem o nono dígito continua sendo da equipe', async () => 
   await nadaGravado(repositorio, '91230047');
 });
 
+test('número do cadastro comparado em E.164: cliente de outro DDD com o mesmo final é atendido (auditoria B2)', async () => {
+  // Auditoria de 7f8275b (B2): o sufixo de 8 dígitos tratava 551191230047
+  // (cliente de SP) como a funcionária 5516991230047 (Franca).
+  const { repositorio, atendimento, envios } = await montar();
+
+  const doCliente = await atendimento.receberMensagem(evento('551191230047', { instancia: 'alpins', id: 'B2', texto: 'tem o 42?' }));
+  assert.equal(doCliente.acao, 'respondida_pela_automacao', 'o cliente de outro DDD não é confundido com a funcionária');
+  assert.equal(envios.length, 1);
+  assert.equal((await repositorio.buscarContatos({ termo: '91230047' })).length, 1, 'o contato do cliente existe');
+
+  const semNonoDigito = await atendimento.receberMensagem(evento('551691230047', { instancia: 'alpins', id: 'B2-f', texto: 'ok' }));
+  assert.equal(semNonoDigito.acao, 'mensagem_interna_ignorada', 'a funcionária, sem o nono dígito, continua interna');
+});
+
+test('forma de comparação: cadastro em E.164 com o nono dígito; lista antiga do ambiente mantém o sufixo (auditoria B2)', () => {
+  const { criarNumerosInternos } = require('../src/dominio/numeros-internos');
+  const doCadastro = criarNumerosInternos(['+5516991230047'], { porSufixo: false });
+  assert.equal(doCadastro.ehInterno('5516991230047'), true);
+  assert.equal(doCadastro.ehInterno('551691230047'), true, 'sem o nono dígito');
+  assert.equal(doCadastro.ehInterno('16991230047'), true, 'sem o 55');
+  assert.equal(doCadastro.ehInterno('551191230047'), false, 'outro DDD, mesmo final');
+  assert.equal(doCadastro.ehInterno('5511991230047'), false);
+
+  const doAmbiente = criarNumerosInternos(['+5516991230047']);
+  assert.equal(doAmbiente.ehInterno('551691230047'), true);
+  assert.equal(doAmbiente.ehInterno('551191230047'), true, 'a lista do ambiente segue a regra antiga, sem mudança');
+});
+
 test('WhatsApp cadastrado SEM autorização não é número interno: sem consentimento, o sistema não usa nem filtra', async () => {
   const { repositorio, atendimento } = await montar();
   const semAutorizacao = await repositorio.criarUsuario({ nome: 'Sem Autorização', email: 'sem-autorizacao@teste.local', papel: 'gestor', situacao: 'ativo' });
