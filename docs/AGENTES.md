@@ -417,8 +417,29 @@ que responderia 403.
   `etiquetas` (manual, de conversa) não é usada. Quem vê a clínica vê o selo do
   Alpins mesmo fora da equipe, mas não a conversa nem a prévia. Quem não vê a
   clínica só vê contato com conversa de agente da equipe, **nunca** o selo
-  "Clínica" (seria dizer que o cliente é paciente), sem notas, observações,
-  atributos nem agenda.
+  "Clínica" (seria dizer que o cliente é paciente).
+- **Contato por LISTA BRANCA para quem não vê a clínica** (auditoria de acesso
+  sobre 42939cf, A2/M1): `escopo.contatoParaColaborador` — `id`, `nome`,
+  `telefone` e os selos dos agentes dele, e nada mais, em toda rota que devolve
+  contato (conversa aberta e sua ficha, lista de conversas, `/api/contatos/:id`,
+  `/api/contatos/:id/conversas`, `/api/contatos/gestao`, busca). Nome completo,
+  nascimento, responsável, consentimento, e-mail, identificador, observações,
+  atributos, documentos, opt-out e a contagem de agendamentos ficam de fora.
+  Campo novo do contato nasce fechado para o colaborador.
+- **O colaborador não escreve em dado da clínica** (A3, B3): `PUT
+  /api/contatos/:id`, `PUT /api/conversas/:id/ficha` e `POST
+  /api/conversas/:id/notas` (a nota é gravada na ficha do CONTATO) respondem
+  `403 sem_acesso_clinica` — inclusive para quem tem papel de gestor. Anotação
+  na conversa do agente é mensagem privada. `PUT /api/contatos/:id` confere o
+  contato e o escopo antes de ler o corpo (B1).
+- **Conversa de agente nunca carrega nem altera lead da clínica**, para
+  **nenhum** usuário, admin inclusive (A1, M2): sem campos de lead nem
+  `proxima_acao` (o join de `leads` só vale para conversa sem agente);
+  etiqueta e temperatura gravam só em `conversa_etiquetas`, sem `salvarLead`;
+  o resumo interno do encerramento sai sem pendência do lead e sem agenda.
+- **Gatilho de `acesso_clinica`** (B2): defesa extra contra escrita com claim de
+  usuário. A proteção real é da aplicação — perfil só aceita nome e telefone, e a
+  marca só muda pela rota do admin.
 - **Chat ao vivo**: replay, push e releitura usam o mesmo `veConversaDe`. Desde
   a 047 o gestor também depende do `agente_id` da conversa: uma consulta por
   evento (como já acontecia com atendente) e, em erro, nega.
@@ -430,7 +451,10 @@ que responderia 403.
 - **Menu do colaborador**: Conversas, Contatos e Meu perfil.
 - **Usuários (admin)**: "Vê a clínica" no cadastro e na lista, selo
   "Colaborador (só agentes)", equipes da pessoa e aviso "Não vê nada" quando
-  falta equipe.
+  falta equipe. Atenção: `GET /api/usuarios/gestao` (só admin, sem uso na tela)
+  e a ficha `GET /api/usuarios/:id` (fonte do cartão de WhatsApp) mostram o
+  **número de WhatsApp em claro**; a lista `GET /api/usuarios` e o painel dos
+  resumos, nunca (docs/RESUMOS.md).
 - **Agentes → agente → Equipe**: lista, colocar (admin) e tirar com
   confirmação. Admin não entra na lista de candidatos (sempre vê).
 

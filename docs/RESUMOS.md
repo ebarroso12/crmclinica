@@ -110,8 +110,10 @@ fica a última lista. A lista do ambiente continua valendo só na clínica, como
   passa de "sem WhatsApp" ou "não autorizado" para a lista de quem recebe.
 - **Meu perfil não cadastra WhatsApp nem autoriza**: `PUT /api/perfil` só aceita nome e
   telefone livre (já era assim, e fica). Autorização é consentimento registrado pelo admin
-  (P1-06). A API antiga `GET /api/usuarios/gestao` (só admin, sem uso na tela) continua
-  devolvendo os campos do cadastro.
+  (P1-06). Atenção: a API antiga `GET /api/usuarios/gestao` (só admin, sem uso na tela)
+  continua devolvendo os campos do cadastro **com o número de WhatsApp em claro** — além
+  da ficha `GET /api/usuarios/:id`, que é a fonte do cartão de edição. Fora dessas duas
+  rotas de admin, o número não sai sem máscara.
 - Chave **"Recebe resumos"** por pessoa (`POST /api/usuarios/:id/recebe-resumo`,
   `{ "recebe_resumo": true|false }`, auditado).
 - Aviso na linha de quem deveria receber e não recebe (sem WhatsApp ou sem autorização).
