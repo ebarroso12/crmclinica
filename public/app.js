@@ -3883,6 +3883,10 @@ async function abrirAgente(id) {
       // Como na Serena: quem configura cai em "Testar o agente"; quem só
       // acompanha (o teste gasta IA e é de quem gerencia), no comportamento no ar.
       selecionarAbaDoAgente(dados.pode_gerenciar ? 'teste' : 'perfil');
+      // B2: nada do agente anterior fica na tela nem clicável enquanto a
+      // operação do novo não chega.
+      zerarOperacaoDoAgente();
+      zerarWhatsappDoAgente();
     }
     preencherEditorDeAgente();
     const editor = seletor('#agente-editor');
@@ -4465,30 +4469,77 @@ function descreverMudancaDoAgente(alteracao) {
   ].filter(Boolean).join(', ');
 }
 
+/**
+ * Operação e WhatsApp saem juntos, mas cada um é desenhado quando chega (B2):
+ * a Evolution lenta não pode segurar o Controle da automação. O contador fica
+ * na própria função (declaração hoisted, sem depender da ordem do script).
+ */
 async function carregarOperacaoDoAgente() {
   if (!agenteAberto) return;
   const id = Number(agenteAberto.agente.id);
-  const [operacao, whatsapp] = await Promise.allSettled([
-    pedirJson(`/api/agentes/${id}/operacao`),
-    pedirJson(`/api/agentes/${id}/whatsapp`),
-  ]);
-  // Trocou de agente (ou fechou) enquanto a resposta vinha: não pinta o errado.
-  if (!agenteAberto || Number(agenteAberto.agente.id) !== id) return;
+  carregarOperacaoDoAgente.pedido = (carregarOperacaoDoAgente.pedido || 0) + 1;
+  const pedido = carregarOperacaoDoAgente.pedido;
+  // Resposta de pedido velho não pinta nada: outro agente aberto (ou fechado),
+  // ou um "Atualizar" mais novo já saiu.
+  const vale = () => pedido === carregarOperacaoDoAgente.pedido
+    && Boolean(agenteAberto) && Number(agenteAberto.agente.id) === id;
 
-  if (operacao.status === 'fulfilled') {
-    desenharOperacaoDoAgente(operacao.value);
-  } else {
-    pintarEstado('#agente-op-agente', 'Indisponível', 'ruim');
-    definirTexto('#agente-op-agente-detalhe', mensagemDeErroDoAgente(operacao.reason));
-  }
-  desenharWhatsappDoAgente(whatsapp.status === 'fulfilled'
-    ? whatsapp.value
-    : { estado: 'erro', erro: mensagemDeErroDoAgente(whatsapp.reason) });
+  const operacao = pedirJson(`/api/agentes/${id}/operacao`)
+    .then((dados) => { if (vale()) desenharOperacaoDoAgente(dados); })
+    .catch((erro) => { if (vale()) mostrarFalhaDaOperacaoDoAgente(erro); });
+  const whatsapp = pedirJson(`/api/agentes/${id}/whatsapp`)
+    .then((dados) => { if (vale()) desenharWhatsappDoAgente(dados); })
+    .catch((erro) => { if (vale()) desenharWhatsappDoAgente({ estado: 'erro', erro: mensagemDeErroDoAgente(erro) }); });
   atualizarSeloDeAgentes();
+  await Promise.all([operacao, whatsapp]);
+}
+
+function desabilitarControleDoAgente() {
+  for (const alvo of ['#agente-pausar', '#agente-retomar', '#agente-pausa-motivo']) {
+    const controle = seletor(alvo);
+    if (controle) controle.disabled = true;
+  }
+}
+
+/** Painel sem dado de agente nenhum: ao trocar de agente nada do anterior fica na tela nem clicável. */
+function zerarOperacaoDoAgente() {
+  for (const alvo of ['#agente-op-agente', '#agente-op-entrega', '#agente-op-aguardando']) {
+    pintarEstado(alvo, 'verificando…', 'neutro');
+  }
+  for (const alvo of ['#agente-op-agente-detalhe', '#agente-op-entrega-detalhe', '#agente-op-aguardando-detalhe', '#agente-controle-estado']) {
+    definirTexto(alvo, '—');
+  }
+  for (const alvo of ['#agente-aguardando', '#agente-conversas-recentes']) {
+    const lista = seletor(alvo);
+    if (lista) lista.innerHTML = '<li class="vazio">carregando…</li>';
+  }
+  const numeros = seletor('#agente-numeros');
+  if (numeros) numeros.innerHTML = '<dd>—</dd>';
+  desabilitarControleDoAgente();
+}
+
+function zerarWhatsappDoAgente() {
+  pintarEstado('#agente-op-whatsapp', 'verificando…', 'neutro');
+  definirTexto('#agente-op-whatsapp-detalhe', '—');
+  definirTexto('#agente-whatsapp-descricao', 'verificando a conexão…');
+  seletor('#agente-whatsapp-acoes').hidden = true;
+  seletor('#agente-whatsapp-form').hidden = true;
+  seletor('#agente-whatsapp-pareamento').hidden = true;
+}
+
+/** Sem operação não há Controle: erro visível e botões desabilitados, nunca estado velho. */
+function mostrarFalhaDaOperacaoDoAgente(erro) {
+  zerarOperacaoDoAgente();
+  pintarEstado('#agente-op-agente', 'Indisponível', 'ruim');
+  definirTexto('#agente-op-agente-detalhe', mensagemDeErroDoAgente(erro));
+  definirTexto('#agente-controle-estado', 'Não foi possível carregar o estado do agente — o Controle fica desabilitado até Atualizar.');
+  desabilitarControleDoAgente();
 }
 
 function desenharOperacaoDoAgente(operacao) {
   const { agente, status_alterado: alteracao, numeros, aguardando = [], conversas = [], pode_gerenciar: pode } = operacao;
+  // Só a operação DO agente aberto reabilita o Controle (B2).
+  for (const alvo of ['#agente-pausar', '#agente-retomar', '#agente-pausa-motivo']) seletor(alvo).disabled = false;
   const atendendo = agente.status === 'ativo';
   const rotulo = atendendo ? 'Atendendo' : agente.status === 'treinamento' ? 'Em treinamento' : 'Pausado';
   const quando = descreverMudancaDoAgente(alteracao);
@@ -4660,11 +4711,11 @@ seletor('#agente-pausar')?.addEventListener('click', async () => {
       metodo: 'POST', corpo: { motivo: seletor('#agente-pausa-motivo').value.trim() || null },
     });
     seletor('#agente-pausa-motivo').value = '';
+    // No sucesso quem reabilita é a operação nova do agente (B2).
     await carregarAgentes();
   } catch (erro) {
-    informar(`Não foi possível pausar o agente: ${mensagemDeErroDoAgente(erro)}`);
-  } finally {
     botao.disabled = false;
+    informar(`Não foi possível pausar o agente: ${mensagemDeErroDoAgente(erro)}`);
   }
 });
 
@@ -4679,11 +4730,11 @@ seletor('#agente-retomar')?.addEventListener('click', async () => {
   botao.disabled = true;
   try {
     await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/retomar`, { metodo: 'POST' });
+    // No sucesso quem reabilita é a operação nova do agente (B2).
     await carregarAgentes();
   } catch (erro) {
-    informar(`Não foi possível retomar o agente: ${mensagemDeErroDoAgente(erro)}`);
-  } finally {
     botao.disabled = false;
+    informar(`Não foi possível retomar o agente: ${mensagemDeErroDoAgente(erro)}`);
   }
 });
 

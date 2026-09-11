@@ -150,6 +150,49 @@ test('o painel de operação recarrega ao abrir o agente e o selo do menu conta 
   assert.match(bloco, /pedirJson\('\/api\/agentes\/aguardando'\)/);
 });
 
+// ------------------------------------------- B2: painel nunca mostra outro agente
+
+test('B2: trocar de agente zera o painel e desabilita o Controle antes de pedir a operação nova', () => {
+  const abrir = funcaoDoApp('abrirAgente');
+  const zerar = abrir.indexOf('zerarOperacaoDoAgente();');
+  const zerarWhatsapp = abrir.indexOf('zerarWhatsappDoAgente();');
+  const carregar = abrir.indexOf('carregarOperacaoDoAgente();');
+  assert.ok(zerar >= 0 && zerarWhatsapp >= 0, 'abrir outro agente zera operação e WhatsApp');
+  assert.ok(zerar < carregar && zerarWhatsapp < carregar, 'zera antes de pedir de novo');
+  assert.match(funcaoDoApp('zerarOperacaoDoAgente'), /desabilitarControleDoAgente\(\);/);
+  const desabilitar = funcaoDoApp('desabilitarControleDoAgente');
+  for (const id of ['#agente-pausar', '#agente-retomar', '#agente-pausa-motivo']) {
+    assert.ok(desabilitar.includes(`'${id}'`), `desabilita ${id}`);
+  }
+  assert.match(funcaoDoApp('desenharOperacaoDoAgente'), /\.disabled = false/, 'só a operação do agente aberto reabilita');
+});
+
+test('B2: a operação é desenhada assim que chega, sem esperar o WhatsApp, e resposta velha é descartada', () => {
+  const carregar = funcaoDoApp('carregarOperacaoDoAgente');
+  assert.doesNotMatch(carregar, /allSettled/, 'nada de esperar os dois pedidos juntos');
+  assert.match(carregar, /\/operacao`\)\s*\.then\(\(dados\) => \{ if \(vale\(\)\) desenharOperacaoDoAgente\(dados\); \}\)/);
+  assert.match(carregar, /\.catch\(\(erro\) => \{ if \(vale\(\)\) mostrarFalhaDaOperacaoDoAgente\(erro\); \}\)/);
+  assert.match(carregar, /\/whatsapp`\)\s*\.then\(\(dados\) => \{ if \(vale\(\)\) desenharWhatsappDoAgente\(dados\); \}\)/);
+  assert.match(carregar, /const vale = \(\) => pedido === carregarOperacaoDoAgente\.pedido/,
+    'descarta resposta de pedido que não é o mais novo');
+  assert.match(carregar, /Number\(agenteAberto\.agente\.id\) === id/, 'descarta resposta de outro agente');
+});
+
+test('B2: falha da operação mostra erro e deixa o Controle desabilitado, sem dados antigos', () => {
+  const falha = funcaoDoApp('mostrarFalhaDaOperacaoDoAgente');
+  assert.match(falha, /zerarOperacaoDoAgente\(\);/);
+  assert.match(falha, /pintarEstado\('#agente-op-agente', 'Indisponível', 'ruim'\)/);
+  assert.match(falha, /desabilitarControleDoAgente\(\);/);
+});
+
+test('B2: pausar e retomar só reabilitam o botão quando a chamada falha', () => {
+  for (const marcador of ["seletor('#agente-pausar')?.addEventListener('click'", "seletor('#agente-retomar')?.addEventListener('click'"]) {
+    const tratador = tratadorDe(marcador);
+    assert.doesNotMatch(tratador, /finally \{\s*botao\.disabled = false;/, 'no sucesso quem reabilita é a operação nova');
+    assert.match(tratador, /catch \(erro\) \{[\s\S]*botao\.disabled = false;/);
+  }
+});
+
 test('o QR do pareamento só entra na tela como data URL PNG, por propriedade do img', () => {
   const bloco = blocoDeAgentes();
   assert.match(bloco, /\/\^data:image\\\/png;base64,\[A-Za-z0-9\+\/=\]\+\$\/\.test\(resultado\.qr\)/);
