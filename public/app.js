@@ -1754,7 +1754,8 @@ function aplicarEscopoNoMenu() {
     if (titulo?.classList.contains('divisor')) titulo.hidden = vazio;
   }
   // `#editar-ficha` (auditoria de acesso A3): o colaborador não edita o cadastro do contato.
-  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha']) {
+  // `#botao-nota` (B3): a nota vai para a ficha do contato; ele anota com mensagem privada.
+  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha', '#botao-nota']) {
     const elemento = seletor(alvo);
     if (elemento) elemento.hidden = true;
   }

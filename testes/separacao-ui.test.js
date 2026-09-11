@@ -44,7 +44,7 @@ test('menu do colaborador: só Conversas, Contatos e Meu perfil; parada da Seren
   const aplicar = funcaoDoApp('aplicarEscopoNoMenu');
   assert.match(aplicar, /if \(veClinica\(\)\) return;/);
   assert.match(aplicar, /!TELAS_SEM_CLINICA\.has\(botao\.dataset\.tela\)/);
-  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha']) assert.ok(aplicar.includes(`'${alvo}'`), alvo);
+  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha', '#botao-nota']) assert.ok(aplicar.includes(`'${alvo}'`), alvo);
   // Auditoria de acesso A3: editar contato é da clínica — o botão só existe para quem a vê.
   assert.match(funcaoDoApp('carregarContatos'), /\$\{veClinica\(\) \? `<button type="button" class="secundario" data-editar-contato=/);
   assert.match(funcaoDoApp('sincronizarLiberarEmMassa'), /\(escopoAtual !== null && !veClinica\(\)\)/);

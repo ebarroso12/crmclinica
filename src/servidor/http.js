@@ -1810,7 +1810,7 @@ function criarAplicacao(dependencias = {}) {
       prioridade: (corpo) => conversas.definirPrioridade(conversaId, corpo),
       estado: (corpo) => conversas.definirEstado(conversaId, corpo),
       temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
-      notas: (corpo) => conversas.criarNota(conversaId, corpo),
+      notas: async (corpo) => conversas.criarNota(conversaId, corpo, { escopo: usuario ? await escopoDoUsuario() : null }),
       encerrar: (corpo) => servicoDeFluxo.encerrarConversa(conversaId, { usuarioId: corpo.usuario_id ?? null }),
     };
 

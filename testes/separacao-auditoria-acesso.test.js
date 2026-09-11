@@ -256,3 +256,30 @@ test('B1: PUT /api/contatos/:id confere o contato antes de ler o corpo — inexi
   const existente = await c.pedir('admin', `/api/contatos/${c.paciente.id}`, { metodo: 'PUT', corpo: '{quebrado' });
   assert.equal(existente.status, 400, 'com o contato conferido, o corpo quebrado continua 400');
 });
+
+// ------------------------------------------------------------------ B3
+
+test('B3: quem não vê a clínica não cria nota na ficha do contato — 403; a nota privada na thread do agente continua', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+  const notasAntes = (await c.repositorio.listarNotas(c.paciente.id)).length;
+
+  for (const quem of ['loja', 'gestorLoja']) {
+    const nota = await c.pedir(quem, `/api/conversas/${c.conversaPacienteLoja.id}/notas`, {
+      metodo: 'POST', corpo: { texto: `nota às cegas da ${quem}` },
+    });
+    assert.equal(nota.status, 403, `${quem}: POST notas`);
+    assert.equal(nota.json?.codigo, 'sem_acesso_clinica', `${quem}: POST notas`);
+
+    const privada = await c.pedir(quem, `/api/conversas/${c.conversaPacienteLoja.id}/mensagens`, {
+      metodo: 'POST', corpo: { texto: `anotação da ${quem}`, privada: true },
+    });
+    assert.equal(privada.status, 200, `${quem}: anotação privada na thread do agente`);
+  }
+  assert.equal((await c.repositorio.listarNotas(c.paciente.id)).length, notasAntes, 'nenhuma nota na ficha clínica');
+
+  const daClinica = await c.pedir('gestorClinica', `/api/conversas/${c.conversaClinica.id}/notas`, {
+    metodo: 'POST', corpo: { texto: 'nota da clínica' },
+  });
+  assert.equal(daClinica.status, 200, 'quem vê a clínica continua anotando a ficha');
+});

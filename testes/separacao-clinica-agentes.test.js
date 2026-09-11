@@ -120,7 +120,10 @@ test('conversa fora do escopo responde 404 em toda sub-rota — antes de ler o c
     // Corpo inválido de propósito: 404 (e não 400) prova que a trava vem antes da leitura.
     assert.equal((await c.pedir(quem, `/api/conversas/${conversa.id}/mensagens`, { metodo: 'POST', corpo: '{quebrado' })).status, 404, `${quem} POST mensagens`);
     for (const acao of ['assumir', 'etiquetas', 'estado', 'notas', 'anexos']) {
-      assert.equal((await c.pedir(quem, `/api/conversas/${conversa.id}/${acao}`, { metodo: 'POST', corpo: {} })).status, 404, `${quem} POST ${acao}`);
+      // Auditoria de acesso B3: nota da ficha é da clínica — para quem não a vê,
+      // o gate responde 403 antes de olhar a conversa (também sem confirmar nada).
+      const esperado = acao === 'notas' && quem === 'loja' ? 403 : 404;
+      assert.equal((await c.pedir(quem, `/api/conversas/${conversa.id}/${acao}`, { metodo: 'POST', corpo: {} })).status, esperado, `${quem} POST ${acao}`);
     }
   }
 });

@@ -7,6 +7,7 @@ const { agruparPorColuna, sugerirTemperatura } = require('../dominio/leads');
 const { proximaAcao } = require('../dominio/qualificacao');
 const {
   TODOS, veConversaDe, veContato, selosDoContato, recortarPedidoDeAgente, filtroDeEscopo, contatoParaColaborador,
+  ErroSemAcessoAClinica,
 } = require('../seguranca/escopo');
 
 // Migration 047 + auditoria de acesso A2 (docs/AGENTES.md, "Quem vê o quê").
@@ -577,7 +578,11 @@ function criarRotasDeConversas({
     },
 
     /** POST /api/conversas/:id/notas — nota na ficha do contato. */
-    async criarNota(conversaId, corpo) {
+    async criarNota(conversaId, corpo, { escopo = null } = {}) {
+      // Auditoria de acesso B3: a nota é gravada no CONTATO (ficha da clínica),
+      // não na conversa. Quem não vê a clínica anota na thread do agente com
+      // mensagem privada. A lista de rotas já barra; esta linha segura se ela mudar.
+      if (escopo && escopo.clinica !== true) throw new ErroSemAcessoAClinica();
       const id = exigirIdentificador(conversaId, 'conversa_id');
       const conversa = await exigirConversa(repositorio, id);
       const texto = exigirTexto(corpo?.texto, 'texto');
