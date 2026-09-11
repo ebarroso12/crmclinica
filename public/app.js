@@ -5125,7 +5125,7 @@ function desenharEquipeDoAgente({ membros = [], pode_gerenciar: pode = false } =
   const lista = seletor('#agente-equipe-lista');
   if (!lista) return;
   if (membros.length === 0) {
-    lista.innerHTML = '<li class="vazio">Ninguém na equipe ainda. Só o administrador vê as conversas deste agente.</li>';
+    lista.innerHTML = '<li class="vazio">Ninguém na equipe ainda: só o administrador vê as conversas deste agente, e ninguém recebe o resumo dele.</li>';
     return;
   }
   lista.innerHTML = membros.map((membro) => `
@@ -5138,7 +5138,12 @@ function desenharEquipeDoAgente({ membros = [], pode_gerenciar: pode = false } =
     </li>`).join('');
 }
 
-/** Quem pode entrar: conta ativa, fora da equipe e não admin (admin sempre vê). */
+/**
+ * Quem pode entrar: conta ativa e fora da equipe — admin inclusive. O admin vê as
+ * conversas de todo agente sem estar na equipe, mas o RESUMO do agente só vai
+ * para a equipe dele (docs/RESUMOS.md). Produção, 11/09: todas as contas eram
+ * admin e a lista vinha vazia, então ninguém recebia o resumo do Alpins.
+ */
 async function preencherCandidatosDaEquipe(membros) {
   const campo = seletor('#agente-equipe-usuario');
   if (!campo) return;
@@ -5149,10 +5154,9 @@ async function preencherCandidatosDaEquipe(membros) {
     usuarios = [];
   }
   const naEquipe = new Set(membros.map((membro) => Number(membro.usuario_id)));
-  const candidatos = usuarios.filter((usuario) => usuario.papel !== 'admin'
-    && usuario.situacao === 'ativo' && !naEquipe.has(Number(usuario.id)));
+  const candidatos = usuarios.filter((usuario) => usuario.situacao === 'ativo' && !naEquipe.has(Number(usuario.id)));
   campo.innerHTML = candidatos.length
-    ? candidatos.map((usuario) => `<option value="${Number(usuario.id)}">${escapar(usuario.nome)} — ${escapar(ROTULOS_DE_PAPEL[usuario.papel] ?? usuario.papel)}${usuario.acesso_clinica === false ? ' · colaborador' : ''}</option>`).join('')
+    ? candidatos.map((usuario) => `<option value="${Number(usuario.id)}">${escapar(usuario.nome)} — ${escapar(ROTULOS_DE_PAPEL[usuario.papel] ?? usuario.papel)}${usuario.acesso_clinica === false ? ' · colaborador' : ''}${usuario.papel === 'admin' ? ' · já vê tudo; entra para receber o resumo' : ''}</option>`).join('')
     : '<option value="" disabled selected>Todas as contas ativas já estão na equipe</option>';
 }
 

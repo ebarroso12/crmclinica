@@ -70,7 +70,9 @@ test('aba Equipe do agente: lista, adicionar (admin) e tirar com confirmação; 
   assert.match(HTML, /data-aba-agente="equipe"[^>]*>Equipe<\/button>/);
   assert.match(HTML, /<div class="agente-aba" data-painel-agente="equipe" hidden>/);
   assert.match(HTML, /<form id="agente-equipe-form" class="form-regra" hidden>/);
-  assert.ok(HTML.includes('O administrador sempre vê.'));
+  // Produção 11/09: todas as contas eram admin e a lista de candidatos vinha vazia —
+  // o admin vê as conversas, mas o RESUMO do agente só vai para quem está na equipe.
+  assert.ok(HTML.includes('O administrador sempre vê as conversas; para receber o resumo deste agente, também precisa estar na equipe.'));
 
   const carregar = funcaoDoApp('carregarEquipeDoAgente');
   assert.match(carregar, /const aindaEste = \(\) => agenteAberto && Number\(agenteAberto\.agente\.id\) === id;/);
@@ -80,7 +82,11 @@ test('aba Equipe do agente: lista, adicionar (admin) e tirar com confirmação; 
   const desenhar = funcaoDoApp('desenharEquipeDoAgente');
   assert.match(desenhar, /escapar\(membro\.nome/);
   assert.match(desenhar, /Colaborador \(só agentes\)/);
-  assert.match(funcaoDoApp('preencherCandidatosDaEquipe'), /usuario\.papel !== 'admin'/, 'admin não entra: sempre vê');
+  const candidatos = funcaoDoApp('preencherCandidatosDaEquipe');
+  assert.doesNotMatch(candidatos, /usuario\.papel !== 'admin'/, 'admin entra na equipe para receber o resumo do agente');
+  assert.match(candidatos, /usuario\.situacao === 'ativo' && !naEquipe\.has\(Number\(usuario\.id\)\)/);
+  assert.match(candidatos, /usuario\.papel === 'admin' \? ' · já vê tudo; entra para receber o resumo' : ''/);
+  assert.match(desenhar, /Ninguém na equipe ainda: só o administrador vê as conversas deste agente, e ninguém recebe o resumo dele\./);
   assert.match(APP_JS, /window\.confirm\('Tirar esta pessoa da equipe\?/);
   assert.match(APP_JS, /\/api\/agentes\/\$\{id\}\/equipe\/\$\{Number\(botao\.dataset\.removerMembro\)\}`, \{ metodo: 'DELETE' \}/);
 });
