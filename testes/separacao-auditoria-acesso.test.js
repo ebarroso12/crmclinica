@@ -20,7 +20,7 @@ const { validarAgente } = require('../src/dominio/agentes/regras');
 const SIGILOS = Object.freeze([
   'sigilo@clinica.test', 'OBS-CLINICA-SIGILOSA', 'ATRIBUTO-SIGILOSO', 'NOME-COMPLETO-SIGILOSO', '1980-01-02',
   'CPF-CIFRADO-SIGILOSO', '981110000', 'RESPONSAVEL-SIGILOSO', 'PARENTESCO-SIGILOSO', 'CONSENTIMENTO-SIGILOSO',
-  'IDENT-SIGILOSO', 'MOTIVO-OPTOUT-SIGILOSO', 'INTERESSE-SIGILOSO',
+  'MOTIVO-OPTOUT-SIGILOSO', 'INTERESSE-SIGILOSO',
 ]);
 
 const CAMPOS_DE_LEAD = Object.freeze([
@@ -114,10 +114,10 @@ test('A1: conversa de agente não traz lead nem próxima ação da clínica — 
 
 // ------------------------------------------------------------- A2 + M1
 
-test('A2 + M1: quem não vê a clínica recebe contato por LISTA BRANCA em toda rota — id, nome, telefone e selos dos agentes dele', async (t) => {
+test('A2 + M1: quem não vê a clínica recebe contato por LISTA BRANCA em toda rota — id, nome, telefone, identificador e selos dos agentes dele', async (t) => {
   const c = await montar();
   t.after(() => c.app.encerrar());
-  const LISTA_BRANCA = new Set(['id', 'nome', 'telefone', 'selos']);
+  const LISTA_BRANCA = new Set(['id', 'nome', 'telefone', 'identificador', 'selos']);
   const foraDaLista = (objeto, extras = []) => Object.keys(objeto ?? {})
     .filter((campo) => !LISTA_BRANCA.has(campo) && !extras.includes(campo));
 
@@ -165,6 +165,38 @@ test('A2 + M1: quem não vê a clínica recebe contato por LISTA BRANCA em toda 
   const conversaDaClinica = await c.pedir('gestorClinica', `/api/conversas/${c.conversaClinica.id}`);
   assert.equal(conversaDaClinica.json.ficha.nome_completo, 'NOME-COMPLETO-SIGILOSO');
   assert.equal(conversaDaClinica.json.conversa.contato.email, 'sigilo@clinica.test');
+});
+
+test('Instagram (reconferência de acesso): contato de agente sem telefone chega ao colaborador com o identificador; contato fora do escopo não chega', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+  const daLoja = await c.repositorio.encontrarOuCriarContato({ canal: 'instagram', identificador: '@cliente.da.loja' });
+  const conversaDaLoja = await c.repositorio.encontrarOuCriarConversaAberta(daLoja.id, 'instagram', { agenteId: c.alpins.id });
+  await c.repositorio.registrarMensagem(conversaDaLoja.id, { direcao: 'entrada', conteudo: 'oi, vi o post', autor_tipo: 'contato' });
+  const soDaClinica = await c.repositorio.encontrarOuCriarContato({ canal: 'instagram', identificador: '@paciente.so.da.clinica' });
+  const conversaDaClinica = await c.repositorio.encontrarOuCriarConversaAberta(soDaClinica.id, 'instagram');
+  await c.repositorio.registrarMensagem(conversaDaClinica.id, { direcao: 'entrada', conteudo: 'quero consulta', autor_tipo: 'contato' });
+
+  for (const quem of ['loja', 'gestorLoja']) {
+    const aberta = await c.pedir(quem, `/api/conversas/${conversaDaLoja.id}`);
+    assert.equal(aberta.status, 200, quem);
+    assert.equal(aberta.json.conversa.contato.identificador, '@cliente.da.loja', `${quem}: conversa aberta`);
+    assert.equal(aberta.json.conversa.contato.telefone, null);
+
+    const lista = await c.pedir(quem, '/api/conversas?fila=todos');
+    const item = lista.json.conversas.find((conversa) => conversa.id === conversaDaLoja.id);
+    assert.equal(item?.contato?.identificador, '@cliente.da.loja', `${quem}: lista de conversas`);
+
+    const ficha = await c.pedir(quem, `/api/contatos/${daLoja.id}`);
+    assert.equal(ficha.status, 200, quem);
+    assert.equal(ficha.json.contato.identificador, '@cliente.da.loja', `${quem}: /api/contatos/:id`);
+
+    const gestao = await c.pedir(quem, '/api/contatos/gestao?limite=500');
+    for (const resposta of [lista, gestao]) {
+      assert.ok(!resposta.texto.includes('@paciente.so.da.clinica'), `${quem}: contato fora do escopo não aparece`);
+    }
+    assert.notEqual((await c.pedir(quem, `/api/contatos/${soDaClinica.id}`)).status, 200, `${quem}: contato só da clínica não abre`);
+  }
 });
 
 // ------------------------------------------------------------------ A3

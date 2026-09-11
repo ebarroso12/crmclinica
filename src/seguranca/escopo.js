@@ -168,10 +168,13 @@ class ErroSemAcessoAClinica extends Error {
 /**
  * O contato como chega a quem NÃO vê a clínica (auditoria de acesso A2): LISTA
  * BRANCA, nunca lista negra. A mesma pessoa pode ser paciente — nome completo,
- * nascimento, responsável, consentimento, e-mail, identificador, observações,
- * atributos, documentos, opt-out e agenda são da clínica. Campo novo do contato
- * nasce FECHADO para o colaborador. `selos` já vem recortada por `selosDoContato`
- * (só os agentes dele); as datas de conversa vêm das conversas que ele vê.
+ * nascimento, responsável, consentimento, e-mail, observações, atributos,
+ * documentos, opt-out e agenda são da clínica. Campo novo do contato nasce
+ * FECHADO para o colaborador. `identificador` entra (reconferência de acesso):
+ * contato de agente pelo Instagram não tem telefone, e sem o @ o colaborador via
+ * só "Conversa N" — não é dado clínico, e só chega de contato do escopo dele.
+ * `selos` já vem recortada por `selosDoContato` (só os agentes dele); as datas de
+ * conversa vêm das conversas que ele vê.
  */
 function contatoParaColaborador(contato, { selos = null } = {}) {
   if (!contato) return contato;
@@ -179,6 +182,7 @@ function contatoParaColaborador(contato, { selos = null } = {}) {
     id: contato.id,
     nome: contato.nome ?? null,
     telefone: contato.telefone ?? null,
+    identificador: contato.identificador ?? null,
     ...(selos ? { selos } : {}),
   };
 }
