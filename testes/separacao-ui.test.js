@@ -119,7 +119,7 @@ test('fim de sessão numa aba já usada recarrega a página: menu e inbox da ses
   assert.match(encerrar, /window\.location\.reload\(\);/);
   assert.match(funcaoDoApp('mostrarAplicacao'), /aplicacaoJaMostrada = true;/);
 
-  assert.match(funcaoDoApp('renovarSessao'), /catch \{\s*encerrarSessaoNaTela\(\);\s*return false;/);
+  assert.match(funcaoDoApp('renovarSessaoUmaVez'), /catch \{\s*encerrarSessaoNaTela\(\);\s*return false;/);
   const inicioSair = APP_JS.indexOf("seletor('#sair')?.addEventListener('click'");
   assert.ok(inicioSair >= 0);
   const sair = APP_JS.slice(inicioSair, APP_JS.indexOf('\n});', inicioSair));
@@ -129,6 +129,29 @@ test('fim de sessão numa aba já usada recarrega a página: menu e inbox da ses
   assert.match(APP_JS, /setTimeout\(\(\) => encerrarSessaoNaTela\('Senha alterada\. Entre com a senha nova\.'\), 1500\);/);
   // O aviso do portão sobrevive ao recarregamento.
   assert.match(APP_JS, /else mostrarPortao\(lerEApagarAvisoDoPortao\(\)\);/);
+});
+
+test('uma renovação de sessão por vez, e "Sair" espera a que está em andamento (revisão de 4669467)', () => {
+  // Dois pedidos com 401 no mesmo tick (timers de 60 s e 30 s, Promise.all ao
+  // abrir conversa) gastavam o mesmo refresh rotativo: um renovava, o outro era
+  // recusado e encerrava a sessão — agora com recarga da página no meio do plantão.
+  assert.match(APP_JS, /^let renovacaoEmAndamento = null;$/m);
+  const renovar = funcaoDoApp('renovarSessao');
+  assert.match(renovar, /if \(!renovacaoEmAndamento\) \{/);
+  assert.match(renovar, /renovacaoEmAndamento = renovarSessaoUmaVez\(\)\.finally\(/);
+  assert.match(renovar, /return renovacaoEmAndamento;/);
+
+  // "Sair" no meio de uma renovação revogava o refresh velho, e o novo chegava
+  // depois: a pessoa voltava logada após a recarga.
+  const inicioSair = APP_JS.indexOf("seletor('#sair')?.addEventListener('click'");
+  const sair = APP_JS.slice(inicioSair, APP_JS.indexOf('\n});', inicioSair));
+  const esperar = sair.indexOf('if (renovacaoEmAndamento) await renovacaoEmAndamento');
+  const ler = sair.indexOf('const refresh = lerRefresh();');
+  const encerrar = sair.indexOf('encerrarSessaoNaTela();');
+  assert.ok(esperar >= 0 && esperar < ler && ler < encerrar, 'espera a renovação, lê o refresh atual, depois encerra');
+
+  // O aviso do portão é lido uma vez só.
+  assert.match(funcaoDoApp('lerEApagarAvisoDoPortao'), /sessionStorage\.removeItem\(CHAVE_AVISO_PORTAO\);/);
 });
 
 test('ficha: "Editar" só para quem vê a clínica, também ao abrir cada conversa (code review de 12e16b1)', () => {

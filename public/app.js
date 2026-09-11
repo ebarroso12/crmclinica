@@ -264,7 +264,22 @@ async function pedirJson(caminho, opcoes = {}, jaRenovou = false) {
   return resposta.json();
 }
 
+// Uma renovação por vez (revisão de 4669467). O refresh é rotativo: dois pedidos
+// com 401 no mesmo tick (timers de 60 s e 30 s, Promise.all ao abrir conversa)
+// gastavam o mesmo refresh, um renovava e o outro era recusado e encerrava a
+// sessão — com a recarga de encerrarSessaoNaTela, no meio do plantão.
+let renovacaoEmAndamento = null;
+
 async function renovarSessao() {
+  if (!renovacaoEmAndamento) {
+    renovacaoEmAndamento = renovarSessaoUmaVez().finally(() => {
+      renovacaoEmAndamento = null;
+    });
+  }
+  return renovacaoEmAndamento;
+}
+
+async function renovarSessaoUmaVez() {
   const refresh = lerRefresh();
   if (!refresh) return false;
 
@@ -2367,6 +2382,9 @@ async function carregarOpcoesDeEntrada() {
 }
 
 seletor('#sair')?.addEventListener('click', async () => {
+  // Renovação em andamento gira o refresh: sem esperar, o logout revogaria o
+  // velho e o novo, gravado logo depois, manteria a pessoa logada após a recarga.
+  if (renovacaoEmAndamento) await renovacaoEmAndamento.catch(() => {});
   const refresh = lerRefresh();
 
   if (refresh) {
