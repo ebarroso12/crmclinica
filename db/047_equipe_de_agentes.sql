@@ -20,7 +20,11 @@
 --                             gatilho, qualquer caminho de "editar o próprio
 --                             perfil" que um dia repassasse campos a mais daria
 --                             ao funcionário da loja um jeito de se dar acesso
---                             aos pacientes. Só backend e admin mudam a marca.
+--                             aos pacientes. Pela aplicação (crmclinica_app), só
+--                             backend e admin mudam a marca. Fora dela (dono das
+--                             tabelas no SQL Editor, manutenção) o gatilho não
+--                             interfere: ali não há sessão de usuário a proteger,
+--                             e o claim vazio faria current_app_role() falhar.
 --                             Função separada de propósito: guard_usuario_sensitive
 --                             (008) vive fora do repositório e não é reescrita aqui.
 --
@@ -70,9 +74,12 @@ CREATE OR REPLACE FUNCTION public.guard_usuario_acesso_clinica()
   SET search_path TO 'public', 'pg_temp'
 AS $$
 BEGIN
-  IF NEW.acesso_clinica IS DISTINCT FROM OLD.acesso_clinica
-     AND public.current_app_role() NOT IN ('backend', 'admin') THEN
-    RAISE EXCEPTION 'acesso à clínica só pode ser alterado por administrador';
+  -- IFs aninhados de propósito: a ordem de avaliação de um AND em SQL não é
+  -- garantida, e fora da aplicação o claim pode estar vazio.
+  IF NEW.acesso_clinica IS DISTINCT FROM OLD.acesso_clinica AND current_user = 'crmclinica_app' THEN
+    IF public.current_app_role() NOT IN ('backend', 'admin') THEN
+      RAISE EXCEPTION 'acesso à clínica só pode ser alterado por administrador';
+    END IF;
   END IF;
   RETURN NEW;
 END $$;

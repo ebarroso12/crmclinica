@@ -47,7 +47,8 @@ test('agente_equipe: chave (agente, usuário), CASCADE nas duas FKs e índice po
 
 test('só backend e admin mudam acesso_clinica: gatilho próprio, sem reescrever o guard da 008', () => {
   const corpo = semComentarios(SQL);
-  assert.match(corpo, /IF NEW\.acesso_clinica IS DISTINCT FROM OLD\.acesso_clinica\s+AND public\.current_app_role\(\) NOT IN \('backend', 'admin'\) THEN/);
+  assert.match(corpo, /IF NEW\.acesso_clinica IS DISTINCT FROM OLD\.acesso_clinica AND current_user = 'crmclinica_app' THEN\s+IF public\.current_app_role\(\) NOT IN \('backend', 'admin'\) THEN/,
+    'vale para a aplicação; o dono das tabelas no SQL Editor não fica travado');
   assert.match(corpo, /SET search_path TO 'public', 'pg_temp'/);
   assert.match(corpo, /CREATE TRIGGER trg_usuarios_acesso_clinica_guard BEFORE UPDATE ON usuarios/);
   assert.ok(!/guard_usuario_sensitive/.test(corpo), 'não mexe no guard da 008, que vive fora do repositório');
