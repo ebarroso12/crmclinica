@@ -1653,6 +1653,96 @@ function criarRepositorio(pool) {
       }));
     },
 
+    // ------------------------------------------ painel de operação dos agentes
+    //
+    // Só leitura, para o painel (docs/AGENTES.md, "Painel de operação"). Nada
+    // aqui devolve conteúdo de mensagem: contagens, horários, ids e o detalhe da
+    // auditoria do PRÓPRIO agente (que nunca carrega texto de cliente).
+
+    /**
+     * Ações auditadas nas conversas de UM agente: quantas desde `hojeDesde`,
+     * quantas desde `semanaDesde` e quando foi a última. `acoes` vem de quem
+     * pergunta — o vocabulário é do fluxo, não do repositório.
+     */
+    async resumirOperacaoDoAgente(agenteId, { acoes = [], hojeDesde, semanaDesde } = {}) {
+      const { rows: porAcao } = await consultar(`
+        SELECT a.acao,
+               count(*) FILTER (WHERE a.criado_em >= $2)::int AS hoje,
+               count(*) FILTER (WHERE a.criado_em >= $3)::int AS semana,
+               max(a.criado_em) AS ultima
+          FROM audit_log a
+          JOIN conversas c ON c.id = a.entidade_id
+         WHERE a.entidade = 'conversa' AND c.agente_id = $1 AND a.acao = ANY($4::text[])
+         GROUP BY a.acao
+         ORDER BY a.acao
+      `, [agenteId, hojeDesde, semanaDesde, acoes]);
+      const { rows: [novas] } = await consultar(`
+        SELECT count(*) FILTER (WHERE criado_em >= $2)::int AS hoje,
+               count(*) FILTER (WHERE criado_em >= $3)::int AS semana
+          FROM conversas
+         WHERE agente_id = $1
+      `, [agenteId, hojeDesde, semanaDesde]);
+      return {
+        acoes: porAcao.map((linha) => ({
+          acao: linha.acao,
+          hoje: Number(linha.hoje),
+          semana: Number(linha.semana),
+          ultima: linha.ultima ? new Date(linha.ultima).toISOString() : null,
+        })),
+        conversas_novas: { hoje: Number(novas?.hoje ?? 0), semana: Number(novas?.semana ?? 0) },
+      };
+    },
+
+    /** Auditoria do próprio agente (entidade 'agente'), mais recente primeiro. */
+    async listarAuditoriaDoAgente(agenteId, { acoes = [], limite = 20 } = {}) {
+      const { rows } = await consultar(`
+        SELECT a.id, a.acao, a.detalhe, a.criado_em, u.nome AS usuario_nome
+          FROM audit_log a
+          LEFT JOIN usuarios u ON u.id = a.usuario_id
+         WHERE a.entidade = 'agente' AND a.entidade_id = $1 AND a.acao = ANY($2::text[])
+         ORDER BY a.id DESC
+         LIMIT $3
+      `, [agenteId, acoes, limite]);
+      return rows.map((linha) => ({
+        id: Number(linha.id),
+        acao: linha.acao,
+        detalhe: linha.detalhe ?? null,
+        criado_em: new Date(linha.criado_em).toISOString(),
+        usuario_nome: linha.usuario_nome ?? null,
+      }));
+    },
+
+    /**
+     * Conversas de UM agente esperando a equipe: transferidas ou escalonadas
+     * (`assumida_por_humano`) e ainda sem responsável. A fila de escalonadas da
+     * clínica exclui conversa de agente de propósito (046) — sem este recorte,
+     * o cliente que pediu gente não aparecia para ninguém.
+     */
+    async listarConversasDoAgenteAguardandoEquipe(agenteId, { limite = 20 } = {}) {
+      const { rows } = await consultar(`
+        SELECT ${SELECAO_CONVERSA}, ${AGREGADOS_CONVERSA}
+        ${JUNCOES_CONVERSA}
+        WHERE c.agente_id = $1 AND c.status <> 'resolvida'
+          AND c.assumida_por_humano = true AND c.atribuido_a IS NULL
+        ORDER BY c.ultima_msg_em DESC NULLS LAST, c.id DESC
+        LIMIT $2
+      `, [agenteId, limite]);
+      return rows.map(montarConversa);
+    },
+
+    /** O mesmo recorte de `listarConversasDoAgenteAguardandoEquipe`, contado por agente. */
+    async contarConversasAguardandoEquipePorAgente() {
+      const { rows } = await consultar(`
+        SELECT agente_id, count(*)::int AS total
+          FROM conversas
+         WHERE agente_id IS NOT NULL AND status <> 'resolvida'
+           AND assumida_por_humano = true AND atribuido_a IS NULL
+         GROUP BY agente_id
+         ORDER BY agente_id
+      `);
+      return rows.map((linha) => ({ agente_id: Number(linha.agente_id), total: Number(linha.total) }));
+    },
+
     // ---------------------------------------------------------------- etiquetas
 
     async listarEtiquetas() {

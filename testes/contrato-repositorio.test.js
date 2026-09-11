@@ -1151,6 +1151,82 @@ for (const { nome, montar } of implementacoes) {
       assert.ok(!soDaClinica.some((c) => c.id === doAgente.id), 'agenteId null filtra só a clínica');
     });
 
+    await t.test('painel de operação: contagens, auditoria do agente e aguardando equipe são só do agente', async () => {
+      const agente = await criarAgenteDeTeste('contrato-painel');
+      const outro = await criarAgenteDeTeste('contrato-painel-outro');
+      const doAgente = await conversaDoAgente(agente.id, '5516900001301');
+      const doOutro = await conversaDoAgente(outro.id, '5516900001302');
+      const contatoDaClinica = await repositorio.encontrarOuCriarContato({ telefone: '5516900001303', nome: 'Da Clínica' });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(contatoDaClinica.id, 'whatsapp');
+
+      const auditarConversa = (conversaId, acao) => repositorio.registrarAuditoria({
+        entidade: 'conversa', entidadeId: conversaId, acao, detalhe: { agente_id: agente.id },
+      });
+      await auditarConversa(doAgente.id, 'agente_respondida');
+      await auditarConversa(doAgente.id, 'agente_respondida');
+      await auditarConversa(doAgente.id, 'transferida_para_humano');
+      await auditarConversa(doAgente.id, 'fora_da_lista');
+      await auditarConversa(doOutro.id, 'agente_respondida');
+      await auditarConversa(daClinica.id, 'agente_respondida');
+
+      const agoraMs = Date.now();
+      const umaHoraAtras = new Date(agoraMs - 60 * 60 * 1000).toISOString();
+      const umaSemanaAtras = new Date(agoraMs - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const daquiAUmaHora = new Date(agoraMs + 60 * 60 * 1000).toISOString();
+      const acoes = ['agente_respondida', 'transferida_para_humano', 'agente_resposta_nao_entregue'];
+
+      const resumo = await repositorio.resumirOperacaoDoAgente(agente.id, {
+        acoes, hojeDesde: umaHoraAtras, semanaDesde: umaSemanaAtras,
+      });
+      const porAcao = Object.fromEntries(resumo.acoes.map((item) => [item.acao, item]));
+      assert.deepEqual(Object.keys(porAcao).sort(), ['agente_respondida', 'transferida_para_humano'],
+        'só as ações pedidas, e só as que aconteceram');
+      assert.equal(porAcao.agente_respondida.hoje, 2, 'conversa de outro agente e da clínica não contam');
+      assert.equal(porAcao.agente_respondida.semana, 2);
+      assert.equal(porAcao.transferida_para_humano.hoje, 1);
+      assert.ok(Number.isFinite(new Date(porAcao.agente_respondida.ultima).getTime()));
+      assert.deepEqual(resumo.conversas_novas, { hoje: 1, semana: 1 });
+
+      const antesDeHoje = await repositorio.resumirOperacaoDoAgente(agente.id, {
+        acoes, hojeDesde: daquiAUmaHora, semanaDesde: umaSemanaAtras,
+      });
+      const respondida = antesDeHoje.acoes.find((item) => item.acao === 'agente_respondida');
+      assert.equal(respondida.hoje, 0, 'o corte de "hoje" vale');
+      assert.equal(respondida.semana, 2);
+      assert.deepEqual(antesDeHoje.conversas_novas, { hoje: 0, semana: 1 });
+
+      await repositorio.registrarAuditoria({
+        entidade: 'agente', entidadeId: agente.id, acao: 'agente_pausado', detalhe: { status_de: 'ativo', motivo: 'almoço' },
+      });
+      await repositorio.registrarAuditoria({ entidade: 'agente', entidadeId: outro.id, acao: 'agente_retomado', detalhe: {} });
+      await repositorio.registrarAuditoria({
+        entidade: 'agente', entidadeId: agente.id, acao: 'agente_retomado', detalhe: { status_de: 'desativado' },
+      });
+      await repositorio.registrarAuditoria({ entidade: 'agente', entidadeId: agente.id, acao: 'agente_treinamento_criado', detalhe: {} });
+      const historico = await repositorio.listarAuditoriaDoAgente(agente.id, {
+        acoes: ['agente_pausado', 'agente_retomado'], limite: 5,
+      });
+      assert.deepEqual(historico.map((item) => item.acao), ['agente_retomado', 'agente_pausado'], 'mais recente primeiro');
+      assert.equal(historico[1].detalhe.motivo, 'almoço');
+      assert.equal(historico[0].usuario_nome, null);
+      assert.ok(Number.isFinite(new Date(historico[0].criado_em).getTime()));
+      assert.equal((await repositorio.listarAuditoriaDoAgente(agente.id, { acoes: ['agente_retomado'], limite: 1 })).length, 1);
+
+      assert.deepEqual(await repositorio.listarConversasDoAgenteAguardandoEquipe(agente.id), []);
+      for (const conversa of [doAgente, doOutro, daClinica]) {
+        await repositorio.atualizarConversa(conversa.id, { assumida_por_humano: true, atribuido_a: null });
+      }
+      const aguardando = await repositorio.listarConversasDoAgenteAguardandoEquipe(agente.id);
+      assert.deepEqual(aguardando.map((conversa) => conversa.id), [doAgente.id]);
+      assert.equal(aguardando[0].agente_nome, agente.nome);
+      const contagem = (await repositorio.contarConversasAguardandoEquipePorAgente())
+        .filter((item) => [agente.id, outro.id].includes(item.agente_id));
+      assert.deepEqual(contagem, [{ agente_id: agente.id, total: 1 }, { agente_id: outro.id, total: 1 }]);
+
+      await repositorio.atualizarConversa(doAgente.id, { status: 'resolvida' });
+      assert.deepEqual(await repositorio.listarConversasDoAgenteAguardandoEquipe(agente.id), [], 'resolvida sai da espera');
+    });
+
     await t.test('contarRespostasDaAutomacao conta só a automação visível', async () => {
       const agente = await criarAgenteDeTeste('contrato-contagem');
       const conversa = await conversaDoAgente(agente.id, '5516900001002');
