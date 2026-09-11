@@ -31,7 +31,7 @@ function blocoDeAgentes() {
   return APP_JS.slice(inicio, fim);
 }
 
-const ABAS = ['teste', 'horario', 'perfil', 'treinamentos', 'trabalho', 'configuracoes', 'inatividade', 'canais'];
+const ABAS = ['teste', 'horario', 'perfil', 'treinamentos', 'trabalho', 'configuracoes', 'inatividade', 'canais', 'equipe'];
 
 test('o menu tem Agentes escondido por padrão e liberado só por agentes:ler', () => {
   assert.match(HTML, /<li id="item-agentes" hidden>\s*<button type="button" data-tela="agentes">/);
@@ -326,13 +326,12 @@ test('a linha do inbox mostra o selo do agente antes dos outros selos', () => {
   assert.match(linha, /selo\.textContent = conversa\.agente_nome/, 'nome do agente por textContent, nunca innerHTML');
 });
 
-test('o inbox filtra por quem atende e o seletor existe no HTML', () => {
-  assert.match(HTML, /<select id="filtro-agente-conversas"[^>]*hidden>/);
-  assert.match(HTML, /<option value="clinica">/);
+test('o inbox separa por abas Clínica | agente (migration 047), no lugar do seletor antigo', () => {
+  assert.ok(!HTML.includes('filtro-agente-conversas'), 'o seletor "Todas / Só da clínica" saiu');
+  assert.match(HTML, /<div class="abas abas-escopo" id="abas-escopo-conversas" role="tablist"[^>]*hidden><\/div>/);
   const carregar = funcaoDoApp('carregarConversas');
-  assert.match(carregar, /parametros\.set\('agente', agente\)/);
-  assert.match(APP_JS, /seletor\('#filtro-agente-conversas'\)\?\.addEventListener\('change', carregarConversas\)/);
-  assert.match(funcaoDoApp('prepararFiltroDeAgentesDaConversa'), /podeFazer\('agentes:ler'\)/);
+  assert.match(carregar, /parametros\.set\('agente', escopoDaListaDeConversas\)/);
+  assert.match(APP_JS, /seletor\('#abas-escopo-conversas'\)\?\.addEventListener\('click'/);
 });
 
 test('conversa de agente transferida (assumida e sem responsável) mostra "Assumir" — achado M1', () => {
