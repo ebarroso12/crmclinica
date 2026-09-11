@@ -142,6 +142,40 @@ test('gestor e atendente não cadastram nem autorizam WhatsApp de ninguém — n
   assert.equal(gestor.whatsapp_particular_autorizado, false);
 });
 
+test('trocar ou tirar o número zera a autorização e audita com o motivo; o mesmo número, formatado, não revoga (auditoria M3)', async (t) => {
+  const { app, auditoria, pedir, ids, situacaoNoPainel } = await montar();
+  t.after(() => app.encerrar());
+  const salvar = (whatsapp) => pedir('admin', `/api/usuarios/${ids.gestor}`, { metodo: 'PUT', corpo: { whatsapp } });
+  const autorizar = () => pedir('admin', `/api/usuarios/${ids.gestor}/whatsapp-particular`, { metodo: 'POST', corpo: { autorizado: true } });
+  const ficha = async () => (await pedir('admin', `/api/usuarios/${ids.gestor}`)).json.usuario;
+  const revogacoes = () => auditoria.filter((item) => item.entidadeId === ids.gestor
+    && item.acao === 'usuario.whatsapp_particular_revogado' && item.detalhe?.motivo === 'numero_alterado');
+
+  await salvar({ ddi: '55', ddd: '16', numero: NUMERO });
+  await autorizar();
+  assert.equal(await situacaoNoPainel(ids.gestor), 'recebe');
+
+  assert.equal((await salvar({ ddi: '+55', ddd: '(16)', numero: '99100-0002' })).status, 200);
+  assert.equal((await ficha()).whatsapp_particular_autorizado, true, 'o mesmo número, formatado, não revoga');
+  assert.equal(revogacoes().length, 0);
+
+  assert.equal((await salvar({ ddi: '55', ddd: '16', numero: '991000009' })).status, 200);
+  const trocado = await ficha();
+  assert.deepEqual(
+    [trocado.whatsapp_particular_autorizado, trocado.whatsapp_particular_autorizado_em, trocado.whatsapp_particular_autorizado_por],
+    [false, null, null],
+    'trocar o número zera autorização, data e autor',
+  );
+  assert.equal(await situacaoNoPainel(ids.gestor), 'whatsapp_nao_autorizado');
+  assert.equal(revogacoes().length, 1, 'auditado com motivo numero_alterado');
+  assert.ok(!JSON.stringify(revogacoes()).includes('991000009'), 'sem telefone na auditoria');
+
+  await autorizar();
+  assert.equal((await salvar({ ddi: null, ddd: null, numero: null })).status, 200);
+  assert.equal((await ficha()).whatsapp_particular_autorizado, false, 'tirar o número também revoga');
+  assert.equal(revogacoes().length, 2);
+});
+
 test('o número nunca sai sem máscara fora da ficha de edição do admin: lista, painel e auditoria', async (t) => {
   const { app, auditoria, pedir, ids } = await montar();
   t.after(() => app.encerrar());

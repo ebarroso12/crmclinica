@@ -2622,9 +2622,14 @@ seletor('#form-whatsapp-usuario')?.addEventListener('submit', async (evento) => 
     ? { ddi: null, ddd: null, numero: null }
     : { ddi: seletor('#whatsapp-usuario-ddi').value.trim() || '55', ddd, numero };
 
+  // Auditoria M3: trocar ou tirar o número retira a autorização no servidor — a tela avisa.
+  const estavaAutorizado = seletor('#whatsapp-usuario-autorizado').checked;
   try {
     await pedirJson(`/api/usuarios/${alvo}`, { metodo: 'PUT', corpo: { whatsapp } });
     await depoisDeMudarWhatsapp(alvo);
+    if (estavaAutorizado && whatsappEmEdicao === alvo && !seletor('#whatsapp-usuario-autorizado').checked) {
+      definirTexto('#whatsapp-usuario-registro', 'Número alterado: a autorização foi retirada. Autorize de novo.');
+    }
   } catch (falha) {
     erro.textContent = falha.detalhe || 'WhatsApp inválido: informe DDD (2 dígitos) e número (8 ou 9 dígitos).';
     erro.hidden = false;

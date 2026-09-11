@@ -55,6 +55,9 @@ test('grava pela edição completa existente e autoriza pela rota de P1-06, com 
   assert.match(funcaoDoApp('carregarUsuarios'), /carregarPainelDeResumos\(\);/);
   const abrir = funcaoDoApp('abrirWhatsappDoUsuario');
   assert.match(abrir, /if \(whatsappEmEdicao !== alvo\) return;/, 'resposta de outra pessoa é descartada');
+  // Auditoria M3: trocar o número retira a autorização — a tela avisa que é preciso autorizar de novo.
+  assert.match(APP_JS, /const estavaAutorizado = seletor\('#whatsapp-usuario-autorizado'\)\.checked;/);
+  assert.match(APP_JS, /definirTexto\('#whatsapp-usuario-registro', 'Número alterado: a autorização foi retirada\. Autorize de novo\.'\);/);
 });
 
 test('a ficha mostra quem autorizou e quando, só por textContent/value; o número em claro só no formulário', () => {
