@@ -50,6 +50,13 @@ function renderizarContatos(contatosFalsos) {
     /dados\.contatos\.map\(\(contato\) => `[\s\S]*?`\)\.join\(''\)/,
     'o template de renderização de contatos precisa existir em carregarContatos (public/app.js)',
   );
+  // Migration 047: o template chama os selos de origem (nome de agente vindo
+  // do banco) e `veClinica()` para mostrar "Excluir". Os selos vêm do fonte
+  // real, porque também são um caminho de texto para HTML.
+  const fonteSelos = extrairFonteDe(
+    /function selosDoContatoEmHtml\([\s\S]*?\n\}/,
+    'public/app.js precisa declarar `selosDoContatoEmHtml`',
+  );
 
   // DOM mínimo, só o suficiente para `escapar` (document.createElement +
   // textContent/innerHTML) e para Date/toLocaleDateString funcionarem.
@@ -62,10 +69,12 @@ function renderizarContatos(contatosFalsos) {
   const contexto = vm.createContext({
     document: { createElement: () => new ElementoFalso() },
     Date,
+    Number,
+    veClinica: () => true,
     __contatos: contatosFalsos,
   });
   const fonteTemplateComVariavelLocal = fonteTemplate.replace('dados.contatos', '__contatos');
-  return vm.runInContext(`${fonteEscapar}\n(${fonteTemplateComVariavelLocal});`, contexto);
+  return vm.runInContext(`${fonteEscapar}\n${fonteSelos}\n(${fonteTemplateComVariavelLocal});`, contexto);
 }
 
 test('telefone malicioso não vira tag HTML executável na lista de contatos', () => {
@@ -80,6 +89,35 @@ test('telefone malicioso não vira tag HTML executável na lista de contatos', (
     html.includes('&lt;img') || html.includes('&amp;lt;img'),
     'o payload precisa aparecer escapado (entidade HTML), não desaparecer nem virar tag real',
   );
+});
+
+test('nome de agente malicioso no selo de origem não vira tag (migration 047)', () => {
+  const PAYLOAD = '<img src=x onerror=alert(1)>';
+  const html = renderizarContatos([{
+    id: 1, nome: 'Cliente', telefone: '5511999999999', excluido: false,
+    selos: { clinica: true, agentes: [{ id: 2, nome: PAYLOAD }] },
+  }]);
+  assert.ok(!html.includes('<img'), `nome de agente cru no selo — html:\n${html}`);
+  assert.ok(html.includes('Clínica'), 'o selo "Clínica" aparece');
+});
+
+test('colaborador (sem agendamentos nem opt-out na resposta) não vê "agendamento(s)" nem "não recebe lembretes" inventados (auditoria de acesso M1)', () => {
+  // Lista branca da API: quem não vê a clínica recebe só id, nome, telefone,
+  // selos e conversas. A tela não pode preencher o vazio com "0 agendamento(s)".
+  const doColaborador = renderizarContatos([{
+    id: 1, nome: 'Cliente', telefone: '5511999999999', conversas: 2, selos: { clinica: false, agentes: [] },
+  }]);
+  assert.ok(!doColaborador.includes('agendamento(s)'), `html:\n${doColaborador}`);
+  assert.ok(!doColaborador.includes('não recebe lembretes'), `html:\n${doColaborador}`);
+
+  const daClinica = renderizarContatos([{
+    id: 1, nome: 'Paciente', telefone: '5511999999999', conversas: 1, agendamentos: 3, recebe_lembretes: false,
+  }]);
+  assert.match(daClinica, /3 agendamento\(s\)/);
+  assert.match(daClinica, /não recebe lembretes/);
+  const semOptOut = renderizarContatos([{ id: 1, nome: 'Paciente', telefone: '5511999999999', agendamentos: 0, recebe_lembretes: true }]);
+  assert.match(semOptOut, /0 agendamento\(s\)/);
+  assert.ok(!semOptOut.includes('não recebe lembretes'));
 });
 
 test('nome malicioso continua escapado (não regride — controle positivo)', () => {

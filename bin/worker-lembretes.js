@@ -340,26 +340,50 @@ async function main() {
     // configurada e entregando mensagem a paciente o dia todo.
     canal: (configuracao.openclaw.canalClinica?.url || clienteEvolucaoEnvio.disponivel)
       ? criarCanalDeConversas(configuracao.openclaw.canalClinica, viasDeEntrega) : null,
-    destinatarios: configuracao.resumoDeAtendimento.destinatarios,
+    // Quem recebe NÃO vem mais de CRMCLINICA_RESUMO_DESTINATARIOS: é a equipe de
+    // cada lado, lida do cadastro a cada varredura (docs/RESUMOS.md). O relógio
+    // do intervalo e a trava contra duas cópias vivem no banco.
     silencioMin: configuracao.resumoDeAtendimento.silencioMin,
+    intervaloMin: configuracao.resumoDeAtendimento.intervaloMin,
+    maximoPorResumo: configuracao.resumoDeAtendimento.maximoConversas,
     gerador: geradorDeResumo,
   });
 
+  // Pool mínimo (auditoria B6): a trava do resumo segura uma conexão durante a
+  // varredura e as consultas usam outra — com 1, o ciclo travaria até o timeout.
+  // O resto do worker (lembretes, sino, retenção) segue normal.
+  const { problemaDoPoolParaResumo } = require('../src/dominio/resumo-atendimento');
+  const problemaDoPool = problemaDoPoolParaResumo(configuracao.banco.poolMax);
+  const resumoLigado = resumoParaEquipe.ativo && !problemaDoPool;
+
   if (!resumoParaEquipe.ativo) {
-    // Dizer QUAL das duas metades falta: "sem destinatarios" com a lista cheia
-    // e o canal ausente mandava procurar no lugar errado.
-    const faltando = configuracao.resumoDeAtendimento.destinatarios.length === 0
-      ? 'CRMCLINICA_RESUMO_DESTINATARIOS vazia'
-      : 'nenhum canal de entrega (nem Evolution, nem gateway da clinica)';
-    console.warn(`[resumo] a equipe nao recebe resumo de atendimento: ${faltando}.`);
+    console.warn('[resumo] a equipe nao recebe resumo de atendimento: nenhum canal de entrega (nem Evolution, nem gateway da clinica).');
+  } else if (problemaDoPool) {
+    console.error(`[resumo] ${problemaDoPool}`);
+  } else {
+    console.log(`[resumo] por equipe, um a cada ${configuracao.resumoDeAtendimento.intervaloMin} min `
+      + `(silencio de ${configuracao.resumoDeAtendimento.silencioMin} min); destinatarios pelo cadastro de usuarios.`);
   }
 
+  // O ciclo de resumo em andamento (auditoria M2): o encerramento espera por ele.
+  let resumoEmAndamento = null;
   async function enviarResumos() {
-    if (!resumoParaEquipe.ativo) return;
+    if (!resumoLigado || encerrando) return;
+    resumoEmAndamento = (async () => {
+      try {
+        const resultado = await resumoParaEquipe.enviarPendentes();
+        // Auditoria M-n1: envio incerto não é repetido — o log diz quantos houve.
+        if (resultado?.incertos > 0) {
+          console.warn(`[resumo] ${resultado.incertos} envio(s) incerto(s) neste ciclo — não repetidos; ver a auditoria resumo_envio_incerto`);
+        }
+      } catch (erro) {
+        console.error(`[resumo] falhou: ${erro.message}`);
+      }
+    })();
     try {
-      await resumoParaEquipe.enviarPendentes();
-    } catch (erro) {
-      console.error(`[resumo] falhou: ${erro.message}`);
+      await resumoEmAndamento;
+    } finally {
+      resumoEmAndamento = null;
     }
   }
 
@@ -457,11 +481,43 @@ async function main() {
     console.log(`[lembretes] ${sinal}: encerrando depois do lote corrente…`);
     clearInterval(relogio);
 
+    // Teto TOTAL da parada (reconferência B-n3): o lote, o resumo e o
+    // fechamento do pool dividem um prazo só, de 80 s, abaixo do TimeoutStopSec
+    // padrão do systemd (90 s). Eram esperas somadas — lote sem teto + 60 s do
+    // resumo + `pool.end()`, que espera a conexão da trava do resumo voltar, e
+    // ela só volta quando a varredura termina.
+    const TETO_DA_PARADA_MS = 80_000;
+    const prazoDaParada = Date.now() + TETO_DA_PARADA_MS;
+    const restanteDaParada = () => Math.max(0, prazoDaParada - Date.now());
+    const ateOPrazo = (limiteMs) => new Promise((resolve) => { setTimeout(resolve, limiteMs).unref(); });
+    // Rede de segurança: sai mesmo que algo trave fora das esperas abaixo.
+    setTimeout(() => {
+      console.error('[lembretes] teto da parada estourado: saindo sem terminar o encerramento');
+      process.exit(1);
+    }, TETO_DA_PARADA_MS + 5_000);
+
     // Espera o lote em andamento. Matar no meio deixaria linhas em
     // 'processando' — recuperáveis, mas só depois do lease de 5 minutos.
-    while (rodando) await new Promise((resolve) => setTimeout(resolve, 100));
+    while (rodando && restanteDaParada() > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+    if (rodando) console.warn('[lembretes] prazo da parada acabou com o lote em andamento: ele volta pelo lease');
 
-    await encerrarPool();
+    // O resumo em andamento também (auditoria M2): parar no meio deixaria parte
+    // entregue sem marca. Até 60 s, dentro do prazo; passando disso, sai — o
+    // registro de envios (resumo_envios) impede que o que ficou 'enviando' saia
+    // duas vezes.
+    const ESPERA_MAXIMA_DO_RESUMO_MS = 60_000;
+    if (resumoEmAndamento) {
+      console.log('[lembretes] esperando o resumo em andamento terminar…');
+      await Promise.race([
+        resumoEmAndamento,
+        ateOPrazo(Math.min(ESPERA_MAXIMA_DO_RESUMO_MS, restanteDaParada())),
+      ]);
+    }
+
+    await Promise.race([
+      encerrarPool().catch((erro) => { console.error(`[lembretes] o pool não fechou limpo: ${erro.message}`); }),
+      ateOPrazo(restanteDaParada()),
+    ]);
     console.log('[lembretes] encerrado');
     process.exit(0);
   };

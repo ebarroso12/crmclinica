@@ -320,6 +320,10 @@
 
         <div class="inbox">
           <div class="lista">
+            <!-- De quem é a conversa (migration 047): "Clínica" e cada agente em que a
+                 pessoa está na equipe. Só aparece para quem tem mais de um contexto;
+                 o servidor recorta a lista de qualquer jeito. -->
+            <div class="abas abas-escopo" id="abas-escopo-conversas" role="tablist" aria-label="De quem é a conversa" hidden></div>
             <label class="oculto-visual" for="busca-conversas">Buscar conversa</label>
             <input id="busca-conversas" type="search" placeholder="Buscar nome, telefone ou mensagem">
             <div class="filtros-conversas">
@@ -330,13 +334,6 @@
                       aria-label="Ordenar por data, mais recentes primeiro" title="Ordenar por data">
                 Mais recentes ↓
               </button>
-              <!-- Quem atende: a clínica (Serena) ou um agente. Só aparece para quem
-                   enxerga a tela de Agentes; o selo na linha vale para todos. -->
-              <label class="oculto-visual" for="filtro-agente-conversas">Filtrar por quem atende</label>
-              <select id="filtro-agente-conversas" title="Quem atende a conversa" hidden>
-                <option value="">Todas as conversas</option>
-                <option value="clinica">Só da clínica</option>
-              </select>
             </div>
             <div class="abas" role="tablist" aria-label="Filas do inbox">
               <button type="button" class="aba" role="tab" data-fila="minhas" aria-selected="false">Minhas</button>
@@ -1190,6 +1187,7 @@
             <button type="button" class="aba" role="tab" data-aba-agente="configuracoes" aria-selected="false">Configurações</button>
             <button type="button" class="aba" role="tab" data-aba-agente="inatividade" aria-selected="false">Ações de inatividade</button>
             <button type="button" class="aba" role="tab" data-aba-agente="canais" aria-selected="false">Canais</button>
+            <button type="button" class="aba" role="tab" data-aba-agente="equipe" aria-selected="false">Equipe</button>
           </div>
 
           <!-- Comportamento no ar (perfil). Ligar e desligar não moram aqui: é o
@@ -1384,6 +1382,21 @@
             </fieldset>
           </form>
 
+          <!-- Equipe (migration 047): quem vê e responde as conversas deste agente. -->
+          <div class="agente-aba" data-painel-agente="equipe" hidden>
+            <p>Quem vê e responde as conversas deste agente. O administrador sempre vê. Quem não vê a clínica (colaborador) só enxerga as conversas dos agentes em que estiver na equipe.</p>
+            <ul class="lista-regras" id="agente-equipe-lista">
+              <li class="vazio">carregando…</li>
+            </ul>
+            <form id="agente-equipe-form" class="form-regra" hidden>
+              <label for="agente-equipe-usuario">Colocar na equipe</label>
+              <select id="agente-equipe-usuario" required></select>
+              <div class="linha-acoes">
+                <button type="submit" class="primario" id="agente-equipe-adicionar">Adicionar à equipe</button>
+              </div>
+            </form>
+          </div>
+
           <!-- Teste -->
           <div class="agente-aba" data-painel-agente="teste" hidden>
             <p>Converse como se fosse o cliente. Nada é gravado nem enviado — mas cada resposta é uma chamada de IA.</p>
@@ -1450,6 +1463,11 @@
             </div>
             <div class="linha-acoes">
               <input id="contatos-busca" type="search" placeholder="Buscar por nome ou telefone">
+              <!-- Origem (selos automáticos, calculados das conversas): Clínica ou agente. -->
+              <label class="oculto-visual" for="contatos-origem">Origem do contato</label>
+              <select id="contatos-origem" title="De onde o contato veio">
+                <option value="">Todas as origens</option>
+              </select>
               <label class="marcador"><input type="checkbox" id="contatos-excluidos"> mostrar excluídos</label>
             </div>
           </div>
@@ -1560,6 +1578,10 @@
                 <option value="admin">Administrador</option>
               </select>
             </div>
+            <div>
+              <label class="marcador"><input type="checkbox" id="novo-acesso-clinica" checked> Vê a clínica</label>
+              <p class="nota">Desmarcado = só as conversas dos agentes em que a pessoa estiver na Equipe (Agentes → agente → Equipe). O administrador sempre vê.</p>
+            </div>
             <div class="formulario-acoes">
               <button type="submit" class="primario">Criar</button>
               <button type="button" class="acao" id="cancelar-novo-usuario">Cancelar</button>
@@ -1575,9 +1597,49 @@
               <p id="resumo-usuarios">Carregando…</p>
             </div>
           </div>
+          <p class="nota">"Vê a clínica" desmarcado = colaborador: só as conversas dos agentes em que a pessoa estiver na Equipe. Sem equipe nenhuma, não vê nada.</p>
           <ul class="lista-usuarios" id="lista-usuarios" aria-live="polite">
             <li class="vazio">Carregando…</li>
           </ul>
+        </article>
+
+        <!-- WhatsApp de uma pessoa da equipe (docs/RESUMOS.md): número e autorização de uso (P1-06).
+             O número em claro só aparece neste formulário do administrador. -->
+        <article class="card" id="cartao-whatsapp-usuario" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3 id="whatsapp-usuario-titulo">WhatsApp</h3>
+              <p id="whatsapp-usuario-situacao">—</p>
+            </div>
+            <button type="button" class="secundario" id="whatsapp-usuario-fechar">Fechar</button>
+          </div>
+          <form id="form-whatsapp-usuario" class="form-regra">
+            <label for="whatsapp-usuario-ddi">DDI</label>
+            <input id="whatsapp-usuario-ddi" type="text" inputmode="numeric" maxlength="3" autocomplete="off" value="55">
+            <label for="whatsapp-usuario-ddd">DDD (2 dígitos)</label>
+            <input id="whatsapp-usuario-ddd" type="text" inputmode="numeric" maxlength="2" autocomplete="off">
+            <label for="whatsapp-usuario-numero">Número (8 ou 9 dígitos)</label>
+            <input id="whatsapp-usuario-numero" type="text" inputmode="numeric" maxlength="9" autocomplete="off">
+            <p class="nota" id="whatsapp-usuario-erro" role="alert" hidden></p>
+            <div class="linha-acoes">
+              <button type="submit" class="primario" id="whatsapp-usuario-salvar">Salvar WhatsApp</button>
+            </div>
+          </form>
+          <label class="marcador"><input type="checkbox" id="whatsapp-usuario-autorizado"> WhatsApp autorizado para avisos e resumos</label>
+          <p class="nota" id="whatsapp-usuario-registro">—</p>
+          <p class="nota">A autorização é o consentimento da pessoa registrado pelo administrador: quem autorizou e quando ficam gravados e auditados. A própria pessoa não autoriza pelo perfil.</p>
+        </article>
+
+        <!-- Resumo por equipe (docs/RESUMOS.md): destinatários efetivos, sempre mascarados. -->
+        <article class="card" id="cartao-resumos" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3>Quem recebe os resumos</h3>
+              <p id="resumo-destinatarios">Carregando…</p>
+            </div>
+          </div>
+          <p class="nota">Um resumo por equipe a cada 2 horas: a equipe da clínica recebe os da clínica; a equipe de cada agente, os do agente, pelo número do agente. Só recebe quem tem WhatsApp cadastrado e autorizado e "Recebe resumos" ligado.</p>
+          <div id="painel-resumos" aria-live="polite"></div>
         </article>
       </section>
 

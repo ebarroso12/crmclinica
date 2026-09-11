@@ -192,6 +192,22 @@ const ESPERADO = {
       ['agente_comportamentos', 'comportamento'],
     ],
   },
+  // Sem `usuarios.acesso_clinica` o código da separação clínica × agentes
+  // responde 500 a toda requisição de quem não é admin: é a prova de "047
+  // antes do deploy". Grants, FKs e o gatilho são conferidos mais abaixo.
+  '047_equipe_de_agentes': {
+    tabelas: ['agente_equipe', 'resumo_envios'],
+    colunas: [
+      ['usuarios', 'acesso_clinica'],
+      // Sem ela, o login (CAMPOS_USUARIO) e o resumo por equipe falham.
+      ['usuarios', 'recebe_resumo'],
+      ['agente_equipe', 'agente_id'], ['agente_equipe', 'usuario_id'],
+      // Registro de envios do resumo: sem ele, o worker não envia (auditoria M2).
+      ['resumo_envios', 'chave'], ['resumo_envios', 'status'],
+      // Sem ela, a reserva falha e nenhum resumo sai (conferência final, item 1).
+      ['resumo_envios', 'tentativas'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
@@ -237,6 +253,9 @@ const TABELAS_COM_RLS = [
   'google_sincronia_conflitos', 'termos', 'termo_assinaturas',
   // Agentes configuráveis (migration 046, docs/AGENTES.md).
   'agentes', 'agente_comportamentos', 'agente_treinamentos', 'agente_acoes_inatividade', 'agente_canais',
+  // Equipe dos agentes e registro de envios do resumo (migration 047).
+  'agente_equipe',
+  'resumo_envios',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
@@ -504,6 +523,65 @@ async function main() {
       const restrict = chaves.length === 1 && chaves[0].confdeltype === 'r';
       marcar(restrict, 'conversas.agente_id com FK ON DELETE RESTRICT',
         chaves.length === 0 ? 'FK ausente' : (restrict ? '' : `${chaves.length} FK(s), confdeltype=${chaves.map((ch) => ch.confdeltype).join(',')}`));
+    }
+
+    // Migration 047 (equipe dos agentes). Sem SELECT em agente_equipe, ninguém
+    // além do admin enxerga conversa de agente; com UPDATE/TRUNCATE sobrando, o
+    // vínculo vira editável por fora do RLS; sem o gatilho, o próprio usuário
+    // pode se dar acesso à clínica pela política de autoatualização.
+    if (porNome.has('agente_equipe')) {
+      const { rows: [privEquipe] } = await pool.query(`
+        SELECT has_table_privilege('crmclinica_app', 'public.agente_equipe', 'SELECT') AS le,
+               has_table_privilege('crmclinica_app', 'public.agente_equipe', 'INSERT') AS insere,
+               has_table_privilege('crmclinica_app', 'public.agente_equipe', 'DELETE') AS apaga,
+               has_table_privilege('crmclinica_app', 'public.agente_equipe', 'UPDATE') AS atualiza,
+               has_table_privilege('crmclinica_app', 'public.agente_equipe', 'TRUNCATE') AS trunca
+      `);
+      marcar(privEquipe.le && privEquipe.insere && privEquipe.apaga, 'SELECT/INSERT/DELETE em agente_equipe',
+        privEquipe.le ? '' : 'a aplicação não lê: só o admin veria conversa de agente');
+      marcar(!privEquipe.atualiza && !privEquipe.trunca, 'sem UPDATE/TRUNCATE em agente_equipe',
+        privEquipe.trunca ? 'TRUNCATE ignora o RLS' : '');
+      const temPoliticaEquipe = (politicasPorTabela.get('agente_equipe') ?? []).includes('app_trabalho');
+      marcar(temPoliticaEquipe, 'política app_trabalho em agente_equipe', temPoliticaEquipe ? '' : 'a aplicação não enxerga as linhas');
+
+      const { rows: chavesEquipe } = await pool.query(`
+        SELECT a.attname AS coluna, c.confdeltype
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.contype = 'f' AND c.conrelid = 'public.agente_equipe'::regclass
+           AND a.attname IN ('agente_id', 'usuario_id')
+      `);
+      // 'c' = CASCADE: apagar agente ou usuário leva só o vínculo.
+      const cascata = chavesEquipe.length === 2 && chavesEquipe.every((chave) => chave.confdeltype === 'c');
+      marcar(cascata, 'agente_equipe com FKs ON DELETE CASCADE',
+        cascata ? '' : `${chavesEquipe.length} FK(s): ${chavesEquipe.map((ch) => `${ch.coluna}=${ch.confdeltype}`).join(', ')}`);
+
+      const { rows: gatilhos } = await pool.query(`
+        SELECT tgenabled FROM pg_trigger
+         WHERE tgrelid = 'public.usuarios'::regclass AND tgname = 'trg_usuarios_acesso_clinica_guard'
+      `);
+      const gatilhoLigado = gatilhos.length === 1 && gatilhos[0].tgenabled !== 'D';
+      marcar(gatilhoLigado, 'gatilho trg_usuarios_acesso_clinica_guard em usuarios',
+        gatilhos.length === 0 ? 'ausente: o próprio usuário pode se dar acesso à clínica' : (gatilhoLigado ? '' : 'desligado'));
+    }
+
+    // Registro de envios do resumo (migration 047, auditoria M2). Sem INSERT ou
+    // UPDATE o worker não reserva nem conclui envio — e sem reserva não envia;
+    // com DELETE/TRUNCATE sobrando, o registro que impede reenvio pode sumir.
+    if (porNome.has('resumo_envios')) {
+      const { rows: [privEnvios] } = await pool.query(`
+        SELECT has_table_privilege('crmclinica_app', 'public.resumo_envios', 'SELECT') AS le,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'INSERT') AS insere,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'UPDATE') AS atualiza,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'DELETE') AS apaga,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'TRUNCATE') AS trunca
+      `);
+      marcar(privEnvios.le && privEnvios.insere && privEnvios.atualiza, 'SELECT/INSERT/UPDATE em resumo_envios',
+        privEnvios.insere ? '' : 'o worker não reserva envio: nenhum resumo sai');
+      marcar(!privEnvios.apaga && !privEnvios.trunca, 'sem DELETE/TRUNCATE em resumo_envios',
+        privEnvios.trunca ? 'TRUNCATE ignora o RLS' : '');
+      const temPoliticaEnvios = (politicasPorTabela.get('resumo_envios') ?? []).includes('app_trabalho');
+      marcar(temPoliticaEnvios, 'política app_trabalho em resumo_envios', temPoliticaEnvios ? '' : 'a aplicação não enxerga as linhas');
     }
 
     const { rows: sobraram } = await pool.query(

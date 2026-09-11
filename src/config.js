@@ -316,9 +316,17 @@ function carregarConfiguracao(ambiente = process.env) {
       texto(ambiente.WHATSAPP_BUSINESS_PHONE),
     ].filter(Boolean),
     resumoDeAtendimento: {
+      // NÃO decide mais quem recebe o resumo (docs/RESUMOS.md): quem recebe é a
+      // equipe de cada lado, lida do cadastro de usuários. A lista continua
+      // valendo como número interno (acima) e para o aviso-equipe.
       destinatarios: texto(ambiente.CRMCLINICA_RESUMO_DESTINATARIOS)
         .split(',').map((numero) => numero.trim()).filter(Boolean),
       silencioMin: inteiro(ambiente.CRMCLINICA_RESUMO_SILENCIO_MIN, 30),
+      // Um resumo por equipe a cada intervalo, contado do último envio gravado
+      // no banco — nunca da memória do processo.
+      intervaloMin: inteiro(ambiente.CRMCLINICA_RESUMO_INTERVALO_MIN, 120),
+      // Atendimentos por resumo de cada grupo; a sobra vai nos seguintes.
+      maximoConversas: inteiro(ambiente.CRMCLINICA_RESUMO_MAXIMO_CONVERSAS, 20),
     },
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),

@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { ErroDeContrato } = require('../contratos/erros');
 const { PAPEIS, exigirPermissao } = require('../seguranca/rbac');
+const { montarPainelDeDestinatarios, motivoSemEntrega } = require('../dominio/destinatarios-resumo');
 
 // Rotas de conta e sessão da equipe.
 //
@@ -308,11 +309,110 @@ function criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, c
         throw new ErroDeContrato(`situação deve ser uma de: ${contas.SITUACOES.join(', ')}`, 'situacao');
       }
 
-      const lista = await repositorio.listarUsuarios({ situacao });
+      const [lista, vinculos, agentes] = await Promise.all([
+        repositorio.listarUsuarios({ situacao }),
+        repositorio.listarVinculosDeEquipe ? repositorio.listarVinculosDeEquipe() : [],
+        repositorio.listarAgentes ? repositorio.listarAgentes() : [],
+      ]);
+      const nomes = new Map(agentes.map((agente) => [agente.id, agente.nome]));
       return {
-        usuarios: lista.map((item) => contas.retratoDoUsuario(item)),
+        usuarios: lista.map((item) => ({
+          ...contas.retratoDoUsuario(item),
+          // Migration 047: em quais equipes a pessoa está. A tela avisa quando
+          // alguém que não vê a clínica não está em equipe nenhuma (não vê nada).
+          equipes: vinculos
+            .filter((vinculo) => vinculo.usuario_id === item.id)
+            .map((vinculo) => ({ id: vinculo.agente_id, nome: nomes.get(vinculo.agente_id) ?? null })),
+          // Resumo por equipe (docs/RESUMOS.md): a chave e por que não recebe —
+          // nunca o número.
+          recebe_resumo: item.recebe_resumo !== false,
+          motivo_sem_resumo: motivoSemEntrega(item),
+        })),
         pendentes: lista.filter((item) => item.situacao === 'pendente').length,
       };
+    },
+
+    /**
+     * POST /api/usuarios/:id/recebe-resumo — corpo `{ recebe_resumo: boolean }`.
+     * Pausa ou retoma o resumo por equipe para a pessoa (docs/RESUMOS.md). Só o
+     * admin; auditado sem telefone.
+     */
+    async definirRecebeResumo(usuario, alvoId, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      const id = exigirIdentificador(alvoId, 'usuario_id');
+      if (typeof corpo?.recebe_resumo !== 'boolean') {
+        throw new ErroDeContrato('campo "recebe_resumo" deve ser verdadeiro ou falso', 'recebe_resumo');
+      }
+
+      const alvo = await repositorio.obterUsuarioPorId(id);
+      if (!alvo) {
+        const erro = new Error('usuário não encontrado');
+        erro.status = 404;
+        throw erro;
+      }
+      if ((alvo.recebe_resumo !== false) === corpo.recebe_resumo) {
+        return { usuario: contas.retratoDoUsuario(alvo), recebe_resumo: corpo.recebe_resumo, mudou: false };
+      }
+
+      const atualizado = await repositorio.atualizarUsuario(id, { recebeResumo: corpo.recebe_resumo });
+      await repositorio.registrarAuditoria({
+        entidade: 'usuario', entidadeId: id, acao: corpo.recebe_resumo ? 'resumo_retomado' : 'resumo_pausado',
+        detalhe: { usuario_id: id }, usuarioId: usuario.id,
+      });
+      return { usuario: contas.retratoDoUsuario(atualizado), recebe_resumo: corpo.recebe_resumo, mudou: true };
+    },
+
+    /**
+     * GET /api/usuarios/resumos — quem recebe o resumo de cada equipe, com o
+     * número mascarado, agente sem canal e quem está fora com o motivo.
+     */
+    async destinatariosDosResumos(usuario) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      const [pessoas, agentes] = await Promise.all([
+        repositorio.listarDestinatariosDeResumo ? repositorio.listarDestinatariosDeResumo() : [],
+        repositorio.listarAgentes ? repositorio.listarAgentes() : [],
+      ]);
+      return {
+        // O worker de lembretes é quem resume; este é o valor configurado neste servidor.
+        intervalo_min: configuracao?.resumoDeAtendimento?.intervaloMin ?? null,
+        ...montarPainelDeDestinatarios({ pessoas, agentes }),
+      };
+    },
+
+    /**
+     * POST /api/usuarios/:id/acesso-clinica — corpo `{ acesso_clinica: boolean }`.
+     * "Desmarcado" = só as conversas dos agentes em que a pessoa estiver na
+     * equipe (docs/AGENTES.md, "Quem vê o quê"). Admin vê sempre: tirar a
+     * marca dele seria prometer uma restrição que não existe.
+     */
+    async definirAcessoClinica(usuario, alvoId, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      const id = exigirIdentificador(alvoId, 'usuario_id');
+      if (typeof corpo?.acesso_clinica !== 'boolean') {
+        throw new ErroDeContrato('campo "acesso_clinica" deve ser verdadeiro ou falso', 'acesso_clinica');
+      }
+
+      const alvo = await repositorio.obterUsuarioPorId(id);
+      if (!alvo) {
+        const erro = new Error('usuário não encontrado');
+        erro.status = 404;
+        throw erro;
+      }
+      if (corpo.acesso_clinica === false && (alvo.papel === 'admin' || alvo.master)) {
+        const erro = new Error('administrador sempre vê a clínica — mude o papel antes');
+        erro.status = 409;
+        throw erro;
+      }
+      if ((alvo.acesso_clinica !== false) === corpo.acesso_clinica) {
+        return { usuario: contas.retratoDoUsuario(alvo), mudou: false };
+      }
+
+      const atualizado = await repositorio.atualizarUsuario(id, { acessoClinica: corpo.acesso_clinica });
+      await repositorio.registrarAuditoria({
+        entidade: 'usuario', entidadeId: id, acao: 'acesso_clinica_alterado',
+        detalhe: { acesso_clinica: corpo.acesso_clinica }, usuarioId: usuario.id,
+      });
+      return { usuario: contas.retratoDoUsuario(atualizado), mudou: true };
     },
 
     /** POST /api/usuarios — criação pelo master, já liberada. */

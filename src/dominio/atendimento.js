@@ -4,7 +4,7 @@ const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
 const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
 const { ehPedidoDeOptOut } = require('./lembretes');
-const { criarNumerosInternos } = require('./numeros-internos');
+const { criarNumerosInternos, criarNumerosInternosDoCadastro } = require('./numeros-internos');
 const { ErroDeEstrategia } = require('../contratos/erros');
 const { criarFluxoDeAgentes } = require('./agentes/fluxo');
 
@@ -89,6 +89,9 @@ function criarAtendimento({
   // `WHATSAPP_BUSINESS_PHONE` (ver src/config.js). Vazia por padrão: sem
   // configuração, ninguém é filtrado.
   const equipe = criarNumerosInternos(numerosInternos);
+  // E os do CADASTRO (docs/RESUMOS.md): o WhatsApp autorizado de cada pessoa da
+  // equipe, que é para onde o resumo vai. Lido do banco no máximo uma vez por minuto.
+  const equipeDoCadastro = criarNumerosInternosDoCadastro({ repositorio });
   // Conversas de agente (docs/AGENTES.md) seguem por um fluxo próprio, que
   // reaproveita a barreira final e o escalonamento daqui. `entregarAoPaciente`
   // e `escalonar` são declarações de função: já existem neste ponto.
@@ -152,9 +155,24 @@ function criarAtendimento({
     //
     // Antes de gravar qualquer coisa, de propósito: uma linha criada e depois
     // escondida continua sendo uma linha no banco.
-    // Os números internos são da equipe da CLÍNICA: escrever para o número de
-    // um agente é conversa legítima com ele (inclusive para testar).
-    if (!agente && !semTelefone && equipe.ehInterno(evento.remetente)) {
+    // Os números internos do AMBIENTE são da equipe da CLÍNICA: escrever com
+    // eles para o número de um agente continua sendo conversa com o agente. Os
+    // do CADASTRO (todo WhatsApp AUTORIZADO de conta ativa) valem nos dois lados
+    // (docs/RESUMOS.md): quem recebe resumo não é cliente de agente nenhum — sem
+    // isto, o funcionário que responde o resumo pelo número do Alpins seria
+    // atendido pelo próprio agente. Consequência aceita (auditoria B3): o admin,
+    // ou qualquer pessoa da equipe, NÃO testa o agente pelo próprio WhatsApp
+    // autorizado — a mensagem é ignorada e nada é gravado. Para testar, use um
+    // número que não esteja autorizado no cadastro (docs/AGENTES.md).
+    //
+    // O cache do cadastro só vale para o SIM (auditoria M1): quando o telefone
+    // ainda não é contato — esta mensagem CRIARIA um —, o NÃO é conferido no
+    // banco na hora, porque a pessoa pode ter sido autorizada depois da última
+    // leitura. Contato que já existe não pesa o webhook com essa consulta.
+    if (!semTelefone && ((!agente && equipe.ehInterno(evento.remetente))
+      || await equipeDoCadastro.ehInterno(evento.remetente, {
+        confirmarNoBanco: async () => !(await repositorio.obterContatoPorTelefone?.(evento.remetente)),
+      }))) {
       return {
         acao: 'mensagem_interna_ignorada',
         motivo: 'número da equipe — comanda, não é atendido',
@@ -1106,7 +1124,10 @@ function criarAtendimento({
     await repositorio.definirEtiquetasDaConversa(conversaId, novas);
 
     const conversa = await repositorio.obterConversa(conversaId);
-    await repositorio.salvarLead(conversa.contato_id, { conversaId, temperatura });
+    // Auditoria de acesso M2: lead é da clínica — conversa de agente fica só com a etiqueta.
+    if ((conversa.agente_id ?? null) === null) {
+      await repositorio.salvarLead(conversa.contato_id, { conversaId, temperatura });
+    }
 
     return { conversa_id: conversaId, temperatura, etiquetas: novas };
   }
@@ -1122,6 +1143,8 @@ function criarAtendimento({
 
     const novas = aplicarTemperatura(conversa.etiquetas, sugestao.temperatura);
     await repositorio.definirEtiquetasDaConversa(conversaId, novas);
+    // Auditoria de acesso M2: nunca a partir de conversa de agente.
+    if ((conversa.agente_id ?? null) !== null) return sugestao;
     await repositorio.salvarLead(conversa.contato_id, {
       conversaId,
       temperatura: sugestao.temperatura,
@@ -1157,6 +1180,17 @@ function criarAtendimento({
     // Mesmo critério da entrada: o eco de um número de agente vai para a
     // conversa do agente, nunca para a da clínica.
     const agente = await fluxoDeAgentes.agenteDoCanal('whatsapp', instancia);
+
+    // O eco do RESUMO (docs/RESUMOS.md): a mensagem que saiu para o WhatsApp de
+    // alguém da equipe volta como `fromMe`. Registrá-la criaria um contato com o
+    // número da própria equipe — na clínica ou no agente — a cada resumo. Mesmo
+    // critério da entrada: lista do ambiente só na clínica; cadastro nos dois.
+    // O eco sempre confirma no banco antes de criar contato ou conversa
+    // (auditoria M1): o resumo sai logo depois de alguém ser autorizado.
+    if ((!agente && equipe.ehInterno(telefone)) || await equipeDoCadastro.ehInterno(telefone, { confirmarNoBanco: true })) {
+      return { acao: 'eco_interno_ignorado', motivo: 'número da equipe — não é atendimento', conversa_id: null };
+    }
+
     const contato = await repositorio.encontrarOuCriarContato({
       telefone, nome, canal: 'whatsapp', identificador: null,
     });

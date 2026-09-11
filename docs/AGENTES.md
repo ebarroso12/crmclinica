@@ -227,6 +227,15 @@ Permissões: `agentes:ler` (admin, gestor) e `agentes:gerenciar` (admin).
 | `PUT /api/agentes/:id/canais` | gerenciar |
 | `POST /api/agentes/:id/teste` | gerenciar — conversa de teste, sem gravar nem enviar |
 | `GET /api/agentes/aguardando` | ler — conversas de agente esperando a equipe, por agente (selo do menu) |
+| `GET /api/agentes/:id/equipe` | ler — quem atende o agente (047) |
+| `POST /api/agentes/:id/equipe` | gerenciar — corpo `{ usuario_id }`; repetir não duplica; auditado `agente_equipe_adicionado` |
+| `DELETE /api/agentes/:id/equipe/:usuarioId` | gerenciar — auditado `agente_equipe_removido`; quem não estava é 404 |
+| `POST /api/usuarios/:id/acesso-clinica` | `usuarios:gerenciar` — corpo `{ acesso_clinica }`; admin é 409; auditado `acesso_clinica_alterado` |
+| `GET /api/conversas/escopo` | `conversas:ler` — `{ clinica, agentes }` para as abas da tela |
+
+Toda rota de LEITURA de agente (lista, detalhe, operação, WhatsApp, equipe,
+aguardando) passa pelo escopo da migration 047: agente fora da equipe de quem
+pede responde 404 e some das listas. Gerenciar é do admin, que vê todos.
 | `GET /api/agentes/:id/operacao` | ler — status e quem mudou, números de hoje/7 dias, aguardando, recentes |
 | `GET /api/agentes/:id/whatsapp` | ler — estado da instância do agente na Evolution (rota lenta) |
 | `POST /api/agentes/:id/whatsapp/conectar` | gerenciar — `{ numero? }`: código de pareamento e QR (rota lenta) |
@@ -368,7 +377,111 @@ Cada passo abaixo que toca produção exige autorização própria.
    mensagens chegam sem dono.
 6. Chaves de IA no `.env` do VPS e reiniciar `crmclinica-outbox.service`;
    confirmar pelo heartbeat no banco.
-7. Testar pela aba Teste, depois ligar o agente (`status = 'ativo'`).
+7. Testar pela aba Teste, depois ligar o agente (`status = 'ativo'`). Pelo
+   WhatsApp, teste com um número que **não** esteja autorizado no cadastro de
+   usuários: todo WhatsApp autorizado de conta ativa (quem recebe resumo) é
+   tratado como número da equipe também no agente — a mensagem é ignorada, nada
+   é gravado e o agente não responde (docs/RESUMOS.md, auditoria B3). Vale para o
+   admin: pelo próprio WhatsApp autorizado ele não testa o agente.
+
+## Quem vê o quê (migration 047)
+
+Decisões do Dr. Edson (11/09/2026). A regra mora num lugar só,
+`src/seguranca/escopo.js`, e é aplicada no servidor; a tela só evita oferecer o
+que responderia 403.
+
+- **Admin vê tudo, sempre**: clínica e todos os agentes, com ou sem marca.
+- **"Vê a clínica"** (`usuarios.acesso_clinica`, padrão `true`): quem tem a
+  marca vê a clínica. Desmarcada = **colaborador** (na tela: "Colaborador (só
+  agentes)"): só as conversas dos agentes em que a pessoa está na **equipe**.
+  Sem equipe nenhuma, não vê nada — a tela Usuários avisa.
+- **Equipe do agente** (`agente_equipe`): conversa de agente só para quem está
+  na equipe daquele agente. Gestor e atendente da clínica fora da equipe não
+  veem a conversa, a prévia, o agente nem o painel dele (404).
+- **Papel continua valendo**: o escopo diz SOBRE O QUÊ; `rbac.js` diz O QUE.
+  Colocar um atendente na equipe não dá a ele `agentes:ler`.
+- **Lido do banco a cada requisição**, nunca do token: tirar alguém da equipe
+  ou tirar a clínica vale na requisição seguinte. O chat ao vivo renova o escopo
+  da conexão a cada minuto (janela máxima de 60 s para quem já está com a aba
+  aberta). O admin não consulta nada.
+- **Quem não vê a clínica** só alcança `ROTAS_SEM_CLINICA` (conta própria,
+  Conversas, contatos dos agentes dele e Agentes). O resto responde
+  `403 sem_acesso_clinica` antes de qualquer rota: fila de SLA, tarefas,
+  notificações, resumo do painel Hoje, liberar em massa, leads, agenda (inclusive
+  a da conversa), temperatura e encerramento de conversa, métricas, IA, Serena,
+  Instagram, auditoria, bloqueios, sincronia, lembretes, usuários, cadastro,
+  exclusão, restauração, duplicatas e qualidade de contatos. É lista de
+  permissão: rota nova nasce fechada para o colaborador.
+- **Conversa fora do escopo** responde 404 em toda sub-rota, numa trava única
+  antes de despachar e de ler o corpo. Lista com filtro forjado
+  (`?agente=` de fora) volta vazia.
+- **Contatos** (decisão 11/09): a base é **compartilhada** para quem vê a
+  clínica, com **selos automáticos** calculados das conversas — "Clínica"
+  (conversa sem agente ou nenhuma conversa) e um selo por agente com quem o
+  contato conversou — e filtro Todas / Clínica / agente. Nada é gravado; a tabela
+  `etiquetas` (manual, de conversa) não é usada. Quem vê a clínica vê o selo do
+  Alpins mesmo fora da equipe, mas não a conversa nem a prévia. Quem não vê a
+  clínica só vê contato com conversa de agente da equipe, **nunca** o selo
+  "Clínica" (seria dizer que o cliente é paciente).
+- **Contato por LISTA BRANCA para quem não vê a clínica** (auditoria de acesso
+  sobre 42939cf, A2/M1): `escopo.contatoParaColaborador` — `id`, `nome`,
+  `telefone` e os selos dos agentes dele, e nada mais, em toda rota que devolve
+  contato (conversa aberta e sua ficha, lista de conversas, `/api/contatos/:id`,
+  `/api/contatos/:id/conversas`, `/api/contatos/gestao`, busca). Nome completo,
+  nascimento, responsável, consentimento, e-mail, identificador, observações,
+  atributos, documentos, opt-out e a contagem de agendamentos ficam de fora.
+  Campo novo do contato nasce fechado para o colaborador.
+- **O colaborador não escreve em dado da clínica** (A3, B3): `PUT
+  /api/contatos/:id`, `PUT /api/conversas/:id/ficha` e `POST
+  /api/conversas/:id/notas` (a nota é gravada na ficha do CONTATO) respondem
+  `403 sem_acesso_clinica` — inclusive para quem tem papel de gestor. Anotação
+  na conversa do agente é mensagem privada. `PUT /api/contatos/:id` confere o
+  contato e o escopo antes de ler o corpo (B1).
+- **Conversa de agente nunca carrega nem altera lead da clínica**, para
+  **nenhum** usuário, admin inclusive (A1, M2): sem campos de lead nem
+  `proxima_acao` (o join de `leads` só vale para conversa sem agente);
+  etiqueta e temperatura gravam só em `conversa_etiquetas`, sem `salvarLead`;
+  o resumo interno do encerramento sai sem pendência do lead e sem agenda.
+- **Gatilho de `acesso_clinica`** (B2): defesa extra contra escrita com claim de
+  usuário. A proteção real é da aplicação — perfil só aceita nome e telefone, e a
+  marca só muda pela rota do admin.
+- **Chat ao vivo**: replay, push e releitura usam o mesmo `veConversaDe`. Desde
+  a 047 o gestor também depende do `agente_id` da conversa: uma consulta por
+  evento (como já acontecia com atendente) e, em erro, nega.
+
+### Telas
+
+- **Conversas**: abas "Clínica | <agente>", abrindo em Clínica; quem só tem um
+  contexto não vê abas. O painel Hoje só aparece para quem vê a clínica.
+- **Menu do colaborador**: Conversas, Contatos e Meu perfil.
+- **Usuários (admin)**: "Vê a clínica" no cadastro e na lista, selo
+  "Colaborador (só agentes)", equipes da pessoa e aviso "Não vê nada" quando
+  falta equipe. Atenção: `GET /api/usuarios/gestao` (só admin, sem uso na tela)
+  e a ficha `GET /api/usuarios/:id` (fonte do cartão de WhatsApp) mostram o
+  **número de WhatsApp em claro**; a lista `GET /api/usuarios` e o painel dos
+  resumos, nunca (docs/RESUMOS.md).
+- **Agentes → agente → Equipe**: lista, colocar (admin) e tirar com
+  confirmação. Admin não entra na lista de candidatos (sempre vê).
+
+### Publicação (cada passo com autorização própria)
+
+1. Aplicar `db/047_equipe_de_agentes.sql` no SQL Editor do Supabase, fora do
+   pico (lock curto em `usuarios`, `lock_timeout` de 5 s). Antes:
+   `SELECT to_regclass('public.agente_equipe')` precisa voltar NULL.
+2. `npm run verificar-banco` com a credencial da aplicação: tabela, coluna,
+   grants (sem UPDATE/TRUNCATE), política, FKs em cascata e o gatilho.
+   **Sem a 047 aplicada, o código novo derruba o login** (`CAMPOS_USUARIO` lê
+   `acesso_clinica`) — nunca publique antes.
+3. Merge e deploy.
+4. Marcar os usuários (quem não vê a clínica) e montar as equipes.
+
+Risco de quem já está logado: a marca e a equipe valem na requisição seguinte;
+só o chat ao vivo pode levar até 60 s. A tela (menu e abas) de uma aba aberta
+antes da mudança só se ajusta ao recarregar — o servidor já recorta.
+
+Resíduos conhecidos: a notificação "Resposta da Serena reprovada" não diz de
+qual conversa é (não vaza agente, mas é da clínica e o colaborador não a vê);
+o painel de um admin que abre a aba de um agente não mostra o painel Hoje.
 
 ## Voltar atrás
 

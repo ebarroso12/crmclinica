@@ -196,24 +196,35 @@ test('[sem TTL] cada evento publicado consulta a atribuição ATUAL exatamente u
   );
 });
 
-test('[sem TTL] só admin/gestor conectados: nenhuma consulta de escopo é feita', async () => {
+test('[sem TTL] só admin conectado: nenhuma consulta de escopo é feita', async () => {
   const { repositorio, conversa } = await montarCenario();
   const { espiao, contador } = contandoConsultasDeEscopo(repositorio);
   const emissor = criarEmissorDeConversas({ repositorio: espiao });
 
   const respostaAdmin = respostaFalsa();
-  const respostaGestor = respostaFalsa();
   emissor.inscrever(respostaAdmin, { usuarioId: 1, papel: 'admin' });
-  emissor.inscrever(respostaGestor, { usuarioId: 2, papel: 'gestor' });
 
   const evento = await emissor.publicar({ conversaId: conversa.id, tipo: 'mensagem_recebida' });
 
   assert.equal(respostaAdmin.recebeu(evento.id), true, 'admin recebe');
-  assert.equal(respostaGestor.recebeu(evento.id), true, 'gestor recebe');
-  assert.equal(
-    contador.total, 0,
-    'admin/gestor não dependem de `atribuido_a` — a otimização legítima é não consultar o banco por eles',
-  );
+  assert.equal(contador.total, 0, 'admin vê clínica e todo agente — não precisa consultar o banco');
+});
+
+test('[047] gestor conectado: UMA consulta por evento, porque conversa de agente só vai para a equipe', async () => {
+  // Antes da migration 047 o gestor tinha acesso global e não consultava nada.
+  // Agora conversa de agente só chega a quem está na equipe dele — saber de
+  // quem é a conversa exige o escopo atual, na mesma consulta do atendente.
+  const { repositorio, conversa } = await montarCenario();
+  const { espiao, contador } = contandoConsultasDeEscopo(repositorio);
+  const emissor = criarEmissorDeConversas({ repositorio: espiao });
+
+  const respostaGestor = respostaFalsa();
+  emissor.inscrever(respostaGestor, { usuarioId: 2, papel: 'gestor' });
+
+  const evento = await emissor.publicar({ conversaId: conversa.id, tipo: 'mensagem_recebida' });
+
+  assert.equal(respostaGestor.recebeu(evento.id), true, 'gestor recebe conversa da clínica');
+  assert.equal(contador.total, 1, 'uma consulta por evento, não por assinante');
 });
 
 test('[sem TTL] sem assinante nenhum: nenhuma consulta de escopo é feita', async () => {
@@ -274,11 +285,10 @@ test('[três estados] ERRO ao consultar o escopo é fail-closed para atendente e
   const evento = await emissor.publicar({ conversaId: conversa.id, tipo: 'mensagem_recebida' });
   assert.ok(evento, 'a falha é só na decisão de escopo — a gravação do evento segue');
   assert.equal(respostaA.recebeu(evento.id), false, 'sem conseguir confirmar o escopo, nega (fail-closed)');
-  // O gestor NÃO depende de `atribuido_a` para nada: negá-lo por causa de uma
-  // consulta que a decisão dele nem usa seria transformar um erro de banco em
-  // perda de funcionalidade para quem tem acesso global. Fail-closed vale para
-  // a decisão que precisava do dado — não para as que não precisavam.
-  assert.equal(respostaGestor.recebeu(evento.id), true, 'gestor tem acesso global e não consulta escopo');
+  // Migration 047: a decisão do gestor passou a depender do escopo (de qual
+  // agente é a conversa). Sem conseguir lê-lo, entregar poderia mandar
+  // conversa da Loja Alpins para quem não é da equipe — nega também.
+  assert.equal(respostaGestor.recebeu(evento.id), false, 'gestor também depende do escopo agora: fail-closed');
 });
 
 test('[três estados] repositório sem a consulta de escopo: nega atendente em vez de assumir "livre"', async () => {

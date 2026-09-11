@@ -7,6 +7,7 @@
 const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+const { TODOS, veConversaDe, veContato } = require('../seguranca/escopo');
 const { normalizarConfiguracoes } = require('../dominio/agentes/regras');
 
 const ETIQUETAS_INICIAIS = [
@@ -84,6 +85,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const agenteTreinamentos = [];
   const agenteAcoesInatividade = [];
   const agenteCanais = [];
+  // Migration 047: quem atende cada agente.
+  const agenteEquipe = [];
   // O catálogo em memória espelha o seed da migration 027.
   const iaModelos = [
     { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
@@ -222,10 +225,31 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     etiquetas.set(etiqueta.nome, { id: proximoId.etiqueta++, ativa: true, ...etiqueta });
   }
 
+  /** O `agente_id` de cada conversa do contato (null = clínica). */
+  function agentesDasConversasDoContato(contatoId) {
+    return [...conversas.values()]
+      .filter((conversa) => conversa.contato_id === Number(contatoId))
+      .map((conversa) => (conversa.agente_id === null || conversa.agente_id === undefined ? null : Number(conversa.agente_id)));
+  }
+
+  /** Selos de origem, mesma regra do SQL: clínica = sem conversa de agente OU com conversa da clínica. */
+  function origensDoContato(contatoId) {
+    const daPessoa = agentesDasConversasDoContato(contatoId);
+    const temDeAgente = daPessoa.some((id) => id !== null);
+    const temDaClinica = daPessoa.some((id) => id === null);
+    return {
+      clinica: !temDeAgente || temDaClinica,
+      agentes: [...new Set(daPessoa.filter((id) => id !== null))].sort((a, b) => a - b),
+    };
+  }
+
   function montarConversa(conversa) {
     if (!conversa) return null;
     const contato = contatos.get(conversa.contato_id);
-    const lead = [...leads.values()].find((registro) => registro.contato_id === conversa.contato_id);
+    // Paridade com repositorio.js (auditoria de acesso A1): conversa de agente não carrega lead da clínica.
+    const lead = (conversa.agente_id ?? null) !== null
+      ? null
+      : [...leads.values()].find((registro) => registro.contato_id === conversa.contato_id);
     const daConversa = mensagens.filter((mensagem) => mensagem.conversa_id === conversa.id && !mensagem.privada);
     const responsavel = conversa.atribuido_a ? usuarios.get(conversa.atribuido_a) : null;
 
@@ -409,6 +433,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       // Migration 046 — paridade com repositorio.js: `undefined` não filtra,
       // `null` é só a clínica, id é só aquele agente.
       agenteId = undefined,
+      // Migration 047 — paridade com repositorio.js: escopo de quem pede.
+      escopo = null,
     } = {}) {
       let lista = [...conversas.values()];
 
@@ -418,6 +444,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       else if (agenteId !== undefined) {
         lista = lista.filter((conversa) => (conversa.agente_id ?? null) === Number(agenteId));
       }
+      if (escopo) lista = lista.filter((conversa) => veConversaDe(escopo, conversa.agente_id ?? null));
       if (busca) {
         const termo = busca.toLowerCase();
         lista = lista.filter((conversa) => {
@@ -630,13 +657,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * "(11) 99999" olhando para a tela do paciente, e isso precisa achar o mesmo
      * contato que "11999990000" acha.
      */
-    async buscarContatos({ termo, limite = 10 }) {
+    async buscarContatos({ termo, limite = 10, escopo = null }) {
       const alvo = String(termo ?? '').trim().toLowerCase();
       if (!alvo) return [];
 
       const digitos = alvo.replace(/\D/g, '');
       return [...contatos.values()]
         .filter((contato) => !contato.excluido_em)
+        .filter((contato) => !escopo || veContato(escopo, agentesDasConversasDoContato(contato.id)))
         .filter((contato) => {
           const nome = (contato.nome ?? '').toLowerCase();
           const telefone = (contato.telefone ?? '').replace(/\D/g, '');
@@ -699,7 +727,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * Lista para a tela de gestão. Excluídos ficam de fora por padrão; a própria
      * tela pede os excluídos quando quer oferecer a restauração.
      */
-    async listarContatos({ termo = null, incluirExcluidos = false, limite = 100 } = {}) {
+    // Paridade com repositorio.js (migration 047 e selos de origem de 11/09).
+    async listarContatos({
+      termo = null, incluirExcluidos = false, limite = 100, escopo = null, origem = undefined,
+    } = {}) {
       const alvo = String(termo ?? '').trim().toLowerCase();
       const digitos = alvo.replace(/\D/g, '');
 
@@ -711,14 +742,27 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
           const telefone = (contato.telefone ?? '').replace(/\D/g, '');
           return nome.includes(alvo) || (digitos.length >= 3 && telefone.includes(digitos));
         })
+        .filter((contato) => !escopo || veContato(escopo, agentesDasConversasDoContato(contato.id)))
+        .filter((contato) => {
+          if (origem === undefined || origem === null) return true;
+          const origens = origensDoContato(contato.id);
+          return origem === 'clinica' ? origens.clinica : origens.agentes.includes(Number(origem));
+        })
         .sort((a, b) => Number(Boolean(a.excluido_em)) - Number(Boolean(b.excluido_em))
           || (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'))
         .slice(0, Number(limite))
         .map((contato) => ({
           ...contato,
-          conversas: [...conversas.values()].filter((c) => c.contato_id === contato.id).length,
+          conversas: [...conversas.values()]
+            .filter((c) => c.contato_id === contato.id && (!escopo || veConversaDe(escopo, c.agente_id ?? null)))
+            .length,
           agendamentos: agendamentos.filter((a) => a.contato_id === contato.id).length,
+          origens: origensDoContato(contato.id),
         }));
+    },
+
+    async obterOrigensDoContato(contatoId) {
+      return origensDoContato(Number(contatoId));
     },
 
     /** O contato de um telefone, mesmo excluído — é como o duplicado é impedido. */
@@ -1222,30 +1266,105 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         .map(([agenteId, total]) => ({ agente_id: agenteId, total }));
     },
 
+    // ------------------------------------------ equipe dos agentes (047)
+    // Paridade com repositorio.js — ver os comentários lá.
+
+    async obterEscopoDeAcesso(usuarioId) {
+      const usuario = usuarios.get(Number(usuarioId));
+      if (!usuario || usuario.ativo === false || usuario.excluido_em) return null;
+      return {
+        acesso_clinica: usuario.acesso_clinica !== false,
+        agentes: agenteEquipe
+          .filter((vinculo) => vinculo.usuario_id === usuario.id)
+          .map((vinculo) => vinculo.agente_id)
+          .sort((a, b) => a - b),
+      };
+    },
+
+    async listarEquipeDoAgente(agenteId) {
+      return agenteEquipe
+        .filter((vinculo) => vinculo.agente_id === Number(agenteId))
+        .map((vinculo) => ({ vinculo, usuario: usuarios.get(vinculo.usuario_id) }))
+        .filter(({ usuario }) => usuario)
+        .sort((a, b) => (a.usuario.nome ?? '').localeCompare(b.usuario.nome ?? '', 'pt-BR') || a.usuario.id - b.usuario.id)
+        .map(({ vinculo, usuario }) => ({
+          agente_id: vinculo.agente_id,
+          usuario_id: usuario.id,
+          nome: usuario.nome,
+          email: usuario.email,
+          papel: usuario.papel,
+          situacao: usuario.situacao,
+          acesso_clinica: usuario.acesso_clinica !== false,
+          criado_em: vinculo.criado_em,
+        }));
+    },
+
+    async listarVinculosDeEquipe() {
+      return agenteEquipe
+        .map((vinculo) => ({ agente_id: vinculo.agente_id, usuario_id: vinculo.usuario_id }))
+        .sort((a, b) => a.usuario_id - b.usuario_id || a.agente_id - b.agente_id);
+    },
+
+    async adicionarMembroDaEquipe(agenteId, usuarioId, { criadoPor = null } = {}) {
+      const agente = Number(agenteId);
+      const usuario = Number(usuarioId);
+      if (!agentes.has(agente) || !usuarios.has(usuario)) {
+        // Mesmo efeito da FK do PostgreSQL: vínculo órfão não entra.
+        const erro = new Error('insert or update on table "agente_equipe" violates foreign key constraint');
+        erro.code = '23503';
+        throw erro;
+      }
+      if (agenteEquipe.some((vinculo) => vinculo.agente_id === agente && vinculo.usuario_id === usuario)) return false;
+      agenteEquipe.push({
+        agente_id: agente, usuario_id: usuario, criado_por: criadoPor, criado_em: agora().toISOString(),
+      });
+      return true;
+    },
+
+    async removerMembroDaEquipe(agenteId, usuarioId) {
+      const indice = agenteEquipe.findIndex((vinculo) => vinculo.agente_id === Number(agenteId)
+        && vinculo.usuario_id === Number(usuarioId));
+      if (indice < 0) return false;
+      agenteEquipe.splice(indice, 1);
+      return true;
+    },
+
     /**
      * Espelha a consulta do PostgreSQL. Sem esta implementação, a regra de
      * quem ainda deve resumo só era exercitável contra banco real — e foi
      * justamente ali que ela ficou errada sem ninguém ver.
      */
-    async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
+    async listarConversasSemResumo({ silencioMin = 30, limite = 20, janelas = null } = {}) {
       const limiteMs = agora().getTime() - silencioMin * 60_000;
+      const entradasDa = (conversaId) => mensagens.filter((mensagem) => mensagem.conversa_id === conversaId
+        && mensagem.autor_tipo === 'contato');
+      // Janela por grupo (auditoria A1) — paridade com repositorio.js.
+      const inicioDaJanela = (agenteId) => {
+        if (!janelas) return null;
+        const propria = (janelas.porGrupo ?? []).find((grupo) => (grupo.agente_id ?? null) === (agenteId ?? null));
+        return new Date(propria?.desde ?? janelas.padrao).getTime();
+      };
 
       return [...conversas.values()]
         .filter((conversa) => {
           if (!conversa.ultima_msg_em) return false;
-          // Migration 046 — paridade com repositorio.js: agente não gera resumo à clínica.
-          if ((conversa.agente_id ?? null) !== null) return false;
+          // Resumo por equipe (docs/RESUMOS.md): conversa de agente entra, com o
+          // agente dela — quem decide para quem vai é o domínio.
           const ultima = new Date(conversa.ultima_msg_em).getTime();
           if (!(ultima < limiteMs)) return false;
 
           // A marca vale para o resumo que já saiu, não para a conversa
-          // inteira: mensagem nova depois do resumo devolve a conversa à fila.
+          // inteira — mas só ENTRADA nova do contato devolve a conversa à fila:
+          // a saída da equipe também move `ultima_msg_em` e repetia o resumo.
           const marcada = conversa.resumo_enviado_em
             ? new Date(conversa.resumo_enviado_em).getTime() : null;
           if (marcada !== null && marcada >= ultima) return false;
 
-          return mensagens.some((mensagem) => mensagem.conversa_id === conversa.id
-            && mensagem.autor_tipo === 'contato');
+          const desde = inicioDaJanela(conversa.agente_id ?? null);
+          return entradasDa(conversa.id).some((mensagem) => {
+            const instante = new Date(mensagem.criado_em).getTime();
+            return (marcada === null || instante > marcada) && (desde === null || instante > desde);
+          });
         })
         .sort((a, b) => new Date(a.ultima_msg_em) - new Date(b.ultima_msg_em))
         .slice(0, limite)
@@ -1253,13 +1372,119 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
           id: conversa.id,
           contato_id: conversa.contato_id,
           ultima_msg_em: conversa.ultima_msg_em,
+          agente_id: conversa.agente_id ?? null,
+          ultima_entrada_id: entradasDa(conversa.id).reduce((maior, mensagem) => Math.max(maior, mensagem.id), 0) || null,
         }));
     },
 
-    async marcarResumoEnviado(conversaId) {
+    async marcarResumoEnviado(conversaId, { ultimaEntradaId = null } = {}) {
       const conversa = conversas.get(Number(conversaId));
-      if (conversa) conversa.resumo_enviado_em = agora().toISOString();
+      if (!conversa) return false;
+      // Paridade com repositorio.js: entrada que chegou depois do resumo montado não é escondida.
+      if (ultimaEntradaId !== null && mensagens.some((mensagem) => mensagem.conversa_id === conversa.id
+        && mensagem.autor_tipo === 'contato' && mensagem.id > Number(ultimaEntradaId))) {
+        return false;
+      }
+      conversa.resumo_enviado_em = agora().toISOString();
+      return true;
     },
+
+    // Resumo por equipe (docs/RESUMOS.md) — paridade com repositorio.js.
+
+    /** O relógio do resumo por grupo: `agente_id` null é a clínica. */
+    async listarUltimosEnviosDeResumo() {
+      const ultimos = new Map();
+      for (const conversa of conversas.values()) {
+        if (!conversa.resumo_enviado_em) continue;
+        const grupo = conversa.agente_id ?? null;
+        const instante = new Date(conversa.resumo_enviado_em).getTime();
+        if (!ultimos.has(grupo) || instante > ultimos.get(grupo)) ultimos.set(grupo, instante);
+      }
+      return [...ultimos].map(([agenteId, instante]) => ({
+        agente_id: agenteId, ultimo_envio: new Date(instante).toISOString(),
+      }));
+    },
+
+    // A trava do resumo: no PostgreSQL é `pg_try_advisory_xact_lock`; aqui, uma
+    // marca deste repositório — a mesma semântica para quem chama.
+    executarComTravaDeResumo: (() => {
+      let ocupada = false;
+      return async function executarComTravaDeResumo(executar) {
+        if (ocupada) return { obtida: false };
+        ocupada = true;
+        try {
+          return { obtida: true, resultado: await executar() };
+        } finally {
+          ocupada = false;
+        }
+      };
+    })(),
+
+    async listarDestinatariosDeResumo() {
+      return [...usuarios.values()]
+        .filter((usuario) => usuario.ativo !== false && !usuario.excluido_em && usuario.situacao === 'ativo')
+        .sort((a, b) => (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR') || a.id - b.id)
+        .map((usuario) => ({
+          id: usuario.id,
+          nome: usuario.nome,
+          papel: usuario.papel,
+          acesso_clinica: usuario.acesso_clinica !== false,
+          recebe_resumo: usuario.recebe_resumo !== false,
+          whatsapp_ddi: usuario.whatsapp_ddi ?? null,
+          whatsapp_ddd: usuario.whatsapp_ddd ?? null,
+          whatsapp_numero: usuario.whatsapp_numero ?? null,
+          whatsapp_particular_autorizado: usuario.whatsapp_particular_autorizado === true,
+          agentes: agenteEquipe
+            .filter((vinculo) => vinculo.usuario_id === usuario.id)
+            .map((vinculo) => vinculo.agente_id)
+            .sort((a, b) => a - b),
+        }));
+    },
+
+    // Registro de envios do resumo (auditoria M2) — paridade com repositorio.js.
+    ...(() => {
+      const enviosDeResumo = new Map();
+      return {
+        async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte, esperaMs = 0 }) {
+          const atual = enviosDeResumo.get(chave);
+          const instante = agora();
+          if (atual) {
+            if (atual.status !== 'falhou') return atual.status;
+            if (instante.getTime() - new Date(atual.atualizado_em).getTime() < Math.max(0, Number(esperaMs) || 0)) return 'falhou';
+          }
+          enviosDeResumo.set(chave, {
+            chave, grupo, agente_id: agenteId, usuario_id: usuarioId, parte, status: 'enviando',
+            tentativas: (atual?.tentativas ?? 0) + 1,
+            criado_em: atual?.criado_em ?? instante.toISOString(), atualizado_em: instante.toISOString(),
+          });
+          return 'reservado';
+        },
+
+        async concluirEnvioDeResumo(chave, status, { maximoDeTentativas = 3 } = {}) {
+          if (!['enviado', 'falhou'].includes(status)) throw new Error('status de envio de resumo inválido');
+          const atual = enviosDeResumo.get(chave);
+          if (!atual) return null;
+          const esgotou = status === 'falhou' && atual.tentativas >= Math.max(1, Number(maximoDeTentativas) || 3);
+          atual.status = esgotou ? 'desistido' : status;
+          atual.atualizado_em = agora().toISOString();
+          return atual.status;
+        },
+
+        async listarUltimasFalhasDeResumo() {
+          const ultimas = new Map();
+          for (const envio of enviosDeResumo.values()) {
+            if (!['falhou', 'desistido'].includes(envio.status)) continue;
+            if (envio.grupo !== 'clinica' && envio.agente_id === null) continue;
+            const grupo = envio.grupo === 'clinica' ? null : Number(envio.agente_id);
+            const instante = new Date(envio.atualizado_em).getTime();
+            if (!ultimas.has(grupo) || instante > ultimas.get(grupo)) ultimas.set(grupo, instante);
+          }
+          return [...ultimas].map(([agenteId, instante]) => ({
+            agente_id: agenteId, ultima_falha: new Date(instante).toISOString(),
+          }));
+        },
+      };
+    })(),
 
     // ---------------------------------------------------------------- etiquetas
 
@@ -2180,6 +2405,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         excluido_em: null,
         excluido_por: null,
         excluido_motivo: null,
+        // Migration 047: padrão sim, como a coluna.
+        acesso_clinica: true,
+        // Resumo por equipe (047): padrão sim, como a coluna.
+        recebe_resumo: true,
         criado_em: agora().toISOString(),
       };
       usuarios.set(usuario.id, usuario);
@@ -2201,6 +2430,9 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
         ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
         ['avatarUrl', 'avatar_url'],
+        // Migration 047.
+        ['acessoClinica', 'acesso_clinica'],
+        ['recebeResumo', 'recebe_resumo'],
         // Cadastro estruturado e documentos — sempre cifrados/hash (P1-05).
         ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
         ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
@@ -2296,11 +2528,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     // `podeAcessarConversaAoVivo` que o broadcast ao vivo usa. Sem SQL aqui,
     // então não há "filtrar no WHERE" — só a passada em JS, que já é a
     // única fonte de verdade nesta implementação.
-    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+    async listarEventosDeConversasDesde({
+      cursor = null, limite = 500, usuarioId = null, papel, escopo = null,
+    } = {}) {
       if (!papel) {
         throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
       }
       const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+      // Migration 047 — mesma omissão segura do SQL: admin vê todo agente, os demais só a clínica.
+      const filtro = escopo ?? (papel === 'admin' ? { clinica: true, agentes: TODOS } : { clinica: true, agentes: [] });
       const visivel = (linha) => {
         const conversa = conversas.get(linha.conversa_id);
         // Conversa inexistente NEGA — paridade exata com o SQL de
@@ -2312,7 +2548,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         if (!conversa) return false;
         const atribuidoA = conversa.atribuido_a !== null && conversa.atribuido_a !== undefined
           ? Number(conversa.atribuido_a) : null;
-        return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA);
+        return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA)
+          && veConversaDe(filtro, conversa.agente_id ?? null);
       };
 
       // Filtra ANTES de limitar — mesma ordem de operações do SQL em
@@ -2323,7 +2560,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       const autorizados = (cursor === null ? conversasEventos : conversasEventos.filter((linha) => linha.id > Number(cursor)))
         .filter(visivel);
       const pagina = cursor === null ? autorizados.slice(-limite) : autorizados.slice(0, limite);
-      return pagina.map((linha) => ({ ...linha }));
+      return pagina.map((linha) => ({ ...linha, agente_id: conversas.get(linha.conversa_id)?.agente_id ?? null }));
     },
 
     /**
@@ -2338,6 +2575,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         estado: 'existe',
         atribuidoA: conversa.atribuido_a === null || conversa.atribuido_a === undefined
           ? null : Number(conversa.atribuido_a),
+        agenteId: conversa.agente_id === null || conversa.agente_id === undefined ? null : Number(conversa.agente_id),
       };
     },
 

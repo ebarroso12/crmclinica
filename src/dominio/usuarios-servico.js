@@ -96,11 +96,26 @@ function criarServicoDeUsuarios({
     if (campos.nomeCompleto !== undefined) atualizacao.nomeCompleto = campos.nomeCompleto ?? null;
     if (campos.nascimento !== undefined) atualizacao.nascimento = nascimentoValido(campos.nascimento);
 
+    // Auditoria M3 (docs/RESUMOS.md): a autorização de P1-06 é o consentimento
+    // para AQUELE número. Trocar ou tirar o número zera a autorização na mesma
+    // gravação — senão o resumo iria para um número que ninguém autorizou.
+    let autorizacaoRevogada = false;
     if (campos.whatsapp !== undefined) {
       const { ddi, ddd, numero } = whatsappValido(campos.whatsapp ?? {});
       atualizacao.whatsappDdi = ddi;
       atualizacao.whatsappDdd = ddd;
       atualizacao.whatsappNumero = numero;
+
+      const digitos = (valor) => String(valor ?? '').replace(/\D/g, '');
+      const numeroCompleto = (d, dd, n) => (digitos(dd) && digitos(n) ? `${digitos(d) || '55'}${digitos(dd)}${digitos(n)}` : '');
+      const mudou = numeroCompleto(alvo.whatsapp_ddi, alvo.whatsapp_ddd, alvo.whatsapp_numero) !== numeroCompleto(ddi, ddd, numero);
+      const haviaAutorizacao = alvo.whatsapp_particular_autorizado === true || Boolean(alvo.whatsapp_particular_autorizado_em);
+      if (mudou && haviaAutorizacao) {
+        atualizacao.whatsappParticularAutorizado = false;
+        atualizacao.whatsappParticularAutorizadoEm = null;
+        atualizacao.whatsappParticularAutorizadoPor = null;
+        autorizacaoRevogada = true;
+      }
     }
 
     if (campos.cpf !== undefined) {
@@ -139,6 +154,10 @@ function criarServicoDeUsuarios({
       campos: Object.keys(atualizacao).filter((c) => !/Cifrado|Hash/.test(c)),
       documentos_tocados: ['cpf', 'rg'].filter((d) => campos[d] !== undefined),
     }, ator.id);
+    if (autorizacaoRevogada) {
+      // Sem telefone: o motivo basta para quem lê a auditoria.
+      await auditar(usuarioId, 'usuario.whatsapp_particular_revogado', { motivo: 'numero_alterado' }, ator.id);
+    }
 
     return atualizado;
   }
@@ -153,8 +172,13 @@ function criarServicoDeUsuarios({
 
     const alvo = await carregarUsuario(usuarioId);
     const documentos = await repositorio.obterDocumentosDoUsuario(usuarioId);
+    // P1-06: a tela mostra quem registrou a autorização do WhatsApp, não só o id.
+    const autorizador = alvo.whatsapp_particular_autorizado_por
+      ? await repositorio.obterUsuarioPorId(alvo.whatsapp_particular_autorizado_por)
+      : null;
     return {
       ...alvo,
+      whatsapp_particular_autorizado_por_nome: autorizador?.nome ?? null,
       cpf_cadastrado: Boolean(documentos?.cpfCifrado),
       cpf_mascarado: documentos?.cpfCifrado
         ? sensiveis.mascararCpf(sensiveis.decifrar(segredo, documentos.cpfCifrado) ?? '')

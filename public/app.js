@@ -138,6 +138,10 @@ seletor('#auditoria-mais')?.addEventListener('click', () => carregarAuditoria(tr
 let accessToken = null;
 let usuarioAtual = null;
 let cursorAuditoria = null;
+// Migration 047: o que esta sessão vê (GET /api/conversas/escopo) — a clínica
+// e os agentes da equipe. `null` até carregar. O servidor garante o recorte;
+// aqui é para não oferecer (nem pedir) o que responderia 403.
+let escopoAtual = null;
 
 const CHAVE_REFRESH = 'crmclinica.refresh';
 
@@ -162,6 +166,9 @@ function lerRefresh() {
 function limparSessao() {
   accessToken = null;
   usuarioAtual = null;
+  // Quem entrar depois nesta aba não herda as abas nem o menu da sessão anterior.
+  escopoAtual = null;
+  escopoDaListaDeConversas = null;
   // A conexão ao vivo carrega o token na URL: sem isso, ela ficaria aberta
   // com a sessão anterior mesmo depois do logout.
   encerrarEventosDeConversas();
@@ -174,6 +181,11 @@ function limparSessao() {
 
 function podeFazer(permissao) {
   return Boolean(usuarioAtual?.permissoes?.includes(permissao));
+}
+
+/** Migration 047: esta sessão vê a clínica? Antes de o escopo carregar, não. */
+function veClinica() {
+  return escopoAtual?.clinica === true;
 }
 
 async function pedirJson(caminho, opcoes = {}, jaRenovou = false) {
@@ -337,7 +349,8 @@ let etiquetasDisponiveis = [];
 // Nome do agente dono da conversa aberta (docs/AGENTES.md); null = clínica.
 // A thread usa para não assinar como "Serena" o que um agente respondeu.
 let agenteDaConversaAberta = null;
-let filtroDeAgentesPreparado = false;
+// Aba de escopo da lista de Conversas (migration 047): 'clinica' ou o id de um agente.
+let escopoDaListaDeConversas = null;
 
 function iniciais(nome) {
   return (nome || '?')
@@ -389,9 +402,7 @@ async function carregarConversas() {
   if (busca) parametros.set('busca', busca);
   const data = seletor('#filtro-data-conversas')?.value;
   if (data) parametros.set('data', data);
-  prepararFiltroDeAgentesDaConversa();
-  const agente = seletor('#filtro-agente-conversas')?.value;
-  if (agente) parametros.set('agente', agente);
+  if (escopoDaListaDeConversas) parametros.set('agente', escopoDaListaDeConversas);
 
   try {
     const dados = await pedirJson(`/api/conversas?${parametros}`);
@@ -408,35 +419,43 @@ async function carregarConversas() {
       lista.append(montarLinhaDaLista(conversa));
     }
 
-    desenharFilaDeHoje(dados.conversas);
+    // O painel Hoje é da clínica: só quem a vê, e só com a aba da clínica.
+    if (veClinica() && (!escopoDaListaDeConversas || escopoDaListaDeConversas === 'clinica')) {
+      desenharFilaDeHoje(dados.conversas);
+    }
   } catch (erro) {
     avisar(lista, erro.status === 503 ? 'Inbox indisponível.' : 'Não foi possível carregar as conversas.');
   }
 }
 
 /**
- * Seletor "quem atende" do inbox: Todas / Só da clínica / cada agente. Os
- * agentes vêm de /api/agentes, que só gestor e admin leem — para os demais o
- * seletor fica escondido e o selo na linha continua dizendo de quem é a conversa.
- * Monta uma vez por sessão; falhar aqui não pode travar a lista.
+ * Abas "Clínica | <agente>" da lista de Conversas (decisão 11/09, migration
+ * 047). As opções vêm do escopo da sessão: "Clínica" para quem a vê e um item
+ * por agente da equipe. Abre em "Clínica". Quem só tem um contexto não vê abas
+ * — a lista já é só dele. Nomes por textContent, nunca innerHTML.
  */
-function prepararFiltroDeAgentesDaConversa() {
-  const campo = seletor('#filtro-agente-conversas');
-  if (!campo || filtroDeAgentesPreparado || !podeFazer('agentes:ler')) return;
-  filtroDeAgentesPreparado = true;
-  pedirJson('/api/agentes').then((dados) => {
-    const agentes = dados.agentes ?? [];
-    if (agentes.length === 0) return;
-    for (const agente of agentes) {
-      const opcao = document.createElement('option');
-      opcao.value = String(Number(agente.id));
-      opcao.textContent = `Só do ${agente.nome}`;
-      campo.append(opcao);
-    }
-    campo.hidden = false;
-  }).catch(() => {
-    filtroDeAgentesPreparado = false;
-  });
+function desenharAbasDeEscopoDasConversas() {
+  const barra = seletor('#abas-escopo-conversas');
+  if (!barra) return;
+  const opcoes = [
+    ...(veClinica() ? [{ valor: 'clinica', rotulo: 'Clínica' }] : []),
+    ...(escopoAtual?.agentes ?? []).map((agente) => ({ valor: String(Number(agente.id)), rotulo: agente.nome })),
+  ];
+  if (!opcoes.some((opcao) => opcao.valor === escopoDaListaDeConversas)) escopoDaListaDeConversas = opcoes[0]?.valor ?? null;
+
+  barra.textContent = '';
+  for (const opcao of opcoes) {
+    const botao = document.createElement('button');
+    const ativa = opcao.valor === escopoDaListaDeConversas;
+    botao.type = 'button';
+    botao.className = ativa ? 'aba selecionada' : 'aba';
+    botao.setAttribute('role', 'tab');
+    botao.setAttribute('aria-selected', String(ativa));
+    botao.dataset.escopoConversas = opcao.valor;
+    botao.textContent = opcao.rotulo;
+    barra.append(botao);
+  }
+  barra.hidden = opcoes.length <= 1;
 }
 
 /** Painel Hoje: as conversas que ainda esperam a equipe, com dado real. */
@@ -687,9 +706,14 @@ async function abrirConversa(conversaId) {
     seletor('#seletor-temperatura').value = detalhe.temperatura || '';
     alternarAcoes(true);
 
+    // Temperatura e agenda são do funil e da agenda da clínica (migration 047):
+    // quem não vê a clínica não recebe o controle nem dispara a chamada.
+    const temperatura = seletor('#seletor-temperatura');
+    if (temperatura) temperatura.hidden = !veClinica();
     // Sem `await`: a agenda do paciente é apoio, e a thread não deve esperar
     // por ela para aparecer.
-    carregarAgendaDaConversa(conversaId);
+    if (veClinica()) carregarAgendaDaConversa(conversaId);
+    else definirTexto('#agenda-da-conversa', '');
   } catch (erro) {
     seletor('#thread-mensagens').innerHTML = '';
     definirTexto('#thread-nome', 'Não foi possível abrir');
@@ -1389,7 +1413,13 @@ for (const aba of document.querySelectorAll('.aba[data-fila]')) {
   });
 }
 
-seletor('#filtro-agente-conversas')?.addEventListener('change', carregarConversas);
+seletor('#abas-escopo-conversas')?.addEventListener('click', (evento) => {
+  const botao = evento.target.closest('[data-escopo-conversas]');
+  if (!botao) return;
+  escopoDaListaDeConversas = botao.dataset.escopoConversas;
+  desenharAbasDeEscopoDasConversas();
+  carregarConversas();
+});
 
 let buscaAgendada = null;
 seletor('#busca-conversas')?.addEventListener('input', () => {
@@ -1691,6 +1721,47 @@ function mostrarPortao(mensagem = '') {
   seletor('#login-email')?.focus();
 }
 
+// Telas que quem não vê a clínica (colaborador da loja) ainda usa.
+const TELAS_SEM_CLINICA = new Set(['conversas', 'contatos', 'perfil']);
+
+/**
+ * Carrega o escopo da sessão e ajusta menu e abas. Falha na leitura mantém a
+ * tela da clínica: o servidor é quem garante o recorte (403/404), e uma
+ * oscilação de rede não pode sumir com o menu de quem atende pacientes.
+ */
+async function prepararEscopoDaSessao() {
+  try {
+    escopoAtual = await pedirJson('/api/conversas/escopo');
+  } catch {
+    escopoAtual = { clinica: true, agentes: [], indisponivel: true };
+  }
+  aplicarEscopoNoMenu();
+  desenharAbasDeEscopoDasConversas();
+  sincronizarLiberarEmMassa();
+}
+
+function aplicarEscopoNoMenu() {
+  if (veClinica()) return;
+  for (const botao of document.querySelectorAll('nav button[data-tela]')) {
+    const item = botao.closest('li');
+    if (item && !TELAS_SEM_CLINICA.has(botao.dataset.tela)) item.hidden = true;
+  }
+  // Grupo do menu sem nenhum item visível some com o título junto.
+  for (const grupo of document.querySelectorAll('nav ul')) {
+    const vazio = [...grupo.querySelectorAll('li')].every((item) => item.hidden);
+    grupo.hidden = vazio;
+    const titulo = grupo.previousElementSibling;
+    if (titulo?.classList.contains('divisor')) titulo.hidden = vazio;
+  }
+  // `#editar-ficha` (auditoria de acesso A3): o colaborador não edita o cadastro do contato.
+  // `#botao-nota` (B3): a nota vai para a ficha do contato; ele anota com mensagem privada.
+  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha', '#botao-nota']) {
+    const elemento = seletor(alvo);
+    if (elemento) elemento.hidden = true;
+  }
+  definirTexto('#contatos .cabecalho p', 'Clientes dos agentes da sua equipe.');
+}
+
 function mostrarAplicacao() {
   seletor('#portao').hidden = true;
   seletor('#aplicacao').hidden = false;
@@ -1721,8 +1792,13 @@ function mostrarAplicacao() {
   iniciarSeloDeAgentes();
 
   // O inbox começa a carregar de qualquer forma: a faixa de saúde não pode ficar
-  // em "verificando…" só porque a pessoa foi levada ao perfil.
-  iniciarInbox();
+  // em "verificando…" só porque a pessoa foi levada ao perfil. Mas só DEPOIS do
+  // escopo (migration 047): o colaborador da loja não pode disparar chamada da
+  // clínica, e quem só atende agentes cai direto em Conversas.
+  prepararEscopoDaSessao().then(() => {
+    iniciarInbox();
+    if (!veClinica() && !usuarioAtual?.precisa_trocar_senha) abrirTela('conversas');
+  });
 
   // Senha provisória: leva direto ao perfil, e o aviso fica visível até trocar.
   const precisaTrocar = Boolean(usuarioAtual?.precisa_trocar_senha);
@@ -1836,7 +1912,7 @@ function sincronizarLiberarEmMassa() {
   if (!botao) return;
   // Mesma permissão de assumir/devolver conversa — não é uma ação nova de
   // RBAC, é a mesma ação (liberar) aplicada a várias conversas de uma vez.
-  botao.hidden = !podeFazer('conversas:assumir');
+  botao.hidden = !podeFazer('conversas:assumir') || (escopoAtual !== null && !veClinica());
 }
 
 seletor('#liberar-em-massa')?.addEventListener('click', async () => {
@@ -2082,12 +2158,15 @@ function iniciarInbox() {
   // saber logo depois de um deploy, sem martelar o servidor com polling.
   setInterval(verificarNovaVersao, 5 * 60 * 1000);
 
-  carregarResumo();
-  setInterval(carregarResumo, 60000);
+  // Resumo do painel Hoje e leads são da clínica (migration 047).
+  if (veClinica()) {
+    carregarResumo();
+    setInterval(carregarResumo, 60000);
+  }
 
   carregarEtiquetas().then(() => {
     carregarConversas();
-    carregarLeads();
+    if (veClinica()) carregarLeads();
   });
   conectarEventosDeConversas();
   // Rede de segurança: se o SSE cair sem disparar `onerror` (proxy silencioso,
@@ -2293,6 +2372,8 @@ async function carregarUsuarios() {
     if (usuarios.length === 0) { avisar(lista, 'Nenhuma conta cadastrada.'); return; }
 
     for (const usuario of usuarios) lista.append(montarLinhaDeUsuario(usuario));
+    // Quem recebe os resumos muda com a lista (pausa, equipe, "vê a clínica").
+    carregarPainelDeResumos();
   } catch (erro) {
     avisar(lista, erro.status === 403 ? 'Apenas o administrador master vê esta lista.' : 'Não foi possível carregar.');
   }
@@ -2331,6 +2412,25 @@ function montarLinhaDeUsuario(usuario) {
     selo.textContent = 'Google';
     selos.append(selo);
   }
+  // Migration 047: colaborador (não vê a clínica) e as equipes de agente.
+  if (usuario.acesso_clinica === false) {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta';
+    selo.textContent = 'Colaborador (só agentes)';
+    selos.append(selo);
+    if (!(usuario.equipes ?? []).length) {
+      const aviso = document.createElement('span');
+      aviso.className = 'etiqueta sit-recusado';
+      aviso.textContent = 'Não vê nada: coloque numa equipe de agente';
+      selos.append(aviso);
+    }
+  }
+  for (const equipe of usuario.equipes ?? []) {
+    const selo = document.createElement('span');
+    selo.className = 'etiqueta agente';
+    selo.textContent = `Equipe: ${equipe.nome ?? `agente #${Number(equipe.id)}`}`;
+    selos.append(selo);
+  }
 
   const acoes = document.createElement('div');
   acoes.className = 'usuario-acoes';
@@ -2350,6 +2450,22 @@ function montarLinhaDeUsuario(usuario) {
     papel.addEventListener('change', () => agirNoUsuario(usuario.id, 'papel', { papel: papel.value }));
     acoes.append(papel);
 
+    // "Vê a clínica" (migration 047). O administrador sempre vê: sem chave.
+    if (usuario.papel !== 'admin') {
+      const marca = document.createElement('label');
+      marca.className = 'marcador';
+      marca.title = 'Desmarcado = só as conversas dos agentes em que a pessoa estiver na Equipe.';
+      const caixa = document.createElement('input');
+      caixa.type = 'checkbox';
+      caixa.checked = usuario.acesso_clinica !== false;
+      caixa.setAttribute('aria-label', `${usuario.nome} vê a clínica`);
+      caixa.addEventListener('change', () => agirNoUsuario(usuario.id, 'acesso-clinica', { acesso_clinica: caixa.checked }));
+      const texto = document.createElement('span');
+      texto.textContent = 'Vê a clínica';
+      marca.append(caixa, texto);
+      acoes.append(marca);
+    }
+
     const botoes = usuario.situacao === 'pendente'
       ? [['Liberar', 'ativo', 'primario'], ['Recusar', 'recusado', 'acao']]
       : usuario.situacao === 'ativo'
@@ -2364,6 +2480,42 @@ function montarLinhaDeUsuario(usuario) {
       botao.addEventListener('click', () => agirNoUsuario(usuario.id, 'situacao', { situacao: situacaoNova }));
       acoes.append(botao);
     }
+  }
+
+  // Resumo por equipe (docs/RESUMOS.md): a pausa por pessoa, e o aviso de quem
+  // deveria receber e não recebe. O número nunca vem para a tela.
+  const recebeResumo = document.createElement('label');
+  recebeResumo.className = 'marcador';
+  recebeResumo.title = 'Resumo da equipe no WhatsApp da pessoa, a cada 2 horas.';
+  const caixaDoResumo = document.createElement('input');
+  caixaDoResumo.type = 'checkbox';
+  caixaDoResumo.checked = usuario.recebe_resumo !== false;
+  caixaDoResumo.setAttribute('aria-label', `${usuario.nome} recebe resumos`);
+  caixaDoResumo.addEventListener('change', () => agirNoUsuario(usuario.id, 'recebe-resumo', { recebe_resumo: caixaDoResumo.checked }));
+  const textoDoResumo = document.createElement('span');
+  textoDoResumo.textContent = 'Recebe resumos';
+  recebeResumo.append(caixaDoResumo, textoDoResumo);
+  acoes.append(recebeResumo);
+
+  // WhatsApp e autorização (P1-06): abre o cartão do admin. O número em claro
+  // só existe lá; a lista nunca o recebe.
+  const botaoWhatsapp = document.createElement('button');
+  botaoWhatsapp.type = 'button';
+  botaoWhatsapp.className = 'acao';
+  botaoWhatsapp.textContent = 'WhatsApp';
+  botaoWhatsapp.setAttribute('aria-label', `WhatsApp de ${usuario.nome}`);
+  botaoWhatsapp.addEventListener('click', () => abrirWhatsappDoUsuario(usuario.id));
+  acoes.append(botaoWhatsapp);
+
+  const estariaNumaEquipe = usuario.papel === 'admin' || usuario.acesso_clinica !== false || (usuario.equipes ?? []).length > 0;
+  if (usuario.recebe_resumo !== false && estariaNumaEquipe
+    && ['sem_whatsapp', 'whatsapp_nao_autorizado'].includes(usuario.motivo_sem_resumo)) {
+    const aviso = document.createElement('span');
+    aviso.className = 'etiqueta sit-recusado';
+    aviso.textContent = usuario.motivo_sem_resumo === 'sem_whatsapp'
+      ? 'Não recebe resumos: sem WhatsApp no cadastro'
+      : 'Não recebe resumos: WhatsApp sem autorização';
+    selos.append(aviso);
   }
 
   linha.append(identidade, selos, acoes);
@@ -2403,6 +2555,178 @@ ${resposta.senha_temporaria}
   }
 }
 
+// WhatsApp de uma pessoa da equipe (docs/RESUMOS.md). O número vai pela edição
+// completa já existente (PUT /api/usuarios/:id, validação de `whatsappValido`); a
+// autorização, pela rota de P1-06 (POST /api/usuarios/:id/whatsapp-particular),
+// que grava e audita quem autorizou e quando. O número em claro só existe neste
+// formulário do admin; na lista e no painel, nunca.
+let whatsappEmEdicao = null;
+
+function desenharWhatsappDoUsuario(ficha) {
+  const cartao = seletor('#cartao-whatsapp-usuario');
+  if (!cartao) return;
+  whatsappEmEdicao = Number(ficha.id);
+  cartao.hidden = false;
+  definirTexto('#whatsapp-usuario-titulo', `WhatsApp de ${ficha.nome ?? 'usuário'}`);
+  seletor('#whatsapp-usuario-ddi').value = ficha.whatsapp_ddi ?? '55';
+  seletor('#whatsapp-usuario-ddd').value = ficha.whatsapp_ddd ?? '';
+  seletor('#whatsapp-usuario-numero').value = ficha.whatsapp_numero ?? '';
+  const erro = seletor('#whatsapp-usuario-erro');
+  erro.textContent = '';
+  erro.hidden = true;
+
+  const temNumero = Boolean(ficha.whatsapp_ddd && ficha.whatsapp_numero);
+  const caixa = seletor('#whatsapp-usuario-autorizado');
+  caixa.checked = ficha.whatsapp_particular_autorizado === true;
+  caixa.disabled = !temNumero && !caixa.checked;
+  definirTexto('#whatsapp-usuario-situacao', !temNumero
+    ? 'Sem WhatsApp no cadastro: não recebe resumos.'
+    : (caixa.checked ? 'WhatsApp cadastrado e autorizado.' : 'WhatsApp cadastrado, sem autorização: não recebe resumos.'));
+  definirTexto('#whatsapp-usuario-registro', caixa.checked
+    ? `Autorizado por ${ficha.whatsapp_particular_autorizado_por_nome ?? 'administrador'} em ${dataHoraDoPainelDoAgente(ficha.whatsapp_particular_autorizado_em) || '—'}.`
+    : (temNumero ? 'Ainda não autorizado.' : 'Cadastre o número antes de autorizar.'));
+}
+
+async function abrirWhatsappDoUsuario(id) {
+  const alvo = Number(id);
+  whatsappEmEdicao = alvo;
+  try {
+    const { usuario: ficha } = await pedirJson(`/api/usuarios/${alvo}`);
+    // Outra pessoa aberta enquanto esta carregava: a resposta velha é descartada.
+    if (whatsappEmEdicao !== alvo) return;
+    desenharWhatsappDoUsuario(ficha);
+    seletor('#whatsapp-usuario-ddd')?.focus();
+  } catch (erro) {
+    definirTexto('#resumo-usuarios', erro.detalhe || 'Não foi possível abrir o WhatsApp desta pessoa.');
+  }
+}
+
+/** Depois de gravar: a ficha de novo, a lista (avisos) e o painel "Quem recebe os resumos". */
+async function depoisDeMudarWhatsapp(alvo) {
+  const { usuario: ficha } = await pedirJson(`/api/usuarios/${alvo}`);
+  if (whatsappEmEdicao === alvo) desenharWhatsappDoUsuario(ficha);
+  await carregarUsuarios();
+}
+
+seletor('#form-whatsapp-usuario')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  const alvo = whatsappEmEdicao;
+  if (!alvo) return;
+  const erro = seletor('#whatsapp-usuario-erro');
+  erro.hidden = true;
+
+  const ddd = seletor('#whatsapp-usuario-ddd').value.trim();
+  const numero = seletor('#whatsapp-usuario-numero').value.trim();
+  // DDD e número vazios = tirar o WhatsApp do cadastro (o DDI sozinho não é número).
+  const whatsapp = !ddd && !numero
+    ? { ddi: null, ddd: null, numero: null }
+    : { ddi: seletor('#whatsapp-usuario-ddi').value.trim() || '55', ddd, numero };
+
+  // Auditoria M3: trocar ou tirar o número retira a autorização no servidor — a tela avisa.
+  const estavaAutorizado = seletor('#whatsapp-usuario-autorizado').checked;
+  try {
+    await pedirJson(`/api/usuarios/${alvo}`, { metodo: 'PUT', corpo: { whatsapp } });
+    await depoisDeMudarWhatsapp(alvo);
+    if (estavaAutorizado && whatsappEmEdicao === alvo && !seletor('#whatsapp-usuario-autorizado').checked) {
+      definirTexto('#whatsapp-usuario-registro', 'Número alterado: a autorização foi retirada. Autorize de novo.');
+    }
+  } catch (falha) {
+    erro.textContent = falha.detalhe || 'WhatsApp inválido: informe DDD (2 dígitos) e número (8 ou 9 dígitos).';
+    erro.hidden = false;
+  }
+});
+
+seletor('#whatsapp-usuario-autorizado')?.addEventListener('change', async (evento) => {
+  const alvo = whatsappEmEdicao;
+  const caixa = evento.target;
+  if (!alvo) return;
+  if (caixa.checked && !window.confirm('Confirma que a pessoa autorizou o uso deste WhatsApp para avisos e resumos? Fica registrado quem autorizou e quando.')) {
+    caixa.checked = false;
+    return;
+  }
+  try {
+    await pedirJson(`/api/usuarios/${alvo}/whatsapp-particular`, { metodo: 'POST', corpo: { autorizado: caixa.checked } });
+    await depoisDeMudarWhatsapp(alvo);
+  } catch (falha) {
+    caixa.checked = !caixa.checked;
+    definirTexto('#whatsapp-usuario-registro', falha.detalhe || 'A autorização não pôde ser gravada.');
+  }
+});
+
+seletor('#whatsapp-usuario-fechar')?.addEventListener('click', () => {
+  whatsappEmEdicao = null;
+  seletor('#cartao-whatsapp-usuario').hidden = true;
+});
+
+// Resumo por equipe (docs/RESUMOS.md): quem recebe o resumo de cada equipe. O
+// número chega mascarado do servidor; nomes de pessoa e de agente só por textContent.
+const MOTIVOS_SEM_RESUMO = {
+  pausado: 'resumos pausados',
+  sem_whatsapp: 'sem WhatsApp no cadastro',
+  whatsapp_nao_autorizado: 'WhatsApp sem autorização de uso',
+};
+
+async function carregarPainelDeResumos() {
+  const cartao = seletor('#cartao-resumos');
+  const painel = seletor('#painel-resumos');
+  if (!cartao || !painel || !usuarioAtual?.master) return;
+  cartao.hidden = false;
+
+  try {
+    const dados = await pedirJson('/api/usuarios/resumos');
+    painel.replaceChildren();
+    let semNinguem = 0;
+
+    for (const grupo of dados.grupos ?? []) {
+      const bloco = document.createElement('div');
+      bloco.className = 'grupo-resumo';
+      const titulo = document.createElement('b');
+      titulo.textContent = grupo.nome ?? 'Equipe';
+      const detalhe = document.createElement('small');
+      detalhe.textContent = grupo.sem_canal
+        ? ' · agente sem WhatsApp ativo: o resumo não sai'
+        : ` · sai pelo número ${grupo.sai_pelo_numero ?? ''}`;
+      const lista = document.createElement('ul');
+      if ((grupo.destinatarios ?? []).length === 0) {
+        semNinguem += 1;
+        const vazio = document.createElement('li');
+        vazio.className = 'vazio';
+        vazio.textContent = 'Ninguém recebe este resumo.';
+        lista.append(vazio);
+      }
+      for (const destino of grupo.destinatarios ?? []) {
+        const item = document.createElement('li');
+        item.textContent = `${destino.nome} — ${destino.whatsapp ?? ''}`;
+        lista.append(item);
+      }
+      bloco.append(titulo, detalhe, lista);
+      painel.append(bloco);
+    }
+
+    if ((dados.sem_entrega ?? []).length > 0) {
+      const fora = document.createElement('div');
+      fora.className = 'grupo-resumo';
+      const titulo = document.createElement('b');
+      titulo.textContent = 'Deveriam receber e não recebem';
+      const lista = document.createElement('ul');
+      for (const pessoa of dados.sem_entrega) {
+        const item = document.createElement('li');
+        item.textContent = `${pessoa.nome} — ${MOTIVOS_SEM_RESUMO[pessoa.motivo] ?? pessoa.motivo}`;
+        lista.append(item);
+      }
+      fora.append(titulo, lista);
+      painel.append(fora);
+    }
+
+    definirTexto('#resumo-destinatarios', semNinguem > 0
+      ? `${semNinguem} equipe(s) sem ninguém para receber o resumo`
+      : `Um resumo por equipe a cada ${Number(dados.intervalo_min) || 120} minutos`);
+  } catch (erro) {
+    painel.replaceChildren();
+    definirTexto('#resumo-destinatarios', erro.status === 403 ? 'Apenas o administrador vê.' : 'Não foi possível carregar.');
+  }
+}
+
 async function agirNoUsuario(id, caminho, corpo) {
   try {
     await pedirJson(`/api/usuarios/${id}/${caminho}`, { metodo: 'POST', corpo });
@@ -2433,7 +2757,12 @@ seletor('#form-novo-usuario')?.addEventListener('submit', async (evento) => {
   };
 
   try {
-    await pedirJson('/api/usuarios', { metodo: 'POST', corpo });
+    const { usuario: criado } = await pedirJson('/api/usuarios', { metodo: 'POST', corpo });
+    // "Vê a clínica" desmarcado no cadastro: colaborador desde o primeiro acesso.
+    const veAClinica = seletor('#novo-acesso-clinica');
+    if (veAClinica && !veAClinica.checked && criado?.id && corpo.papel !== 'admin') {
+      await pedirJson(`/api/usuarios/${Number(criado.id)}/acesso-clinica`, { metodo: 'POST', corpo: { acesso_clinica: false } });
+    }
     evento.target.reset();
     seletor('#cartao-novo-usuario').hidden = true;
     await carregarUsuarios();
@@ -3889,6 +4218,7 @@ async function abrirAgente(id) {
       zerarWhatsappDoAgente();
     }
     preencherEditorDeAgente();
+    carregarEquipeDoAgente();
     const editor = seletor('#agente-editor');
     editor.hidden = false;
     if (trocouDeAgente) editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -4190,7 +4520,10 @@ seletor('#agente-fechar')?.addEventListener('click', () => {
 });
 
 for (const aba of document.querySelectorAll('[data-aba-agente]')) {
-  aba.addEventListener('click', () => selecionarAbaDoAgente(aba.dataset.abaAgente));
+  aba.addEventListener('click', () => {
+    selecionarAbaDoAgente(aba.dataset.abaAgente);
+    if (aba.dataset.abaAgente === 'equipe') carregarEquipeDoAgente();
+  });
 }
 
 seletor('#agente-comportamento')?.addEventListener('input', atualizarContadorDoComportamento);
@@ -4670,8 +5003,9 @@ async function abrirConversaDoAgente(conversaId) {
     aba.classList.toggle('selecionada', ativa);
     aba.setAttribute('aria-selected', String(ativa));
   }
-  const filtro = seletor('#filtro-agente-conversas');
-  if (filtro) filtro.value = '';
+  // Abre na aba do próprio agente (migration 047), que é onde a conversa está.
+  if (agenteAberto) escopoDaListaDeConversas = String(Number(agenteAberto.agente.id));
+  desenharAbasDeEscopoDasConversas();
   abrirTela('conversas');
   await abrirConversa(conversaId);
 }
@@ -4699,6 +5033,95 @@ function iniciarSeloDeAgentes() {
 }
 
 seletor('#agente-op-atualizar')?.addEventListener('click', () => carregarOperacaoDoAgente());
+
+// ---------------------------------------------------------------------------
+// Equipe do agente (migration 047): quem vê e responde as conversas dele.
+// ---------------------------------------------------------------------------
+
+async function carregarEquipeDoAgente() {
+  if (!agenteAberto) return;
+  const id = Number(agenteAberto.agente.id);
+  const lista = seletor('#agente-equipe-lista');
+  const formulario = seletor('#agente-equipe-form');
+  if (!lista) return;
+  // Resposta de outro agente (troca no meio da espera) é descartada — lição do BN1.
+  const aindaEste = () => agenteAberto && Number(agenteAberto.agente.id) === id;
+  lista.innerHTML = '<li class="vazio">carregando…</li>';
+  if (formulario) formulario.hidden = true;
+  try {
+    const dados = await pedirJson(`/api/agentes/${id}/equipe`);
+    if (!aindaEste()) return;
+    desenharEquipeDoAgente(dados);
+    if (dados.pode_gerenciar) await preencherCandidatosDaEquipe(dados.membros ?? []);
+    if (!aindaEste()) return;
+    if (formulario) formulario.hidden = !dados.pode_gerenciar;
+  } catch (erro) {
+    if (!aindaEste()) return;
+    lista.innerHTML = `<li class="vazio">${escapar(`Não foi possível carregar a equipe: ${mensagemDeErroDoAgente(erro)}`)}</li>`;
+  }
+}
+
+function desenharEquipeDoAgente({ membros = [], pode_gerenciar: pode = false } = {}) {
+  const lista = seletor('#agente-equipe-lista');
+  if (!lista) return;
+  if (membros.length === 0) {
+    lista.innerHTML = '<li class="vazio">Ninguém na equipe ainda. Só o administrador vê as conversas deste agente.</li>';
+    return;
+  }
+  lista.innerHTML = membros.map((membro) => `
+    <li>
+      <div>
+        <strong>${escapar(membro.nome ?? membro.email ?? 'sem nome')}</strong>
+        <small>${escapar(ROTULOS_DE_PAPEL[membro.papel] ?? membro.papel)} · ${escapar(membro.acesso_clinica ? 'vê a clínica' : 'Colaborador (só agentes)')}</small>
+      </div>
+      ${pode ? `<div class="linha-acoes"><button type="button" class="perigo" data-remover-membro="${Number(membro.usuario_id)}">Tirar da equipe</button></div>` : ''}
+    </li>`).join('');
+}
+
+/** Quem pode entrar: conta ativa, fora da equipe e não admin (admin sempre vê). */
+async function preencherCandidatosDaEquipe(membros) {
+  const campo = seletor('#agente-equipe-usuario');
+  if (!campo) return;
+  let usuarios = [];
+  try {
+    usuarios = (await pedirJson('/api/usuarios')).usuarios ?? [];
+  } catch {
+    usuarios = [];
+  }
+  const naEquipe = new Set(membros.map((membro) => Number(membro.usuario_id)));
+  const candidatos = usuarios.filter((usuario) => usuario.papel !== 'admin'
+    && usuario.situacao === 'ativo' && !naEquipe.has(Number(usuario.id)));
+  campo.innerHTML = candidatos.length
+    ? candidatos.map((usuario) => `<option value="${Number(usuario.id)}">${escapar(usuario.nome)} — ${escapar(ROTULOS_DE_PAPEL[usuario.papel] ?? usuario.papel)}${usuario.acesso_clinica === false ? ' · colaborador' : ''}</option>`).join('')
+    : '<option value="" disabled selected>Todas as contas ativas já estão na equipe</option>';
+}
+
+seletor('#agente-equipe-form')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+  const id = Number(agenteAberto.agente.id);
+  const usuarioId = Number(seletor('#agente-equipe-usuario')?.value);
+  if (!usuarioId) return;
+  try {
+    await pedirJson(`/api/agentes/${id}/equipe`, { metodo: 'POST', corpo: { usuario_id: usuarioId } });
+    if (agenteAberto && Number(agenteAberto.agente.id) === id) await carregarEquipeDoAgente();
+  } catch (erro) {
+    informar(`Não foi possível colocar na equipe: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
+
+seletor('#agente-equipe-lista')?.addEventListener('click', async (evento) => {
+  const botao = evento.target.closest('[data-remover-membro]');
+  if (!botao || !agenteAberto) return;
+  const id = Number(agenteAberto.agente.id);
+  if (!window.confirm('Tirar esta pessoa da equipe? Ela deixa de ver as conversas deste agente na hora.')) return;
+  try {
+    await pedirJson(`/api/agentes/${id}/equipe/${Number(botao.dataset.removerMembro)}`, { metodo: 'DELETE' });
+    if (agenteAberto && Number(agenteAberto.agente.id) === id) await carregarEquipeDoAgente();
+  } catch (erro) {
+    informar(`Não foi possível tirar da equipe: ${mensagemDeErroDoAgente(erro)}`);
+  }
+});
 
 for (const alvo of ['#agente-aguardando', '#agente-conversas-recentes']) {
   seletor(alvo)?.addEventListener('click', (evento) => {
@@ -4784,12 +5207,46 @@ seletor('#agente-whatsapp-form')?.addEventListener('submit', async (evento) => {
 
 let contatoEmEdicao = null;
 
+/** Selos automáticos de origem (decisão 11/09): "Clínica" e o nome de cada agente. */
+function selosDoContatoEmHtml(selos) {
+  if (!selos) return '';
+  const itens = [
+    ...(selos.clinica ? [{ rotulo: 'Clínica', agente: false }] : []),
+    ...(selos.agentes ?? []).map((agente) => ({ rotulo: agente.nome ?? `agente #${Number(agente.id)}`, agente: true })),
+  ];
+  return itens.map((item) => `<span class="etiqueta${item.agente ? ' agente' : ''}">${escapar(item.rotulo)}</span>`).join(' ');
+}
+
+/** Filtro de origem: "Clínica" só para quem a vê; agentes vêm da própria resposta. */
+function prepararFiltroDeOrigemDosContatos(agentes) {
+  const campo = seletor('#contatos-origem');
+  if (!campo) return;
+  const escolhido = campo.value;
+  const opcoes = [
+    ['', 'Todas as origens'],
+    ...(veClinica() ? [['clinica', 'Clínica']] : []),
+    ...agentes.map((agente) => [String(Number(agente.id)), agente.nome]),
+  ];
+  campo.textContent = '';
+  for (const [valor, rotulo] of opcoes) {
+    const opcao = document.createElement('option');
+    opcao.value = valor;
+    opcao.textContent = rotulo;
+    opcao.selected = valor === escolhido;
+    campo.append(opcao);
+  }
+}
+
+seletor('#contatos-origem')?.addEventListener('change', () => carregarContatos());
+
 async function carregarContatos() {
   const busca = seletor('#contatos-busca')?.value ?? '';
   const excluidos = seletor('#contatos-excluidos')?.checked ? 'sim' : 'nao';
+  const origem = seletor('#contatos-origem')?.value ?? '';
 
   try {
-    const dados = await pedirJson(`/api/contatos/gestao?busca=${encodeURIComponent(busca)}&excluidos=${excluidos}`);
+    const dados = await pedirJson(`/api/contatos/gestao?busca=${encodeURIComponent(busca)}&excluidos=${excluidos}${origem ? `&origem=${encodeURIComponent(origem)}` : ''}`);
+    prepararFiltroDeOrigemDosContatos(dados.agentes ?? []);
     const lista = seletor('#lista-contatos');
     const total = seletor('#contatos-total');
 
@@ -4804,18 +5261,18 @@ async function carregarContatos() {
     lista.innerHTML = dados.contatos.map((contato) => `
       <li class="${contato.excluido ? 'desligada' : ''}">
         <div>
-          <strong>${escapar(contato.nome ?? 'sem nome')}</strong>
-          <small>${escapar(contato.telefone)} · ${contato.conversas ?? 0} conversa(s) ·
-            ${contato.agendamentos ?? 0} agendamento(s)
-            ${contato.recebe_lembretes ? '' : ' · não recebe lembretes'}
+          <strong>${escapar(contato.nome ?? 'sem nome')}</strong> ${selosDoContatoEmHtml(contato.selos)}
+          <small>${escapar(contato.telefone)} · ${contato.conversas ?? 0} conversa(s)
+            ${contato.agendamentos !== undefined ? ` · ${Number(contato.agendamentos) || 0} agendamento(s)` : ''}
+            ${contato.recebe_lembretes === false ? ' · não recebe lembretes' : ''}
             ${contato.excluido ? ` · excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}` : ''}</small>
         </div>
         <div class="linha-acoes">
           ${contato.excluido
             ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`
             : `<button type="button" class="secundario" data-ver-contato="${contato.id}">Histórico</button>
-               <button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
-               <button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>`}
+               ${veClinica() ? `<button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
+               <button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>` : ''}`}
         </div>
       </li>`).join('');
   } catch (erro) {
@@ -4841,14 +5298,22 @@ async function verHistoricoDoContato(id) {
   try {
     const dados = await pedirJson(`/api/contatos/${id}`);
     const { contato, historico } = dados;
+    const origens = [
+      ...(contato.selos?.clinica ? ['Clínica'] : []),
+      ...(contato.selos?.agentes ?? []).map((agente) => agente.nome ?? `agente #${agente.id}`),
+    ];
+    // Só as conversas que a pessoa vê chegam aqui (o servidor recorta a prévia).
     const linhas = [
       `${contato.nome ?? 'sem nome'} — ${contato.telefone}`,
+      ...(origens.length ? [`Origem: ${origens.join(', ')}`] : []),
       '',
       `Conversas: ${historico.conversas.length}`,
-      ...historico.conversas.slice(0, 5).map((c) => `  · ${c.status} — ${c.previa ?? 'sem mensagem'}`),
-      '',
-      `Agendamentos: ${historico.agendamentos.length}`,
-      ...historico.agendamentos.slice(0, 5).map((a) => `  · ${new Date(a.inicio).toLocaleString('pt-BR')} — ${a.status}`),
+      ...historico.conversas.slice(0, 5).map((c) => `  · ${c.agente_nome ?? 'Clínica'} · ${c.status} — ${c.previa ?? 'sem mensagem'}`),
+      ...(veClinica() ? [
+        '',
+        `Agendamentos: ${historico.agendamentos.length}`,
+        ...historico.agendamentos.slice(0, 5).map((a) => `  · ${new Date(a.inicio).toLocaleString('pt-BR')} — ${a.status}`),
+      ] : []),
     ];
     alert(linhas.join('\n'));
   } catch (erro) {

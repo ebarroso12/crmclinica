@@ -1227,6 +1227,134 @@ for (const { nome, montar } of implementacoes) {
       assert.deepEqual(await repositorio.listarConversasDoAgenteAguardandoEquipe(agente.id), [], 'resolvida sai da espera');
     });
 
+    await t.test('equipe e marca (047): escopo de acesso lê "vê a clínica" e a equipe; conta inativa ou ausente nega', async () => {
+      const agente = await criarAgenteDeTeste('contrato-equipe');
+      const outro = await criarAgenteDeTeste('contrato-equipe-outro');
+      const loja = await repositorio.criarUsuario({
+        nome: 'Colaborador Loja', email: 'loja-equipe@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      const clinica = await repositorio.criarUsuario({
+        nome: 'Atendente Clínica', email: 'clinica-equipe@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+
+      assert.equal(loja.acesso_clinica, true, 'padrão da coluna: ninguém perde a clínica');
+      assert.equal(loja.recebe_resumo, true, 'padrão da coluna: ninguém deixa de receber resumo pela migration');
+      assert.equal((await repositorio.atualizarUsuario(clinica.id, { recebeResumo: false })).recebe_resumo, false);
+      assert.equal((await repositorio.atualizarUsuario(clinica.id, { recebeResumo: true })).recebe_resumo, true);
+      // P1-06 na tela de Usuários: quem autorizou o WhatsApp e quando vêm na leitura do usuário.
+      const autorizado = await repositorio.atualizarUsuario(clinica.id, {
+        whatsappParticularAutorizado: true,
+        whatsappParticularAutorizadoEm: new Date().toISOString(),
+        whatsappParticularAutorizadoPor: loja.id,
+      });
+      assert.equal(autorizado.whatsapp_particular_autorizado, true);
+      assert.equal(autorizado.whatsapp_particular_autorizado_por, loja.id);
+      assert.ok(Number.isFinite(new Date(autorizado.whatsapp_particular_autorizado_em).getTime()));
+      assert.equal((await repositorio.obterUsuarioPorId(clinica.id)).whatsapp_particular_autorizado_por, loja.id);
+      assert.deepEqual(await repositorio.obterEscopoDeAcesso(loja.id), { acesso_clinica: true, agentes: [] });
+
+      assert.equal(await repositorio.adicionarMembroDaEquipe(outro.id, loja.id), true);
+      assert.equal(await repositorio.adicionarMembroDaEquipe(agente.id, loja.id, { criadoPor: clinica.id }), true);
+      assert.equal(await repositorio.adicionarMembroDaEquipe(agente.id, loja.id), false, 'repetir não duplica');
+
+      const atualizado = await repositorio.atualizarUsuario(loja.id, { acessoClinica: false });
+      assert.equal(atualizado.acesso_clinica, false);
+      assert.deepEqual(await repositorio.obterEscopoDeAcesso(loja.id), {
+        acesso_clinica: false, agentes: [agente.id, outro.id].sort((a, b) => a - b),
+      });
+
+      const equipe = await repositorio.listarEquipeDoAgente(agente.id);
+      assert.deepEqual(
+        equipe.map((membro) => [membro.usuario_id, membro.nome, membro.papel, membro.acesso_clinica]),
+        [[loja.id, 'Colaborador Loja', 'atendente', false]],
+      );
+      assert.ok(!('senha_hash' in equipe[0]), 'a equipe nunca carrega segredo');
+      assert.ok(Number.isFinite(new Date(equipe[0].criado_em).getTime()));
+      assert.ok((await repositorio.listarVinculosDeEquipe())
+        .some((vinculo) => vinculo.agente_id === agente.id && vinculo.usuario_id === loja.id));
+
+      assert.equal(await repositorio.removerMembroDaEquipe(outro.id, loja.id), true);
+      assert.equal(await repositorio.removerMembroDaEquipe(outro.id, loja.id), false);
+      assert.deepEqual((await repositorio.obterEscopoDeAcesso(loja.id)).agentes, [agente.id]);
+
+      await assert.rejects(() => repositorio.adicionarMembroDaEquipe(agente.id, 999999), (erro) => erro.code === '23503',
+        'vínculo com usuário que não existe não entra');
+      assert.equal(await repositorio.obterEscopoDeAcesso(999999), null);
+      await repositorio.atualizarUsuario(clinica.id, { ativo: false });
+      assert.equal(await repositorio.obterEscopoDeAcesso(clinica.id), null, 'conta inativa nega');
+    });
+
+    await t.test('escopo (047) em conversas, eventos ao vivo e contatos: clínica, colaborador da loja e admin', async () => {
+      const alpins = await criarAgenteDeTeste('contrato-escopo-alpins');
+      const bravo = await criarAgenteDeTeste('contrato-escopo-bravo');
+      const paciente = await repositorio.encontrarOuCriarContato({ telefone: '5516900004701', nome: 'Paciente Escopo' });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(paciente.id, 'whatsapp');
+      const doAlpinsMesmoContato = await repositorio.encontrarOuCriarConversaAberta(paciente.id, 'whatsapp', { agenteId: alpins.id });
+      const clienteAlpins = await conversaDoAgente(alpins.id, '5516900004702');
+      const clienteBravo = await conversaDoAgente(bravo.id, '5516900004703');
+      const manual = await repositorio.criarContato({ nome: 'Manual Escopo', telefone: '5516900004704' });
+
+      const escopoClinica = { clinica: true, agentes: [] };
+      const escopoLoja = { clinica: false, agentes: [alpins.id] };
+      const escopoAdmin = { clinica: true, agentes: 'todos' };
+      const ordenar = (lista) => [...lista].sort((a, b) => a - b);
+      const ids = (lista) => ordenar(lista.map((item) => item.id));
+
+      const nossas = [daClinica.id, doAlpinsMesmoContato.id, clienteAlpins.id, clienteBravo.id];
+      const conversasDe = async (opcoes) => ids(await repositorio.listarConversas({ limite: 1000, ...opcoes }))
+        .filter((id) => nossas.includes(id));
+      assert.deepEqual(await conversasDe({ escopo: escopoClinica }), [daClinica.id]);
+      assert.deepEqual(await conversasDe({ escopo: escopoLoja }), ordenar([doAlpinsMesmoContato.id, clienteAlpins.id]));
+      assert.deepEqual(await conversasDe({ escopo: escopoAdmin }), ordenar(nossas));
+      assert.deepEqual(await conversasDe({ escopo: { clinica: false, agentes: 'todos' } }),
+        ordenar([doAlpinsMesmoContato.id, clienteAlpins.id, clienteBravo.id]));
+      assert.deepEqual(await conversasDe({ escopo: escopoLoja, agenteId: null }), [], 'forjar "só clínica" não abre nada');
+      assert.deepEqual(await conversasDe({ escopo: escopoClinica, contatoId: paciente.id }), [daClinica.id],
+        'as conversas anteriores do mesmo contato também passam pelo escopo');
+
+      assert.deepEqual(await repositorio.obterEscopoDaConversa(clienteAlpins.id), { estado: 'existe', atribuidoA: null, agenteId: alpins.id });
+      assert.deepEqual(await repositorio.obterEscopoDaConversa(daClinica.id), { estado: 'existe', atribuidoA: null, agenteId: null });
+
+      const ultimo = await repositorio.listarEventosDeConversasDesde({ papel: 'admin', escopo: escopoAdmin, limite: 1 });
+      const cursor = ultimo.at(-1)?.id ?? 0;
+      for (const conversa of [daClinica, clienteAlpins, clienteBravo]) {
+        await repositorio.registrarEventoDeConversa({ conversaId: conversa.id, tipo: 'mensagem_recebida', payload: {} });
+      }
+      const eventosDe = async (papel, escopo) => (await repositorio.listarEventosDeConversasDesde({
+        cursor, papel, usuarioId: null, escopo,
+      })).map((evento) => evento.conversa_id);
+      assert.deepEqual(await eventosDe('gestor', escopoClinica), [daClinica.id]);
+      assert.deepEqual(await eventosDe('atendente', escopoLoja), [clienteAlpins.id]);
+      assert.deepEqual(await eventosDe('admin', escopoAdmin), [daClinica.id, clienteAlpins.id, clienteBravo.id]);
+      assert.deepEqual(await eventosDe('gestor', null), [daClinica.id], 'sem escopo declarado, quem não é admin não recebe agente');
+      assert.deepEqual(await eventosDe('admin', null), [daClinica.id, clienteAlpins.id, clienteBravo.id]);
+
+      const nossosContatos = [paciente.id, clienteAlpins.contato_id, clienteBravo.contato_id, manual.id];
+      const contatosDe = async (opcoes) => (await repositorio.listarContatos({ limite: 500, ...opcoes }))
+        .filter((contato) => nossosContatos.includes(contato.id));
+
+      const clinicaVe = await contatosDe({ escopo: escopoClinica });
+      assert.deepEqual(ids(clinicaVe), ordenar(nossosContatos), 'quem vê a clínica vê a base inteira');
+      const fichaDoPaciente = clinicaVe.find((contato) => contato.id === paciente.id);
+      assert.deepEqual(fichaDoPaciente.origens, { clinica: true, agentes: [alpins.id] });
+      assert.equal(fichaDoPaciente.conversas, 1, 'conta só a conversa que a clínica vê');
+      assert.deepEqual(clinicaVe.find((contato) => contato.id === manual.id).origens, { clinica: true, agentes: [] });
+      assert.deepEqual(clinicaVe.find((contato) => contato.id === clienteBravo.contato_id).origens, { clinica: false, agentes: [bravo.id] });
+
+      const lojaVe = await contatosDe({ escopo: escopoLoja });
+      assert.deepEqual(ids(lojaVe), ordenar([paciente.id, clienteAlpins.contato_id]), 'loja só vê cliente do Alpins');
+      assert.equal(lojaVe.find((contato) => contato.id === paciente.id).conversas, 1);
+
+      assert.deepEqual(ids(await contatosDe({ origem: 'clinica' })), ordenar([paciente.id, manual.id]));
+      assert.deepEqual(ids(await contatosDe({ origem: bravo.id })), [clienteBravo.contato_id]);
+      assert.deepEqual(await repositorio.obterOrigensDoContato(paciente.id), { clinica: true, agentes: [alpins.id] });
+      assert.deepEqual(await repositorio.obterOrigensDoContato(manual.id), { clinica: true, agentes: [] });
+
+      assert.deepEqual(ids(await repositorio.buscarContatos({ termo: '55169000047', limite: 50, escopo: escopoLoja })),
+        ordenar([paciente.id, clienteAlpins.contato_id]));
+      assert.equal((await repositorio.buscarContatos({ termo: '55169000047', limite: 50, escopo: escopoClinica })).length, 4);
+    });
+
     await t.test('contarRespostasDaAutomacao conta só a automação visível', async () => {
       const agente = await criarAgenteDeTeste('contrato-contagem');
       const conversa = await conversaDoAgente(agente.id, '5516900001002');
@@ -1344,7 +1472,7 @@ for (const { nome, montar } of implementacoes) {
       assert.ok(!aguardando.includes(doAgente.id), 'a do agente não entra na fila da clínica');
     });
 
-    await t.test('resumo da equipe e liberação em massa ignoram conversas de agente', async () => {
+    await t.test('resumo: conversa de agente entra na fila com o agente dela; liberação em massa ignora agente', async () => {
       const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
       const agente = await criarAgenteDeTeste('contrato-sem-resumo');
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001021', nome: 'Resumo Duplo' });
@@ -1356,16 +1484,287 @@ for (const { nome, montar } of implementacoes) {
       }
       await respirar();
 
-      const semResumo = (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 }))
-        .map((item) => Number(item.id));
-      assert.ok(semResumo.includes(daClinica.id));
-      assert.ok(!semResumo.includes(doAgente.id), 'conversa de agente não gera resumo para a equipe da clínica');
+      // Resumo por equipe (docs/RESUMOS.md): o agente entra COM o agente — o
+      // domínio manda só para a equipe dele, pelo número dele.
+      const semResumo = await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 });
+      const item = (id) => semResumo.find((registro) => Number(registro.id) === id);
+      assert.equal(item(daClinica.id)?.agente_id, null);
+      assert.equal(item(doAgente.id)?.agente_id, agente.id);
 
       await repositorio.atualizarConversa(doAgente.id, { assumida_por_humano: true });
       await repositorio.atualizarConversa(daClinica.id, { assumida_por_humano: true });
       const escalonadas = await repositorio.listarConversasEscalonadasSemDono();
       assert.ok(escalonadas.includes(daClinica.id));
       assert.ok(!escalonadas.includes(doAgente.id), 'transferência do agente para humano não é liberada em massa');
+    });
+
+    await t.test('resumo por equipe (047): destinatários do cadastro, trava, relógio por grupo e duas cópias ao mesmo tempo', async () => {
+      const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+      const respirar = (ms = 5) => new Promise((seguir) => { setTimeout(seguir, ms); });
+
+      const agente = await criarAgenteDeTeste('contrato-resumo-equipe');
+      await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'contrato-resumo', ativo: true }]);
+      const membro = await repositorio.criarUsuario({
+        nome: 'Resumo Loja', email: 'resumo-loja@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(membro.id, {
+        acessoClinica: false, whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '991230047', whatsappParticularAutorizado: true,
+      });
+      await repositorio.adicionarMembroDaEquipe(agente.id, membro.id);
+      const pausado = await repositorio.criarUsuario({
+        nome: 'Resumo Pausado', email: 'resumo-pausado@teste.local', papel: 'gestor', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(pausado.id, { recebeResumo: false });
+      const naoLiberado = await repositorio.criarUsuario({
+        nome: 'Resumo Pendente', email: 'resumo-pendente@teste.local', papel: 'atendente', situacao: 'pendente',
+      });
+
+      const pessoas = await repositorio.listarDestinatariosDeResumo();
+      const doMembro = pessoas.find((item) => item.id === membro.id);
+      assert.deepEqual(doMembro, {
+        id: membro.id, nome: 'Resumo Loja', papel: 'atendente', acesso_clinica: false, recebe_resumo: true,
+        whatsapp_ddi: '55', whatsapp_ddd: '16', whatsapp_numero: '991230047', whatsapp_particular_autorizado: true,
+        agentes: [agente.id],
+      }, 'só o que a regra usa — nunca senha nem documento');
+      assert.equal(pessoas.find((item) => item.id === pausado.id)?.recebe_resumo, false);
+      assert.ok(!pessoas.some((item) => item.id === naoLiberado.id), 'conta não liberada não recebe nem é número interno');
+
+      // Trava: enquanto a primeira segura, a segunda volta sem entrar.
+      let entrou;
+      let soltar;
+      const dentro = new Promise((resolver) => { entrou = resolver; });
+      const segura = new Promise((resolver) => { soltar = resolver; });
+      const primeira = repositorio.executarComTravaDeResumo(async () => { entrou(); await segura; return 'primeira'; });
+      await dentro;
+      assert.deepEqual(await repositorio.executarComTravaDeResumo(async () => 'segunda'), { obtida: false });
+      soltar();
+      assert.deepEqual(await primeira, { obtida: true, resultado: 'primeira' });
+      assert.deepEqual(await repositorio.executarComTravaDeResumo(async () => 'terceira'), { obtida: true, resultado: 'terceira' });
+
+      // Duas cópias do resumo ao mesmo tempo, com a entrega da primeira presa.
+      const conversa = await conversaDoAgente(agente.id, '5516900001061');
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'tem o 42?', autor_tipo: 'contato' });
+      await respirar();
+      const envios = [];
+      let liberar;
+      const portao = new Promise((resolver) => { liberar = resolver; });
+      const canal = { async enviar(carga) { envios.push(carga); await portao; return { identificador: 'x' }; } };
+      const copia = () => criarResumoDeAtendimento({ repositorio, canal, silencioMin: 0, intervaloMin: 120 });
+
+      const a = copia().enviarPendentes();
+      for (let espera = 0; envios.length === 0 && espera < 400; espera += 1) await respirar();
+      assert.ok(envios.length > 0, 'a primeira cópia chegou à entrega');
+      const b = await copia().enviarPendentes();
+      assert.match(b.motivo ?? '', /outra cópia/, 'a segunda cópia não entra enquanto a primeira resume');
+      liberar();
+      await a;
+
+      const doAgente = () => envios.filter((envio) => envio.instancia === 'contrato-resumo');
+      assert.equal(doAgente().length, 1, 'uma entrega para a única pessoa da equipe, pelo número do agente');
+      assert.equal(doAgente()[0].telefone, '+5516991230047');
+      assert.ok(doAgente()[0].texto.includes('Contato 5516900001061'));
+      assert.ok((await repositorio.listarUltimosEnviosDeResumo()).some((linha) => linha.agente_id === agente.id));
+
+      // Entrada nova logo depois: a cópia seguinte (um "reinício") espera o intervalo.
+      // A pausa é da memória (milissegundos): a entrada precisa ser DEPOIS da marca.
+      await respirar();
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'e o 43?', autor_tipo: 'contato' });
+      await respirar();
+      const depois = await copia().enviarPendentes();
+      assert.equal(doAgente().length, 1, 'o relógio vem do banco: nada antes de 2 h');
+      assert.equal(depois.grupos.find((grupo) => grupo.agente_id === agente.id)?.situacao, 'aguardando_intervalo');
+    });
+
+    await t.test('resumo: saída da equipe não reenfileira; só entrada nova do contato — e a marca não esconde entrada que chegou depois', async () => {
+      const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001051', nome: 'Resumo Repetido' });
+      const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      const pendente = async () => (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 }))
+        .find((item) => Number(item.id) === conversa.id) ?? null;
+
+      const { mensagem: primeira } = await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'entrada', conteudo: 'quero saber o preço', autor_tipo: 'contato',
+      });
+      await respirar();
+      assert.equal((await pendente())?.ultima_entrada_id, primeira.id);
+
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: primeira.id }), true);
+      await respirar();
+      assert.equal(await pendente(), null, 'resumida sai da fila');
+
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'custa R$ 300', autor_tipo: 'equipe' });
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'saida', conteudo: 'posso ajudar?', autor_tipo: 'automacao' });
+      await respirar();
+      assert.equal(await pendente(), null, 'resposta da equipe ou da automação não devolve a conversa à fila — era isso que repetia o resumo');
+
+      const { mensagem: segunda } = await repositorio.registrarMensagem(conversa.id, {
+        direcao: 'entrada', conteudo: 'e parcela?', autor_tipo: 'contato',
+      });
+      await respirar();
+      assert.equal((await pendente())?.ultima_entrada_id, segunda.id, 'entrada nova do contato volta à fila, com chave nova');
+
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: primeira.id }), false,
+        'resumo montado antes da entrada nova não pode escondê-la');
+      await respirar();
+      assert.ok(await pendente(), 'continua na fila');
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id, { ultimaEntradaId: segunda.id }), true);
+      assert.equal(await repositorio.marcarResumoEnviado(conversa.id), true, 'sem id, marca como antes');
+    });
+
+    await t.test('resumo: janela por grupo — só conversa com entrada do contato depois do início da janela do seu grupo (A1)', async () => {
+      const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
+      const agente = await criarAgenteDeTeste('contrato-janela');
+      const daClinica = await conversaDoAgente(null, '5516900001071');
+      const doAgente = await conversaDoAgente(agente.id, '5516900001072');
+      for (const conversa of [daClinica, doAgente]) {
+        await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'oi', autor_tipo: 'contato' });
+      }
+      await respirar();
+
+      const passado = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const futuro = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const nossas = [daClinica.id, doAgente.id];
+      const ids = async (janelas) => (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000, janelas }))
+        .map((item) => Number(item.id)).filter((id) => nossas.includes(id)).sort((a, b) => a - b);
+      const ambas = [...nossas].sort((a, b) => a - b);
+
+      assert.deepEqual(await ids(null), ambas, 'sem janela, como antes');
+      assert.deepEqual(await ids({ padrao: passado, porGrupo: [] }), ambas);
+      assert.deepEqual(await ids({ padrao: futuro, porGrupo: [] }), [], 'sem entrada dentro da janela, nunca sai');
+      assert.deepEqual(await ids({ padrao: futuro, porGrupo: [{ agente_id: agente.id, desde: passado }] }), [doAgente.id],
+        'a janela do grupo vale sobre a padrão');
+      assert.deepEqual(await ids({ padrao: passado, porGrupo: [{ agente_id: null, desde: futuro }] }), [doAgente.id],
+        'a clínica tem a própria janela');
+    });
+
+    await t.test('conversa de agente nunca carrega o lead da clínica; a da clínica carrega como antes (auditoria de acesso A1)', async () => {
+      const agente = await criarAgenteDeTeste('contrato-lead-agente');
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001081', nome: 'Lead Duplo' });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      const doAgente = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id });
+      const lead = await repositorio.salvarLead(contato.id, { conversaId: daClinica.id, temperatura: 'quente' });
+      await repositorio.atualizarLead(lead.id, { pagamento: 'convenio' });
+
+      const campos = ['lead_id', 'temperatura', 'estagio', 'score', 'interesse', 'primeira_consulta',
+        'pagamento', 'urgencia', 'disponibilidade', 'perdido_motivo'];
+      const semLead = (conversa) => campos.filter((campo) => conversa[campo] !== null);
+      const lista = await repositorio.listarConversas({ contatoId: contato.id, limite: 10 });
+
+      assert.deepEqual(semLead(lista.find((item) => item.id === doAgente.id)), [], 'lista: conversa de agente sem campo de lead');
+      assert.deepEqual(semLead(await repositorio.obterConversa(doAgente.id)), [], 'obterConversa: idem');
+      const clinicaNaLista = lista.find((item) => item.id === daClinica.id);
+      assert.equal(clinicaNaLista.lead_id, lead.id);
+      assert.equal(clinicaNaLista.pagamento, 'convenio');
+      assert.equal(clinicaNaLista.temperatura, 'quente');
+      assert.equal((await repositorio.obterConversa(daClinica.id)).pagamento, 'convenio');
+    });
+
+    await t.test('registro de envios do resumo: reserva única; falhou volta só depois da espera e no máximo 3 vezes; enviado e enviando não (auditoria M2; conferência final, item 1)', async () => {
+      const usuario = await repositorio.criarUsuario({ nome: 'Envio Resumo', email: 'envio-resumo@teste.local', papel: 'gestor', situacao: 'ativo' });
+      // Grupo de um agente só deste teste: a falha gravada segura o relógio do grupo.
+      const agente = await criarAgenteDeTeste('contrato-registro-envios');
+      const base = { grupo: 'agente', agenteId: agente.id, usuarioId: usuario.id, parte: 1 };
+      const reservar = (chave, extra = {}) => repositorio.reservarEnvioDeResumo({ ...base, chave, ...extra });
+
+      assert.equal(await reservar('resumo:contrato:um'), 'reservado');
+      assert.equal(await reservar('resumo:contrato:um'), 'enviando', 'reservado e não concluído é incerto: não sai de novo');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:um', 'enviado'), 'enviado');
+      assert.equal(await reservar('resumo:contrato:um'), 'enviado');
+
+      assert.equal(await reservar('resumo:contrato:dois'), 'reservado');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou'), 'falhou', 'primeira falha');
+      assert.equal(await reservar('resumo:contrato:dois', { esperaMs: 60 * 60_000 }), 'falhou', 'dentro da espera não volta');
+      assert.equal(await reservar('resumo:contrato:dois'), 'reservado', 'passada a espera: segunda tentativa');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou'), 'falhou');
+      assert.equal(await reservar('resumo:contrato:dois'), 'reservado', 'terceira tentativa');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou', { maximoDeTentativas: 3 }), 'desistido',
+        'a terceira falha é definitiva');
+      assert.equal(await reservar('resumo:contrato:dois'), 'desistido', 'desistido não volta');
+      assert.ok((await repositorio.listarUltimasFalhasDeResumo()).some((linha) => linha.agente_id === agente.id),
+        'a falha entra no relógio do grupo');
+
+      await assert.rejects(() => repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'qualquer'));
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:inexistente', 'enviado'), null);
+    });
+
+    await t.test('resumo: restart entre a parte 1 e a parte 2 não reenvia a parte 1 nem a incerta (auditoria M2)', async () => {
+      const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+      const respirar = (ms = 5) => new Promise((seguir) => { setTimeout(seguir, ms); });
+      const agente = await criarAgenteDeTeste('contrato-resumo-restart');
+      await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'contrato-restart', ativo: true }]);
+      const membro = await repositorio.criarUsuario({
+        nome: 'Restart Loja', email: 'restart-loja@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(membro.id, {
+        acessoClinica: false, whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '991230048', whatsappParticularAutorizado: true,
+      });
+      await repositorio.adicionarMembroDaEquipe(agente.id, membro.id);
+      for (let i = 0; i < 6; i += 1) {
+        const conversa = await conversaDoAgente(agente.id, `55169000011${String(i).padStart(2, '0')}`);
+        await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: `quero o modelo ${i}`, autor_tipo: 'contato' });
+      }
+      await respirar();
+      const gerador = { async gerar() { return `Procura: ${'x'.repeat(1200)}`; } };
+      const ehParte = (carga, numero) => carga.instancia === 'contrato-restart' && carga.texto.includes(`(${numero}/`);
+
+      // Primeiro processo: a entrega da parte 2 fica presa — o processo "morre" ali.
+      const primeiros = [];
+      let soltar;
+      const presa = new Promise((resolver) => { soltar = resolver; });
+      const primeiro = criarResumoDeAtendimento({
+        repositorio, silencioMin: 0, intervaloMin: 120, gerador,
+        canal: { async enviar(carga) { primeiros.push(carga); if (ehParte(carga, 2)) await presa; return { identificador: 'p' }; } },
+      }).enviarPendentes();
+      for (let espera = 0; !primeiros.some((carga) => ehParte(carga, 2)) && espera < 1000; espera += 1) await respirar(2);
+      assert.ok(primeiros.some((carga) => ehParte(carga, 2)), 'o primeiro processo chegou à parte 2');
+
+      // Processo novo: a trava do morto caiu (no PostgreSQL, com a conexão).
+      const reiniciado = { ...repositorio, executarComTravaDeResumo: async (executar) => ({ obtida: true, resultado: await executar() }) };
+      const segundos = [];
+      await criarResumoDeAtendimento({
+        repositorio: reiniciado, silencioMin: 0, intervaloMin: 120, gerador,
+        canal: { async enviar(carga) { segundos.push(carga); return { identificador: 's' }; } },
+      }).enviarPendentes();
+
+      assert.equal(segundos.filter((carga) => ehParte(carga, 1)).length, 0, 'a parte 1 não sai de novo');
+      assert.equal(segundos.filter((carga) => ehParte(carga, 2)).length, 0, 'a parte 2 incerta não sai de novo');
+      assert.equal(segundos.filter((carga) => ehParte(carga, 3)).length, 1, 'a parte 3 sai');
+
+      soltar();
+      await primeiro;
+    });
+
+    await t.test('resumo: canal que responde erro — a falha gravada segura o grupo e a cópia seguinte não bate no canal (conferência final, item 1)', async () => {
+      const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+      const respirar = (ms = 5) => new Promise((seguir) => { setTimeout(seguir, ms); });
+      const agente = await criarAgenteDeTeste('contrato-resumo-falha');
+      await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'contrato-falha', ativo: true }]);
+      const membro = await repositorio.criarUsuario({
+        nome: 'Falha Loja', email: 'falha-loja@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(membro.id, {
+        acessoClinica: false, whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '991230049', whatsappParticularAutorizado: true,
+      });
+      await repositorio.adicionarMembroDaEquipe(agente.id, membro.id);
+      const conversa = await conversaDoAgente(agente.id, '5516900001291');
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'tem o 44?', autor_tipo: 'contato' });
+      await respirar();
+
+      let tentativas = 0;
+      const canal = {
+        async enviar(carga) {
+          if (carga.instancia !== 'contrato-falha') return { identificador: 'outro-grupo' };
+          tentativas += 1;
+          throw new Error('Evolution API respondeu HTTP 500');
+        },
+      };
+      const copia = () => criarResumoDeAtendimento({ repositorio, canal, silencioMin: 0, intervaloMin: 120 });
+
+      await copia().enviarPendentes();
+      assert.equal(tentativas, 1);
+      const depois = await copia().enviarPendentes();
+      assert.equal(tentativas, 1, 'a falha está no banco: a cópia seguinte espera o intervalo');
+      assert.equal(depois.grupos.find((grupo) => grupo.agente_id === agente.id)?.situacao, 'aguardando_intervalo');
     });
 
     await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {

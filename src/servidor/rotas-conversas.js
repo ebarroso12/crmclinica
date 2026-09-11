@@ -5,6 +5,35 @@ const { ErroDeContrato } = require('../contratos/erros');
 const { FILAS, ESTADOS, PRIORIDADES, TEMPERATURAS, lerTemperatura } = require('../dominio/conversas');
 const { agruparPorColuna, sugerirTemperatura } = require('../dominio/leads');
 const { proximaAcao } = require('../dominio/qualificacao');
+const {
+  TODOS, veConversaDe, veContato, selosDoContato, recortarPedidoDeAgente, filtroDeEscopo, contatoParaColaborador,
+  ErroSemAcessoAClinica,
+} = require('../seguranca/escopo');
+
+// Migration 047 + auditoria de acesso A2 (docs/AGENTES.md, "Quem vê o quê").
+// Quem não vê a clínica recebe o contato por LISTA BRANCA — antes só
+// observações e atributos saíam, e nome completo, nascimento, responsável,
+// consentimento e documentos iam junto. Notas da ficha também não vão.
+function fichaSemDadoClinico(contato) {
+  return contatoParaColaborador(contato);
+}
+
+/** A conversa como o colaborador a recebe: o contato embutido também por lista branca. */
+function conversaSemDadoClinico(conversa) {
+  if (!conversa) return conversa;
+  return { ...conversa, contato: contatoParaColaborador(conversa.contato) };
+}
+
+function erroNaoEncontrado(mensagem) {
+  const erro = new Error(mensagem);
+  erro.status = 404;
+  return erro;
+}
+
+async function nomesDosAgentes(repositorio) {
+  const agentes = repositorio.listarAgentes ? await repositorio.listarAgentes() : [];
+  return new Map(agentes.map((agente) => [agente.id, agente.nome]));
+}
 
 // API do inbox local. O banco do crmclinica é a fonte de dados; não há
 // serviço externo de conversas por trás destas rotas.
@@ -138,8 +167,8 @@ function criarRotasDeConversas({
       };
     },
 
-    /** GET /api/conversas?fila=…&status=…&busca=…&contato=… */
-    async listarConversas(parametros) {
+    /** GET /api/conversas?fila=…&status=…&busca=…&contato=…&agente=… */
+    async listarConversas(parametros, { escopo = null } = {}) {
       const fila = parametros.get('fila') || 'todos';
       if (!FILAS[fila]) throw new ErroDeContrato(`fila desconhecida: ${fila}`, 'fila');
 
@@ -168,17 +197,28 @@ function criarRotasDeConversas({
       const agenteId = !agenteParam
         ? undefined
         : agenteParam === 'clinica' ? null : exigirIdentificador(agenteParam, 'agente');
-
       const contatoParam = parametros.get('contato');
+      const contatoId = contatoParam ? exigirIdentificador(contatoParam, 'contato') : null;
+
+      // Migration 047: o escopo de quem pede recorta o filtro. Pedir um agente
+      // (ou "só da clínica") que a pessoa não vê devolve lista vazia — nem 403,
+      // nem a lista inteira, e nada que confirme que aquilo existe.
+      let recorte = { agenteId };
+      if (escopo) {
+        recorte = recortarPedidoDeAgente(escopo, agenteId);
+        if (!recorte) return { fila, rotulo: FILAS[fila].rotulo, total: 0, conversas: [] };
+      }
+
       const conversas = await repositorio.listarConversas({
         status: status || null,
         busca: parametros.get('busca') || null,
-        contatoId: contatoParam ? exigirIdentificador(contatoParam, 'contato') : null,
+        contatoId,
         dataInicio: dataInicio || null,
         dataFim: dataFim || null,
         ordenacao,
         limite: 50,
-        agenteId,
+        agenteId: recorte.agenteId,
+        escopo: escopo ? filtroDeEscopo(escopo) : null,
       });
 
       // A fila é um recorte de quem responde, não um filtro do banco.
@@ -189,8 +229,10 @@ function criarRotasDeConversas({
           : conversas;
 
       // A próxima ação vai junto: é o que a recepção lê sem abrir a conversa.
+      // Quem não vê a clínica recebe o contato de cada conversa por lista branca.
+      const listaSemClinica = Boolean(escopo) && escopo.clinica !== true;
       const comAcao = filtradas.map((conversa) => ({
-        ...conversa,
+        ...(listaSemClinica ? conversaSemDadoClinico(conversa) : conversa),
         proxima_acao: conversa.lead_id ? proximaAcao(conversa) : null,
       }));
 
@@ -198,21 +240,30 @@ function criarRotasDeConversas({
     },
 
     /** GET /api/conversas/:id — conversa, ficha, notas e conversas anteriores. */
-    async obterConversa(conversaId) {
+    async obterConversa(conversaId, { escopo = null } = {}) {
       const id = exigirIdentificador(conversaId, 'conversa_id');
       const conversa = await exigirConversa(repositorio, id);
+      // Mesma resposta de "não existe": fora do escopo não confirma nada.
+      if (escopo && !veConversaDe(escopo, conversa.agente_id ?? null)) throw erroNaoEncontrado('conversa não encontrada');
+      const semClinica = Boolean(escopo) && escopo.clinica !== true;
 
-      const [contato, notas, anteriores] = await Promise.all([
+      const [contatoBruto, notasBrutas, anteriores] = await Promise.all([
         repositorio.obterContato(conversa.contato_id),
-        repositorio.listarNotas(conversa.contato_id),
-        repositorio.listarConversas({ contatoId: conversa.contato_id, limite: 20 }),
+        semClinica ? [] : repositorio.listarNotas(conversa.contato_id),
+        // As outras conversas do mesmo contato também passam pelo escopo: o
+        // paciente que falou com a loja não leva a conversa da clínica junto.
+        repositorio.listarConversas({
+          contatoId: conversa.contato_id, limite: 20, escopo: escopo ? filtroDeEscopo(escopo) : null,
+        }),
       ]);
+      const contato = semClinica ? fichaSemDadoClinico(contatoBruto) : contatoBruto;
+      const notas = notasBrutas;
 
       return {
         // A próxima ação acompanha a conversa aberta, não só a lista: quem já
         // está na thread precisa ver o que perguntar sem voltar para a esquerda.
         conversa: {
-          ...conversa,
+          ...(semClinica ? conversaSemDadoClinico(conversa) : conversa),
           proxima_acao: conversa.lead_id ? proximaAcao(conversa) : null,
         },
         ficha: {
@@ -432,10 +483,15 @@ function criarRotasDeConversas({
       const nomes = corpo.etiquetas.map((nome) => String(nome).trim()).filter(Boolean);
       const aplicadas = await repositorio.definirEtiquetasDaConversa(id, nomes);
 
-      // A temperatura vive nas etiquetas; o lead precisa refletir a mesma verdade.
+      // A temperatura vive nas etiquetas; o lead precisa refletir a mesma verdade
+      // — só na conversa da CLÍNICA (auditoria de acesso M2). Lead é da clínica:
+      // a etiqueta posta numa conversa de agente fica só nela, para qualquer
+      // usuário. Antes, "lead_quente" no Alpins trocava a temperatura e o
+      // conversa_id do lead da clínica.
       const temperatura = lerTemperatura(aplicadas);
       const conversa = await repositorio.obterConversa(id);
-      if (temperatura) await repositorio.salvarLead(conversa.contato_id, { conversaId: id, temperatura });
+      const daClinica = (conversa.agente_id ?? null) === null;
+      if (temperatura && daClinica) await repositorio.salvarLead(conversa.contato_id, { conversaId: id, temperatura });
 
       const ignoradas = nomes.filter((nome) => !aplicadas.includes(nome));
       return { conversa_id: id, etiquetas: aplicadas, temperatura, ignoradas };
@@ -522,7 +578,11 @@ function criarRotasDeConversas({
     },
 
     /** POST /api/conversas/:id/notas — nota na ficha do contato. */
-    async criarNota(conversaId, corpo) {
+    async criarNota(conversaId, corpo, { escopo = null } = {}) {
+      // Auditoria de acesso B3: a nota é gravada no CONTATO (ficha da clínica),
+      // não na conversa. Quem não vê a clínica anota na thread do agente com
+      // mensagem privada. A lista de rotas já barra; esta linha segura se ela mudar.
+      if (escopo && escopo.clinica !== true) throw new ErroSemAcessoAClinica();
       const id = exigirIdentificador(conversaId, 'conversa_id');
       const conversa = await exigirConversa(repositorio, id);
       const texto = exigirTexto(corpo?.texto, 'texto');
@@ -541,21 +601,33 @@ function criarRotasDeConversas({
     },
 
     /** GET /api/contatos/:id/conversas — histórico ao clicar no nome. */
-    async historicoDoContato(contatoId) {
+    async historicoDoContato(contatoId, { escopo = null } = {}) {
       const id = exigirIdentificador(contatoId, 'contato_id');
-      const contato = await repositorio.obterContato(id);
-      if (!contato) {
-        const erro = new Error('contato não encontrado');
-        erro.status = 404;
-        throw erro;
-      }
+      const contatoBruto = await repositorio.obterContato(id);
+      if (!contatoBruto) throw erroNaoEncontrado('contato não encontrado');
 
-      const [conversas, notas] = await Promise.all([
-        repositorio.listarConversas({ contatoId: id, limite: 50 }),
-        repositorio.listarNotas(id),
+      // Migration 047 + decisão 11/09: quem vê a clínica vê o contato (base
+      // compartilhada); quem não vê só o cliente dos agentes dele. As conversas
+      // — e a prévia de cada uma — seguem sempre o escopo de conversas.
+      const efetivo = escopo ?? { admin: true, clinica: true, agentes: TODOS };
+      const origens = repositorio.obterOrigensDoContato
+        ? await repositorio.obterOrigensDoContato(id)
+        : { clinica: true, agentes: [] };
+      if (!veContato(efetivo, origens.agentes)) throw erroNaoEncontrado('contato não encontrado');
+      const semClinica = efetivo.clinica !== true;
+
+      const [conversas, notas, nomes] = await Promise.all([
+        repositorio.listarConversas({ contatoId: id, limite: 50, escopo: escopo ? filtroDeEscopo(escopo) : null }),
+        semClinica ? [] : repositorio.listarNotas(id),
+        nomesDosAgentes(repositorio),
       ]);
 
-      return { contato, notas, conversas };
+      return {
+        contato: semClinica ? fichaSemDadoClinico(contatoBruto) : contatoBruto,
+        notas,
+        conversas: semClinica ? conversas.map(conversaSemDadoClinico) : conversas,
+        selos: selosDoContato(efetivo, origens, nomes),
+      };
     },
 
     /** Usado pelo webhook de canal: grava a mensagem e roda o ciclo de atendimento. */
