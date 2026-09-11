@@ -2730,12 +2730,22 @@ function criarRepositorio(pool) {
      * `ultima_entrada_id` compõe a chave de idempotência da IA: a mesma última
      * entrada devolve o mesmo resumo (cache); entrada nova, resumo novo.
      */
-    async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
+    async listarConversasSemResumo({ silencioMin = 30, limite = 20, janelas = null } = {}) {
+      // Janela por grupo (auditoria A1, docs/RESUMOS.md): com `janelas`, a
+      // conversa só entra se o contato escreveu DEPOIS do início da janela do
+      // grupo dela (`porGrupo`, `agente_id` null = clínica) ou, sem janela
+      // própria, da `padrao`. Sem isso, a primeira execução mandava o
+      // histórico inteiro — conversa de agente nunca tinha sido resumida.
+      const porGrupo = janelas?.porGrupo ?? [];
       const { rows } = await consultar(
-        `SELECT c.id, c.contato_id, c.ultima_msg_em, c.agente_id,
+        `WITH janelas AS (
+           SELECT * FROM unnest($4::bigint[], $5::timestamptz[]) AS j(agente_id, desde)
+         )
+         SELECT c.id, c.contato_id, c.ultima_msg_em, c.agente_id,
                 (SELECT max(u.id) FROM mensagens u
                   WHERE u.conversa_id = c.id AND u.autor_tipo = 'contato') AS ultima_entrada_id
            FROM conversas c
+           LEFT JOIN janelas j ON j.agente_id IS NOT DISTINCT FROM c.agente_id
           WHERE (c.resumo_enviado_em IS NULL OR c.resumo_enviado_em < c.ultima_msg_em)
             AND c.ultima_msg_em < now() - ($1 || ' minutes')::interval
             -- Resumo por equipe (docs/RESUMOS.md): conversa de agente entra, com
@@ -2744,10 +2754,14 @@ function criarRepositorio(pool) {
               SELECT 1 FROM mensagens m
                WHERE m.conversa_id = c.id AND m.autor_tipo = 'contato'
                  AND (c.resumo_enviado_em IS NULL OR m.criado_em > c.resumo_enviado_em)
+                 AND ($3::timestamptz IS NULL OR m.criado_em > COALESCE(j.desde, $3::timestamptz))
             )
           ORDER BY c.ultima_msg_em
           LIMIT $2`,
-        [String(silencioMin), limite],
+        [
+          String(silencioMin), limite, janelas ? janelas.padrao : null,
+          porGrupo.map((grupo) => grupo.agente_id ?? null), porGrupo.map((grupo) => grupo.desde),
+        ],
       );
       return rows;
     },

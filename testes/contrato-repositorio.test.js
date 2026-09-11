@@ -1611,6 +1611,32 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(await repositorio.marcarResumoEnviado(conversa.id), true, 'sem id, marca como antes');
     });
 
+    await t.test('resumo: janela por grupo — só conversa com entrada do contato depois do início da janela do seu grupo (A1)', async () => {
+      const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
+      const agente = await criarAgenteDeTeste('contrato-janela');
+      const daClinica = await conversaDoAgente(null, '5516900001071');
+      const doAgente = await conversaDoAgente(agente.id, '5516900001072');
+      for (const conversa of [daClinica, doAgente]) {
+        await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'oi', autor_tipo: 'contato' });
+      }
+      await respirar();
+
+      const passado = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const futuro = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const nossas = [daClinica.id, doAgente.id];
+      const ids = async (janelas) => (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000, janelas }))
+        .map((item) => Number(item.id)).filter((id) => nossas.includes(id)).sort((a, b) => a - b);
+      const ambas = [...nossas].sort((a, b) => a - b);
+
+      assert.deepEqual(await ids(null), ambas, 'sem janela, como antes');
+      assert.deepEqual(await ids({ padrao: passado, porGrupo: [] }), ambas);
+      assert.deepEqual(await ids({ padrao: futuro, porGrupo: [] }), [], 'sem entrada dentro da janela, nunca sai');
+      assert.deepEqual(await ids({ padrao: futuro, porGrupo: [{ agente_id: agente.id, desde: passado }] }), [doAgente.id],
+        'a janela do grupo vale sobre a padrão');
+      assert.deepEqual(await ids({ padrao: passado, porGrupo: [{ agente_id: null, desde: futuro }] }), [doAgente.id],
+        'a clínica tem a própria janela');
+    });
+
     await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001031', nome: 'Fila Agendada' });
       const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');

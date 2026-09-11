@@ -1331,10 +1331,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * quem ainda deve resumo só era exercitável contra banco real — e foi
      * justamente ali que ela ficou errada sem ninguém ver.
      */
-    async listarConversasSemResumo({ silencioMin = 30, limite = 20 } = {}) {
+    async listarConversasSemResumo({ silencioMin = 30, limite = 20, janelas = null } = {}) {
       const limiteMs = agora().getTime() - silencioMin * 60_000;
       const entradasDa = (conversaId) => mensagens.filter((mensagem) => mensagem.conversa_id === conversaId
         && mensagem.autor_tipo === 'contato');
+      // Janela por grupo (auditoria A1) — paridade com repositorio.js.
+      const inicioDaJanela = (agenteId) => {
+        if (!janelas) return null;
+        const propria = (janelas.porGrupo ?? []).find((grupo) => (grupo.agente_id ?? null) === (agenteId ?? null));
+        return new Date(propria?.desde ?? janelas.padrao).getTime();
+      };
 
       return [...conversas.values()]
         .filter((conversa) => {
@@ -1351,8 +1357,11 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
             ? new Date(conversa.resumo_enviado_em).getTime() : null;
           if (marcada !== null && marcada >= ultima) return false;
 
-          return entradasDa(conversa.id)
-            .some((mensagem) => marcada === null || new Date(mensagem.criado_em).getTime() > marcada);
+          const desde = inicioDaJanela(conversa.agente_id ?? null);
+          return entradasDa(conversa.id).some((mensagem) => {
+            const instante = new Date(mensagem.criado_em).getTime();
+            return (marcada === null || instante > marcada) && (desde === null || instante > desde);
+          });
         })
         .sort((a, b) => new Date(a.ultima_msg_em) - new Date(b.ultima_msg_em))
         .slice(0, limite)

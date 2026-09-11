@@ -49,6 +49,8 @@ const LIMITE_POR_MENSAGEM = 3500;
 // seguinte — um resumo de 30 mensagens seguidas ninguém lê.
 const MAXIMO_POR_RESUMO = 40;
 const LIMITE_DA_VARREDURA = 500;
+// Teto da janela (auditoria A1): nada anterior a 24 h entra num resumo.
+const JANELA_MAXIMA_MS = 24 * 60 * 60 * 1000;
 const SEPARADOR = '\n\n— — —\n\n';
 
 function horaCurta(data) {
@@ -428,8 +430,33 @@ function criarResumoDeAtendimento({
     return relatorio;
   }
 
+  // Janela (auditoria A1): uma conversa só entra no resumo do seu grupo se o
+  // contato escreveu depois do INÍCIO DA JANELA desse grupo:
+  //   início = (relógio do grupo ou, sem relógio, agora) − intervalo − silêncio,
+  //   nunca antes de agora − 24 h.
+  // "− silêncio": a conversa precisa esfriar para entrar — sem isso, a que
+  // ainda não tinha esfriado no último resumo ficaria de fora para sempre, e um
+  // grupo sem relógio com silêncio = intervalo nunca teria conversa elegível.
+  // "− intervalo": o que não chegou a ninguém, ou passou do teto por resumo,
+  // tem mais uma chance no resumo seguinte. O teto de 24 h impede que uma queda
+  // longa do worker — ou o histórico nunca resumido — vire enxurrada.
+  const folgaDaJanelaMs = intervaloMs + Math.max(0, Number(silencioMin) || 0) * 60_000;
+  function inicioDaJanela(ultimo, instante) {
+    return new Date(Math.max(instante - JANELA_MAXIMA_MS, (ultimo ?? instante) - folgaDaJanelaMs)).toISOString();
+  }
+
   async function varrer() {
-    const pendentes = await repositorio.listarConversasSemResumo?.({ silencioMin, limite: LIMITE_DA_VARREDURA }) ?? [];
+    // O relógio vem do banco: o último envio confirmado de cada grupo. Lido
+    // antes da fila, porque é ele que define a janela de cada grupo.
+    const ultimos = new Map((await repositorio.listarUltimosEnviosDeResumo?.() ?? [])
+      .map((linha) => [linha.agente_id === null ? null : Number(linha.agente_id), new Date(linha.ultimo_envio).getTime()]));
+    const instante = agora().getTime();
+    const janelas = {
+      padrao: inicioDaJanela(undefined, instante),
+      porGrupo: [...ultimos].map(([agenteId, ultimo]) => ({ agente_id: agenteId, desde: inicioDaJanela(ultimo, instante) })),
+    };
+
+    const pendentes = await repositorio.listarConversasSemResumo?.({ silencioMin, limite: LIMITE_DA_VARREDURA, janelas }) ?? [];
     if (pendentes.length === 0) return { enviados: 0, nao_entregues: 0, grupos: [] };
 
     const porGrupo = new Map();
@@ -438,11 +465,6 @@ function criarResumoDeAtendimento({
       if (!porGrupo.has(agenteId)) porGrupo.set(agenteId, []);
       porGrupo.get(agenteId).push(conversa);
     }
-
-    // O relógio vem do banco: o último envio confirmado de cada grupo.
-    const ultimos = new Map((await repositorio.listarUltimosEnviosDeResumo?.() ?? [])
-      .map((linha) => [linha.agente_id === null ? null : Number(linha.agente_id), new Date(linha.ultimo_envio).getTime()]));
-    const instante = agora().getTime();
 
     let pessoas = null;
     const grupos = [];

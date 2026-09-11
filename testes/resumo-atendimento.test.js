@@ -401,6 +401,65 @@ test('conversa de agente pede à IA o prompt do agente; a da clínica, o de semp
   assert.deepEqual(contextos.sort(), ['agente', 'clinica']);
 });
 
+// ------------------------------------------------------------- janela (A1)
+
+test('primeira execução: histórico nunca resumido NÃO sai — só o que teve entrada do contato dentro da janela', async () => {
+  // Auditoria de 7f8275b (A1): o código antigo nunca resumia conversa de agente
+  // e a fila não tinha corte de data — a primeira autorização de WhatsApp
+  // mandava o histórico inteiro, 40 conversas a cada 2 h.
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000121' });
+  const loja = await c.pessoa('Loja', { acessoClinica: false, whatsapp: '16990000122' });
+  const alpins = await c.agente('alpins', { equipe: [loja] });
+  for (let i = 0; i < 30; i += 1) await c.conversa(`55169100${String(i).padStart(5, '0')}`, { nome: `Antiga Clínica ${i}` });
+  for (let i = 0; i < 90; i += 1) {
+    await c.conversa(`55169200${String(i).padStart(5, '0')}`, { agenteId: alpins.id, nome: `Antiga Loja ${i}` });
+  }
+  c.relogio.avancar(3 * 24 * 60);
+  await c.conversa('5516930000001', { nome: 'Recente Clínica' });
+  await c.conversa('5516930000002', { agenteId: alpins.id, nome: 'Recente Loja' });
+  c.relogio.avancar(31);
+
+  const canal = canalFalso();
+  const resultado = await c.resumo({ canal }).enviarPendentes();
+
+  const tudo = canal.envios.map((envio) => envio.texto).join('\n');
+  assert.ok(!tudo.includes('Antiga'), 'nenhuma conversa antiga sai');
+  assert.match(tudo, /Recente Clínica/);
+  assert.match(tudo, /Recente Loja/);
+  assert.equal(canal.envios.length, 2, 'uma mensagem por pessoa, cada uma com o atendimento novo do seu grupo');
+  assert.equal(resultado.enviados, 2);
+});
+
+test('worker parado 3 dias: entram só as entradas das últimas 24 h, não a fila acumulada', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000131' });
+  await c.conversa('5516940000001', { nome: 'Antes da Parada' });
+  c.relogio.avancar(31);
+  const canal = canalFalso();
+  await c.resumo({ canal }).enviarPendentes();
+  assert.equal(canal.envios.length, 1);
+
+  // Worker parado; as conversas chegam ao longo de 3 dias.
+  c.relogio.avancar(12 * 60);
+  await c.conversa('5516940000002', { nome: 'Velha Doze Horas' });
+  c.relogio.avancar(28 * 60);
+  await c.conversa('5516940000003', { nome: 'Velha Quarenta Horas' });
+  c.relogio.avancar(20 * 60);
+  await c.conversa('5516940000004', { nome: 'Nova Sessenta Horas' });
+  c.relogio.avancar(10 * 60);
+  await c.conversa('5516940000005', { nome: 'Nova Setenta Horas' });
+  c.relogio.avancar(2 * 60);
+
+  await c.resumo({ canal }).enviarPendentes();
+
+  assert.equal(canal.envios.length, 2);
+  const texto = canal.envios[1].texto;
+  assert.match(texto, /Nova Sessenta Horas/);
+  assert.match(texto, /Nova Setenta Horas/);
+  assert.ok(!/Velha/.test(texto), 'o que passou de 24 h não vira enxurrada');
+});
+
 // ------------------------------------------------------------- ligação no worker
 
 test('sem canal de entrega o resumo fica inativo e nem consulta o banco', async () => {
