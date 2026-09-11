@@ -520,6 +520,67 @@ test('envio indeterminado (timeout da Evolution) conta como entregue e não é r
   assert.deepEqual(await c.pendentes(), []);
 });
 
+test('envio incerto por timeout deixa rastro: auditoria resumo_envio_incerto por grupo e destinatário, sem telefone (auditoria M-n1)', async () => {
+  const c = await montarCenario();
+  const admin = await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000171' });
+  const conversa = await c.conversa('5516900019001');
+  c.relogio.avancar(31);
+  const canal = {
+    async enviar(carga) {
+      const erro = new Error(`falha de rede ao chamar a Evolution API para ${carga.telefone}: timeout`);
+      erro.indeterminado = true;
+      throw erro;
+    },
+  };
+
+  const resultado = await c.resumo({ canal }).enviarPendentes();
+
+  assert.equal(resultado.incertos, 1, 'o total do ciclo, que o worker registra no log');
+  const incertos = c.auditoria.filter((item) => item.acao === 'resumo_envio_incerto');
+  assert.equal(incertos.length, 1, 'uma auditoria para o destinatário e a parte incertos');
+  assert.equal(incertos[0].entidade, 'sistema');
+  assert.deepEqual(incertos[0].detalhe, {
+    grupo: 'clinica', agente_id: null, usuario_id: admin.id, conversas: [conversa.id], parte: 1, motivo: 'timeout',
+  });
+  assert.ok(!/990000171|Evolution/.test(JSON.stringify(incertos)), 'sem telefone e sem texto');
+});
+
+test('reserva órfã (processo morreu depois de reservar): a cópia seguinte não envia, marca e grava resumo_envio_incerto (auditoria M-n1)', async () => {
+  const c = await montarCenario();
+  const admin = await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000181' });
+  const conversa = await c.conversa('5516900020001');
+  c.relogio.avancar(31);
+
+  // Primeiro processo: reserva e a entrega nunca volta — o processo morre ali.
+  const presos = [];
+  c.resumo({ canal: { async enviar(carga) { presos.push(carga); return new Promise(() => {}); } } }).enviarPendentes();
+  for (let espera = 0; presos.length === 0 && espera < 2000; espera += 1) {
+    await new Promise((seguir) => { setImmediate(seguir); });
+  }
+  assert.equal(presos.length, 1, 'o primeiro processo reservou e começou a enviar');
+
+  const reiniciado = { ...c.repositorio, executarComTravaDeResumo: async (executar) => ({ obtida: true, resultado: await executar() }) };
+  const segundos = [];
+  const resultado = await criarResumoDeAtendimento({
+    repositorio: reiniciado, agora: c.relogio.agora, silencioMin: 30, intervaloMin: 120,
+    canal: { async enviar(carga) { segundos.push(carga); return { identificador: 's' }; } },
+  }).enviarPendentes();
+
+  assert.equal(segundos.length, 0, 'o incerto não sai de novo');
+  assert.equal(resultado.grupos[0].incertos, 1);
+  assert.deepEqual(await c.pendentes(), [], 'a conversa foi marcada');
+  const incertos = c.auditoria.filter((item) => item.acao === 'resumo_envio_incerto');
+  assert.deepEqual(incertos.map((item) => item.detalhe), [{
+    grupo: 'clinica', agente_id: null, usuario_id: admin.id, conversas: [conversa.id], parte: 1, motivo: 'reserva_orfa',
+  }]);
+});
+
+test('o worker registra no log quantos envios do ciclo ficaram incertos (auditoria M-n1)', () => {
+  const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
+  assert.match(fonte, /const resultado = await resumoParaEquipe\.enviarPendentes\(\);/);
+  assert.match(fonte, /if \(resultado\?\.incertos > 0\) \{\s*console\.warn\(`\[resumo\] \$\{resultado\.incertos\} envio\(s\) incerto\(s\) neste ciclo/);
+});
+
 test('pool de uma conexão não roda o resumo: erro claro na subida, o resto do worker segue (auditoria B6)', () => {
   const { problemaDoPoolParaResumo } = require('../src/dominio/resumo-atendimento');
   assert.match(problemaDoPoolParaResumo(1), /CRMCLINICA_DB_POOL_MAX=1 é pouco para o resumo/);

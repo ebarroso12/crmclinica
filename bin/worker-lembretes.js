@@ -370,7 +370,11 @@ async function main() {
     if (!resumoLigado || encerrando) return;
     resumoEmAndamento = (async () => {
       try {
-        await resumoParaEquipe.enviarPendentes();
+        const resultado = await resumoParaEquipe.enviarPendentes();
+        // Auditoria M-n1: envio incerto não é repetido — o log diz quantos houve.
+        if (resultado?.incertos > 0) {
+          console.warn(`[resumo] ${resultado.incertos} envio(s) incerto(s) neste ciclo — não repetidos; ver a auditoria resumo_envio_incerto`);
+        }
       } catch (erro) {
         console.error(`[resumo] falhou: ${erro.message}`);
       }

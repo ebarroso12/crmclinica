@@ -412,6 +412,31 @@ function criarResumoDeAtendimento({
         console.error(`[resumo] envio ${status} não registrado: ${erro.message}`);
       }
     }
+    // Envio incerto (auditoria M-n1): não é repetido e conta como entregue, mas
+    // deixa rastro — log e auditoria por grupo e destinatário, com as conversas
+    // e a parte. Sem telefone e sem texto. `motivo`: 'timeout' (a Evolution não
+    // confirmou) ou 'reserva_orfa' (o processo morreu depois de reservar).
+    async function registrarIncerto({ destino, parte, indice, motivo }) {
+      console.error(`[resumo] ${nome}: envio incerto (${motivo}) para o usuário ${destino.usuario_id}, parte ${indice + 1}, `
+        + `conversas ${parte.conversas.join(', ')} — não será repetido`);
+      try {
+        await repositorio.registrarAuditoria?.({
+          entidade: doAgente ? 'agente' : 'sistema',
+          entidadeId: doAgente ? agenteId : 1,
+          acao: 'resumo_envio_incerto',
+          detalhe: {
+            grupo: tipoDeGrupo,
+            agente_id: agenteId,
+            usuario_id: destino.usuario_id,
+            conversas: [...parte.conversas],
+            parte: indice + 1,
+            motivo,
+          },
+        });
+      } catch {
+        // Auditoria indisponível não pode derrubar a varredura de resumos.
+      }
+    }
     relatorio.incertos = 0;
 
     // Entrega ANTES de marcar. Marcar primeiro fazia toda falha de canal virar
@@ -436,7 +461,10 @@ function criarResumoDeAtendimento({
           }
         }
         if (reserva !== 'reservado') {
-          if (reserva === 'enviando') relatorio.incertos += 1;
+          if (reserva === 'enviando') {
+            relatorio.incertos += 1;
+            await registrarIncerto({ destino, parte, indice, motivo: 'reserva_orfa' });
+          }
           contarComoEntregue();
           continue;
         }
@@ -455,7 +483,8 @@ function criarResumoDeAtendimento({
             // Não sabemos se chegou: fica 'enviando' e não é repetido.
             relatorio.incertos += 1;
             contarComoEntregue();
-            console.error(`[resumo] envio sem confirmação (indeterminado), não será repetido: ${motivoSemTelefone(erro.message)}`);
+            console.error(`[resumo] envio sem confirmação (indeterminado): ${motivoSemTelefone(erro.message)}`);
+            await registrarIncerto({ destino, parte, indice, motivo: 'timeout' });
           } else {
             await concluir(chave, 'falhou');
             for (const id of parte.conversas) falhas.get(id).push(motivoSemTelefone(erro?.message));
@@ -579,11 +608,12 @@ function criarResumoDeAtendimento({
 
     const enviados = grupos.reduce((soma, grupo) => soma + grupo.enviados, 0);
     const naoEntregues = grupos.reduce((soma, grupo) => soma + grupo.nao_entregues, 0);
+    const incertos = grupos.reduce((soma, grupo) => soma + (grupo.incertos ?? 0), 0);
     if (enviados > 0) console.log(`[resumo] ${enviados} atendimento(s) resumido(s) para a equipe`);
     if (naoEntregues > 0) {
       console.error(`[resumo] ${naoEntregues} atendimento(s) sem entrega nenhuma — serão tentados no próximo ciclo`);
     }
-    return { enviados, nao_entregues: naoEntregues, grupos };
+    return { enviados, nao_entregues: naoEntregues, incertos, grupos };
   }
 
   return {
