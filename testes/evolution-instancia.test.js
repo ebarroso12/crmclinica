@@ -97,7 +97,9 @@ test('estados da Evolution viram estados da tela; 404 é instância inexistente'
     const { fetchImpl, pedidos } = fetchFalso({ '/instance/connectionState/alpins': respostaDaEvolution });
     const estado = await criarClienteEvolucaoInstancia(CONFIG, { fetchImpl }).estado('alpins');
     assert.equal(estado.estado, esperado);
-    if (esperado !== 'conectado') assert.equal(pedidos.length, 1, `${esperado}: não busca número`);
+    // Os dois pedidos saem juntos (prazo da Vercel); fora de "conectado" o número não é usado.
+    if (esperado !== 'conectado') assert.equal(estado.numero, null, `${esperado}: sem número`);
+    assert.equal(pedidos[0].url, 'https://evo.exemplo.test/instance/connectionState/alpins', 'o estado é pedido primeiro');
   }
 });
 
@@ -165,4 +167,41 @@ test('instância vazia é 422 antes de qualquer rede; nome com caractere especia
 
   await cliente.estado('loja/alpins');
   assert.equal(pedidos[0].url, 'https://evo.exemplo.test/instance/connectionState/loja%2Falpins');
+});
+
+// ------------------------------------------------ duração (função da Vercel)
+
+test('prazo de no máximo 5 s por pedido — o painel roda numa função da Vercel', () => {
+  const { PRAZO_MAXIMO_MS } = require('../src/integracoes/evolution-instancia');
+  assert.equal(PRAZO_MAXIMO_MS, 5000);
+});
+
+test('estado faz os dois pedidos em paralelo: o tempo total é o do mais lento, não a soma', async () => {
+  const atraso = (ms, valor) => new Promise((resolve) => { setTimeout(() => resolve(valor), ms); });
+  const { fetchImpl } = fetchFalso({
+    '/instance/connectionState/alpins': () => atraso(250, resposta(200, { instance: { state: 'open' } })),
+    '/instance/fetchInstances': () => atraso(250, resposta(200, [{ ownerJid: '5516991271838@s.whatsapp.net' }])),
+  });
+  const inicio = Date.now();
+  const estado = await criarClienteEvolucaoInstancia(CONFIG, { fetchImpl }).estado('alpins');
+  const decorrido = Date.now() - inicio;
+  assert.equal(estado.estado, 'conectado');
+  assert.equal(estado.numero, '5516991271838');
+  assert.ok(decorrido < 450, `em paralelo leva ~250 ms; em sequência ~500 — levou ${decorrido} ms`);
+});
+
+test('pedido pendurado é cortado pelo prazo, sem esperar a Evolution', async () => {
+  const pendurado = (url, opcoes) => new Promise((resolve, reject) => {
+    opcoes.signal.addEventListener('abort', () => reject(opcoes.signal.reason));
+  });
+  const { fetchImpl } = fetchFalso({
+    '/instance/connectionState/alpins': pendurado,
+    '/instance/fetchInstances': pendurado,
+  });
+  const inicio = Date.now();
+  await rejeita(
+    criarClienteEvolucaoInstancia({ ...CONFIG, timeoutMs: 50 }, { fetchImpl }).estado('alpins'),
+    { status: 503, codigo: 'evolution_sem_resposta' },
+  );
+  assert.ok(Date.now() - inicio < 1000, 'o corte vem do prazo configurado');
 });

@@ -305,7 +305,7 @@ test('o despacho só reivindica o próprio prefixo e sabe quais rotas são lenta
   assert.equal(despacho.ehRotaLenta('/api/agentes/5/treinamentos', 'POST'), true);
   assert.equal(despacho.ehRotaLenta('/api/agentes/5/treinamentos/3', 'DELETE'), false);
   assert.equal(despacho.ehRotaLenta('/api/agentes/5/teste', 'POST'), true);
-  // A Evolution pode levar até 10 s: fora da transação com identidade.
+  // A Evolution pode levar até 5 s: fora da transação com identidade.
   assert.equal(despacho.ehRotaLenta('/api/agentes/5/whatsapp', 'GET'), true);
   assert.equal(despacho.ehRotaLenta('/api/agentes/5/whatsapp/conectar', 'POST'), true);
   assert.equal(despacho.ehRotaLenta('/api/agentes/5/operacao', 'GET'), false);

@@ -12,7 +12,10 @@
 // carrega a chave nem a URL da Evolution. Erro vira mensagem curta com o código
 // HTTP e um `status` que a rota repassa.
 
-const PRAZO_MAXIMO_MS = 10000;
+// Teto por pedido. A rota do painel roda numa função da Vercel: com dois
+// pedidos de 10 s em sequência ela podia estourar antes de responder. 5 s por
+// pedido, e os dois de `estado()` em paralelo — pior caso ~5 s.
+const PRAZO_MAXIMO_MS = 5000;
 
 // Estados da Evolution (Baileys) traduzidos para o que a tela mostra.
 const ESTADOS = Object.freeze({ open: 'conectado', close: 'desconectado', connecting: 'conectando' });
@@ -80,7 +83,12 @@ function criarClienteEvolucaoInstancia(configuracao = {}, { fetchImpl = globalTh
     /** `{ estado, numero, perfil }` — estado: conectado, desconectado, conectando, inexistente ou desconhecido. */
     async estado(instancia) {
       const nome = exigirInstancia(instancia);
-      const { status, corpo } = await pedir(`/instance/connectionState/${nome}`);
+      // Os dois pedidos saem juntos: somados em sequência, os prazos podiam
+      // passar do tempo da função da Vercel. O segundo (número e perfil) é
+      // extra — falha nele vira "sem número", nunca derruba o estado.
+      const pedidoDoEstado = pedir(`/instance/connectionState/${nome}`);
+      const pedidoDoNumero = pedir(`/instance/fetchInstances?instanceName=${nome}`).catch(() => null);
+      const { status, corpo } = await pedidoDoEstado;
       if (status === 404) return { estado: 'inexistente', numero: null, perfil: null };
       if (status >= 400) throw erroDaEvolution(`a Evolution respondeu HTTP ${status}`, 503, 'evolution_http');
 
@@ -88,17 +96,12 @@ function criarClienteEvolucaoInstancia(configuracao = {}, { fetchImpl = globalTh
       const resultado = { estado: ESTADOS[bruto] ?? 'desconhecido', numero: null, perfil: null };
       if (resultado.estado !== 'conectado') return resultado;
 
-      // Número e nome do perfil são extras: sem eles o estado continua valendo.
-      try {
-        const lista = await pedir(`/instance/fetchInstances?instanceName=${nome}`);
-        const item = Array.isArray(lista.corpo) ? lista.corpo[0] : null;
-        const dono = item?.ownerJid ?? item?.instance?.owner ?? '';
-        resultado.numero = soDigitos(String(dono).split('@')[0]) || null;
-        const perfil = item?.profileName ?? item?.instance?.profileName;
-        resultado.perfil = typeof perfil === 'string' && perfil.trim() ? perfil.trim().slice(0, 100) : null;
-      } catch {
-        // Fica só o estado.
-      }
+      const lista = await pedidoDoNumero;
+      const item = lista && Array.isArray(lista.corpo) ? lista.corpo[0] : null;
+      const dono = item?.ownerJid ?? item?.instance?.owner ?? '';
+      resultado.numero = soDigitos(String(dono).split('@')[0]) || null;
+      const perfil = item?.profileName ?? item?.instance?.profileName;
+      resultado.perfil = typeof perfil === 'string' && perfil.trim() ? perfil.trim().slice(0, 100) : null;
       return resultado;
     },
 
@@ -125,4 +128,4 @@ function criarClienteEvolucaoInstancia(configuracao = {}, { fetchImpl = globalTh
   };
 }
 
-module.exports = { criarClienteEvolucaoInstancia, ESTADOS };
+module.exports = { criarClienteEvolucaoInstancia, ESTADOS, PRAZO_MAXIMO_MS };

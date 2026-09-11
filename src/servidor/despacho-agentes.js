@@ -34,7 +34,7 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
 
   /**
    * Teste (chama o modelo), novo treinamento (pode buscar um site por até 10s)
-   * e o WhatsApp do agente (espera a Evolution por até 10s).
+   * e o WhatsApp do agente (espera a Evolution por até 5 s — evolution-instancia.js).
    */
   function ehRotaLenta(rota, metodo) {
     return ehRotaDeTeste(rota, metodo)
