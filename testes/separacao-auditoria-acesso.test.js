@@ -200,3 +200,40 @@ test('A3: quem não vê a clínica não edita contato nem ficha — 403 sem toca
   });
   assert.equal(daEquipeComClinica.status, 200, 'quem vê a clínica continua editando');
 });
+
+// ------------------------------------------------------------------ M2
+
+test('M2: etiqueta, temperatura e encerramento em conversa de agente não alteram nem copiam o lead da clínica — nem pelo admin', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+  const antes = await c.repositorio.obterLeadPorContato(c.paciente.id);
+  assert.equal(antes.temperatura, 'frio');
+
+  const etiqueta = await c.pedir('admin', `/api/conversas/${c.conversaPacienteLoja.id}/etiquetas`, {
+    metodo: 'POST', corpo: { etiquetas: ['lead_quente'] },
+  });
+  assert.equal(etiqueta.status, 200);
+  assert.deepEqual(etiqueta.json.etiquetas, ['lead_quente'], 'a etiqueta fica na conversa do agente');
+  const temperatura = await c.pedir('admin', `/api/conversas/${c.conversaPacienteLoja.id}/temperatura`, {
+    metodo: 'POST', corpo: { temperatura: 'quente' },
+  });
+  assert.equal(temperatura.status, 200);
+
+  const depois = await c.repositorio.obterLeadPorContato(c.paciente.id);
+  assert.equal(depois.temperatura, 'frio', 'temperatura do lead da clínica intacta');
+  assert.equal(depois.conversa_id, c.conversaClinica.id, 'o card do kanban continua abrindo a conversa da clínica');
+
+  const encerrada = await c.pedir('admin', `/api/conversas/${c.conversaPacienteLoja.id}/encerrar`, { metodo: 'POST', corpo: {} });
+  assert.equal(encerrada.status, 200);
+  // O resumo interno fica numa mensagem privada da thread do agente: sem a
+  // pendência calculada do lead e sem a agenda da clínica.
+  assert.match(encerrada.json.resumo, /Pendência: nenhuma registrada/, 'pendência derivada do lead da clínica não entra');
+  assert.match(encerrada.json.resumo, /Agendou: NÃO/, 'agenda da clínica não entra');
+  const thread = await c.pedir('admin', `/api/conversas/${c.conversaPacienteLoja.id}/mensagens`);
+  assert.ok(!thread.texto.includes('INTERESSE-SIGILOSO'));
+  assert.equal((await c.repositorio.obterLeadPorContato(c.paciente.id)).conversa_id, c.conversaClinica.id);
+
+  // Na conversa da clínica, a etiqueta continua levando o lead junto.
+  await c.pedir('admin', `/api/conversas/${c.conversaClinica.id}/etiquetas`, { metodo: 'POST', corpo: { etiquetas: ['lead_quente'] } });
+  assert.equal((await c.repositorio.obterLeadPorContato(c.paciente.id)).temperatura, 'quente');
+});

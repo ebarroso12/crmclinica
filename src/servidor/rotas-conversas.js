@@ -482,10 +482,15 @@ function criarRotasDeConversas({
       const nomes = corpo.etiquetas.map((nome) => String(nome).trim()).filter(Boolean);
       const aplicadas = await repositorio.definirEtiquetasDaConversa(id, nomes);
 
-      // A temperatura vive nas etiquetas; o lead precisa refletir a mesma verdade.
+      // A temperatura vive nas etiquetas; o lead precisa refletir a mesma verdade
+      // — só na conversa da CLÍNICA (auditoria de acesso M2). Lead é da clínica:
+      // a etiqueta posta numa conversa de agente fica só nela, para qualquer
+      // usuário. Antes, "lead_quente" no Alpins trocava a temperatura e o
+      // conversa_id do lead da clínica.
       const temperatura = lerTemperatura(aplicadas);
       const conversa = await repositorio.obterConversa(id);
-      if (temperatura) await repositorio.salvarLead(conversa.contato_id, { conversaId: id, temperatura });
+      const daClinica = (conversa.agente_id ?? null) === null;
+      if (temperatura && daClinica) await repositorio.salvarLead(conversa.contato_id, { conversaId: id, temperatura });
 
       const ignoradas = nomes.filter((nome) => !aplicadas.includes(nome));
       return { conversa_id: id, etiquetas: aplicadas, temperatura, ignoradas };

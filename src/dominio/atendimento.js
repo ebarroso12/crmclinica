@@ -1114,7 +1114,10 @@ function criarAtendimento({
     await repositorio.definirEtiquetasDaConversa(conversaId, novas);
 
     const conversa = await repositorio.obterConversa(conversaId);
-    await repositorio.salvarLead(conversa.contato_id, { conversaId, temperatura });
+    // Auditoria de acesso M2: lead é da clínica — conversa de agente fica só com a etiqueta.
+    if ((conversa.agente_id ?? null) === null) {
+      await repositorio.salvarLead(conversa.contato_id, { conversaId, temperatura });
+    }
 
     return { conversa_id: conversaId, temperatura, etiquetas: novas };
   }
@@ -1130,6 +1133,8 @@ function criarAtendimento({
 
     const novas = aplicarTemperatura(conversa.etiquetas, sugestao.temperatura);
     await repositorio.definirEtiquetasDaConversa(conversaId, novas);
+    // Auditoria de acesso M2: nunca a partir de conversa de agente.
+    if ((conversa.agente_id ?? null) !== null) return sugestao;
     await repositorio.salvarLead(conversa.contato_id, {
       conversaId,
       temperatura: sugestao.temperatura,

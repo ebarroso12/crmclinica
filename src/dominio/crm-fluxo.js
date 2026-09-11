@@ -123,12 +123,16 @@ function criarServicoDeFluxo({ repositorio, canal = null, agora = () => new Date
         throw erro;
       }
 
+      // Auditoria de acesso M2: numa conversa de agente, o resumo interno não
+      // copia a qualificação nem a agenda do contato — são da clínica, e a
+      // mensagem privada fica numa thread que a equipe do agente lê.
+      const doAgente = (conversa.agente_id ?? null) !== null;
       const [contato, mensagens, lead] = await Promise.all([
         repositorio.obterContato(conversa.contato_id),
         repositorio.listarMensagens(conversaId, { incluirPrivadas: false }),
-        repositorio.obterLeadPorContato(conversa.contato_id),
+        doAgente ? null : repositorio.obterLeadPorContato(conversa.contato_id),
       ]);
-      const agendamento = await (repositorio.obterAgendamentoDoContato?.(conversa.contato_id) ?? null);
+      const agendamento = doAgente ? null : await (repositorio.obterAgendamentoDoContato?.(conversa.contato_id) ?? null);
 
       const resumo = montarResumoInterno({
         contato, mensagens, agendamento, lead, agora: agora(),
