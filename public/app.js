@@ -4643,10 +4643,16 @@ function desenharPareamentoDoAgente(resultado) {
     carregarOperacaoDoAgente();
     return;
   }
-  definirTexto('#agente-whatsapp-codigo', resultado.codigo_pareamento || 'use o QR abaixo');
   // O servidor já filtra; conferir de novo aqui custa nada e o valor vai para um img.src.
+  const qrValido = typeof resultado.qr === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(resultado.qr);
+  // B6: sem código e sem QR não há o que "usar abaixo" — diz que está
+  // indisponível e aponta o caminho alternativo (manager da Evolution).
+  const temCaminho = Boolean(resultado.codigo_pareamento) || qrValido;
+  definirTexto('#agente-whatsapp-codigo', resultado.codigo_pareamento || (qrValido ? 'use o QR abaixo' : 'indisponível'));
+  seletor('#agente-whatsapp-instrucao').hidden = !resultado.codigo_pareamento;
+  seletor('#agente-whatsapp-sem-codigo').hidden = temCaminho;
   const qr = seletor('#agente-whatsapp-qr');
-  if (typeof resultado.qr === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(resultado.qr)) {
+  if (qrValido) {
     qr.src = resultado.qr;
     qr.hidden = false;
   } else {

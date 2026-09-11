@@ -193,6 +193,21 @@ test('B2: pausar e retomar só reabilitam o botão quando a chamada falha', () =
   }
 });
 
+test('B6: sem código e sem QR, a tela diz indisponível e aponta o manager da Evolution', () => {
+  const secao = secaoDeAgentes();
+  const aviso = secao.match(/<p[^>]*id="agente-whatsapp-sem-codigo"[^>]*>[\s\S]*?<\/p>/)?.[0];
+  assert.ok(aviso, 'o aviso de indisponível existe no HTML');
+  assert.match(aviso, /\shidden\b/, 'nasce escondido');
+  assert.match(aviso, /manager da Evolution/, 'aponta o caminho alternativo');
+  assert.match(secao, /<p[^>]*id="agente-whatsapp-instrucao"/, 'a instrução do celular tem id para sumir sem código');
+
+  const pareamento = funcaoDoApp('desenharPareamentoDoAgente');
+  assert.doesNotMatch(pareamento, /resultado\.codigo_pareamento \|\| 'use o QR abaixo'/, 'não promete QR que não veio');
+  assert.match(pareamento, /resultado\.codigo_pareamento \|\| \(qrValido \? 'use o QR abaixo' : 'indisponível'\)/);
+  assert.match(pareamento, /seletor\('#agente-whatsapp-sem-codigo'\)\.hidden = temCaminho;/);
+  assert.match(pareamento, /seletor\('#agente-whatsapp-instrucao'\)\.hidden = !resultado\.codigo_pareamento;/);
+});
+
 test('o QR do pareamento só entra na tela como data URL PNG, por propriedade do img', () => {
   const bloco = blocoDeAgentes();
   assert.match(bloco, /\/\^data:image\\\/png;base64,\[A-Za-z0-9\+\/=\]\+\$\/\.test\(resultado\.qr\)/);
