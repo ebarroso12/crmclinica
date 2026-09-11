@@ -872,6 +872,8 @@ function criarAplicacao(dependencias = {}) {
       'PUT /api/perfil': async () => auth.atualizarPerfil(usuario, await lerJson(req)),
       'GET /api/usuarios': () => auth.listarUsuarios(usuario, url.searchParams),
       'POST /api/usuarios': async () => auth.criarUsuario(usuario, await lerJson(req)),
+      // Resumo por equipe (docs/RESUMOS.md): quem recebe, com número mascarado. Só admin.
+      'GET /api/usuarios/resumos': () => auth.destinatariosDosResumos(usuario),
     };
 
     const acao = mapa[`${metodo} ${rota}`];
@@ -908,6 +910,8 @@ function criarAplicacao(dependencias = {}) {
         papel: (corpo) => auth.definirPapel(usuario, partes[2], corpo),
         // Migration 047: "vê a clínica" (admin, auditado).
         'acesso-clinica': (corpo) => auth.definirAcessoClinica(usuario, partes[2], corpo),
+        // Resumo por equipe: pausar/retomar por pessoa (admin, auditado).
+        'recebe-resumo': (corpo) => auth.definirRecebeResumo(usuario, partes[2], corpo),
         // Recuperação sem e-mail: o master gera uma senha temporária e entrega
         // pessoalmente. Não lê corpo — não há nada a informar.
         senha: () => auth.definirSenhaTemporaria(usuario, partes[2]),

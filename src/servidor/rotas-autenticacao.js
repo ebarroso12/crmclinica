@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { ErroDeContrato } = require('../contratos/erros');
 const { PAPEIS, exigirPermissao } = require('../seguranca/rbac');
+const { montarPainelDeDestinatarios, motivoSemEntrega } = require('../dominio/destinatarios-resumo');
 
 // Rotas de conta e sessão da equipe.
 //
@@ -322,8 +323,59 @@ function criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, c
           equipes: vinculos
             .filter((vinculo) => vinculo.usuario_id === item.id)
             .map((vinculo) => ({ id: vinculo.agente_id, nome: nomes.get(vinculo.agente_id) ?? null })),
+          // Resumo por equipe (docs/RESUMOS.md): a chave e por que não recebe —
+          // nunca o número.
+          recebe_resumo: item.recebe_resumo !== false,
+          motivo_sem_resumo: motivoSemEntrega(item),
         })),
         pendentes: lista.filter((item) => item.situacao === 'pendente').length,
+      };
+    },
+
+    /**
+     * POST /api/usuarios/:id/recebe-resumo — corpo `{ recebe_resumo: boolean }`.
+     * Pausa ou retoma o resumo por equipe para a pessoa (docs/RESUMOS.md). Só o
+     * admin; auditado sem telefone.
+     */
+    async definirRecebeResumo(usuario, alvoId, corpo) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      const id = exigirIdentificador(alvoId, 'usuario_id');
+      if (typeof corpo?.recebe_resumo !== 'boolean') {
+        throw new ErroDeContrato('campo "recebe_resumo" deve ser verdadeiro ou falso', 'recebe_resumo');
+      }
+
+      const alvo = await repositorio.obterUsuarioPorId(id);
+      if (!alvo) {
+        const erro = new Error('usuário não encontrado');
+        erro.status = 404;
+        throw erro;
+      }
+      if ((alvo.recebe_resumo !== false) === corpo.recebe_resumo) {
+        return { usuario: contas.retratoDoUsuario(alvo), recebe_resumo: corpo.recebe_resumo, mudou: false };
+      }
+
+      const atualizado = await repositorio.atualizarUsuario(id, { recebeResumo: corpo.recebe_resumo });
+      await repositorio.registrarAuditoria({
+        entidade: 'usuario', entidadeId: id, acao: corpo.recebe_resumo ? 'resumo_retomado' : 'resumo_pausado',
+        detalhe: { usuario_id: id }, usuarioId: usuario.id,
+      });
+      return { usuario: contas.retratoDoUsuario(atualizado), recebe_resumo: corpo.recebe_resumo, mudou: true };
+    },
+
+    /**
+     * GET /api/usuarios/resumos — quem recebe o resumo de cada equipe, com o
+     * número mascarado, agente sem canal e quem está fora com o motivo.
+     */
+    async destinatariosDosResumos(usuario) {
+      exigirPermissao(usuario, 'usuarios:gerenciar');
+      const [pessoas, agentes] = await Promise.all([
+        repositorio.listarDestinatariosDeResumo ? repositorio.listarDestinatariosDeResumo() : [],
+        repositorio.listarAgentes ? repositorio.listarAgentes() : [],
+      ]);
+      return {
+        // O worker de lembretes é quem resume; este é o valor configurado neste servidor.
+        intervalo_min: configuracao?.resumoDeAtendimento?.intervaloMin ?? null,
+        ...montarPainelDeDestinatarios({ pessoas, agentes }),
       };
     },
 

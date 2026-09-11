@@ -193,6 +193,17 @@ function casos(conversa) {
       rota: `/api/usuarios/${conversa.usuarioDaMatriz}/acesso-clinica`, metodo: 'POST', corpo: { acesso_clinica: true },
       podem: ['admin'],
     },
+    // Resumo por equipe (docs/RESUMOS.md).
+    {
+      o_que: 'pausar ou retomar os resumos de um usuário',
+      rota: `/api/usuarios/${conversa.usuarioDaMatriz}/recebe-resumo`, metodo: 'POST', corpo: { recebe_resumo: true },
+      podem: ['admin'],
+    },
+    {
+      o_que: 'ver quem recebe os resumos',
+      rota: '/api/usuarios/resumos', metodo: 'GET',
+      podem: ['admin'],
+    },
   ];
 }
 

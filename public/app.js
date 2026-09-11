@@ -2370,6 +2370,8 @@ async function carregarUsuarios() {
     if (usuarios.length === 0) { avisar(lista, 'Nenhuma conta cadastrada.'); return; }
 
     for (const usuario of usuarios) lista.append(montarLinhaDeUsuario(usuario));
+    // Quem recebe os resumos muda com a lista (pausa, equipe, "vê a clínica").
+    carregarPainelDeResumos();
   } catch (erro) {
     avisar(lista, erro.status === 403 ? 'Apenas o administrador master vê esta lista.' : 'Não foi possível carregar.');
   }
@@ -2478,6 +2480,32 @@ function montarLinhaDeUsuario(usuario) {
     }
   }
 
+  // Resumo por equipe (docs/RESUMOS.md): a pausa por pessoa, e o aviso de quem
+  // deveria receber e não recebe. O número nunca vem para a tela.
+  const recebeResumo = document.createElement('label');
+  recebeResumo.className = 'marcador';
+  recebeResumo.title = 'Resumo da equipe no WhatsApp da pessoa, a cada 2 horas.';
+  const caixaDoResumo = document.createElement('input');
+  caixaDoResumo.type = 'checkbox';
+  caixaDoResumo.checked = usuario.recebe_resumo !== false;
+  caixaDoResumo.setAttribute('aria-label', `${usuario.nome} recebe resumos`);
+  caixaDoResumo.addEventListener('change', () => agirNoUsuario(usuario.id, 'recebe-resumo', { recebe_resumo: caixaDoResumo.checked }));
+  const textoDoResumo = document.createElement('span');
+  textoDoResumo.textContent = 'Recebe resumos';
+  recebeResumo.append(caixaDoResumo, textoDoResumo);
+  acoes.append(recebeResumo);
+
+  const estariaNumaEquipe = usuario.papel === 'admin' || usuario.acesso_clinica !== false || (usuario.equipes ?? []).length > 0;
+  if (usuario.recebe_resumo !== false && estariaNumaEquipe
+    && ['sem_whatsapp', 'whatsapp_nao_autorizado'].includes(usuario.motivo_sem_resumo)) {
+    const aviso = document.createElement('span');
+    aviso.className = 'etiqueta sit-recusado';
+    aviso.textContent = usuario.motivo_sem_resumo === 'sem_whatsapp'
+      ? 'Não recebe resumos: sem WhatsApp no cadastro'
+      : 'Não recebe resumos: WhatsApp sem autorização';
+    selos.append(aviso);
+  }
+
   linha.append(identidade, selos, acoes);
   return linha;
 }
@@ -2512,6 +2540,75 @@ ${resposta.senha_temporaria}
     await carregarUsuarios();
   } catch (erro) {
     window.alert(`Não foi possível redefinir: ${erro.message}`);
+  }
+}
+
+// Resumo por equipe (docs/RESUMOS.md): quem recebe o resumo de cada equipe. O
+// número chega mascarado do servidor; nomes de pessoa e de agente só por textContent.
+const MOTIVOS_SEM_RESUMO = {
+  pausado: 'resumos pausados',
+  sem_whatsapp: 'sem WhatsApp no cadastro',
+  whatsapp_nao_autorizado: 'WhatsApp sem autorização de uso',
+};
+
+async function carregarPainelDeResumos() {
+  const cartao = seletor('#cartao-resumos');
+  const painel = seletor('#painel-resumos');
+  if (!cartao || !painel || !usuarioAtual?.master) return;
+  cartao.hidden = false;
+
+  try {
+    const dados = await pedirJson('/api/usuarios/resumos');
+    painel.replaceChildren();
+    let semNinguem = 0;
+
+    for (const grupo of dados.grupos ?? []) {
+      const bloco = document.createElement('div');
+      bloco.className = 'grupo-resumo';
+      const titulo = document.createElement('b');
+      titulo.textContent = grupo.nome ?? 'Equipe';
+      const detalhe = document.createElement('small');
+      detalhe.textContent = grupo.sem_canal
+        ? ' · agente sem WhatsApp ativo: o resumo não sai'
+        : ` · sai pelo número ${grupo.sai_pelo_numero ?? ''}`;
+      const lista = document.createElement('ul');
+      if ((grupo.destinatarios ?? []).length === 0) {
+        semNinguem += 1;
+        const vazio = document.createElement('li');
+        vazio.className = 'vazio';
+        vazio.textContent = 'Ninguém recebe este resumo.';
+        lista.append(vazio);
+      }
+      for (const destino of grupo.destinatarios ?? []) {
+        const item = document.createElement('li');
+        item.textContent = `${destino.nome} — ${destino.whatsapp ?? ''}`;
+        lista.append(item);
+      }
+      bloco.append(titulo, detalhe, lista);
+      painel.append(bloco);
+    }
+
+    if ((dados.sem_entrega ?? []).length > 0) {
+      const fora = document.createElement('div');
+      fora.className = 'grupo-resumo';
+      const titulo = document.createElement('b');
+      titulo.textContent = 'Deveriam receber e não recebem';
+      const lista = document.createElement('ul');
+      for (const pessoa of dados.sem_entrega) {
+        const item = document.createElement('li');
+        item.textContent = `${pessoa.nome} — ${MOTIVOS_SEM_RESUMO[pessoa.motivo] ?? pessoa.motivo}`;
+        lista.append(item);
+      }
+      fora.append(titulo, lista);
+      painel.append(fora);
+    }
+
+    definirTexto('#resumo-destinatarios', semNinguem > 0
+      ? `${semNinguem} equipe(s) sem ninguém para receber o resumo`
+      : `Um resumo por equipe a cada ${Number(dados.intervalo_min) || 120} minutos`);
+  } catch (erro) {
+    painel.replaceChildren();
+    definirTexto('#resumo-destinatarios', erro.status === 403 ? 'Apenas o administrador vê.' : 'Não foi possível carregar.');
   }
 }
 
