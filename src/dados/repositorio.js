@@ -215,7 +215,7 @@ const CAMPOS_USUARIO = `
   id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
   telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em,
   nome_completo, nascimento, whatsapp_ddi, whatsapp_ddd, whatsapp_numero,
-  whatsapp_particular_autorizado, excluido_em, acesso_clinica
+  whatsapp_particular_autorizado, excluido_em, acesso_clinica, recebe_resumo
 `;
 
 function montarLead(linha) {
@@ -2628,6 +2628,8 @@ function criarRepositorio(pool) {
         // Migration 047 — só a rota do admin passa este campo (e o gatilho do
         // banco recusa qualquer outro papel).
         ['acessoClinica', 'acesso_clinica'],
+        // Resumo por equipe (docs/RESUMOS.md): a pausa por pessoa, só pela rota do admin.
+        ['recebeResumo', 'recebe_resumo'],
         // P1-01/P1-05 — cadastro completo. CPF/RG chegam já cifrados da camada
         // de domínio: o repositório não sabe decifrar, e não deve.
         ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],

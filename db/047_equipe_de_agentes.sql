@@ -68,6 +68,21 @@ ALTER TABLE usuarios
 COMMENT ON COLUMN usuarios.acesso_clinica IS
   'Vê a clínica (pacientes, leads, agenda, Serena). FALSE = só as conversas dos agentes da equipe dele. Admin ignora a marca. docs/AGENTES.md.';
 
+-- ---------------------------------------------------- usuarios.recebe_resumo
+--
+-- Resumo do atendimento por equipe (docs/RESUMOS.md): quem recebe é a equipe
+-- de cada lado — a da clínica recebe os da clínica, a de cada agente os do
+-- agente. Esta marca é a pausa por pessoa, que só o admin muda (auditado).
+-- Padrão TRUE: ninguém que hoje receberia deixa de receber pela migration.
+-- Não precisa de gatilho: a marca só decide o que chega ao WhatsApp da própria
+-- pessoa — não abre dado nenhum.
+
+ALTER TABLE usuarios
+  ADD COLUMN IF NOT EXISTS recebe_resumo boolean NOT NULL DEFAULT true;
+
+COMMENT ON COLUMN usuarios.recebe_resumo IS
+  'Recebe o resumo de atendimento da(s) equipe(s) em que está. FALSE = pausado pelo admin. docs/RESUMOS.md.';
+
 CREATE OR REPLACE FUNCTION public.guard_usuario_acesso_clinica()
   RETURNS trigger
   LANGUAGE plpgsql

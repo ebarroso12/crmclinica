@@ -37,6 +37,8 @@ END $$;
 DROP TRIGGER IF EXISTS trg_usuarios_acesso_clinica_guard ON usuarios;
 DROP FUNCTION IF EXISTS public.guard_usuario_acesso_clinica();
 ALTER TABLE usuarios DROP COLUMN IF EXISTS acesso_clinica;
+-- Sem recusa: o código anterior manda o resumo à lista do ambiente e ignora a pausa.
+ALTER TABLE usuarios DROP COLUMN IF EXISTS recebe_resumo;
 
 DROP TABLE IF EXISTS agente_equipe;
 

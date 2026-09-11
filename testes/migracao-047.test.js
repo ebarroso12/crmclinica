@@ -36,6 +36,17 @@ test('047 é aditiva: cria agente_equipe e só ACRESCENTA usuarios.acesso_clinic
   assert.ok(!/\bTRUNCATE\s+(TABLE\s+)?\w+\s*;/i.test(corpo));
 });
 
+test('047 acrescenta usuarios.recebe_resumo (pausa do resumo por pessoa), padrão TRUE; o rollback a remove', () => {
+  const corpo = semComentarios(SQL);
+  assert.match(corpo, /ALTER TABLE usuarios\s+ADD COLUMN IF NOT EXISTS recebe_resumo boolean NOT NULL DEFAULT true;/);
+  assert.ok(corpo.indexOf('recebe_resumo') > corpo.indexOf("SET LOCAL lock_timeout = '5s';"), 'dentro do lock_timeout');
+  const rollback = semComentarios(ROLLBACK);
+  assert.match(rollback, /ALTER TABLE usuarios DROP COLUMN IF EXISTS recebe_resumo;/);
+  assert.ok(rollback.indexOf('DROP COLUMN IF EXISTS recebe_resumo') > rollback.indexOf('RAISE EXCEPTION'), 'depois da recusa');
+  const verificador = fs.readFileSync(path.join(RAIZ, 'bin', 'verificar-banco.js'), 'utf8');
+  assert.match(verificador, /\['usuarios', 'recebe_resumo'\]/);
+});
+
 test('agente_equipe: chave (agente, usuário), CASCADE nas duas FKs e índice por usuário', () => {
   const bloco = SQL.match(/CREATE TABLE IF NOT EXISTS agente_equipe \(([\s\S]*?)\n\);/)[1];
   assert.match(bloco, /agente_id\s+bigint NOT NULL REFERENCES agentes\(id\) ON DELETE CASCADE/);

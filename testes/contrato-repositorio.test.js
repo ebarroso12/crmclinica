@@ -1238,6 +1238,9 @@ for (const { nome, montar } of implementacoes) {
       });
 
       assert.equal(loja.acesso_clinica, true, 'padrão da coluna: ninguém perde a clínica');
+      assert.equal(loja.recebe_resumo, true, 'padrão da coluna: ninguém deixa de receber resumo pela migration');
+      assert.equal((await repositorio.atualizarUsuario(clinica.id, { recebeResumo: false })).recebe_resumo, false);
+      assert.equal((await repositorio.atualizarUsuario(clinica.id, { recebeResumo: true })).recebe_resumo, true);
       assert.deepEqual(await repositorio.obterEscopoDeAcesso(loja.id), { acesso_clinica: true, agentes: [] });
 
       assert.equal(await repositorio.adicionarMembroDaEquipe(outro.id, loja.id), true);

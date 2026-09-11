@@ -2286,6 +2286,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         excluido_motivo: null,
         // Migration 047: padrão sim, como a coluna.
         acesso_clinica: true,
+        // Resumo por equipe (047): padrão sim, como a coluna.
+        recebe_resumo: true,
         criado_em: agora().toISOString(),
       };
       usuarios.set(usuario.id, usuario);
@@ -2309,6 +2311,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         ['avatarUrl', 'avatar_url'],
         // Migration 047.
         ['acessoClinica', 'acesso_clinica'],
+        ['recebeResumo', 'recebe_resumo'],
         // Cadastro estruturado e documentos — sempre cifrados/hash (P1-05).
         ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
         ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],

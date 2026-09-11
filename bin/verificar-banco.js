@@ -199,6 +199,8 @@ const ESPERADO = {
     tabelas: ['agente_equipe'],
     colunas: [
       ['usuarios', 'acesso_clinica'],
+      // Sem ela, o login (CAMPOS_USUARIO) e o resumo por equipe falham.
+      ['usuarios', 'recebe_resumo'],
       ['agente_equipe', 'agente_id'], ['agente_equipe', 'usuario_id'],
     ],
   },
