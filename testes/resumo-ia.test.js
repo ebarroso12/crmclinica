@@ -96,7 +96,12 @@ test('resposta curta demais não é resumo — é falha do modelo, e vira null',
 test('resposta normal passa e a tagarela é cortada no teto', () => {
   const normal = 'Nome: Rafael\nConversa: pediu consulta por encaminhamento do psicólogo.';
   assert.equal(interpretarResumo(normal), normal);
-  assert.ok(interpretarResumo('a'.repeat(3000)).length <= 1500);
+  // Conferência final, item 2: o corte é o mesmo limite que o prompt pede.
+  assert.match(SISTEMA, /Máximo de 700 caracteres/);
+  assert.match(SISTEMA_AGENTE, /Máximo de 700 caracteres/);
+  const cortado = interpretarResumo('a'.repeat(3000));
+  assert.equal(cortado.length, 700);
+  assert.ok(cortado.endsWith('…'));
 });
 
 // ------------------------------------------------------------------ gerador

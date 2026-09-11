@@ -325,6 +325,8 @@ function carregarConfiguracao(ambiente = process.env) {
       // Um resumo por equipe a cada intervalo, contado do último envio gravado
       // no banco — nunca da memória do processo.
       intervaloMin: inteiro(ambiente.CRMCLINICA_RESUMO_INTERVALO_MIN, 120),
+      // Atendimentos por resumo de cada grupo; a sobra vai nos seguintes.
+      maximoConversas: inteiro(ambiente.CRMCLINICA_RESUMO_MAXIMO_CONVERSAS, 20),
     },
     serena: {
       baseUrl: urlValida(ambiente.SERENA_BASE_URL),

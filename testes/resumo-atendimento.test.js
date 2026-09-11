@@ -776,7 +776,7 @@ test('worker parado 3 dias: entram só as entradas das últimas 24 h, não a fil
   assert.ok(!/Velha/.test(texto), 'o que passou de 24 h não vira enxurrada');
 });
 
-test('sobra acima de 40 por resumo sai nos resumos seguintes: 90 atendimentos em 3 ciclos, sem histórico antigo (reconferência B-n1)', async () => {
+test('sobra acima do teto por resumo sai nos resumos seguintes: 90 atendimentos em 5 ciclos de 20, sem histórico antigo (reconferência B-n1)', async () => {
   const c = await montarCenario();
   await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000191' });
   // Histórico nunca resumido, de 2 dias atrás — uma delas com saída recente da equipe.
@@ -789,12 +789,12 @@ test('sobra acima de 40 por resumo sai nos resumos seguintes: 90 atendimentos em
   const canal = canalFalso();
   const resumo = c.resumo({ canal });
   const porCiclo = [];
-  for (const minutos of [31, 120, 120, 120]) {
+  for (const minutos of [31, 120, 120, 120, 120, 120]) {
     c.relogio.avancar(minutos);
     porCiclo.push((await resumo.enviarPendentes()).enviados);
   }
 
-  assert.deepEqual(porCiclo, [40, 40, 10, 0], 'o rodapé "Mais N" é cumprido: a sobra sai nos resumos seguintes');
+  assert.deepEqual(porCiclo, [20, 20, 20, 20, 10, 0], 'o rodapé "Mais N" é cumprido: a sobra sai nos resumos seguintes');
   assert.ok(!canal.envios.some((envio) => envio.texto.includes('Antiga')), 'histórico de fora das 24 h não entra');
   assert.deepEqual((await c.pendentes()).sort((a, b) => a - b), antigas.map((conversa) => conversa.id).sort((a, b) => a - b),
     'as 90 marcadas uma vez; só o histórico continua sem resumo');
@@ -851,6 +851,49 @@ test('o worker passa o intervalo e não usa mais a lista do ambiente para decidi
 
   assert.equal(carregarConfiguracao({}).resumoDeAtendimento.intervaloMin, 120);
   assert.equal(carregarConfiguracao({ CRMCLINICA_RESUMO_INTERVALO_MIN: '90' }).resumoDeAtendimento.intervaloMin, 90);
+});
+
+test('teto por resumo: 20 atendimentos por padrão, configurável, e o worker passa o valor (conferência final, item 2)', async () => {
+  assert.equal(carregarConfiguracao({}).resumoDeAtendimento.maximoConversas, 20);
+  assert.equal(carregarConfiguracao({ CRMCLINICA_RESUMO_MAXIMO_CONVERSAS: '12' }).resumoDeAtendimento.maximoConversas, 12);
+  assert.equal(carregarConfiguracao({ CRMCLINICA_RESUMO_MAXIMO_CONVERSAS: 'zero' }).resumoDeAtendimento.maximoConversas, 20);
+  const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
+  const inicio = fonte.indexOf('criarResumoDeAtendimento({');
+  const chamada = fonte.slice(inicio, fonte.indexOf('});', inicio)).replace(/\/\/.*$/gm, '');
+  assert.match(chamada, /maximoPorResumo: configuracao\.resumoDeAtendimento\.maximoConversas/);
+
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000241' });
+  for (let i = 0; i < 25; i += 1) await c.conversa(`55169810000${String(i).padStart(2, '0')}`, { nome: `Teto ${i}` });
+  c.relogio.avancar(31);
+  const canal = canalFalso();
+  const resultado = await c.resumo({ canal }).enviarPendentes();
+  assert.equal(resultado.enviados, 20, 'sem opção, o padrão é 20');
+  assert.match(canal.envios.at(-1).texto, /Mais 5 atendimento\(s\) no próximo resumo\./);
+});
+
+test('pior caso com o teto novo: IA no limite, nomes longos, admin na clínica e na equipe do agente — 14 mensagens no ciclo, não 40 (conferência final, item 2)', async () => {
+  const { criarGeradorDeResumo } = require('../src/dominio/resumo-ia');
+  const c = await montarCenario();
+  const admin = await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000251' });
+  const alpins = await c.agente('alpins', { equipe: [admin] });
+  const nomeLongo = 'Maria Aparecida dos Santos Oliveira Pereira da Silva';
+  // 40 pendentes por grupo: o cenário do auditor, que dava 40 mensagens seguidas.
+  for (let i = 0; i < 40; i += 1) {
+    await c.conversa(`55169820000${String(i).padStart(2, '0')}`, { nome: `${nomeLongo} ${i}` });
+    await c.conversa(`55169830000${String(i).padStart(2, '0')}`, { nome: `${nomeLongo} ${i}`, agenteId: alpins.id });
+  }
+  c.relogio.avancar(31);
+  // A IA ignora o pedido e escreve 5.000 caracteres: o gerador corta no teto.
+  const gerador = criarGeradorDeResumo({ gateway: { async gerar() { return { resposta: `Procura: ${'palavra '.repeat(625)}` }; } } });
+  const canal = canalFalso();
+
+  const resultado = await c.resumo({ canal, gerador }).enviarPendentes();
+
+  const paraOAdmin = canal.envios.filter((envio) => envio.telefone === '+5516990000251');
+  assert.equal(resultado.enviados, 40, '20 da clínica + 20 do agente');
+  assert.ok(paraOAdmin.every((envio) => envio.texto.length <= LIMITE_POR_MENSAGEM));
+  assert.equal(paraOAdmin.length, 14, 'pior caso por pessoa por ciclo com o teto novo');
 });
 
 test('o worker de lembretes nunca monta o canal sem as vias de entrega', () => {

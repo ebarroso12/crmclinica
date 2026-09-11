@@ -72,7 +72,10 @@ const PROMPT_VERSION_AGENTE = 'resumo-agente-v1';
 
 const MAXIMO_DE_MENSAGENS = 60;
 const MAXIMO_POR_MENSAGEM = 300;
-const MAXIMO_DO_RESUMO = 1500;
+// O mesmo teto que o prompt pede ("Máximo de 700 caracteres"). Era 1.500: o
+// modelo tagarela passava do pedido e dobrava o número de mensagens do resumo
+// (conferência final sobre 54f6225, item 2).
+const MAXIMO_DO_RESUMO = 700;
 const MINIMO_DO_RESUMO = 30;
 
 /**

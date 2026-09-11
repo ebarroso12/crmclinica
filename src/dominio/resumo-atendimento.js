@@ -46,8 +46,11 @@ const INTERVALO_PADRAO_MIN = 120;
 // Cabe folgado numa mensagem de WhatsApp e ainda se lê no celular.
 const LIMITE_POR_MENSAGEM = 3500;
 // Teto de atendimentos num resumo: depois de uma parada longa, o resto vai no
-// seguinte — um resumo de 30 mensagens seguidas ninguém lê.
-const MAXIMO_POR_RESUMO = 40;
+// seguinte — um resumo de 30 mensagens seguidas ninguém lê. Era 40: com a IA
+// escrevendo no teto, quem está na clínica e numa equipe de agente recebia 40
+// mensagens seguidas (conferência final, item 2). Configurável por
+// CRMCLINICA_RESUMO_MAXIMO_CONVERSAS.
+const MAXIMO_POR_RESUMO = 20;
 // Tentativas por envio (pessoa × parte) que falhou com erro conhecido — uma por
 // intervalo do grupo; na última, desiste (conferência final sobre 54f6225).
 const TENTATIVAS_POR_ENVIO = 3;
@@ -296,6 +299,7 @@ function criarResumoDeAtendimento({
   if (!repositorio) throw new Error('resumo de atendimento exige o repositório');
 
   const intervaloMs = Math.max(1, Number(intervaloMin) || INTERVALO_PADRAO_MIN) * 60_000;
+  const maximoDeConversas = Math.max(1, Math.floor(Number(maximoPorResumo)) || MAXIMO_POR_RESUMO);
   // O worker roda a cada minuto: um aviso que se repete a cada ciclo enterra o
   // log. Repete só quando a situação muda (nova cópia do processo, novo grupo).
   const avisados = new Set();
@@ -365,7 +369,7 @@ function criarResumoDeAtendimento({
       return relatorio;
     }
 
-    const escolhidas = conversas.slice(0, maximoPorResumo);
+    const escolhidas = conversas.slice(0, maximoDeConversas);
     const blocos = [];
     for (const conversa of escolhidas) {
       try {

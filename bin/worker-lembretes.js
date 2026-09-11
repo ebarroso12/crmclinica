@@ -345,6 +345,7 @@ async function main() {
     // do intervalo e a trava contra duas cópias vivem no banco.
     silencioMin: configuracao.resumoDeAtendimento.silencioMin,
     intervaloMin: configuracao.resumoDeAtendimento.intervaloMin,
+    maximoPorResumo: configuracao.resumoDeAtendimento.maximoConversas,
     gerador: geradorDeResumo,
   });
 

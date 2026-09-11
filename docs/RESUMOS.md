@@ -70,7 +70,7 @@ interno (o que esses números escrevem não vira contato) e pelo aviso-equipe.
     - **B-n2**: a conversa com saídas por mais de intervalo + silêncio depois da última
       entrada esfriava já fora da janela e nunca era resumida.
   - Efeito colateral aceito: o primeiro resumo de um grupo pode trazer até 24 h de entradas
-    nunca resumidas, no máximo 40 por resumo, com o resto nos seguintes.
+    nunca resumidas, no máximo 20 por resumo, com o resto nos seguintes.
 - Uma conversa entra quando está em silêncio há `CRMCLINICA_RESUMO_SILENCIO_MIN` minutos
   (padrão 30; produção usa 120).
 - **Um resumo por grupo** (a clínica; cada agente) a cada `CRMCLINICA_RESUMO_INTERVALO_MIN`
@@ -79,8 +79,16 @@ interno (o que esses números escrevem não vira contato) e pelo aviso-equipe.
 - O relógio é o **último `resumo_enviado_em` do grupo no banco** — reiniciar o worker não
   antecipa nada (incidente das 04:55 de 11/09, 126 resumos).
 - Mensagens de até ~3.500 caracteres, numeradas "(1/3)"; cada atendimento cai inteiro numa
-  parte. Bloco longo é cortado por code point, sem partir emoji (B4). No máximo 40
-  atendimentos por resumo; o rodapé avisa quantos ficaram para o seguinte.
+  parte. Bloco longo é cortado por code point, sem partir emoji (B4).
+- **No máximo 20 atendimentos por resumo de cada grupo (conferência final, item 2)**.
+  - Configurável por `CRMCLINICA_RESUMO_MAXIMO_CONVERSAS` (padrão 20; era 40 fixo). O
+    rodapé avisa quantos ficaram, e a sobra sai nos resumos seguintes.
+  - O texto da IA é cortado em **700 caracteres**, o mesmo limite que o prompt pede (antes
+    cortava em 1.500).
+  - **Pior caso medido** (IA no teto, nomes de ~55 caracteres, pessoa na clínica e na equipe
+    de um agente, 40 pendentes em cada grupo): **14 mensagens para essa pessoa no ciclo**
+    (7 por grupo). Antes eram 40.
+  - Com nomes curtos, cabem 4 atendimentos por mensagem: 5 mensagens por grupo.
 - Conversa de agente usa prompt próprio (`resumo-agente-v1`), sem lead nem agenda da clínica.
 
 ## Duas cópias do worker e pool mínimo
