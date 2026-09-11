@@ -2824,6 +2824,17 @@ function criarRepositorio(pool) {
       const TRAVA_DO_RESUMO = 47047001;
       const cliente = await pool.connect();
       let erroDaConexao;
+      // A transação fica parada (idle in transaction) durante toda a varredura,
+      // e o pg-pool tira o ouvinte de erro da conexão emprestada: uma queda de
+      // rede ou do pooler nesse meio-tempo emitia 'error' sem ouvinte, e isso
+      // derrubava o worker inteiro. Com o ouvinte, a conexão volta ao pool com o
+      // erro (descartada, a trava vai junto); o registro de envios impede que
+      // outra cópia, pegando a trava, repita o que já saiu.
+      const aoCair = (erro) => {
+        erroDaConexao ??= erro;
+        console.error(`[resumo] a conexão da trava caiu durante a varredura: ${erro?.message}`);
+      };
+      cliente.on('error', aoCair);
       try {
         await cliente.query('BEGIN');
         const { rows } = await cliente.query('SELECT pg_try_advisory_xact_lock($1::bigint) AS obtida', [TRAVA_DO_RESUMO]);
@@ -2833,10 +2844,13 @@ function criarRepositorio(pool) {
         try {
           await cliente.query('ROLLBACK');
         } catch (erro) {
-          erroDaConexao = erro;
+          erroDaConexao ??= erro;
         }
         // Com erro, o pool descarta a conexão — e a trava vai junto.
         cliente.release(erroDaConexao);
+        // Conexão sã volta ao pool sem o ouvinte (não acumula um por ciclo); a
+        // descartada fica com ele até terminar de fechar.
+        if (!erroDaConexao) cliente.removeListener('error', aoCair);
       }
     },
 

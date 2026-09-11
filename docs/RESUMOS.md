@@ -92,6 +92,27 @@ quando a trava cai (no ROLLBACK, ou se a conexão morrer), então a cópia segui
 atualizado. Vale também atrás de pooler em modo transação. Em produção, `crmclinica_app`
 tem permissão de executar a função (conferido em 11/09, só leitura).
 
+**Conexão da trava parada em transação (idle in transaction)**: a transação da trava fica
+parada durante toda a varredura (IA, envios, marcas). O pg-pool tira o ouvinte de erro da
+conexão emprestada; a trava põe o seu. Se a rede ou o pooler caírem nesse intervalo:
+
+- o erro vai para o log;
+- a conexão é descartada, e a trava cai junto;
+- o worker segue;
+- se outra cópia pegar a trava, o registro de envios impede reenviar.
+
+Leitura de produção em 11/09:
+
+- `idle_in_transaction_session_timeout = 0`, sem configuração por role para `crmclinica_app`;
+- `idle_session_timeout = 0`;
+- `statement_timeout = 120 s`, que vale só para instrução em execução, não para a transação
+  parada.
+
+**Se alguém configurar um `idle_in_transaction_session_timeout` curto no futuro, a varredura
+de resumo precisa caber nele.** Do contrário, a trava cai no meio de todo ciclo longo. Duas
+cópias podem então resumir juntas: o registro evita envio duplicado, mas a cópia que chega
+depois conta como incerto (`resumo_envio_incerto`) o que a outra está enviando.
+
 **Pool mínimo 2 (B6)**: a trava segura uma conexão durante toda a varredura e as consultas
 usam outra. Com `CRMCLINICA_DB_POOL_MAX=1` o ciclo travaria até o timeout: o worker
 registra o erro na subida e **não liga o resumo** (lembretes e o resto seguem). No VPS o
