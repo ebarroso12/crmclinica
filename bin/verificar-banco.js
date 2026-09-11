@@ -179,6 +179,19 @@ const ESPERADO = {
   '024_indices_extensoes_qualidade': {
     colunas: [],
   },
+  // Sem `conversas.agente_id` o código dos agentes derruba o inbox inteiro: é a
+  // prova de "migration antes do deploy". O índice de canal, a FK RESTRICT e o
+  // SELECT da aplicação em `agentes` são conferidos à parte, mais abaixo.
+  '046_agentes': {
+    tabelas: ['agentes', 'agente_comportamentos', 'agente_treinamentos', 'agente_acoes_inatividade', 'agente_canais'],
+    colunas: [
+      ['conversas', 'agente_id'],
+      ['agentes', 'slug'], ['agentes', 'status'], ['agentes', 'configuracoes'],
+      ['agente_canais', 'instancia'], ['agente_canais', 'ativo'],
+      ['agente_acoes_inatividade', 'apos_minutos'], ['agente_treinamentos', 'conteudo'],
+      ['agente_comportamentos', 'comportamento'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
@@ -193,6 +206,7 @@ const CONSTRAINTS = [
   ['ia_chamadas', 'ia_chamadas_chave_unica', 'retry de IA devolve o mesmo resultado, sem custo dobrado'],
   ['ia_avaliacoes', 'ia_avaliacoes_unicas', 'reavaliar não duplica avaliação'],
   ['notificacoes', 'notificacoes_chave_unica', 'reprocessar não duplica aviso no sino'],
+  ['agentes', 'agentes_slug_uk', 'dois agentes não dividem o mesmo identificador'],
 ];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
@@ -221,6 +235,8 @@ const TABELAS_COM_RLS = [
   'ia_modelos', 'ia_chamadas', 'ia_avaliacoes', 'notificacoes', 'serena_ativacao_contatos',
   'google_outbox', 'google_sincronia_estado', 'google_eventos_externos',
   'google_sincronia_conflitos', 'termos', 'termo_assinaturas',
+  // Agentes configuráveis (migration 046, docs/AGENTES.md).
+  'agentes', 'agente_comportamentos', 'agente_treinamentos', 'agente_acoes_inatividade', 'agente_canais',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
@@ -442,6 +458,52 @@ async function main() {
         [`public.${tabela}`],
       );
       marcar(!priv.pode, `sem DELETE em ${tabela}`, priv.pode ? 'a aplicação pode apagar histórico' : '');
+    }
+
+    // Migration 046 (agentes). A presença de tabelas e colunas já foi cobrada
+    // em ESPERADO; aqui, o que só o catálogo responde e que, faltando, quebra
+    // em produção sem erro de sintaxe nenhum: sem SELECT em `agentes`, toda
+    // leitura de conversa (LEFT JOIN agentes) dá "permission denied"; sem o
+    // índice por lower(instancia), duas grafias da mesma instância viram dois
+    // donos; com FK SET NULL, apagar agente devolve conversas à clínica.
+    if (porNome.has('agentes')) {
+      for (const tabela of ['agentes', 'agente_comportamentos', 'agente_treinamentos', 'agente_acoes_inatividade', 'agente_canais']) {
+        if (!porNome.has(tabela)) continue;
+        const { rows: [leitura] } = await pool.query(
+          "SELECT has_table_privilege('crmclinica_app', $1, 'SELECT') AS pode",
+          [`public.${tabela}`],
+        );
+        marcar(leitura.pode, `SELECT em ${tabela}`, leitura.pode ? '' : 'a aplicação não lê: o inbox cai');
+        const { rows: [trunca] } = await pool.query(
+          "SELECT has_table_privilege('crmclinica_app', $1, 'TRUNCATE') AS pode",
+          [`public.${tabela}`],
+        );
+        marcar(!trunca.pode, `sem TRUNCATE em ${tabela}`, trunca.pode ? 'TRUNCATE ignora o RLS' : '');
+        // RLS ligada sem política da aplicação: a tabela fica invisível SEM erro
+        // (obterAgentePorCanal devolveria null e o cliente cairia na clínica).
+        const temPolitica = (politicasPorTabela.get(tabela) ?? []).includes('app_trabalho');
+        marcar(temPolitica, `política app_trabalho em ${tabela}`, temPolitica ? '' : 'a aplicação não enxerga as linhas');
+      }
+
+      const { rows: indices } = await pool.query(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'agente_canais_instancia_uk'",
+      );
+      const indiceCerto = indices.length === 1
+        && /UNIQUE/i.test(indices[0].indexdef) && /lower\(instancia\)/i.test(indices[0].indexdef);
+      marcar(indiceCerto, 'índice agente_canais_instancia_uk por (canal, lower(instancia))',
+        indices.length === 0 ? 'ausente' : (indiceCerto ? '' : `forma diferente: ${indices[0].indexdef}`));
+
+      const { rows: chaves } = await pool.query(`
+        SELECT c.confdeltype
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.contype = 'f' AND c.conrelid = 'public.conversas'::regclass
+           AND c.confrelid = 'public.agentes'::regclass AND a.attname = 'agente_id'
+      `);
+      // 'r' = RESTRICT. Mais de uma FK também é defeito (IF NOT EXISTS reaplicado em versão antiga).
+      const restrict = chaves.length === 1 && chaves[0].confdeltype === 'r';
+      marcar(restrict, 'conversas.agente_id com FK ON DELETE RESTRICT',
+        chaves.length === 0 ? 'FK ausente' : (restrict ? '' : `${chaves.length} FK(s), confdeltype=${chaves.map((ch) => ch.confdeltype).join(',')}`));
     }
 
     const { rows: sobraram } = await pool.query(

@@ -196,6 +196,26 @@ function carregarConfiguracao(ambiente = process.env) {
       apiUrl: urlValida(ambiente.EVOLUTION_API_URL),
       apiKey: texto(ambiente.EVOLUTION_API_KEY),
       instancia: texto(ambiente.EVOLUTION_INSTANCE) || 'clinica',
+      // Nomes das instâncias que são da CLÍNICA, exatamente como a Evolution os
+      // manda no webhook (sem diferenciar maiúsculas). Com a lista preenchida,
+      // mensagem de uma instância que não é da clínica nem de agente nenhum é
+      // gravada e passada à equipe, sem resposta automática — responder pela
+      // Serena sairia pelo número da clínica (docs/AGENTES.md). Vazia, nada muda:
+      // sem saber o nome real, tratar a própria clínica como estranha calaria o
+      // atendimento de pacientes.
+      //
+      // RISCO (reauditoria): nome ERRADO aqui transforma todo paciente que chega
+      // pela Evolution em "instância sem dono" — a Serena para de responder e
+      // cada mensagem vai para a equipe. Por isso a instância por onde a clínica
+      // ENVIA (EVOLUTION_INSTANCE, quando declarada) entra sozinha na lista:
+      // se ela estiver errada, o envio da clínica já não funcionaria.
+      instanciasDaClinica: (() => {
+        const lista = texto(ambiente.EVOLUTION_INSTANCIAS_CLINICA)
+          .split(',').map((nome) => nome.trim()).filter(Boolean);
+        const deEnvio = texto(ambiente.EVOLUTION_INSTANCE);
+        const jaTem = lista.some((nome) => nome.toLowerCase() === deEnvio.toLowerCase());
+        return lista.length > 0 && deEnvio && !jaTem ? [...lista, deEnvio] : lista;
+      })(),
       timeoutMs: inteiro(ambiente.EVOLUTION_API_TIMEOUT_MS, 15000),
     },
     // Integração de Instagram (DM + comentário), em construção 23/08. Os

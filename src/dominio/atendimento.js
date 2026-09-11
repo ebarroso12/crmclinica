@@ -6,6 +6,7 @@ const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificaca
 const { ehPedidoDeOptOut } = require('./lembretes');
 const { criarNumerosInternos } = require('./numeros-internos');
 const { ErroDeEstrategia } = require('../contratos/erros');
+const { criarFluxoDeAgentes } = require('./agentes/fluxo');
 
 // Comando 7, achado A-3 da auditoria: a barreira final (`podeEntregarAgora`)
 // bloqueia por vários motivos, mas até aqui NENHUM deles escalonava — a
@@ -24,6 +25,8 @@ const { ErroDeEstrategia } = require('../contratos/erros');
 // por padrão — fail-open para avisar gente, nunca fail-closed para o silêncio.
 const MOTIVOS_DE_DECISAO_HUMANA_RECENTE = new Set([
   'serena_desligada', 'serena_pausada', 'assumida_por_humano', 'humano_responsavel', 'ia_pausada',
+  // Agente desativado ou em treinamento: alguém da equipe escolheu esse status na tela.
+  'agente_desativado', 'agente_treinamento',
 ]);
 
 function bloqueioDaBarreiraPrecisaEscalar(motivo) {
@@ -75,12 +78,23 @@ const MENSAGEM_CONTATO_BLOQUEADO = 'Olá! Para que você tenha o melhor '
 function criarAtendimento({
   repositorio, orquestrador, leads = null, lembretes = null, serena = null, canal = null, emissor = null,
   qualificacaoIa = null, storage = null, numerosInternos = [],
+  // Motor dos agentes configuráveis (src/dominio/agentes/motor.js), opcional.
+  // Sem ele, conversa de agente escala para a equipe em vez de responder.
+  agentes = null,
+  // Instâncias da Evolution que são da clínica (EVOLUTION_INSTANCIAS_CLINICA).
+  instanciasDaClinica = [],
 }) {
   // Quem opera a clínica não é atendido por ela. A lista sai de
   // `CRMCLINICA_NUMEROS_INTERNOS` + `CRMCLINICA_RESUMO_DESTINATARIOS` +
   // `WHATSAPP_BUSINESS_PHONE` (ver src/config.js). Vazia por padrão: sem
   // configuração, ninguém é filtrado.
   const equipe = criarNumerosInternos(numerosInternos);
+  // Conversas de agente (docs/AGENTES.md) seguem por um fluxo próprio, que
+  // reaproveita a barreira final e o escalonamento daqui. `entregarAoPaciente`
+  // e `escalonar` são declarações de função: já existem neste ponto.
+  const fluxoDeAgentes = criarFluxoDeAgentes({
+    repositorio, agentes, emissor, entregar: entregarAoPaciente, escalonar, instanciasDaClinica,
+  });
   /**
    * Recebe uma mensagem de canal: garante contato e conversa, grava e decide.
    * O `id_externo` sustenta a idempotência — reentrega do canal não duplica linha.
@@ -111,6 +125,22 @@ function criarAtendimento({
     // resto do sistema trata como telefone de verdade (normalização, exibição).
     const semTelefone = CANAIS_SEM_TELEFONE.has(evento.canal);
 
+    // Mensagem que entrou por uma instância de agente pertence ao agente — e
+    // só nesse caso. Instância sem dono cadastrado segue o caminho da clínica
+    // exatamente como antes, inclusive quando o nome da instância padrão da
+    // configuração não bate com o que a Evolution manda.
+    //
+    // Só evento que o CRM despacha pode ser de agente: importação ("o agente
+    // do canal já respondeu") nunca vira resposta nova de ninguém.
+    const agente = evento.estrategia_ia === 'crm_despacha'
+      ? await fluxoDeAgentes.agenteDoCanal(evento.canal, evento.instancia ?? null)
+      : null;
+    // Instância que não é da clínica nem de agente nenhum (webhook ligado antes
+    // do cadastro, nome digitado diferente): grava e passa à equipe, sem
+    // resposta automática — a Serena responderia pelo número da clínica.
+    const instanciaSemDono = !agente && evento.estrategia_ia === 'crm_despacha'
+      && fluxoDeAgentes.instanciaSemDono(evento.instancia ?? null);
+
     // Administrador não é paciente: ele comanda a Serena e recebe os resumos.
     // A guarda existia desde sempre em `sincronia-conversas.js`, mas essa
     // rotina é abandonada logo no início quando o transporte é `crm_despacha`
@@ -122,7 +152,9 @@ function criarAtendimento({
     //
     // Antes de gravar qualquer coisa, de propósito: uma linha criada e depois
     // escondida continua sendo uma linha no banco.
-    if (!semTelefone && equipe.ehInterno(evento.remetente)) {
+    // Os números internos são da equipe da CLÍNICA: escrever para o número de
+    // um agente é conversa legítima com ele (inclusive para testar).
+    if (!agente && !semTelefone && equipe.ehInterno(evento.remetente)) {
       return {
         acao: 'mensagem_interna_ignorada',
         motivo: 'número da equipe — comanda, não é atendido',
@@ -137,7 +169,9 @@ function criarAtendimento({
       identificador: semTelefone ? evento.remetente : (evento.identificador ?? null),
     });
 
-    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, evento.canal);
+    const conversa = agente
+      ? await repositorio.encontrarOuCriarConversaAberta(contato.id, evento.canal, { agenteId: agente.id })
+      : await repositorio.encontrarOuCriarConversaAberta(contato.id, evento.canal);
 
     const { mensagem, duplicada } = await repositorio.registrarMensagem(conversa.id, {
       direcao: 'entrada',
@@ -156,6 +190,45 @@ function criarAtendimento({
     // de automação — quem está com a tela aberta precisa ver o paciente
     // escrevendo, não só a eventual resposta da Serena minutos depois.
     emissor?.publicarMensagem(conversa.id, mensagem);
+
+    // Conversa de agente: lembretes de consulta, funil de leads e temperatura
+    // são da clínica e ficam de fora (invariante 7 de docs/AGENTES.md).
+    if (instanciaSemDono) {
+      await repositorio.registrarAuditoria({
+        entidade: 'conversa',
+        entidadeId: conversa.id,
+        acao: 'instancia_sem_dono',
+        detalhe: { canal: evento.canal, instancia: evento.instancia },
+      });
+      // Visível no log do processo, além da auditoria: nome errado na lista da
+      // clínica transformaria TODO paciente em "instância sem dono".
+      console.warn(`[atendimento] instância "${evento.instancia}" não é da clínica nem de agente: conversa ${conversa.id} foi para a equipe sem resposta automática`);
+      await escalonar(conversa.id, 'instancia_sem_agente');
+      return { acao: 'instancia_sem_agente', conversa_id: conversa.id, mensagem_id: mensagem.id };
+    }
+
+    if (agente) {
+      if (despachoEmSegundoPlano) {
+        const disponivelEm = fluxoDeAgentes.atrasoDeResposta(agente);
+        const { trabalho } = await repositorio.enfileirarTrabalhoDeOutbox({
+          conversaId: conversa.id,
+          mensagemEntradaId: mensagem.id,
+          chaveIdempotencia: `outbox:${conversa.id}:${mensagem.id}`,
+          // O tempo de resposta do agente: rajada de mensagens vira uma resposta só.
+          ...(disponivelEm ? { disponivelEm } : {}),
+        });
+        return {
+          acao: 'aceita_para_despacho',
+          ia_despachada: true,
+          despacho: 'outbox',
+          conversa_id: conversa.id,
+          mensagem_id: mensagem.id,
+          trabalho_id: trabalho.id,
+          agente_id: agente.id,
+        };
+      }
+      return responderSePossivel(conversa.id, { mensagemEntradaId: mensagem.id });
+    }
 
     // "PARAR" precisa valer na hora. Esperar alguém da equipe ver a mensagem e
     // clicar em algo faria a pessoa que acabou de pedir para não receber nada
@@ -256,8 +329,13 @@ function criarAtendimento({
    * inbound chegar entre a falha e a retentativa e faria o retry parecer um
    * evento novo.
    */
-  async function responderSePossivel(conversaId, { mensagemEntradaId = null } = {}) {
+  // `renovarPosse` (opcional, vem da outbox): só o fluxo do agente usa — ver fluxo.js.
+  async function responderSePossivel(conversaId, { mensagemEntradaId = null, renovarPosse = null } = {}) {
     const conversa = await repositorio.obterConversa(conversaId);
+
+    // Conversa de agente nunca passa pela Serena nem pelo OpenClaw, nem pela
+    // lista de bloqueio da secretária da clínica (docs/AGENTES.md).
+    if (conversa?.agente_id) return fluxoDeAgentes.responder(conversa, { mensagemEntradaId, renovarPosse });
 
     // Contato bloqueado: intercepta ANTES de qualquer decisão de automação
     // normal, sempre — cada mensagem que chega dele recebe a mensagem fixa,
@@ -659,7 +737,9 @@ function criarAtendimento({
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
-      acao: 'assumida_por_humano',
+      // Conversa de agente com nome próprio: `assumida_por_humano` conta nos
+      // handoffs da Serena (metricas.js e vw_serena_por_dia).
+      acao: conversa.agente_id ? 'agente_assumida_por_humano' : 'assumida_por_humano',
       detalhe: { usuario_id: usuarioId },
       usuarioId,
     });
@@ -748,7 +828,9 @@ function criarAtendimento({
         await repositorio.registrarAuditoria({
           entidade: 'conversa',
           entidadeId: conversaId,
-          acao: 'resposta_nao_entregue',
+          // `resposta_nao_entregue` acende o alerta crítico da Serena no centro
+          // operacional: falha numa conversa de agente audita com nome próprio.
+          acao: conversa.agente_id ? 'agente_resposta_nao_entregue' : 'resposta_nao_entregue',
           detalhe: { mensagem_id: mensagem.id, motivo: entrega.motivo },
           usuarioId,
         }).catch(() => {});
@@ -791,9 +873,9 @@ function criarAtendimento({
     if (!conversaFresca) return { permitido: false, motivo: 'conversa_nao_encontrada' };
 
     try {
-      const decisao = serena
-        ? await serena.podeResponder(conversaFresca)
-        : decidirAutomacao(conversaFresca);
+      let decisao;
+      if (conversaFresca.agente_id) decisao = await fluxoDeAgentes.decidir(conversaFresca);
+      else decisao = serena ? await serena.podeResponder(conversaFresca) : decidirAutomacao(conversaFresca);
       if (!decisao.responder) return { permitido: false, motivo: decisao.motivo };
       return { permitido: true };
     } catch {
@@ -814,7 +896,7 @@ function criarAtendimento({
     // por um humano é o próprio humano, no instante em que ele clicou em
     // enviar — não há geração assíncrona entre a decisão e o envio para uma
     // corrida acontecer.
-    if (origem === 'serena') {
+    if (origem === 'serena' || origem === 'agente') {
       const controle = await podeEntregarAgora(conversa.id);
       if (!controle.permitido) {
         // Auditoria com motivo técnico e o identificador da mensagem, nunca o
@@ -853,7 +935,11 @@ function criarAtendimento({
         // em silêncio, e a conversa segue do jeito que estava como se nada
         // tivesse acontecido.
         if (bloqueioDaBarreiraPrecisaEscalar(controle.motivo)) {
-          await escalonar(conversa.id, `barreira_final:${controle.motivo}`).catch((erro) => {
+          await escalonar(
+            conversa.id,
+            `barreira_final:${controle.motivo}`,
+            ...(conversa.agente_id ? [{ acaoDeAuditoria: 'agente_escalonada' }] : []),
+          ).catch((erro) => {
             console.error(`[atendimento] falha ao escalonar bloqueio da barreira final: ${erro.message}`);
           });
         }
@@ -884,6 +970,15 @@ function criarAtendimento({
       const destinatario = CANAIS_SEM_TELEFONE.has(conversa.canal) ? contato?.identificador : contato?.telefone;
       if (!destinatario) return { enviada: false, motivo: 'contato_sem_destinatario' };
 
+      // Conversa de agente sai pela instância do agente — para qualquer origem,
+      // inclusive resposta da equipe. Sem canal ativo do agente, não sai: a
+      // instância padrão é o número da clínica (invariante 2).
+      let instancia = null;
+      if (conversa.agente_id) {
+        instancia = await fluxoDeAgentes.instanciaDeEnvio(conversa);
+        if (!instancia) return { enviada: false, motivo: 'agente_sem_canal' };
+      }
+
       // Mesma chave de idempotência nos dois casos — ver o comentário abaixo
       // sobre o que ela realmente protege (não é dedupe nativo da Evolution).
       const chave = `${origem}:${conversa.id}:${mensagemId}`;
@@ -900,6 +995,7 @@ function criarAtendimento({
           tipo: anexo.tipo,
           legenda: texto || null,
           nomeArquivo: anexo.nome || null,
+          ...(instancia ? { instancia } : {}),
         })
         : await canal.enviar({
           canal: conversa.canal,
@@ -918,6 +1014,7 @@ function criarAtendimento({
           // deduplica no lado dele; só o gateway WebSocket do OpenClaw
           // (reserva) usa a chave de verdade (`idempotencyKey`).
           chave,
+          ...(instancia ? { instancia } : {}),
         });
 
       // Migration 038: marca a confirmação ANTES de devolver — é o que
@@ -976,7 +1073,9 @@ function criarAtendimento({
   // equipe (mensagem de sistema + auditoria — nada se perde em silêncio),
   // só não desliga mais a automação: a próxima mensagem do paciente tenta de
   // novo, e se a causa raiz já foi corrigida, a conversa se resolve sozinha.
-  async function escalonar(conversaId, motivo) {
+  // `acaoDeAuditoria`: conversa de agente escala com nome próprio — métricas,
+  // view analítica e alerta da Serena contam `escalonada` (docs/AGENTES.md).
+  async function escalonar(conversaId, motivo, { acaoDeAuditoria = 'escalonada' } = {}) {
     await repositorio.atualizarConversa(conversaId, { status: 'aberta' });
     const { mensagem: avisoDeEscalonamento } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
@@ -989,7 +1088,7 @@ function criarAtendimento({
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
       entidadeId: conversaId,
-      acao: 'escalonada',
+      acao: acaoDeAuditoria,
       detalhe: { motivo },
     });
   }
@@ -1047,12 +1146,17 @@ function criarAtendimento({
    * índice único e devolve `duplicada: true`, sem criar linha nova.
    */
   async function registrarEnvioExternoDoWhatsapp({
-    telefone, nome = null, texto, idProvedor,
+    telefone, nome = null, texto, idProvedor, instancia = null,
   }) {
+    // Mesmo critério da entrada: o eco de um número de agente vai para a
+    // conversa do agente, nunca para a da clínica.
+    const agente = await fluxoDeAgentes.agenteDoCanal('whatsapp', instancia);
     const contato = await repositorio.encontrarOuCriarContato({
       telefone, nome, canal: 'whatsapp', identificador: null,
     });
-    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+    const conversa = agente
+      ? await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id })
+      : await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
 
     const { mensagem, duplicada } = await repositorio.registrarMensagem(conversa.id, {
       direcao: 'saida',
@@ -1082,6 +1186,7 @@ function criarAtendimento({
     responderComoEquipe,
     registrarEnvioExternoDoWhatsapp,
     escalonar,
+    processarInatividadeDeAgentes: (opcoes) => fluxoDeAgentes.processarInatividade(opcoes),
     definirTemperatura,
     sincronizarTemperatura,
   };

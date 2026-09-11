@@ -54,6 +54,14 @@ const PERMISSOES = Object.freeze({
   // em nome da clínica) é só do admin.
   'instagram:ler': ['admin', 'gestor', 'atendente'],
   'instagram:gerenciar': ['admin'],
+
+  // Agentes configuráveis (docs/AGENTES.md): ver a configuração é de quem
+  // responde pela operação — o gestor precisa saber o que o agente diz em nome
+  // da casa. Mudar (comportamento, treinamento, status, canal) é só do admin:
+  // ligar um agente começa a responder gente de verdade. O atendente não vê a
+  // tela porque não há nada nela que ele opere.
+  'agentes:ler': ['admin', 'gestor'],
+  'agentes:gerenciar': ['admin'],
 });
 
 const PERMISSOES_CONHECIDAS = Object.freeze(Object.keys(PERMISSOES));

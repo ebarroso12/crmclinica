@@ -32,6 +32,11 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
   const fetchImpl = dependencias.fetchImpl || globalThis.fetch;
   const disponivel = Boolean(configuracao.apiUrl && configuracao.apiKey && configuracao.instancia);
 
+  /** A instância pedida (a do agente) ou, sem pedido, a configurada (a da clínica). */
+  function escolherInstancia(instancia) {
+    return typeof instancia === 'string' && instancia.trim() ? instancia.trim() : configuracao.instancia;
+  }
+
   return {
     disponivel,
 
@@ -40,7 +45,7 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
      * (dígitos, com DDI) — quem chama (`canal-conversas.js`) faz isso antes
      * de escolher a via de envio, para as duas vias receberem o mesmo dado.
      */
-    async enviar({ telefone, texto }) {
+    async enviar({ telefone, texto, instancia = null }) {
       if (!disponivel) throw new Error('Evolution API não configurada (EVOLUTION_API_URL/EVOLUTION_API_KEY)');
       if (typeof fetchImpl !== 'function') throw new Error('fetch indisponível');
 
@@ -48,7 +53,9 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
       if (!numero) throw new Error('telefone inválido para envio pela Evolution');
 
       const base = configuracao.apiUrl.replace(/\/+$/, '');
-      const url = `${base}/message/sendText/${encodeURIComponent(configuracao.instancia)}`;
+      // `instancia` é a do agente dono da conversa (docs/AGENTES.md): o número
+      // de onde a resposta sai. Sem ela, a instância da clínica, como sempre.
+      const url = `${base}/message/sendText/${encodeURIComponent(escolherInstancia(instancia))}`;
 
       let resposta;
       try {
@@ -96,7 +103,7 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
      * assinada do Storage, de vida curta — ver supabase-storage.js). Mesmo
      * contrato de erro/timeout/indeterminado de `enviar`, acima.
      */
-    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo }) {
+    async enviarMidia({ telefone, mediaUrl, tipo, legenda, nomeArquivo, instancia = null }) {
       if (!disponivel) throw new Error('Evolution API não configurada (EVOLUTION_API_URL/EVOLUTION_API_KEY)');
       if (typeof fetchImpl !== 'function') throw new Error('fetch indisponível');
 
@@ -111,7 +118,7 @@ function criarClienteEvolucaoEnvio(configuracao = {}, dependencias = {}) {
       if (!mediatype) throw new Error(`tipo de mídia não suportado pela Evolution: ${tipo}`);
 
       const base = configuracao.apiUrl.replace(/\/+$/, '');
-      const url = `${base}/message/sendMedia/${encodeURIComponent(configuracao.instancia)}`;
+      const url = `${base}/message/sendMedia/${encodeURIComponent(escolherInstancia(instancia))}`;
 
       let resposta;
       try {

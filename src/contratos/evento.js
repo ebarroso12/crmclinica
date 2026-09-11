@@ -34,6 +34,7 @@ const LIMITES = Object.freeze({
   nome: 160,
   texto: 8000,
   origem: 80,
+  instancia: 100,
 });
 
 function exigirTexto(valor, campo, limite) {
@@ -115,6 +116,11 @@ function validarEvento(entrada) {
     nome: textoOpcional(entrada.nome, 'nome', LIMITES.nome),
     texto,
     origem: textoOpcional(entrada.origem, 'origem', LIMITES.origem),
+    // De qual número (instância da Evolution) a mensagem veio — é o que acha o
+    // agente dono da conversa (docs/AGENTES.md). Fica fora da chave de
+    // idempotência de propósito: a identidade do evento já está no
+    // `id_externo`, que o adaptador escopa pela instância quando precisa.
+    instancia: textoOpcional(entrada.instancia, 'instancia', LIMITES.instancia),
     estrategia_ia: estrategiaIa,
     ocorrido_em: ocorridoEm,
   };

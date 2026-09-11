@@ -46,6 +46,8 @@ const { criarClienteInstagramEnvio } = require('../src/integracoes/instagram-env
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
 const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
+const { criarGatewayDeIA } = require('../src/ia/gateway');
+const { criarMotorDeAgentes } = require('../src/dominio/agentes/motor');
 
 function lerArgumento(nome, padrao = null) {
   const prefixo = `--${nome}=`;
@@ -141,6 +143,12 @@ async function main() {
   // fica sem o que reler. O emissor grava no banco mesmo sem conexões SSE
   // (o empurrão local simplesmente não alcança ninguém).
   const emissorDeConversas = criarEmissorDeConversas({ repositorio });
+
+  // Agentes configuráveis (docs/AGENTES.md): quem gera a resposta de uma
+  // conversa de agente é este worker, pelo gateway multi-IA — então as chaves
+  // de IA precisam existir no .env DESTE processo (o do VPS), não só na Vercel.
+  const motorDeAgentes = criarMotorDeAgentes({ gateway: criarGatewayDeIA({ configuracao, repositorio }) });
+
   const atendimento = criarAtendimento({
     repositorio,
     orquestrador: criarClienteOpenClaw(configuracao.openclaw),
@@ -151,6 +159,8 @@ async function main() {
     serena: servicoDaSerena,
     canal: canalDeConversas,
     emissor: emissorDeConversas,
+    agentes: motorDeAgentes,
+    instanciasDaClinica: configuracao.evolution.instanciasDaClinica,
   });
 
   const outbox = criarServicoDeOutbox({
@@ -236,6 +246,27 @@ async function main() {
     return;
   }
 
+  // Ações de inatividade dos agentes em relógio PRÓPRIO, nunca dentro do
+  // ciclo da fila: "interagir" chama a IA e, com provedor lento, seguraria o
+  // lote da clínica e o heartbeat por minutos — e trabalho parado 30 min é
+  // escalonado em massa como expirado (achado ALTO 2 da auditoria). Uma
+  // passada por minuto, com teto de tempo; falha aqui nunca derruba a fila.
+  let varrendoInatividade = false;
+  async function varrerInatividadeDeAgentes() {
+    if (varrendoInatividade || encerrando) return;
+    varrendoInatividade = true;
+    try {
+      const resumo = await atendimento.processarInatividadeDeAgentes({ limite: 20, orcamentoMs: 20_000 });
+      if (resumo.finalizadas || resumo.interacoes || resumo.falhas || resumo.adiadas) {
+        console.log('[outbox] inatividade de agentes', JSON.stringify(resumo));
+      }
+    } catch (erro) {
+      console.error(`[outbox] falha na varredura de inatividade de agentes: ${erro.message}`);
+    } finally {
+      varrendoInatividade = false;
+    }
+  }
+
   let cicloEmAndamento = false;
   const cicloCompleto = async () => {
     if (cicloEmAndamento) return;
@@ -249,6 +280,7 @@ async function main() {
   };
 
   const relogio = setInterval(cicloCompleto, intervaloMs);
+  const relogioDeInatividade = setInterval(varrerInatividadeDeAgentes, 60_000);
   await cicloCompleto();
 
   const encerrar = async (sinal) => {
@@ -256,10 +288,11 @@ async function main() {
     encerrando = true;
     console.log(`[outbox] ${sinal}: encerrando depois do lote corrente…`);
     clearInterval(relogio);
+    clearInterval(relogioDeInatividade);
 
     // Espera o lote em andamento. Matar no meio deixaria trabalhos em
     // 'processando' — recuperáveis, mas só depois do lease expirar.
-    while (rodando) await new Promise((resolve) => setTimeout(resolve, 100));
+    while (rodando || varrendoInatividade) await new Promise((resolve) => setTimeout(resolve, 100));
 
     await encerrarPool();
     console.log('[outbox] encerrado');

@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { subirServidor, configuracaoDeTeste } = require('./auxiliar');
 const { criarRepositorioEmMemoria } = require('../src/dados/repositorio-memoria');
 const { criarAtendimento } = require('../src/dominio/atendimento');
+const { validarAgente } = require('../src/dominio/agentes/regras');
 
 // Matriz de perfis: quem pode o quê, rota por rota.
 //
@@ -44,6 +45,13 @@ async function subir() {
 
   const app = await subirServidor({ repositorio, atendimento, orquestrador, configuracao });
   const [conversa] = await repositorio.listarConversas({});
+
+  // Um agente já cadastrado, para as rotas com id da matriz abaixo.
+  const agente = await repositorio.criarAgente(
+    validarAgente({ slug: 'agente-matriz', nome: 'Agente da Matriz' }),
+    { usuarioId: null },
+  );
+  conversa.agenteDaMatriz = agente.id;
 
   return { app, repositorio, conversa, atendimento };
 }
@@ -93,6 +101,29 @@ function casos(conversa) {
     {
       o_que: 'listar usuários',
       rota: '/api/usuarios', metodo: 'GET',
+      podem: ['admin'],
+    },
+    // Agentes configuráveis: ler é de quem gere a operação; mudar o que um
+    // agente diz a clientes, só do admin (mesmo raciocínio de serena:gerenciar).
+    {
+      o_que: 'listar agentes',
+      rota: '/api/agentes', metodo: 'GET',
+      podem: ['gestor', 'admin'],
+    },
+    {
+      o_que: 'ver um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}`, metodo: 'GET',
+      podem: ['gestor', 'admin'],
+    },
+    {
+      o_que: 'editar um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}`, metodo: 'PUT', corpo: { descricao: 'Atualizado pela matriz' },
+      podem: ['admin'],
+    },
+    {
+      o_que: 'trocar os canais de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/canais`, metodo: 'PUT',
+      corpo: { canais: [{ canal: 'whatsapp', instancia: 'matriz' }] },
       podem: ['admin'],
     },
   ];
