@@ -243,6 +243,21 @@ function criarRotasDeContatos({ repositorio }) {
       return { contato: publicar(contato, { telefoneCompleto: true }) };
     },
 
+    /**
+     * O que o PUT confere ANTES de o corpo ser lido (auditoria de acesso B1):
+     * permissão, colaborador (A3), identificador, existência e escopo. Contato
+     * inexistente ou fora do escopo responde 404 mesmo com corpo quebrado — a
+     * resposta não pode depender do corpo para confirmar nada.
+     */
+    async exigirContatoParaEditar(usuario, contatoId, { escopo = null } = {}) {
+      exigirPermissao(usuario, 'contatos:editar');
+      if (escopo && escopo.clinica !== true) throw new ErroSemAcessoAClinica();
+      const id = exigirIdentificador(contatoId, 'contato_id');
+      if (!(await repositorio.obterContato(id))) throw naoEncontrado();
+      await exigirContatoVisivel(escopo ?? ESCOPO_TOTAL, id);
+      return id;
+    },
+
     /** PUT /api/contatos/:id */
     async editar(usuario, contatoId, corpo, { escopo = null } = {}) {
       exigirPermissao(usuario, 'contatos:editar');

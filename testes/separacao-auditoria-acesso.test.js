@@ -237,3 +237,22 @@ test('M2: etiqueta, temperatura e encerramento em conversa de agente não altera
   await c.pedir('admin', `/api/conversas/${c.conversaClinica.id}/etiquetas`, { metodo: 'POST', corpo: { etiquetas: ['lead_quente'] } });
   assert.equal((await c.repositorio.obterLeadPorContato(c.paciente.id)).temperatura, 'quente');
 });
+
+// ------------------------------------------------------------------ B1
+
+test('B1: PUT /api/contatos/:id confere o contato antes de ler o corpo — inexistente com corpo quebrado é 404, não 400', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+
+  for (const quem of ['admin', 'gestorClinica']) {
+    const inexistente = await c.pedir(quem, '/api/contatos/999999', { metodo: 'PUT', corpo: '{quebrado' });
+    assert.equal(inexistente.status, 404, `${quem}: contato inexistente com corpo quebrado`);
+  }
+
+  const doColaborador = await c.pedir('gestorLoja', '/api/contatos/999999', { metodo: 'PUT', corpo: '{quebrado' });
+  assert.equal(doColaborador.status, 403);
+  assert.equal(doColaborador.json?.codigo, 'sem_acesso_clinica');
+
+  const existente = await c.pedir('admin', `/api/contatos/${c.paciente.id}`, { metodo: 'PUT', corpo: '{quebrado' });
+  assert.equal(existente.status, 400, 'com o contato conferido, o corpo quebrado continua 400');
+});

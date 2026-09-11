@@ -1640,9 +1640,12 @@ function criarAplicacao(dependencias = {}) {
     if (partes[0] === 'api' && partes[1] === 'contatos' && partes.length === 3 && /^\d+$/.test(partes[2])) {
       const acoes = {
         GET: async () => rotasDeContatos.obter(usuario, partes[2], { escopo: usuario ? await escopoDoUsuario() : null }),
-        PUT: async () => rotasDeContatos.editar(usuario, partes[2], await lerJson(req), {
-          escopo: usuario ? await escopoDoUsuario() : null,
-        }),
+        PUT: async () => {
+          const escopo = usuario ? await escopoDoUsuario() : null;
+          // Auditoria de acesso B1: contato e escopo conferidos antes de ler o corpo.
+          await rotasDeContatos.exigirContatoParaEditar(usuario, partes[2], { escopo });
+          return rotasDeContatos.editar(usuario, partes[2], await lerJson(req), { escopo });
+        },
         DELETE: async () => rotasDeContatos.excluir(usuario, partes[2], await lerJson(req).catch(() => ({}))),
       };
       const acao = acoes[metodo];
