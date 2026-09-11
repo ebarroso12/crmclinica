@@ -1080,9 +1080,12 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       // Tudo decidido antes de mexer: um array não tem rollback.
       const vistos = new Set();
       for (const item of canais) {
-        const chave = `${item.canal}:${item.instancia}`;
+        // Sem diferenciar maiúsculas — paridade com o índice único
+        // (canal, lower(instancia)) da migration 046 e com a busca do dono.
+        const chave = `${item.canal}:${String(item.instancia).toLowerCase()}`;
         const tomado = agenteCanais.some((canal) => canal.agente_id !== id
-          && canal.canal === item.canal && canal.instancia === item.instancia);
+          && canal.canal === item.canal
+          && String(canal.instancia).toLowerCase() === String(item.instancia).toLowerCase());
         // Instância repetida na própria lista bate no mesmo índice único do
         // PostgreSQL — mesmo código de erro dos dois lados.
         if (tomado || vistos.has(chave)) {

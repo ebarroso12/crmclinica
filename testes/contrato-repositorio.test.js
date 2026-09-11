@@ -1103,6 +1103,11 @@ for (const { nome, montar } of implementacoes) {
       );
       assert.deepEqual((await repositorio.obterAgente(intruso.id)).canais, [], 'a recusa não grava nada');
       assert.equal((await repositorio.obterAgente(dono.id)).canais.length, 2, 'a recusa não apaga os do dono');
+      await assert.rejects(
+        () => repositorio.definirCanaisDoAgente(intruso.id, [{ canal: 'whatsapp', instancia: 'CONTRATO-INST-1', ativo: true }]),
+        (erro) => erro.status === 409 && erro.codigo === 'canal_de_outro_agente',
+        'a mesma instância com outra caixa também é do dono (índice único por lower(instancia) na 046)',
+      );
 
       // O que o dono deixa de ter fica livre para outro agente.
       await repositorio.definirCanaisDoAgente(dono.id, [{ canal: 'whatsapp', instancia: 'contrato-inst-1', ativo: true }]);

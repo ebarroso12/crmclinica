@@ -85,6 +85,9 @@ test('validarCanais recusa instância com caractere perigoso e canal repetido', 
   assert.throws(() => validarCanais([
     { canal: 'whatsapp', instancia: 'a' }, { canal: 'whatsapp', instancia: 'a' },
   ]), ErroDeContrato);
+  assert.throws(() => validarCanais([
+    { canal: 'whatsapp', instancia: 'Alpins' }, { canal: 'whatsapp', instancia: 'alpins' },
+  ]), ErroDeContrato, 'mesma instância com outra caixa é repetição (índice único por lower(instancia))');
 });
 
 test('os dados do Agente Alpins passam em todas as regras', () => {

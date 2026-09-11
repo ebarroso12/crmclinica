@@ -1567,7 +1567,12 @@ function criarRepositorio(pool) {
             const { rows: tomados } = await cliente.query(`
               SELECT ac.canal, ac.instancia FROM agente_canais ac
                WHERE ac.agente_id <> $1
-                 AND (ac.canal, ac.instancia) IN (SELECT * FROM unnest($2::text[], $3::text[]))
+                 -- Sem diferenciar maiúsculas: é assim que a busca do dono e o
+                 -- índice único (canal, lower(instancia)) da 046 funcionam.
+                 AND (ac.canal, lower(ac.instancia)) IN (
+                   SELECT pedido.canal, lower(pedido.instancia)
+                     FROM unnest($2::text[], $3::text[]) AS pedido(canal, instancia)
+                 )
                LIMIT 1
             `, [agenteId, canais.map((item) => item.canal), canais.map((item) => item.instancia)]);
             if (tomados.length > 0) {

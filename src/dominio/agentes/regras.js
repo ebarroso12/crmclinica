@@ -311,7 +311,9 @@ function validarCanais(lista) {
     if (!INSTANCIA.test(instancia)) {
       throw new ErroDeContrato(`${campo}.instancia deve ter até ${LIMITES.instancia} caracteres: letras, números, _ . -`, `${campo}.instancia`);
     }
-    const chave = `${canal}:${instancia}`;
+    // "Alpins" e "alpins" são a mesma instância para a busca do dono e para o
+    // índice único do banco — a validação não pode deixar passar as duas.
+    const chave = `${canal}:${instancia.toLowerCase()}`;
     if (vistos.has(chave)) throw new ErroDeContrato(`${campo} repete outro canal da lista`, campo);
     vistos.add(chave);
     if (item.ativo !== undefined && typeof item.ativo !== 'boolean') {
