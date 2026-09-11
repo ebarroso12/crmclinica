@@ -287,6 +287,20 @@ test('divisão: uma parte só não leva numeração e leva o rodapé', () => {
   assert.deepEqual(parte.conversas, [1]);
 });
 
+test('bloco grande é cortado por code point: emoji nunca partido ao meio (auditoria B4)', () => {
+  const partes = dividirEmMensagens({
+    titulo: 'RESUMO DA CLÍNICA',
+    rodape: '1 atendimento(s) neste resumo',
+    blocos: [{ conversaId: 1, texto: '😀'.repeat(3000) }],
+  });
+  const substitutoSolto = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  for (const parte of partes) {
+    assert.ok(!substitutoSolto.test(parte.texto), 'o corte deixou meio emoji — o WhatsApp mostra lixo');
+    assert.ok(parte.texto.length <= LIMITE_POR_MENSAGEM, `parte com ${parte.texto.length} caracteres`);
+  }
+  assert.ok(partes[0].texto.includes('😀…'), 'o corte termina num emoji inteiro seguido da reticência');
+});
+
 test('parte que não chegou a ninguém não marca os atendimentos dela; a que chegou marca — auditoria sem telefone', async () => {
   const c = await montarCenario();
   await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000071' });

@@ -213,6 +213,21 @@ function montarResumo({ contato, mensagens = [], agendamento = null, agora = new
 }
 
 /**
+ * Corta um texto longo sem partir caractere (auditoria B4): percorre por code
+ * point (`Array.from`), então um emoji — par substituto em UTF-16 — nunca fica
+ * pela metade. O teto continua medido em unidades UTF-16, que é o que o limite
+ * da mensagem protege; a reticência final cabe dentro dele.
+ */
+function cortarSemPartirCaractere(texto, teto) {
+  let cortado = '';
+  for (const caractere of Array.from(texto)) {
+    if (cortado.length + caractere.length > teto - 1) break;
+    cortado += caractere;
+  }
+  return `${cortado}…`;
+}
+
+/**
  * Divide o resumo de um grupo em mensagens de até `limite` caracteres. Cada
  * atendimento cai inteiro numa parte só — é o que permite marcar como entregue
  * exatamente o que chegou. Título numerado "(1/3)" quando há mais de uma; o
@@ -226,7 +241,7 @@ function dividirEmMensagens({ titulo, blocos, rodape, limite = LIMITE_POR_MENSAG
   let atual = [];
   let tamanho = 0;
   for (const bloco of blocos) {
-    const texto = bloco.texto.length > teto ? `${bloco.texto.slice(0, teto - 1)}…` : bloco.texto;
+    const texto = bloco.texto.length > teto ? cortarSemPartirCaractere(bloco.texto, teto) : bloco.texto;
     const acrescimo = texto.length + (atual.length > 0 ? SEPARADOR.length : 0);
     if (atual.length > 0 && tamanho + acrescimo > teto) {
       grupos.push(atual);
