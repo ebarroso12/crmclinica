@@ -2737,9 +2737,8 @@ function criarRepositorio(pool) {
            FROM conversas c
           WHERE (c.resumo_enviado_em IS NULL OR c.resumo_enviado_em < c.ultima_msg_em)
             AND c.ultima_msg_em < now() - ($1 || ' minutes')::interval
-            -- Migration 046: o resumo vai para a equipe da CLÍNICA; conversa
-            -- de agente (outro negócio, outro número) não entra.
-            AND c.agente_id IS NULL
+            -- Resumo por equipe (docs/RESUMOS.md): conversa de agente entra, com
+            -- o agente dela; para quem vai é decisão do domínio.
             AND EXISTS (
               SELECT 1 FROM mensagens m
                WHERE m.conversa_id = c.id AND m.autor_tipo = 'contato'
@@ -2770,6 +2769,89 @@ function criarRepositorio(pool) {
         [conversaId, ultimaEntradaId],
       );
       return rows.length > 0;
+    },
+
+    /**
+     * Quando cada grupo recebeu o último resumo — `agente_id` null é a clínica.
+     * É o relógio do resumo por equipe (docs/RESUMOS.md): vem do BANCO, nunca
+     * da memória do processo, para um reinício do worker não mandar antes da
+     * hora (incidente de 11/09/2026: 126 resumos às 04:55). Varre `conversas`
+     * inteira; nesta escala (centenas de linhas) não pesa.
+     */
+    async listarUltimosEnviosDeResumo() {
+      const { rows } = await consultar(
+        `SELECT agente_id, max(resumo_enviado_em) AS ultimo_envio
+           FROM conversas
+          WHERE resumo_enviado_em IS NOT NULL
+          GROUP BY agente_id`,
+      );
+      return rows.map((linha) => ({
+        agente_id: linha.agente_id === null ? null : Number(linha.agente_id),
+        ultimo_envio: new Date(linha.ultimo_envio).toISOString(),
+      }));
+    },
+
+    /**
+     * Roda `executar` com a trava do resumo: duas cópias do worker nunca montam
+     * e mandam resumo ao mesmo tempo. `pg_try_advisory_xact_lock` numa
+     * transação só dela, numa conexão só dela — quem não pega volta na hora com
+     * `{ obtida: false }`. A trava cai no ROLLBACK do fim (ou quando a conexão
+     * morre). A transação não escreve nada: as marcas saem pelas conexões
+     * normais e já estão confirmadas quando `executar` termina, então a cópia
+     * seguinte lê o relógio atualizado. Funciona também atrás de pooler em modo
+     * transação (a trava é da transação, não da sessão).
+     */
+    async executarComTravaDeResumo(executar) {
+      // Chave fixa: todas as cópias precisam disputar a MESMA trava. "047" + resumo.
+      const TRAVA_DO_RESUMO = 47047001;
+      const cliente = await pool.connect();
+      let erroDaConexao;
+      try {
+        await cliente.query('BEGIN');
+        const { rows } = await cliente.query('SELECT pg_try_advisory_xact_lock($1::bigint) AS obtida', [TRAVA_DO_RESUMO]);
+        if (!rows[0]?.obtida) return { obtida: false };
+        return { obtida: true, resultado: await executar() };
+      } finally {
+        try {
+          await cliente.query('ROLLBACK');
+        } catch (erro) {
+          erroDaConexao = erro;
+        }
+        // Com erro, o pool descarta a conexão — e a trava vai junto.
+        cliente.release(erroDaConexao);
+      }
+    },
+
+    /**
+     * Contas que podem receber o resumo por equipe e cujo WhatsApp autorizado é
+     * número interno (docs/RESUMOS.md): ativas, liberadas, não excluídas, com as
+     * marcas e as equipes. A regra (quem recebe o quê) fica em
+     * src/dominio/destinatarios-resumo.js. Como sistema: o worker e o webhook
+     * não têm usuário na sessão. Nunca devolve senha nem documento.
+     */
+    async listarDestinatariosDeResumo() {
+      const { rows } = await comoSistema((cliente) => consultarNoCliente(cliente, `
+        SELECT u.id, u.nome, u.papel, u.acesso_clinica, u.recebe_resumo,
+               u.whatsapp_ddi, u.whatsapp_ddd, u.whatsapp_numero, u.whatsapp_particular_autorizado,
+               COALESCE(array_agg(e.agente_id ORDER BY e.agente_id) FILTER (WHERE e.agente_id IS NOT NULL), '{}') AS agentes
+          FROM usuarios u
+          LEFT JOIN agente_equipe e ON e.usuario_id = u.id
+         WHERE u.ativo AND u.excluido_em IS NULL AND u.situacao = 'ativo'
+         GROUP BY u.id
+         ORDER BY u.nome, u.id
+      `));
+      return rows.map((linha) => ({
+        id: Number(linha.id),
+        nome: linha.nome,
+        papel: linha.papel,
+        acesso_clinica: linha.acesso_clinica !== false,
+        recebe_resumo: linha.recebe_resumo !== false,
+        whatsapp_ddi: linha.whatsapp_ddi ?? null,
+        whatsapp_ddd: linha.whatsapp_ddd ?? null,
+        whatsapp_numero: linha.whatsapp_numero ?? null,
+        whatsapp_particular_autorizado: linha.whatsapp_particular_autorizado === true,
+        agentes: (linha.agentes ?? []).map(Number),
+      }));
     },
 
     /** O agendamento futuro do contato, para o resumo dizer se ele marcou. */

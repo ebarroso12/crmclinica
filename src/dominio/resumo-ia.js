@@ -51,6 +51,25 @@ const SISTEMA = [
 // cabeçalho novo, e nenhum deploy consertaria.
 const PROMPT_VERSION = 'resumo-lead-v2';
 
+// Resumo de conversa de AGENTE (docs/RESUMOS.md): outro negócio, outra equipe.
+// O prompt da clínica fala em paciente e psiquiatria — errado para uma loja —,
+// então o agente tem prompt e versão próprios. O da clínica não muda.
+const SISTEMA_AGENTE = [
+  'Você escreve o resumo interno de um atendimento de WhatsApp feito por um agente de atendimento,',
+  'para a equipe do negócio (não para o cliente).',
+  'Use SOMENTE o que está na conversa. Não invente dados, preços, estoque, prazos ou condições.',
+  'Escreva em português do Brasil, direto, sem saudação e sem despedida.',
+  'Formato obrigatório, nesta ordem (omita a linha se a conversa não disser nada sobre ela):',
+  'Nome citado: … (apenas se a pessoa disser o próprio nome na conversa)',
+  'Procura: … (o que a pessoa quer, 1 a 2 linhas, nas palavras dela)',
+  'Situacao: … (o que ficou combinado; produtos, valores e prazos citados)',
+  'Falta: … (o que a equipe ainda precisa fazer)',
+  'Duvida: … (perguntas do cliente que ficaram sem resposta)',
+  'Não repita o telefone — a equipe já o recebe em outro lugar.',
+  'Máximo de 700 caracteres no total.',
+].join('\n');
+const PROMPT_VERSION_AGENTE = 'resumo-agente-v1';
+
 const MAXIMO_DE_MENSAGENS = 60;
 const MAXIMO_POR_MENSAGEM = 300;
 const MAXIMO_DO_RESUMO = 1500;
@@ -63,15 +82,16 @@ const MINIMO_DO_RESUMO = 30;
  * injetá-lo aqui fazia o modelo repeti-lo no corpo — a linha "Nome citado"
  * existe para o caso oposto, o nome que só aparece NA conversa.
  */
-function montarPromptDoResumo({ mensagens = [], qualificacao = null }) {
+function montarPromptDoResumo({ mensagens = [], qualificacao = null, contexto = 'clinica' }) {
+  const doAgente = contexto === 'agente';
   const linhas = [];
 
   // O que a extração de qualificação já apurou entra como apoio — a IA não
-  // precisa redescobrir, só conferir com a conversa.
-  const apoio = ['interesse', 'pagamento', 'urgencia', 'disponibilidade']
+  // precisa redescobrir, só conferir com a conversa. Qualificação é da clínica.
+  const apoio = doAgente ? [] : ['interesse', 'pagamento', 'urgencia', 'disponibilidade']
     .filter((campo) => qualificacao?.[campo])
     .map((campo) => `${campo}: ${qualificacao[campo]}`);
-  if (typeof qualificacao?.primeira_consulta === 'boolean') {
+  if (!doAgente && typeof qualificacao?.primeira_consulta === 'boolean') {
     apoio.push(`primeira_consulta: ${qualificacao.primeira_consulta ? 'sim' : 'não'}`);
   }
   if (apoio.length > 0) linhas.push(`Qualificação já registrada: ${apoio.join(' · ')}`);
@@ -80,7 +100,9 @@ function montarPromptDoResumo({ mensagens = [], qualificacao = null }) {
   for (const mensagem of mensagens.slice(-MAXIMO_DE_MENSAGENS)) {
     const texto = String(mensagem.conteudo ?? '').trim();
     if (!texto) continue;
-    const papel = mensagem.autor_tipo === 'contato' ? 'Paciente' : 'Clínica';
+    const papel = mensagem.autor_tipo === 'contato'
+      ? (doAgente ? 'Cliente' : 'Paciente')
+      : (doAgente ? 'Atendimento' : 'Clínica');
     linhas.push(`${papel}: ${texto.length > MAXIMO_POR_MENSAGEM ? `${texto.slice(0, MAXIMO_POR_MENSAGEM)}…` : texto}`);
   }
 
@@ -107,18 +129,23 @@ function criarGeradorDeResumo({ gateway }) {
   if (!gateway) throw new Error('o gerador de resumo exige o gateway de IA');
 
   return {
-    /** Nunca lança: qualquer falha devolve `null` e o chamador usa a reserva. */
-    async gerar({ mensagens = [], qualificacao = null, chaveIdempotencia }) {
+    /**
+     * Nunca lança: qualquer falha devolve `null` e o chamador usa a reserva.
+     * `contexto`: 'clinica' (padrão) ou 'agente' — prompt e versão próprios.
+     */
+    async gerar({ mensagens = [], qualificacao = null, chaveIdempotencia, contexto = 'clinica' }) {
       if (!chaveIdempotencia) return null;
       if (!mensagens.some((mensagem) => String(mensagem?.conteudo ?? '').trim())) return null;
+      const doAgente = contexto === 'agente';
+      const versao = doAgente ? PROMPT_VERSION_AGENTE : PROMPT_VERSION;
       try {
         const resultado = await gateway.gerar({
           finalidade: 'resumo_atendimento',
-          sistema: SISTEMA,
-          prompt: montarPromptDoResumo({ mensagens, qualificacao }),
+          sistema: doAgente ? SISTEMA_AGENTE : SISTEMA,
+          prompt: montarPromptDoResumo({ mensagens, qualificacao, contexto }),
           // A versão compõe a chave: prompt novo nunca reusa resposta do velho.
-          chaveIdempotencia: `${chaveIdempotencia}:${PROMPT_VERSION}`,
-          promptVersion: PROMPT_VERSION,
+          chaveIdempotencia: `${chaveIdempotencia}:${versao}`,
+          promptVersion: versao,
         });
         return interpretarResumo(resultado?.resposta);
       } catch {
@@ -129,5 +156,6 @@ function criarGeradorDeResumo({ gateway }) {
 }
 
 module.exports = {
-  criarGeradorDeResumo, montarPromptDoResumo, interpretarResumo, SISTEMA, PROMPT_VERSION,
+  criarGeradorDeResumo, montarPromptDoResumo, interpretarResumo,
+  SISTEMA, PROMPT_VERSION, SISTEMA_AGENTE, PROMPT_VERSION_AGENTE,
 };

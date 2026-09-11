@@ -1462,7 +1462,7 @@ for (const { nome, montar } of implementacoes) {
       assert.ok(!aguardando.includes(doAgente.id), 'a do agente não entra na fila da clínica');
     });
 
-    await t.test('resumo da equipe e liberação em massa ignoram conversas de agente', async () => {
+    await t.test('resumo: conversa de agente entra na fila com o agente dela; liberação em massa ignora agente', async () => {
       const respirar = () => new Promise((seguir) => { setTimeout(seguir, 5); });
       const agente = await criarAgenteDeTeste('contrato-sem-resumo');
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001021', nome: 'Resumo Duplo' });
@@ -1474,16 +1474,95 @@ for (const { nome, montar } of implementacoes) {
       }
       await respirar();
 
-      const semResumo = (await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 }))
-        .map((item) => Number(item.id));
-      assert.ok(semResumo.includes(daClinica.id));
-      assert.ok(!semResumo.includes(doAgente.id), 'conversa de agente não gera resumo para a equipe da clínica');
+      // Resumo por equipe (docs/RESUMOS.md): o agente entra COM o agente — o
+      // domínio manda só para a equipe dele, pelo número dele.
+      const semResumo = await repositorio.listarConversasSemResumo({ silencioMin: 0, limite: 1000 });
+      const item = (id) => semResumo.find((registro) => Number(registro.id) === id);
+      assert.equal(item(daClinica.id)?.agente_id, null);
+      assert.equal(item(doAgente.id)?.agente_id, agente.id);
 
       await repositorio.atualizarConversa(doAgente.id, { assumida_por_humano: true });
       await repositorio.atualizarConversa(daClinica.id, { assumida_por_humano: true });
       const escalonadas = await repositorio.listarConversasEscalonadasSemDono();
       assert.ok(escalonadas.includes(daClinica.id));
       assert.ok(!escalonadas.includes(doAgente.id), 'transferência do agente para humano não é liberada em massa');
+    });
+
+    await t.test('resumo por equipe (047): destinatários do cadastro, trava, relógio por grupo e duas cópias ao mesmo tempo', async () => {
+      const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+      const respirar = (ms = 5) => new Promise((seguir) => { setTimeout(seguir, ms); });
+
+      const agente = await criarAgenteDeTeste('contrato-resumo-equipe');
+      await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'contrato-resumo', ativo: true }]);
+      const membro = await repositorio.criarUsuario({
+        nome: 'Resumo Loja', email: 'resumo-loja@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(membro.id, {
+        acessoClinica: false, whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '991230047', whatsappParticularAutorizado: true,
+      });
+      await repositorio.adicionarMembroDaEquipe(agente.id, membro.id);
+      const pausado = await repositorio.criarUsuario({
+        nome: 'Resumo Pausado', email: 'resumo-pausado@teste.local', papel: 'gestor', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(pausado.id, { recebeResumo: false });
+      const naoLiberado = await repositorio.criarUsuario({
+        nome: 'Resumo Pendente', email: 'resumo-pendente@teste.local', papel: 'atendente', situacao: 'pendente',
+      });
+
+      const pessoas = await repositorio.listarDestinatariosDeResumo();
+      const doMembro = pessoas.find((item) => item.id === membro.id);
+      assert.deepEqual(doMembro, {
+        id: membro.id, nome: 'Resumo Loja', papel: 'atendente', acesso_clinica: false, recebe_resumo: true,
+        whatsapp_ddi: '55', whatsapp_ddd: '16', whatsapp_numero: '991230047', whatsapp_particular_autorizado: true,
+        agentes: [agente.id],
+      }, 'só o que a regra usa — nunca senha nem documento');
+      assert.equal(pessoas.find((item) => item.id === pausado.id)?.recebe_resumo, false);
+      assert.ok(!pessoas.some((item) => item.id === naoLiberado.id), 'conta não liberada não recebe nem é número interno');
+
+      // Trava: enquanto a primeira segura, a segunda volta sem entrar.
+      let entrou;
+      let soltar;
+      const dentro = new Promise((resolver) => { entrou = resolver; });
+      const segura = new Promise((resolver) => { soltar = resolver; });
+      const primeira = repositorio.executarComTravaDeResumo(async () => { entrou(); await segura; return 'primeira'; });
+      await dentro;
+      assert.deepEqual(await repositorio.executarComTravaDeResumo(async () => 'segunda'), { obtida: false });
+      soltar();
+      assert.deepEqual(await primeira, { obtida: true, resultado: 'primeira' });
+      assert.deepEqual(await repositorio.executarComTravaDeResumo(async () => 'terceira'), { obtida: true, resultado: 'terceira' });
+
+      // Duas cópias do resumo ao mesmo tempo, com a entrega da primeira presa.
+      const conversa = await conversaDoAgente(agente.id, '5516900001061');
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'tem o 42?', autor_tipo: 'contato' });
+      await respirar();
+      const envios = [];
+      let liberar;
+      const portao = new Promise((resolver) => { liberar = resolver; });
+      const canal = { async enviar(carga) { envios.push(carga); await portao; return { identificador: 'x' }; } };
+      const copia = () => criarResumoDeAtendimento({ repositorio, canal, silencioMin: 0, intervaloMin: 120 });
+
+      const a = copia().enviarPendentes();
+      for (let espera = 0; envios.length === 0 && espera < 400; espera += 1) await respirar();
+      assert.ok(envios.length > 0, 'a primeira cópia chegou à entrega');
+      const b = await copia().enviarPendentes();
+      assert.match(b.motivo ?? '', /outra cópia/, 'a segunda cópia não entra enquanto a primeira resume');
+      liberar();
+      await a;
+
+      const doAgente = () => envios.filter((envio) => envio.instancia === 'contrato-resumo');
+      assert.equal(doAgente().length, 1, 'uma entrega para a única pessoa da equipe, pelo número do agente');
+      assert.equal(doAgente()[0].telefone, '+5516991230047');
+      assert.ok(doAgente()[0].texto.includes('Contato 5516900001061'));
+      assert.ok((await repositorio.listarUltimosEnviosDeResumo()).some((linha) => linha.agente_id === agente.id));
+
+      // Entrada nova logo depois: a cópia seguinte (um "reinício") espera o intervalo.
+      // A pausa é da memória (milissegundos): a entrada precisa ser DEPOIS da marca.
+      await respirar();
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'e o 43?', autor_tipo: 'contato' });
+      await respirar();
+      const depois = await copia().enviarPendentes();
+      assert.equal(doAgente().length, 1, 'o relógio vem do banco: nada antes de 2 h');
+      assert.equal(depois.grupos.find((grupo) => grupo.agente_id === agente.id)?.situacao, 'aguardando_intervalo');
     });
 
     await t.test('resumo: saída da equipe não reenfileira; só entrada nova do contato — e a marca não esconde entrada que chegou depois', async () => {

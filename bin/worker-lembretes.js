@@ -340,18 +340,19 @@ async function main() {
     // configurada e entregando mensagem a paciente o dia todo.
     canal: (configuracao.openclaw.canalClinica?.url || clienteEvolucaoEnvio.disponivel)
       ? criarCanalDeConversas(configuracao.openclaw.canalClinica, viasDeEntrega) : null,
-    destinatarios: configuracao.resumoDeAtendimento.destinatarios,
+    // Quem recebe NÃO vem mais de CRMCLINICA_RESUMO_DESTINATARIOS: é a equipe de
+    // cada lado, lida do cadastro a cada varredura (docs/RESUMOS.md). O relógio
+    // do intervalo e a trava contra duas cópias vivem no banco.
     silencioMin: configuracao.resumoDeAtendimento.silencioMin,
+    intervaloMin: configuracao.resumoDeAtendimento.intervaloMin,
     gerador: geradorDeResumo,
   });
 
   if (!resumoParaEquipe.ativo) {
-    // Dizer QUAL das duas metades falta: "sem destinatarios" com a lista cheia
-    // e o canal ausente mandava procurar no lugar errado.
-    const faltando = configuracao.resumoDeAtendimento.destinatarios.length === 0
-      ? 'CRMCLINICA_RESUMO_DESTINATARIOS vazia'
-      : 'nenhum canal de entrega (nem Evolution, nem gateway da clinica)';
-    console.warn(`[resumo] a equipe nao recebe resumo de atendimento: ${faltando}.`);
+    console.warn('[resumo] a equipe nao recebe resumo de atendimento: nenhum canal de entrega (nem Evolution, nem gateway da clinica).');
+  } else {
+    console.log(`[resumo] por equipe, um a cada ${configuracao.resumoDeAtendimento.intervaloMin} min `
+      + `(silencio de ${configuracao.resumoDeAtendimento.silencioMin} min); destinatarios pelo cadastro de usuarios.`);
   }
 
   async function enviarResumos() {

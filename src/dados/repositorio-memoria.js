@@ -1339,8 +1339,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return [...conversas.values()]
         .filter((conversa) => {
           if (!conversa.ultima_msg_em) return false;
-          // Migration 046 — paridade com repositorio.js: agente não gera resumo à clínica.
-          if ((conversa.agente_id ?? null) !== null) return false;
+          // Resumo por equipe (docs/RESUMOS.md): conversa de agente entra, com o
+          // agente dela — quem decide para quem vai é o domínio.
           const ultima = new Date(conversa.ultima_msg_em).getTime();
           if (!(ultima < limiteMs)) return false;
 
@@ -1375,6 +1375,58 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       }
       conversa.resumo_enviado_em = agora().toISOString();
       return true;
+    },
+
+    // Resumo por equipe (docs/RESUMOS.md) — paridade com repositorio.js.
+
+    /** O relógio do resumo por grupo: `agente_id` null é a clínica. */
+    async listarUltimosEnviosDeResumo() {
+      const ultimos = new Map();
+      for (const conversa of conversas.values()) {
+        if (!conversa.resumo_enviado_em) continue;
+        const grupo = conversa.agente_id ?? null;
+        const instante = new Date(conversa.resumo_enviado_em).getTime();
+        if (!ultimos.has(grupo) || instante > ultimos.get(grupo)) ultimos.set(grupo, instante);
+      }
+      return [...ultimos].map(([agenteId, instante]) => ({
+        agente_id: agenteId, ultimo_envio: new Date(instante).toISOString(),
+      }));
+    },
+
+    // A trava do resumo: no PostgreSQL é `pg_try_advisory_xact_lock`; aqui, uma
+    // marca deste repositório — a mesma semântica para quem chama.
+    executarComTravaDeResumo: (() => {
+      let ocupada = false;
+      return async function executarComTravaDeResumo(executar) {
+        if (ocupada) return { obtida: false };
+        ocupada = true;
+        try {
+          return { obtida: true, resultado: await executar() };
+        } finally {
+          ocupada = false;
+        }
+      };
+    })(),
+
+    async listarDestinatariosDeResumo() {
+      return [...usuarios.values()]
+        .filter((usuario) => usuario.ativo !== false && !usuario.excluido_em && usuario.situacao === 'ativo')
+        .sort((a, b) => (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR') || a.id - b.id)
+        .map((usuario) => ({
+          id: usuario.id,
+          nome: usuario.nome,
+          papel: usuario.papel,
+          acesso_clinica: usuario.acesso_clinica !== false,
+          recebe_resumo: usuario.recebe_resumo !== false,
+          whatsapp_ddi: usuario.whatsapp_ddi ?? null,
+          whatsapp_ddd: usuario.whatsapp_ddd ?? null,
+          whatsapp_numero: usuario.whatsapp_numero ?? null,
+          whatsapp_particular_autorizado: usuario.whatsapp_particular_autorizado === true,
+          agentes: agenteEquipe
+            .filter((vinculo) => vinculo.usuario_id === usuario.id)
+            .map((vinculo) => vinculo.agente_id)
+            .sort((a, b) => a - b),
+        }));
     },
 
     // ---------------------------------------------------------------- etiquetas

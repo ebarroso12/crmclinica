@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { criarGeradorDeResumo, montarPromptDoResumo, interpretarResumo } = require('../src/dominio/resumo-ia');
+const {
+  criarGeradorDeResumo, montarPromptDoResumo, interpretarResumo, SISTEMA, SISTEMA_AGENTE, PROMPT_VERSION_AGENTE,
+} = require('../src/dominio/resumo-ia');
 const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
 
 // Nenhum teste aqui abre rede: o gateway é sempre um dublê.
@@ -11,6 +13,18 @@ const MENSAGENS = [
   { autor_tipo: 'contato', conteudo: 'Boa tarde, queria marcar uma consulta' },
   { autor_tipo: 'automacao', conteudo: 'Claro! É sua primeira consulta?' },
   { autor_tipo: 'contato', conteudo: 'Sim, venho por encaminhamento do psicólogo, tenho 31 anos' },
+];
+
+// Duas pessoas da equipe da clínica com WhatsApp autorizado (docs/RESUMOS.md).
+const EQUIPE_DA_CLINICA = [
+  {
+    id: 1, nome: 'Admin', papel: 'admin', acesso_clinica: true, recebe_resumo: true, agentes: [],
+    whatsapp_ddi: '55', whatsapp_ddd: '16', whatsapp_numero: '911111111', whatsapp_particular_autorizado: true,
+  },
+  {
+    id: 2, nome: 'Atendente', papel: 'atendente', acesso_clinica: true, recebe_resumo: true, agentes: [],
+    whatsapp_ddi: '55', whatsapp_ddd: '16', whatsapp_numero: '922222222', whatsapp_particular_autorizado: true,
+  },
 ];
 
 // ------------------------------------------------------------------ prompt
@@ -36,12 +50,32 @@ test('o prompt novo tem versão própria, e a versão compõe a chave do cache',
     gateway: { async gerar(pedido) { chamadas.push(pedido); return { resposta: 'x'.repeat(60) }; } },
   });
 
-  await gerador.gerar({ mensagens: MENSAGENS, chaveIdempotencia: 'resumo:conversa:7' });
+  await gerador.gerar({ mensagens: MENSAGENS, chaveIdempotencia: 'resumo:conversa:7:entrada:3' });
 
   assert.notEqual(PROMPT_VERSION, 'resumo-v1', 'mudou o prompt, muda a versão');
   assert.equal(chamadas[0].promptVersion, PROMPT_VERSION);
-  assert.equal(chamadas[0].chaveIdempotencia, `resumo:conversa:7:${PROMPT_VERSION}`,
+  assert.equal(chamadas[0].sistema, SISTEMA, 'a clínica continua com o prompt aprovado');
+  assert.equal(chamadas[0].chaveIdempotencia, `resumo:conversa:7:entrada:3:${PROMPT_VERSION}`,
     'sem a versão na chave, o cache devolveria para sempre o corpo no formato velho');
+});
+
+test('conversa de agente: prompt, papéis e versão próprios — sem "paciente", sem qualificação da clínica', async () => {
+  const prompt = montarPromptDoResumo({
+    mensagens: MENSAGENS, qualificacao: { interesse: 'consulta' }, contexto: 'agente',
+  });
+  assert.match(prompt, /Cliente: Boa tarde/);
+  assert.match(prompt, /Atendimento: Claro!/);
+  assert.ok(!/Paciente|Clínica|interesse/.test(prompt));
+
+  const chamadas = [];
+  const gerador = criarGeradorDeResumo({
+    gateway: { async gerar(pedido) { chamadas.push(pedido); return { resposta: 'y'.repeat(60) }; } },
+  });
+  await gerador.gerar({ mensagens: MENSAGENS, chaveIdempotencia: 'resumo:conversa:9:entrada:4', contexto: 'agente' });
+
+  assert.equal(chamadas[0].sistema, SISTEMA_AGENTE);
+  assert.ok(!/psiquiatria|paciente/i.test(SISTEMA_AGENTE));
+  assert.equal(chamadas[0].chaveIdempotencia, `resumo:conversa:9:entrada:4:${PROMPT_VERSION_AGENTE}`);
 });
 
 test('mensagem gigante entra truncada no prompt — o modelo não precisa do livro inteiro', () => {
@@ -86,31 +120,37 @@ test('sem chave de idempotência ou sem conversa, nem chama o gateway', async ()
 
 // --------------------------------------------- resumo de atendimento com IA
 
-function montarAmbiente({ respostaDaIa } = {}) {
-  const envios = [];
+function repositorioDeUmaConversa({ conversa, contato, lead }) {
   const marcadas = [];
-
-  const repositorio = {
-    async listarConversasSemResumo() { return [{ id: 7, contato_id: 3 }]; },
-    async obterContato() { return { id: 3, nome: 'Rafael', telefone: '5516900000001' }; },
+  return {
+    marcadas,
+    async listarConversasSemResumo() { return [conversa]; },
+    async listarDestinatariosDeResumo() { return EQUIPE_DA_CLINICA; },
+    async obterContato() { return contato; },
     async listarMensagens() { return MENSAGENS; },
     async obterAgendamentoDoContato() { return null; },
-    async obterLeadPorContato() {
-      return { interesse: 'consulta', temperatura: 'quente', score: 71, estagio: 'agendado' };
-    },
-    async marcarResumoEnviado(id) { marcadas.push(id); },
+    async obterLeadPorContato() { return lead; },
+    async marcarResumoEnviado(id) { marcadas.push(id); return true; },
   };
+}
+
+function montarAmbiente({ respostaDaIa } = {}) {
+  const envios = [];
+  const repositorio = repositorioDeUmaConversa({
+    conversa: { id: 7, contato_id: 3, agente_id: null, ultima_entrada_id: 3 },
+    contato: { id: 3, nome: 'Rafael', telefone: '5516900000001' },
+    lead: { interesse: 'consulta', temperatura: 'quente', score: 71, estagio: 'agendado' },
+  });
 
   const resumo = criarResumoDeAtendimento({
     repositorio,
     canal: { async enviar(pedido) { envios.push(pedido); } },
-    destinatarios: ['5516911111111', '5516922222222'],
     gerador: respostaDaIa === undefined ? null : {
       async gerar() { return respostaDaIa; },
     },
   });
 
-  return { resumo, envios, marcadas };
+  return { resumo, envios, marcadas: repositorio.marcadas };
 }
 
 test('com a IA no ar, a equipe recebe o RESUMO DE LEAD: nome no título e dados do banco', async () => {
@@ -119,13 +159,13 @@ test('com a IA no ar, a equipe recebe o RESUMO DE LEAD: nome no título e dados 
 
   await resumo.enviarPendentes();
 
-  assert.equal(envios.length, 2, 'um envio por destinatário');
-  assert.match(envios[0].texto, /^RESUMO DE LEAD — Rafael/, 'o título leva o NOME da pessoa');
+  assert.equal(envios.length, 2, 'um envio por pessoa da equipe');
+  assert.match(envios[0].texto, /^RESUMO DA CLÍNICA[\s\S]*RESUMO DE LEAD — Rafael/, 'o bloco leva o NOME da pessoa');
   assert.match(envios[0].texto, /Telefone: 5516900000001/, 'telefone vem do banco, não do modelo');
   assert.match(envios[0].texto, /Qualificacao: quente \(score 71\)/, 'qualificação vem do lead');
   assert.match(envios[0].texto, /Estagio: agendado/);
   assert.match(envios[0].texto, /encaminhamento do psicólogo/, 'o contexto da conversa está no corpo');
-  assert.match(envios[0].texto, /Mensagens trocadas: 3/, 'o rodapé conta as mensagens');
+  assert.match(envios[0].texto, /Mensagens trocadas: 3/, 'o bloco conta as mensagens');
 });
 
 test('IA falhando (null), a reserva sai NO MESMO layout — muda a profundidade, não o formato', async () => {
@@ -134,7 +174,7 @@ test('IA falhando (null), a reserva sai NO MESMO layout — muda a profundidade,
   await resumo.enviarPendentes();
 
   assert.equal(envios.length, 2);
-  assert.match(envios[0].texto, /^RESUMO DE LEAD — Rafael/, 'o cabeçalho aprovado vale também no degradado');
+  assert.match(envios[0].texto, /RESUMO DE LEAD — Rafael/, 'o cabeçalho aprovado vale também no degradado');
   assert.match(envios[0].texto, /Idade: 31/, 'o recorte determinístico preenche o miolo');
   assert.match(envios[0].texto, /Procura: Boa tarde, queria marcar uma consulta/);
   assert.match(envios[0].texto, /Mensagens trocadas: 3/);
@@ -152,20 +192,15 @@ test('"Agendou: NÃO" é explícito — estágio preso em "agendado" não pode v
 });
 
 test('lead nunca avaliado não sai como "frio (score 0)" — default do banco não é veredito', async () => {
-  const { criarResumoDeAtendimento: montar } = require('../src/dominio/resumo-atendimento');
   const envios = [];
-  const resumo = montar({
-    repositorio: {
-      async listarConversasSemResumo() { return [{ id: 8, contato_id: 4 }]; },
-      async obterContato() { return { id: 4, nome: 'Maria', telefone: '5516900000002' }; },
-      async listarMensagens() { return MENSAGENS; },
-      async obterAgendamentoDoContato() { return null; },
+  const resumo = criarResumoDeAtendimento({
+    repositorio: repositorioDeUmaConversa({
+      conversa: { id: 8, contato_id: 4, agente_id: null, ultima_entrada_id: 5 },
+      contato: { id: 4, nome: 'Maria', telefone: '5516900000002' },
       // Como o Postgres devolve um lead que ninguém avaliou: defaults NOT NULL.
-      async obterLeadPorContato() { return { temperatura: 'frio', score: 0, estagio: 'novo' }; },
-      async marcarResumoEnviado() {},
-    },
+      lead: { temperatura: 'frio', score: 0, estagio: 'novo' },
+    }),
     canal: { async enviar(pedido) { envios.push(pedido); } },
-    destinatarios: ['5516911111111'],
     gerador: { async gerar() { return 'Procura: consulta.'; } },
   });
 
