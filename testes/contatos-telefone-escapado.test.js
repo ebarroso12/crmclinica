@@ -101,6 +101,25 @@ test('nome de agente malicioso no selo de origem não vira tag (migration 047)',
   assert.ok(html.includes('Clínica'), 'o selo "Clínica" aparece');
 });
 
+test('colaborador (sem agendamentos nem opt-out na resposta) não vê "agendamento(s)" nem "não recebe lembretes" inventados (auditoria de acesso M1)', () => {
+  // Lista branca da API: quem não vê a clínica recebe só id, nome, telefone,
+  // selos e conversas. A tela não pode preencher o vazio com "0 agendamento(s)".
+  const doColaborador = renderizarContatos([{
+    id: 1, nome: 'Cliente', telefone: '5511999999999', conversas: 2, selos: { clinica: false, agentes: [] },
+  }]);
+  assert.ok(!doColaborador.includes('agendamento(s)'), `html:\n${doColaborador}`);
+  assert.ok(!doColaborador.includes('não recebe lembretes'), `html:\n${doColaborador}`);
+
+  const daClinica = renderizarContatos([{
+    id: 1, nome: 'Paciente', telefone: '5511999999999', conversas: 1, agendamentos: 3, recebe_lembretes: false,
+  }]);
+  assert.match(daClinica, /3 agendamento\(s\)/);
+  assert.match(daClinica, /não recebe lembretes/);
+  const semOptOut = renderizarContatos([{ id: 1, nome: 'Paciente', telefone: '5511999999999', agendamentos: 0, recebe_lembretes: true }]);
+  assert.match(semOptOut, /0 agendamento\(s\)/);
+  assert.ok(!semOptOut.includes('não recebe lembretes'));
+});
+
 test('nome malicioso continua escapado (não regride — controle positivo)', () => {
   const PAYLOAD = '<script>alert(1)</script>';
   const html = renderizarContatos([{ id: 1, nome: PAYLOAD, telefone: '5511999999999', excluido: false }]);
