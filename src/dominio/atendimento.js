@@ -161,8 +161,15 @@ function criarAtendimento({
     // vai para o WhatsApp autorizado de cada pessoa, e quem recebe resumo não é
     // cliente de agente nenhum — sem isto, o funcionário que responde o resumo
     // pelo número do Alpins seria atendido pelo próprio agente.
+    //
+    // O cache do cadastro só vale para o SIM (auditoria M1): quando o telefone
+    // ainda não é contato — esta mensagem CRIARIA um —, o NÃO é conferido no
+    // banco na hora, porque a pessoa pode ter sido autorizada depois da última
+    // leitura. Contato que já existe não pesa o webhook com essa consulta.
     if (!semTelefone && ((!agente && equipe.ehInterno(evento.remetente))
-      || await equipeDoCadastro.ehInterno(evento.remetente))) {
+      || await equipeDoCadastro.ehInterno(evento.remetente, {
+        confirmarNoBanco: async () => !(await repositorio.obterContatoPorTelefone?.(evento.remetente)),
+      }))) {
       return {
         acao: 'mensagem_interna_ignorada',
         motivo: 'número da equipe — comanda, não é atendido',
@@ -1175,7 +1182,9 @@ function criarAtendimento({
     // alguém da equipe volta como `fromMe`. Registrá-la criaria um contato com o
     // número da própria equipe — na clínica ou no agente — a cada resumo. Mesmo
     // critério da entrada: lista do ambiente só na clínica; cadastro nos dois.
-    if ((!agente && equipe.ehInterno(telefone)) || await equipeDoCadastro.ehInterno(telefone)) {
+    // O eco sempre confirma no banco antes de criar contato ou conversa
+    // (auditoria M1): o resumo sai logo depois de alguém ser autorizado.
+    if ((!agente && equipe.ehInterno(telefone)) || await equipeDoCadastro.ehInterno(telefone, { confirmarNoBanco: true })) {
       return { acao: 'eco_interno_ignorado', motivo: 'número da equipe — não é atendimento', conversa_id: null };
     }
 

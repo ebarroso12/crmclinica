@@ -67,9 +67,9 @@ function criarNumerosInternosDoCadastro({ repositorio, validadeMs = 60_000, relo
   let lidoEm = null;
   let leitura = null;
 
-  async function atualizar() {
+  async function atualizar({ forcar = false } = {}) {
     if (!repositorio?.listarDestinatariosDeResumo) return conhecidos;
-    if (lidoEm !== null && relogio() - lidoEm < validadeMs) return conhecidos;
+    if (!forcar && lidoEm !== null && relogio() - lidoEm < validadeMs) return conhecidos;
     if (!leitura) {
       leitura = (async () => {
         try {
@@ -87,10 +87,19 @@ function criarNumerosInternosDoCadastro({ repositorio, validadeMs = 60_000, relo
   }
 
   return {
-    /** É WhatsApp autorizado de alguém da equipe? */
-    async ehInterno(telefone) {
+    /**
+     * É WhatsApp autorizado de alguém da equipe? O cache só vale para o SIM
+     * (auditoria M1): com `confirmarNoBanco` (valor ou função, avaliada só
+     * quando o cache diz NÃO), o cadastro é relido na hora — é o que pede quem
+     * vai CRIAR contato, porque a pessoa pode ter sido autorizada depois da
+     * última leitura.
+     */
+    async ehInterno(telefone, { confirmarNoBanco = false } = {}) {
       if (!telefone) return false;
-      return (await atualizar()).ehInterno(telefone);
+      if ((await atualizar()).ehInterno(telefone)) return true;
+      const confirmar = typeof confirmarNoBanco === 'function' ? await confirmarNoBanco() : confirmarNoBanco;
+      if (!confirmar) return false;
+      return (await atualizar({ forcar: true })).ehInterno(telefone);
     },
   };
 }

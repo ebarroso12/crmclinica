@@ -141,6 +141,37 @@ test('WhatsApp cadastrado SEM autorização não é número interno: sem consent
   assert.equal((await repositorio.listarConversas({})).length, 1);
 });
 
+test('cache velho + autorização recente: eco e número novo conferem no banco antes de criar contato; contato existente não relê (auditoria M1)', async () => {
+  // Auditoria de 7f8275b (M1): o cache de 60 s valia também para o NÃO. Autorizar
+  // o WhatsApp e o resumo sair no minuto seguinte deixava uma instância quente
+  // criar contato com o texto do resumo.
+  const { repositorio, atendimento } = await montar();
+  let leituras = 0;
+  const lerOriginal = repositorio.listarDestinatariosDeResumo.bind(repositorio);
+  repositorio.listarDestinatariosDeResumo = async () => { leituras += 1; return lerOriginal(); };
+
+  // Aquece o cache: um cliente escreve, o cadastro é lido (sem a pessoa nova).
+  await atendimento.receberMensagem(evento(CLIENTE, { id: 'C1', texto: 'oi, quero marcar' }));
+
+  const recente = await repositorio.criarUsuario({ nome: 'Recém Autorizada', email: 'recem@teste.local', papel: 'gestor', situacao: 'ativo' });
+  await repositorio.atualizarUsuario(recente.id, {
+    whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '997770002', whatsappParticularAutorizado: true,
+  });
+
+  const eco = await atendimento.registrarEnvioExternoDoWhatsapp({
+    telefone: '5516997770002', texto: 'RESUMO DA CLÍNICA — 1 atendimento(s)', idProvedor: 'whatsapp:5516997770002:ECO-M1',
+  });
+  assert.equal(eco.acao, 'eco_interno_ignorado', 'o eco do resumo não vira contato com o cache velho');
+  const resposta = await atendimento.receberMensagem(evento('5516997770002', { id: 'R-M1', texto: 'ok, obrigada' }));
+  assert.equal(resposta.acao, 'mensagem_interna_ignorada', 'a resposta dela também não');
+  assert.deepEqual(await repositorio.buscarContatos({ termo: '997770002' }), [], 'nenhum contato criado');
+
+  // Contato que já existe: sem leitura extra do cadastro dentro da validade.
+  const antes = leituras;
+  await atendimento.receberMensagem(evento(CLIENTE, { id: 'C2', texto: 'e sábado?' }));
+  assert.equal(leituras, antes, 'contato existente não pesa o webhook');
+});
+
 test('o cadastro é lido no máximo uma vez por minuto, e falha de banco mantém a última lista', async () => {
   let leituras = 0;
   let quebrado = false;
