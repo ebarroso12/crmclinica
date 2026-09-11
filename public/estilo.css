@@ -159,36 +159,54 @@ h1, h2, h3 { line-height: 1.25; }
 .app {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 244px minmax(0, 1fr);
+  grid-template-columns: 232px minmax(0, 1fr);
   grid-template-rows: auto 1fr;
 }
 .app > * { min-width: 0; }
 
 /* ---------- Faixa superior de saúde operacional ---------- */
 
+/* Uma linha fina, não um painel: são quatro sinais de saúde e a fila, lidos de
+   relance. Antes eram cinco blocos altos que tomavam a largura toda e brigavam
+   com o título da tela. O estado vira um ponto colorido + palavra. */
 .plantao {
   grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 20px;
   background: var(--navy);
-  color: #fff;
-  padding: 12px 28px;
+  color: #dfe8f7;
+  padding: 7px 24px;
+  font-size: 12px;
 }
 .plantao > div {
-  padding: 4px 22px;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
 }
-.plantao > div:last-child { border-right: 0; }
-.plantao > div { min-width: 0; }
 .plantao strong, .plantao .estado { overflow-wrap: anywhere; }
-.plantao small { color: #a9b8d4; font-size: 11px; letter-spacing: 0.12em; }
-.plantao strong { font-size: 15px; }
-.plantao .estado { font-size: 12px; color: #cbd6ea; }
-.plantao .estado.ok { color: #57e0b0; }
-.plantao .estado.alerta { color: #ffcd6b; }
-.plantao .estado.ruim { color: #ff9b96; }
+.plantao small { color: #8fa2c4; font-size: 10px; letter-spacing: 0.1em; }
+.plantao strong { font-size: 12px; font-weight: 600; color: #eef3fb; }
+.plantao .estado { font-size: 12px; color: #b9c7de; }
+.plantao .estado::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #7f8db0;
+  vertical-align: middle;
+}
+.plantao .estado.ok { color: #7fe3bd; }
+.plantao .estado.ok::before { background: #3ddc9a; }
+.plantao .estado.alerta { color: #ffd489; }
+.plantao .estado.alerta::before { background: #f5b301; }
+.plantao .estado.ruim { color: #ffada8; }
+.plantao .estado.ruim::before { background: #ff6b61; }
 
 /* ---------- Menu lateral ---------- */
 
@@ -197,11 +215,12 @@ h1, h2, h3 { line-height: 1.25; }
   border-right: 1px solid var(--linha);
   display: flex;
   flex-direction: column;
-  padding: 22px 14px;
+  gap: 8px;
+  padding: 14px 10px;
 }
-.marca { display: flex; gap: 10px; align-items: center; margin: 0 0 20px; padding: 0 8px; }
-.marca b { display: block; font-size: 18px; }
-.marca small { display: block; color: var(--apoio); font-size: 11px; }
+.marca { display: flex; gap: 9px; align-items: center; margin: 0 0 6px; padding: 0 6px; }
+.marca b { display: block; font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
+.marca small { display: block; color: var(--apoio); font-size: 10.5px; }
 .marca-icone, .agente-icone {
   display: grid;
   place-items: center;
@@ -212,91 +231,119 @@ h1, h2, h3 { line-height: 1.25; }
   background: linear-gradient(135deg, var(--ciano), var(--roxo));
   flex: none;
 }
+/* Relógio: agora vive na barra do topo, em uma linha, como contexto de plantão
+   (hora grande em bloco próprio no menu era peso visual sem função). */
 .relogio {
-  display: grid;
-  gap: 2px;
-  margin: 0 0 18px;
-  padding: 14px 12px;
-  background: #f3f6fb;
-  border-radius: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 0 4px 0 0;
 }
-.relogio b { font-size: 23px; letter-spacing: 0.04em; }
-.relogio span { color: var(--apoio); font-size: 12px; }
+.relogio b { font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.relogio span { color: var(--apoio); font-size: 11.5px; }
 
-nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+/* O menu ocupa a altura livre: o que vem depois dele (controles da Serena e
+   rodapé) se ancora no pé sem `margin: auto` espalhado por cada botão. */
+.lateral nav { margin-bottom: auto; min-width: 0; }
+nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
 nav button {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   border: 0;
   background: transparent;
   text-align: left;
-  color: var(--apoio);
-  padding: 11px 12px;
+  color: #45506a;
+  padding: 8px 10px;
   border-radius: 8px;
   font: inherit;
+  font-size: 13.5px;
   cursor: pointer;
 }
-nav button:hover { background: #eef7f9; color: var(--ciano); }
-nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weight: 600; }
-.icone-menu { width: 18px; text-align: center; }
+nav button:hover { background: #f1f6fb; color: #0a6f7e; }
+/* Ativo: barra de acento + fundo suave. A barra marca a posição na lista mesmo
+   para quem enxerga mal a diferença de fundo. */
+nav button[aria-current="page"] {
+  background: #e6f4f7;
+  color: #0a6473;
+  font-weight: 700;
+  box-shadow: inset 3px 0 0 var(--ciano);
+}
+.icone-menu { width: 20px; text-align: center; font-size: 14px; opacity: 0.9; }
+/* Contador do menu é informação, não alarme: neutro. O do sino é alerta. */
 .contador {
   margin-left: auto;
-  background: #ffe8de;
-  color: #a1461c;
-  border-radius: 10px;
-  padding: 1px 8px;
-  font-size: 12px;
+  background: #eef2f8;
+  color: #46506a;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
 }
-.divisor { color: #8b95a7; font-size: 11px; letter-spacing: 0.13em; margin: 22px 0 6px; padding: 0 12px; }
+.sino .contador { background: #c0182c; color: #fff; font-weight: 700; }
+.divisor {
+  color: #8f9bb1;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin: 14px 0 4px;
+  padding: 0 10px;
+}
 
-/* Parada de emergência: grande, vermelho, impossível de não achar num aperto.
-   `margin-top: auto` empurra o botão para o pé do menu, acima do rodapé. */
+/* Parada de emergência: continua sempre à mão, no pé do menu, mas em contorno
+   em vez de bloco maciço. Dois botões gritando em cores opostas dentro de um
+   menu de 13 itens era o que mais poluía a lateral — e, gritando o tempo todo,
+   nenhum dos dois chamava atenção de verdade. O vermelho cheio fica para o
+   estado que importa: PARAR agora. */
 .parada-emergencia {
-  margin: auto 10px 10px;
-  padding: 13px 10px;
-  width: calc(100% - 20px);
-  border: 0;
-  border-radius: 10px;
-  background: #c0182c;
-  color: #fff;
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(192, 24, 44, 0.35);
-}
-.parada-emergencia:hover { background: #a01224; }
-.parada-emergencia[data-estado="parada"] {
-  background: #f5b301;
-  color: #402a00;
-  box-shadow: none;
-}
-.parada-emergencia[data-estado="parada"]:hover { background: #dea201; }
-
-/* Liberar em massa: mesmo peso visual da parada de emergência, cor oposta
-   (verde = destrava, vermelho = trava) — fica logo acima dela. */
-.liberar-em-massa {
-  margin: auto 10px 0;
-  padding: 11px 10px;
-  width: calc(100% - 20px);
-  border: 0;
-  border-radius: 10px;
-  background: #1c8a4d;
-  color: #fff;
+  margin: 0;
+  padding: 9px 10px;
+  width: 100%;
+  border: 1px solid #e6bcc3;
+  border-radius: 8px;
+  background: #fff5f6;
+  color: #a3182b;
   font-weight: 700;
   font-size: 12px;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(28, 138, 77, 0.35);
 }
-.liberar-em-massa:hover { background: #156b3c; }
+.parada-emergencia:hover { background: #c0182c; border-color: #c0182c; color: #fff; }
+/* Serena já parada: âmbar, e o texto do botão vira "religar" (app.js troca). */
+.parada-emergencia[data-estado="parada"] {
+  background: #fff8e6;
+  border-color: #e8cf94;
+  color: #6b4e05;
+}
+.parada-emergencia[data-estado="parada"]:hover { background: #f5b301; border-color: #f5b301; color: #402a00; }
+
+/* Liberar em massa é manutenção, não emergência: some no fundo do menu até
+   existir conversa travada (app.js controla o `hidden`). */
+.liberar-em-massa {
+  margin: 0;
+  padding: 8px 10px;
+  width: 100%;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  background: var(--superficie);
+  color: #14704a;
+  font-weight: 600;
+  font-size: 11.5px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.liberar-em-massa:hover { background: #eef7f2; border-color: #a8d9c1; }
 .liberar-em-massa:disabled { opacity: 0.6; cursor: default; }
 
-/* margin-top:auto sempre ligado: com um, dois ou nenhum dos botões acima
-   visíveis, o rodapé continua se ancorando no pé do menu sem gap extra. */
-.rodape-lateral { margin-top: auto; color: #8b95a7; font-size: 11px; padding: 14px 10px 0; }
+.rodape-lateral {
+  margin: 0;
+  color: #97a2b5;
+  font-size: 10.5px;
+  padding: 8px 6px 0;
+  border-top: 1px solid var(--linha);
+}
 
 /* Aviso de versão nova: achado do incidente de 2026-08-17 — quem fica com a
    aba aberta por horas nunca sabia que subiu um deploy. Azul/informativo de
@@ -319,19 +366,25 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 
 .area { min-width: 0; }
 
+/* Barra do topo fixa: em plantão longo, rolar a lista não pode esconder quem
+   está logado, o sino nem o "Sair". Mais baixa que antes (o título de 23px com
+   28px de respiro empurrava o conteúdo para fora da primeira tela). */
 .topo {
+  position: sticky;
+  top: 0;
+  z-index: 4;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding: 20px 36px;
+  padding: 12px 24px;
   background: var(--superficie);
   border-bottom: 1px solid var(--linha);
 }
-.topo small { color: var(--apoio); font-size: 11px; letter-spacing: 0.1em; }
-.topo h1 { margin: 4px 0 0; font-size: 23px; }
-.acoes { display: flex; align-items: center; gap: 10px; color: var(--apoio); }
-.nome-equipe { font-size: 14px; }
+.topo small { color: var(--apoio); font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; }
+.topo h1 { margin: 2px 0 0; font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
+.acoes { display: flex; align-items: center; gap: 12px; color: var(--apoio); }
+.nome-equipe { font-size: 13px; }
 
 .avatar {
   display: inline-grid;
@@ -862,16 +915,17 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 
 @media (max-width: 980px) {
   .app { grid-template-columns: minmax(0, 1fr); }
-  .lateral { border-right: 0; border-bottom: 1px solid var(--linha); padding: 10px; }
-  .relogio, .rodape-lateral, .marca small, .divisor { display: none; }
-  .marca { margin-bottom: 8px; }
+  .lateral { border-right: 0; border-bottom: 1px solid var(--linha); gap: 6px; padding: 10px; }
+  .rodape-lateral, .marca small, .divisor { display: none; }
+  .marca { margin-bottom: 4px; }
   /* O menu vira uma faixa que rola dentro de si mesma, sem empurrar a página. */
-  nav { min-width: 0; overflow-x: auto; }
+  .lateral nav { margin-bottom: 0; overflow-x: auto; }
   nav ul { grid-auto-flow: column; grid-auto-columns: max-content; gap: 4px; }
   nav button { white-space: nowrap; }
-  .plantao { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 0; padding: 10px 14px; }
-  .plantao > div { padding: 4px 12px; }
-  .plantao > div:nth-child(2) { border-right: 0; }
+  nav button[aria-current="page"] { box-shadow: inset 0 -3px 0 var(--ciano); }
+  /* Os dois controles da Serena ficam lado a lado, não empilhados. */
+  .parada-emergencia, .liberar-em-massa { width: auto; }
+  .plantao { gap: 4px 14px; padding: 8px 14px; }
   .topo, .tela { padding-left: 18px; padding-right: 18px; }
   .aviso { margin-left: 18px; margin-right: 18px; }
   .metricas { grid-template-columns: repeat(2, minmax(0, 1fr)); }

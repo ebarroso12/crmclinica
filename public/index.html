@@ -147,11 +147,6 @@
         <span><b>crmclinica</b><small>Clínica Dr. Edson Barroso</small></span>
       </p>
 
-      <p class="relogio">
-        <b id="hora">--:--</b>
-        <span id="hora-local">Franca - SP</span>
-      </p>
-
       <nav aria-label="Seções do CRM">
         <ul>
           <li><button type="button" data-tela="painel" aria-current="page"><span class="icone-menu" aria-hidden="true">▦</span> Hoje</button></li>
@@ -192,7 +187,7 @@
            botão libera de uma vez só as que a PRÓPRIA automação travou —
            nunca as que um humano assumiu de verdade (ver liberarEmMassa). -->
       <button type="button" class="liberar-em-massa" id="liberar-em-massa" hidden>
-        ✓ Liberar todas as travadas por falha
+        ✓ Liberar travadas por falha
       </button>
 
       <button type="button" class="parada-emergencia" id="parada-emergencia" data-estado="armada" hidden>
@@ -222,6 +217,13 @@
           <h1 id="titulo">Hoje</h1>
         </div>
         <div class="acoes">
+          <!-- O relógio saiu do menu (onde ocupava um bloco de 23px só para a
+               hora) e virou contexto da barra do topo, ao lado de quem está
+               logado. Mesmos ids: app.js continua atualizando os dois. -->
+          <p class="relogio">
+            <b id="hora">--:--</b>
+            <span id="hora-local">Franca - SP</span>
+          </p>
           <span class="sino" id="sino">
             <button type="button" class="acao" id="sino-botao" aria-label="Notificações">
               🔔<b class="contador" id="sino-contador" hidden>0</b>
