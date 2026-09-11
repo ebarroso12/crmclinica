@@ -1713,10 +1713,12 @@ function criarRepositorio(pool) {
     },
 
     /**
-     * Conversas de UM agente esperando a equipe: transferidas ou escalonadas
-     * (`assumida_por_humano`) e ainda sem responsável. A fila de escalonadas da
-     * clínica exclui conversa de agente de propósito (046) — sem este recorte,
-     * o cliente que pediu gente não aparecia para ninguém.
+     * Conversas de UM agente esperando a equipe: as que o agente TRANSFERIU
+     * (`transferir` grava `assumida_por_humano` com `atribuido_a` nulo) e que
+     * ainda estão sem responsável. Escalonamento por falha não entra —
+     * `escalonar()` não marca a conversa como assumida. A fila de escalonadas
+     * da clínica exclui conversa de agente de propósito (046) — sem este
+     * recorte, o cliente que pediu gente não aparecia para ninguém.
      */
     async listarConversasDoAgenteAguardandoEquipe(agenteId, { limite = 20 } = {}) {
       const { rows } = await consultar(`

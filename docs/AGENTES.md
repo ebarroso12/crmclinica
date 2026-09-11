@@ -250,11 +250,16 @@ equipe já opera a Serena:
    motivo), **WHATSAPP** (estado da instância na Evolution, número e perfil),
    **ENTREGA** (última resposta e última falha `agente_resposta_nao_entregue`)
    e **AGUARDANDO VOCÊ**.
-2. **Aguardando você**: conversas do agente com `assumida_por_humano` e sem
-   responsável (transferidas pelo agente ou escalonadas). A fila de
-   escalonadas da clínica exclui conversa de agente de propósito — sem este
-   bloco, o cliente que pediu gente não aparecia para ninguém. O mesmo total
-   vira selo no menu Agentes (atualiza a cada minuto).
+2. **Aguardando você**: conversas que o agente **transferiu para a equipe** e
+   que ainda estão **sem responsável** — `transferir` (fluxo.js) grava
+   `assumida_por_humano = true` com `atribuido_a` nulo, e esse é o recorte.
+   Escalonamento por falha (`agente_escalonada`) **não** entra: `escalonar()`
+   não marca a conversa como assumida. A conversa sai quando alguém clica
+   "Assumir" ou responde como equipe (responder assume a conversa de agente
+   sem responsável). A fila de escalonadas da clínica exclui conversa de
+   agente de propósito — sem este bloco, o cliente que pediu gente não
+   aparecia para ninguém. O mesmo total vira selo no menu Agentes (atualiza a
+   cada minuto).
 3. **WhatsApp do agente**: "Conectar WhatsApp" pede à Evolution o código de
    pareamento (com o número) e o QR da instância do canal. O painel **não**
    cria nem apaga instância e **não** mexe em webhook — isso é feito uma vez,
@@ -280,6 +285,12 @@ nome/telefone do contato e estado — sem prévia. Falha da Evolution vira estad
 Resíduo conhecido: dois administradores pausando no mesmo instante gravam duas
 auditorias `agente_pausado` (o status fica certo); a atualização do agente não
 é condicional.
+
+Resíduos da auditoria independente (documentados, não corrigidos nesta entrega):
+
+- B4 — o seletor "quem atende" do inbox continua montado depois de sair da conta sem recarregar a página: o próximo usuário vê as opções até recarregar.
+- B5 — `resumirOperacaoDoAgente` não tem corte de tempo no WHERE (a "última" ocorrência varre toda a auditoria das conversas do agente); cresce com o histórico.
+- B7 — nada impede cadastrar no canal do agente a mesma instância da clínica (`EVOLUTION_INSTANCE`); isso passaria as conversas da clínica para o agente.
 
 ## Sinais da clínica não misturam agente
 
