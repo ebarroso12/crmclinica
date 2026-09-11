@@ -137,10 +137,13 @@ const ROTAS_SEM_CLINICA = Object.freeze([
   { padrao: /^\/api\/conversas\/filas$/, metodos: ['GET'] },
   { padrao: /^\/api\/conversas\/escopo$/, metodos: ['GET'] },
   { padrao: /^\/api\/conversas\/eventos(\/ticket)?$/ },
-  { padrao: /^\/api\/conversas\/\d+(\/(mensagens|anexos|assumir|etiquetas|prioridade|estado|notas|ficha))?$/ },
+  // Auditoria de acesso A3: "ficha" (PUT do cadastro do contato pela conversa)
+  // saiu — o colaborador não escreve em dado de contato, que é da clínica.
+  { padrao: /^\/api\/conversas\/\d+(\/(mensagens|anexos|assumir|etiquetas|prioridade|estado|notas))?$/ },
   { padrao: /^\/api\/contatos$/, metodos: ['GET'] },
   { padrao: /^\/api\/contatos\/gestao$/, metodos: ['GET'] },
-  { padrao: /^\/api\/contatos\/\d+$/, metodos: ['GET', 'PUT'] },
+  // Só leitura (auditoria de acesso A3): editar contato é da clínica.
+  { padrao: /^\/api\/contatos\/\d+$/, metodos: ['GET'] },
   { padrao: /^\/api\/contatos\/\d+\/conversas$/, metodos: ['GET'] },
   { padrao: /^\/api\/agentes(\/.*)?$/ },
 ]);

@@ -6,6 +6,7 @@ const { normalizarTelefone, telefoneValido } = require('../dominio/serena');
 const { mascararTelefone } = require('../dominio/lembretes');
 const {
   TODOS, veAgente, veContato, veConversaDe, selosDoContato, filtroDeEscopo, contatoParaColaborador,
+  ErroSemAcessoAClinica,
 } = require('../seguranca/escopo');
 
 // Sem escopo declarado (chamada interna ou teste de unidade): vê tudo.
@@ -245,6 +246,10 @@ function criarRotasDeContatos({ repositorio }) {
     /** PUT /api/contatos/:id */
     async editar(usuario, contatoId, corpo, { escopo = null } = {}) {
       exigirPermissao(usuario, 'contatos:editar');
+      // Auditoria de acesso A3: quem não vê a clínica não edita cadastro de
+      // contato — nem com papel de gestor. A lista de rotas já barra; esta
+      // linha segura se a lista mudar.
+      if (escopo && escopo.clinica !== true) throw new ErroSemAcessoAClinica();
       const id = exigirIdentificador(contatoId, 'contato_id');
 
       const atual = await repositorio.obterContato(id);

@@ -166,3 +166,37 @@ test('A2 + M1: quem não vê a clínica recebe contato por LISTA BRANCA em toda 
   assert.equal(conversaDaClinica.json.ficha.nome_completo, 'NOME-COMPLETO-SIGILOSO');
   assert.equal(conversaDaClinica.json.conversa.contato.email, 'sigilo@clinica.test');
 });
+
+// ------------------------------------------------------------------ A3
+
+test('A3: quem não vê a clínica não edita contato nem ficha — 403 sem tocar no cadastro; a clínica na equipe ainda edita', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+
+  for (const quem of ['loja', 'gestorLoja']) {
+    const contato = await c.pedir(quem, `/api/contatos/${c.paciente.id}`, {
+      metodo: 'PUT', corpo: { observacoes: null, telefone: '5516900006999' },
+    });
+    assert.equal(contato.status, 403, `${quem} PUT /api/contatos/:id`);
+    assert.equal(contato.json?.codigo, 'sem_acesso_clinica', `${quem} PUT /api/contatos/:id`);
+
+    const ficha = await c.pedir(quem, `/api/conversas/${c.conversaPacienteLoja.id}/ficha`, {
+      metodo: 'PUT', corpo: { observacoes: null, telefone: '5516900006998' },
+    });
+    assert.equal(ficha.status, 403, `${quem} PUT /api/conversas/:id/ficha`);
+    assert.equal(ficha.json?.codigo, 'sem_acesso_clinica', `${quem} PUT ficha`);
+
+    for (const resposta of [contato, ficha]) {
+      for (const sigilo of SIGILOS) assert.ok(!resposta.texto.includes(sigilo), `${quem}: "${sigilo}" na resposta da recusa`);
+    }
+  }
+
+  const intacto = await c.repositorio.obterContato(c.paciente.id);
+  assert.equal(intacto.observacoes, 'OBS-CLINICA-SIGILOSA', 'observação não foi apagada');
+  assert.equal(intacto.telefone, '5516900006001', 'telefone do paciente não foi trocado');
+
+  const daEquipeComClinica = await c.pedir('gestorAlpins', `/api/contatos/${c.paciente.id}`, {
+    metodo: 'PUT', corpo: { nome: 'Paciente Auditoria' },
+  });
+  assert.equal(daEquipeComClinica.status, 200, 'quem vê a clínica continua editando');
+});

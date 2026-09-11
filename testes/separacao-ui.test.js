@@ -44,7 +44,9 @@ test('menu do colaborador: só Conversas, Contatos e Meu perfil; parada da Seren
   const aplicar = funcaoDoApp('aplicarEscopoNoMenu');
   assert.match(aplicar, /if \(veClinica\(\)\) return;/);
   assert.match(aplicar, /!TELAS_SEM_CLINICA\.has\(botao\.dataset\.tela\)/);
-  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo']) assert.ok(aplicar.includes(`'${alvo}'`), alvo);
+  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha']) assert.ok(aplicar.includes(`'${alvo}'`), alvo);
+  // Auditoria de acesso A3: editar contato é da clínica — o botão só existe para quem a vê.
+  assert.match(funcaoDoApp('carregarContatos'), /\$\{veClinica\(\) \? `<button type="button" class="secundario" data-editar-contato=/);
   assert.match(funcaoDoApp('sincronizarLiberarEmMassa'), /\(escopoAtual !== null && !veClinica\(\)\)/);
 });
 
@@ -101,7 +103,8 @@ test('Contatos: selos de origem escapados, filtro Todos/Clínica/agente, e o col
   assert.match(funcaoDoApp('prepararFiltroDeOrigemDosContatos'), /\.\.\.\(veClinica\(\) \? \[\['clinica', 'Clínica'\]\] : \[\]\)/);
   const carregar = funcaoDoApp('carregarContatos');
   assert.match(carregar, /&origem=\$\{encodeURIComponent\(origem\)\}/);
-  assert.match(carregar, /\$\{veClinica\(\) \? `<button type="button" class="perigo" data-excluir-contato=/);
+  // Auditoria de acesso A3: "Editar" e "Excluir" do contato no mesmo bloco, só para quem vê a clínica.
+  assert.match(carregar, /\$\{veClinica\(\) \? `<button type="button" class="secundario" data-editar-contato="\$\{contato\.id\}">Editar<\/button>\s*<button type="button" class="perigo" data-excluir-contato=/);
   assert.match(funcaoDoApp('verHistoricoDoContato'), /c\.agente_nome \?\? 'Clínica'/);
 });
 

@@ -1753,7 +1753,8 @@ function aplicarEscopoNoMenu() {
     const titulo = grupo.previousElementSibling;
     if (titulo?.classList.contains('divisor')) titulo.hidden = vazio;
   }
-  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo']) {
+  // `#editar-ficha` (auditoria de acesso A3): o colaborador não edita o cadastro do contato.
+  for (const alvo of ['#parada-emergencia', '#liberar-em-massa', '#contato-novo', '#editar-ficha']) {
     const elemento = seletor(alvo);
     if (elemento) elemento.hidden = true;
   }
@@ -5264,8 +5265,8 @@ async function carregarContatos() {
           ${contato.excluido
             ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`
             : `<button type="button" class="secundario" data-ver-contato="${contato.id}">Histórico</button>
-               <button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
-               ${veClinica() ? `<button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>` : ''}`}
+               ${veClinica() ? `<button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
+               <button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>` : ''}`}
         </div>
       </li>`).join('');
   } catch (erro) {
