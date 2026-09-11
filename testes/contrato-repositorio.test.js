@@ -1637,6 +1637,28 @@ for (const { nome, montar } of implementacoes) {
         'a clínica tem a própria janela');
     });
 
+    await t.test('conversa de agente nunca carrega o lead da clínica; a da clínica carrega como antes (auditoria de acesso A1)', async () => {
+      const agente = await criarAgenteDeTeste('contrato-lead-agente');
+      const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001081', nome: 'Lead Duplo' });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');
+      const doAgente = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp', { agenteId: agente.id });
+      const lead = await repositorio.salvarLead(contato.id, { conversaId: daClinica.id, temperatura: 'quente' });
+      await repositorio.atualizarLead(lead.id, { pagamento: 'convenio' });
+
+      const campos = ['lead_id', 'temperatura', 'estagio', 'score', 'interesse', 'primeira_consulta',
+        'pagamento', 'urgencia', 'disponibilidade', 'perdido_motivo'];
+      const semLead = (conversa) => campos.filter((campo) => conversa[campo] !== null);
+      const lista = await repositorio.listarConversas({ contatoId: contato.id, limite: 10 });
+
+      assert.deepEqual(semLead(lista.find((item) => item.id === doAgente.id)), [], 'lista: conversa de agente sem campo de lead');
+      assert.deepEqual(semLead(await repositorio.obterConversa(doAgente.id)), [], 'obterConversa: idem');
+      const clinicaNaLista = lista.find((item) => item.id === daClinica.id);
+      assert.equal(clinicaNaLista.lead_id, lead.id);
+      assert.equal(clinicaNaLista.pagamento, 'convenio');
+      assert.equal(clinicaNaLista.temperatura, 'quente');
+      assert.equal((await repositorio.obterConversa(daClinica.id)).pagamento, 'convenio');
+    });
+
     await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001031', nome: 'Fila Agendada' });
       const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');

@@ -246,7 +246,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   function montarConversa(conversa) {
     if (!conversa) return null;
     const contato = contatos.get(conversa.contato_id);
-    const lead = [...leads.values()].find((registro) => registro.contato_id === conversa.contato_id);
+    // Paridade com repositorio.js (auditoria de acesso A1): conversa de agente não carrega lead da clínica.
+    const lead = (conversa.agente_id ?? null) !== null
+      ? null
+      : [...leads.values()].find((registro) => registro.contato_id === conversa.contato_id);
     const daConversa = mensagens.filter((mensagem) => mensagem.conversa_id === conversa.id && !mensagem.privada);
     const responsavel = conversa.atribuido_a ? usuarios.get(conversa.atribuido_a) : null;
 

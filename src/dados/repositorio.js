@@ -36,7 +36,10 @@ const JUNCOES_CONVERSA = `
   FROM conversas c
   JOIN contatos ct ON ct.id = c.contato_id
   LEFT JOIN usuarios u ON u.id = c.atribuido_a
-  LEFT JOIN leads l ON l.contato_id = c.contato_id
+  -- Lead é da CLÍNICA (auditoria de acesso A1): conversa de agente nunca o
+  -- carrega — a mesma pessoa pode ser paciente, e interesse, pagamento e
+  -- temperatura não são assunto da loja, para usuário nenhum.
+  LEFT JOIN leads l ON l.contato_id = c.contato_id AND c.agente_id IS NULL
   LEFT JOIN agentes ag ON ag.id = c.agente_id
 `;
 
