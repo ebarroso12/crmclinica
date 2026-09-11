@@ -377,7 +377,12 @@ Cada passo abaixo que toca produção exige autorização própria.
    mensagens chegam sem dono.
 6. Chaves de IA no `.env` do VPS e reiniciar `crmclinica-outbox.service`;
    confirmar pelo heartbeat no banco.
-7. Testar pela aba Teste, depois ligar o agente (`status = 'ativo'`).
+7. Testar pela aba Teste, depois ligar o agente (`status = 'ativo'`). Pelo
+   WhatsApp, teste com um número que **não** esteja autorizado no cadastro de
+   usuários: todo WhatsApp autorizado de conta ativa (quem recebe resumo) é
+   tratado como número da equipe também no agente — a mensagem é ignorada, nada
+   é gravado e o agente não responde (docs/RESUMOS.md, auditoria B3). Vale para o
+   admin: pelo próprio WhatsApp autorizado ele não testa o agente.
 
 ## Quem vê o quê (migration 047)
 

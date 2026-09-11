@@ -156,11 +156,14 @@ function criarAtendimento({
     // Antes de gravar qualquer coisa, de propósito: uma linha criada e depois
     // escondida continua sendo uma linha no banco.
     // Os números internos do AMBIENTE são da equipe da CLÍNICA: escrever com
-    // eles para o número de um agente é conversa legítima (inclusive para
-    // testar). Os do CADASTRO valem nos dois lados (docs/RESUMOS.md): o resumo
-    // vai para o WhatsApp autorizado de cada pessoa, e quem recebe resumo não é
-    // cliente de agente nenhum — sem isto, o funcionário que responde o resumo
-    // pelo número do Alpins seria atendido pelo próprio agente.
+    // eles para o número de um agente continua sendo conversa com o agente. Os
+    // do CADASTRO (todo WhatsApp AUTORIZADO de conta ativa) valem nos dois lados
+    // (docs/RESUMOS.md): quem recebe resumo não é cliente de agente nenhum — sem
+    // isto, o funcionário que responde o resumo pelo número do Alpins seria
+    // atendido pelo próprio agente. Consequência aceita (auditoria B3): o admin,
+    // ou qualquer pessoa da equipe, NÃO testa o agente pelo próprio WhatsApp
+    // autorizado — a mensagem é ignorada e nada é gravado. Para testar, use um
+    // número que não esteja autorizado no cadastro (docs/AGENTES.md).
     //
     // O cache do cadastro só vale para o SIM (auditoria M1): quando o telefone
     // ainda não é contato — esta mensagem CRIARIA um —, o NÃO é conferido no
