@@ -265,6 +265,14 @@ test('o inbox filtra por quem atende e o seletor existe no HTML', () => {
   assert.match(funcaoDoApp('prepararFiltroDeAgentesDaConversa'), /podeFazer\('agentes:ler'\)/);
 });
 
+test('conversa de agente transferida (assumida e sem responsável) mostra "Assumir" — achado M1', () => {
+  const abrir = funcaoDoApp('abrirConversa');
+  assert.match(abrir, /const agenteSemResponsavel = Boolean\(conversa\.agente_id\) && conversa\.assumida_por_humano && !conversa\.atribuido_a;/);
+  assert.match(abrir, /seletor\('\.acao\[data-acao="assumir"\]'\)\.hidden = conversa\.assumida_por_humano && !agenteSemResponsavel;/);
+  assert.match(abrir, /seletor\('\.acao\[data-acao="liberar"\]'\)\.hidden = !conversa\.assumida_por_humano;/,
+    '"Devolver à IA" segue a regra de antes');
+});
+
 test('conversa de agente não é assinada nem avisada como Serena', () => {
   assert.match(funcaoDoApp('desenharThread'), /agenteDaConversaAberta \|\| 'Serena'/);
   const abrir = funcaoDoApp('abrirConversa');

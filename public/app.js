@@ -674,7 +674,10 @@ async function abrirConversa(conversaId) {
         ? 'Conversa assumida pela equipe. A resposta automática está pausada.'
         : '';
     }
-    seletor('.acao[data-acao="assumir"]').hidden = conversa.assumida_por_humano;
+    // Conversa que o agente transferiu fica assumida e sem responsável: ainda
+    // precisa de alguém que diga "é minha" (achado M1). Na clínica, como antes.
+    const agenteSemResponsavel = Boolean(conversa.agente_id) && conversa.assumida_por_humano && !conversa.atribuido_a;
+    seletor('.acao[data-acao="assumir"]').hidden = conversa.assumida_por_humano && !agenteSemResponsavel;
     seletor('.acao[data-acao="liberar"]').hidden = !conversa.assumida_por_humano;
 
     desenharThread(mensagens);
