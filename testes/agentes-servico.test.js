@@ -495,3 +495,167 @@ test('aplicarPlano grava tudo dentro de uma transação e audita sem conteúdo',
   assert.equal(registro.detalhe.treinamentos_novos, 9);
   assert.ok(!JSON.stringify(registro).includes('Mountain Trail'));
 });
+
+// ------------------------------------------------------- painel de operação
+
+test('pausar leva a desativado, audita com motivo e repetir não audita de novo', async () => {
+  const { servico, repositorio, agente } = await servicoComAgente();
+  await repositorio.atualizarAgente(agente.id, { status: 'ativo' });
+
+  const pausado = await servico.pausar(agente.id, { motivo: '  almoço da equipe ' }, { usuarioId: 3 });
+  assert.equal(pausado.mudou, true);
+  assert.equal(pausado.agente.status, 'desativado');
+  const registro = repositorio.auditoria.find((item) => item.acao === 'agente_pausado');
+  assert.deepEqual(registro.detalhe, { status_de: 'ativo', motivo: 'almoço da equipe' }, 'motivo limpo de caractere de controle');
+  assert.equal(registro.usuarioId, 3);
+
+  const repetido = await servico.pausar(agente.id, {}, { usuarioId: 3 });
+  assert.equal(repetido.mudou, false);
+  assert.equal(repositorio.auditoria.filter((item) => item.acao === 'agente_pausado').length, 1);
+});
+
+test('pausar sem motivo não grava motivo; motivo inválido é ErroDeContrato antes de mudar status', async () => {
+  const { servico, repositorio, agente } = await servicoComAgente();
+  await repositorio.atualizarAgente(agente.id, { status: 'ativo' });
+
+  await assert.rejects(servico.pausar(agente.id, { motivo: 'x'.repeat(201) }), ErroDeContrato);
+  await assert.rejects(servico.pausar(agente.id, { motivo: 42 }), ErroDeContrato);
+  await assert.rejects(servico.pausar(agente.id, [1]), ErroDeContrato);
+  assert.equal((await repositorio.obterAgente(agente.id)).status, 'ativo', 'recusa não pausa');
+
+  await servico.pausar(agente.id, null);
+  assert.deepEqual(repositorio.auditoria.find((item) => item.acao === 'agente_pausado').detalhe, { status_de: 'ativo' });
+  await rejeitaComStatus(servico.pausar(999, {}), 404);
+});
+
+test('retomar leva a ativo e audita de onde veio; já ativo não muda', async () => {
+  const { servico, repositorio, agente } = await servicoComAgente();
+
+  const retomado = await servico.retomar(agente.id, { usuarioId: 4 });
+  assert.equal(retomado.mudou, true);
+  assert.equal(retomado.agente.status, 'ativo');
+  assert.deepEqual(repositorio.auditoria.find((item) => item.acao === 'agente_retomado').detalhe, { status_de: 'desativado' });
+
+  assert.equal((await servico.retomar(agente.id)).mudou, false);
+  assert.equal(repositorio.auditoria.filter((item) => item.acao === 'agente_retomado').length, 1);
+});
+
+test('operação junta números, quem mudou o status por último e conversas — sem conteúdo de mensagem', async () => {
+  // 02:30 UTC de 11/09 ainda é 10/09 em São Paulo: "hoje" começa 10/09 às 03:00 UTC.
+  const instante = new Date('2026-09-11T02:30:00.000Z');
+  const { servico, repositorio, agente } = await servicoComAgente({ agora: () => instante });
+  const pedidos = {};
+  const conversa = {
+    id: 9, status: 'aberta', contato: { nome: 'Cliente da Loja', telefone: '5516900000009' },
+    assumida_por_humano: true, ultima_msg_em: '2026-09-11T01:00:00.000Z', previa: 'texto do cliente', responsavel_nome: null,
+  };
+  Object.assign(repositorio, {
+    async resumirOperacaoDoAgente(agenteId, opcoes) {
+      pedidos.resumo = [agenteId, opcoes];
+      return {
+        acoes: [
+          { acao: 'agente_respondida', hoje: 3, semana: 5, ultima: '2026-09-11T01:00:00.000Z' },
+          { acao: 'acao_que_o_painel_nao_conhece', hoje: 1, semana: 1, ultima: null },
+        ],
+        conversas_novas: { hoje: 1, semana: 2 },
+      };
+    },
+    async listarAuditoriaDoAgente(agenteId, opcoes) {
+      pedidos.auditoria = [agenteId, opcoes];
+      return [
+        { acao: 'agente_atualizado', detalhe: { campos: ['nome'] }, criado_em: '2026-09-11T02:00:00.000Z', usuario_nome: 'Outra' },
+        { acao: 'agente_pausado', detalhe: { status_de: 'ativo', motivo: 'almoço' }, criado_em: '2026-09-11T01:30:00.000Z', usuario_nome: 'Dra. Ana' },
+      ];
+    },
+    async listarConversasDoAgenteAguardandoEquipe(agenteId, opcoes) { pedidos.aguardando = [agenteId, opcoes]; return [conversa]; },
+    async listarConversas(opcoes) { pedidos.recentes = opcoes; return [conversa]; },
+  });
+
+  const operacao = await servico.operacao(agente.id);
+
+  assert.equal(pedidos.resumo[1].hojeDesde, '2026-09-10T03:00:00.000Z');
+  assert.equal(pedidos.resumo[1].semanaDesde, '2026-09-04T02:30:00.000Z');
+  assert.ok(pedidos.resumo[1].acoes.includes('transferida_para_humano'));
+  assert.deepEqual(pedidos.recentes, { agenteId: agente.id, limite: 10 });
+
+  assert.deepEqual(operacao.agente, { id: agente.id, nome: 'Agente Teste', status: 'desativado' });
+  assert.deepEqual(operacao.status_alterado, {
+    acao: 'agente_pausado', status: 'desativado', motivo: 'almoço', em: '2026-09-11T01:30:00.000Z', por: 'Dra. Ana',
+  }, 'atualização sem troca de status não conta como mudança');
+  assert.deepEqual(operacao.numeros.conversas_novas, { hoje: 1, semana: 2 });
+  assert.deepEqual(operacao.numeros.por_acao.agente_respondida, { hoje: 3, semana: 5, ultima: '2026-09-11T01:00:00.000Z' });
+  assert.deepEqual(operacao.numeros.por_acao.agente_resposta_nao_entregue, { hoje: 0, semana: 0, ultima: null });
+  assert.ok(!('acao_que_o_painel_nao_conhece' in operacao.numeros.por_acao));
+  assert.deepEqual(operacao.aguardando, [{
+    id: 9, status: 'aberta', contato_nome: 'Cliente da Loja', contato_telefone: '5516900000009',
+    ultima_msg_em: '2026-09-11T01:00:00.000Z', assumida_por_humano: true, responsavel_nome: null,
+  }]);
+  assert.ok(!JSON.stringify(operacao).includes('texto do cliente'), 'prévia de mensagem não vai ao painel');
+  await rejeitaComStatus(servico.operacao(999), 404);
+});
+
+test('aguardandoPorAgente soma o total', async () => {
+  const { servico, repositorio } = await servicoComAgente();
+  repositorio.contarConversasAguardandoEquipePorAgente = async () => [{ agente_id: 1, total: 2 }, { agente_id: 4, total: 3 }];
+  assert.deepEqual(await servico.aguardandoPorAgente(), { total: 5, por_agente: [{ agente_id: 1, total: 2 }, { agente_id: 4, total: 3 }] });
+});
+
+function evolutionFalsa({ estado, conectar } = {}) {
+  const chamadas = [];
+  return {
+    chamadas,
+    disponivel: true,
+    async estado(instancia) { chamadas.push(['estado', instancia]); return estado(instancia); },
+    async conectar(instancia, opcoes) { chamadas.push(['conectar', instancia, opcoes]); return conectar(instancia, opcoes); },
+  };
+}
+
+test('whatsapp: sem canal, Evolution ausente, estado da Evolution e falha dela viram estado — nunca exceção', async () => {
+  const semEvolution = await servicoComAgente();
+  assert.deepEqual(await semEvolution.servico.whatsapp(semEvolution.agente.id), {
+    instancia: null, canal_ativo: false, estado: 'sem_canal', numero: null, perfil: null,
+  });
+  await semEvolution.repositorio.definirCanaisDoAgente(semEvolution.agente.id, [{ canal: 'whatsapp', instancia: 'alpins', ativo: true }]);
+  assert.equal((await semEvolution.servico.whatsapp(semEvolution.agente.id)).estado, 'nao_configurado');
+
+  const evolution = evolutionFalsa({ estado: async () => ({ estado: 'conectado', numero: '5516991271838', perfil: 'Loja' }) });
+  const conectado = await servicoComAgente({ evolution });
+  await conectado.repositorio.definirCanaisDoAgente(conectado.agente.id, [
+    { canal: 'whatsapp', instancia: 'antiga', ativo: false }, { canal: 'whatsapp', instancia: 'alpins', ativo: true },
+  ]);
+  assert.deepEqual(await conectado.servico.whatsapp(conectado.agente.id), {
+    instancia: 'alpins', canal_ativo: true, estado: 'conectado', numero: '5516991271838', perfil: 'Loja',
+  }, 'o canal ligado vence o desligado');
+  assert.deepEqual(evolution.chamadas, [['estado', 'alpins']]);
+
+  const quebrada = await servicoComAgente({
+    evolution: evolutionFalsa({ estado: async () => { const erro = new Error('a Evolution não respondeu a tempo'); erro.status = 503; throw erro; } }),
+  });
+  await quebrada.repositorio.definirCanaisDoAgente(quebrada.agente.id, [{ canal: 'whatsapp', instancia: 'alpins', ativo: false }]);
+  assert.deepEqual(await quebrada.servico.whatsapp(quebrada.agente.id), {
+    instancia: 'alpins', canal_ativo: false, estado: 'erro', numero: null, perfil: null, erro: 'a Evolution não respondeu a tempo',
+  });
+});
+
+test('conectarWhatsapp exige canal e Evolution, valida número e audita sem o número', async () => {
+  const evolution = evolutionFalsa({ conectar: async () => ({ ja_conectado: false, codigo_pareamento: 'KD2ESVLA', qr: null }) });
+  const { servico, repositorio, agente } = await servicoComAgente({ evolution });
+
+  await rejeitaComStatus(servico.conectarWhatsapp(agente.id, {}), 422);
+  await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'alpins', ativo: true }]);
+
+  await assert.rejects(servico.conectarWhatsapp(agente.id, { numero: '123' }), ErroDeContrato);
+  await assert.rejects(servico.conectarWhatsapp(agente.id, { numero: 5516991271838 }), ErroDeContrato);
+  assert.equal(evolution.chamadas.length, 0, 'número inválido não chega à Evolution');
+
+  const resultado = await servico.conectarWhatsapp(agente.id, { numero: '+55 (16) 99127-1838' }, { usuarioId: 3 });
+  assert.deepEqual(resultado, { instancia: 'alpins', ja_conectado: false, codigo_pareamento: 'KD2ESVLA', qr: null });
+  assert.deepEqual(evolution.chamadas, [['conectar', 'alpins', { numero: '5516991271838' }]]);
+  const registro = repositorio.auditoria.find((item) => item.acao === 'agente_whatsapp_conexao_pedida');
+  assert.deepEqual(registro.detalhe, { instancia: 'alpins', por_codigo: true, ja_conectado: false });
+  assert.ok(!JSON.stringify(repositorio.auditoria).includes('99127'), 'o número não entra na auditoria');
+
+  const semEvolution = await servicoComAgente();
+  await semEvolution.repositorio.definirCanaisDoAgente(semEvolution.agente.id, [{ canal: 'whatsapp', instancia: 'x', ativo: true }]);
+  await rejeitaComStatus(semEvolution.servico.conectarWhatsapp(semEvolution.agente.id, {}), 503);
+});

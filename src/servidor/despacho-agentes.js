@@ -32,10 +32,15 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
     return metodo === 'POST' && /^\/api\/agentes\/[^/]+\/teste$/.test(rota);
   }
 
-  /** Teste (chama o modelo) e novo treinamento (pode buscar um site por até 10s). */
+  /**
+   * Teste (chama o modelo), novo treinamento (pode buscar um site por até 10s)
+   * e o WhatsApp do agente (espera a Evolution por até 10s).
+   */
   function ehRotaLenta(rota, metodo) {
     return ehRotaDeTeste(rota, metodo)
-      || (metodo === 'POST' && /^\/api\/agentes\/[^/]+\/treinamentos$/.test(rota));
+      || (metodo === 'POST' && /^\/api\/agentes\/[^/]+\/treinamentos$/.test(rota))
+      || (metodo === 'GET' && /^\/api\/agentes\/[^/]+\/whatsapp$/.test(rota))
+      || (metodo === 'POST' && /^\/api\/agentes\/[^/]+\/whatsapp\/conectar$/.test(rota));
   }
 
   function responder(res, status, dados) {
@@ -68,6 +73,12 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
       return naoPermitido(res, 'GET, POST');
     }
 
+    // Antes do bloco com id: "aguardando" não é um identificador.
+    if (partes.length === 3 && id === 'aguardando') {
+      if (metodo !== 'GET') return naoPermitido(res, 'GET');
+      return responder(res, 200, await rotas.aguardando(usuario));
+    }
+
     if (partes.length === 3) {
       if (metodo === 'GET') return responder(res, 200, await rotas.obter(usuario, id));
       if (metodo === 'PUT') return responder(res, 200, await rotas.atualizar(usuario, id, await lerJson(req)));
@@ -91,11 +102,33 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
         if (metodo !== 'POST') return naoPermitido(res, 'POST');
         return responder(res, 200, await rotas.testar(usuario, id, await lerJson(req)));
       }
+      if (sub === 'operacao') {
+        if (metodo !== 'GET') return naoPermitido(res, 'GET');
+        return responder(res, 200, await rotas.operacao(usuario, id));
+      }
+      if (sub === 'whatsapp') {
+        if (metodo !== 'GET') return naoPermitido(res, 'GET');
+        return responder(res, 200, await rotas.whatsapp(usuario, id));
+      }
+      if (sub === 'pausar') {
+        if (metodo !== 'POST') return naoPermitido(res, 'POST');
+        return responder(res, 200, await rotas.pausar(usuario, id, await lerJson(req)));
+      }
+      if (sub === 'retomar') {
+        // Sem corpo: retomar não tem parâmetro, e exigir `{}` só criaria um 400 à toa.
+        if (metodo !== 'POST') return naoPermitido(res, 'POST');
+        return responder(res, 200, await rotas.retomar(usuario, id));
+      }
     }
 
     if (partes.length === 5 && sub === 'treinamentos') {
       if (metodo !== 'DELETE') return naoPermitido(res, 'DELETE');
       return responder(res, 200, await rotas.removerTreinamento(usuario, id, alvo));
+    }
+
+    if (partes.length === 5 && sub === 'whatsapp' && alvo === 'conectar') {
+      if (metodo !== 'POST') return naoPermitido(res, 'POST');
+      return responder(res, 200, await rotas.conectarWhatsapp(usuario, id, await lerJson(req)));
     }
 
     if (partes.length === 6 && sub === 'comportamento' && acao === 'restaurar') {

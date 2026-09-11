@@ -126,6 +126,41 @@ function casos(conversa) {
       corpo: { canais: [{ canal: 'whatsapp', instancia: 'matriz' }] },
       podem: ['admin'],
     },
+    // Painel de operação: acompanhar é de quem gere; pausar, retomar e pedir
+    // código de WhatsApp mudam quem responde cliente — só admin.
+    {
+      o_que: 'ver a operação de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/operacao`, metodo: 'GET',
+      podem: ['gestor', 'admin'],
+    },
+    {
+      o_que: 'ver o WhatsApp de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/whatsapp`, metodo: 'GET',
+      podem: ['gestor', 'admin'],
+    },
+    {
+      o_que: 'ver as conversas de agente que aguardam a equipe',
+      rota: '/api/agentes/aguardando', metodo: 'GET',
+      podem: ['gestor', 'admin'],
+    },
+    {
+      o_que: 'pausar um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/pausar`, metodo: 'POST', corpo: { motivo: 'matriz' },
+      podem: ['admin'],
+    },
+    {
+      o_que: 'retomar um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/retomar`, metodo: 'POST',
+      podem: ['admin'],
+    },
+    {
+      o_que: 'pedir código para conectar o WhatsApp de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/whatsapp/conectar`, metodo: 'POST', corpo: {},
+      podem: ['admin'],
+      // Sem Evolution no ambiente de teste, o admin passa da porta e recebe a
+      // recusa do negócio (503); o que a matriz prova é que não é 401/403.
+      recusaDoNegocio: [503],
+    },
   ];
 }
 
@@ -155,7 +190,7 @@ test('matriz de perfis: cada rota exige a permissão certa', async (t) => {
       const deveria = caso.podem.includes(papel);
       if (deveria) {
         assert.ok(
-          resposta.status < 400,
+          resposta.status < 400 || (caso.recusaDoNegocio ?? []).includes(resposta.status),
           `${papel} deveria poder ${caso.o_que} — recebeu ${resposta.status}`,
         );
       } else {

@@ -106,6 +106,48 @@ function criarRotasDeAgentes({ servico, gateway = null }) {
       return { canais: await servico.definirCanais(agenteId, corpo?.canais, { usuarioId: usuario.id }) };
     },
 
+    // ---------------------------------------------- painel de operação
+
+    /** GET /api/agentes/aguardando — conversas de agente esperando a equipe, por agente. */
+    async aguardando(usuario) {
+      exigirPermissao(usuario, 'agentes:ler');
+      return servico.aguardandoPorAgente();
+    },
+
+    /** GET /api/agentes/:id/operacao — estado, números, aguardando e conversas recentes. */
+    async operacao(usuario, id) {
+      exigirPermissao(usuario, 'agentes:ler');
+      const operacao = await servico.operacao(exigirIdentificador(id, 'agente_id'));
+      return { ...operacao, pode_gerenciar: podeGerenciar(usuario) };
+    },
+
+    /** GET /api/agentes/:id/whatsapp — estado da instância do agente na Evolution. */
+    async whatsapp(usuario, id) {
+      exigirPermissao(usuario, 'agentes:ler');
+      return servico.whatsapp(exigirIdentificador(id, 'agente_id'));
+    },
+
+    /** POST /api/agentes/:id/whatsapp/conectar — corpo `{ numero? }`. Código de pareamento e QR. */
+    async conectarWhatsapp(usuario, id, corpo) {
+      exigirPermissao(usuario, 'agentes:gerenciar');
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      return servico.conectarWhatsapp(agenteId, corpo, { usuarioId: usuario.id });
+    },
+
+    /** POST /api/agentes/:id/pausar — corpo `{ motivo? }`. */
+    async pausar(usuario, id, corpo) {
+      exigirPermissao(usuario, 'agentes:gerenciar');
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      return servico.pausar(agenteId, corpo, { usuarioId: usuario.id });
+    },
+
+    /** POST /api/agentes/:id/retomar — sem corpo. */
+    async retomar(usuario, id) {
+      exigirPermissao(usuario, 'agentes:gerenciar');
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      return servico.retomar(agenteId, { usuarioId: usuario.id });
+    },
+
     /** POST /api/agentes/:id/teste — corpo `{ mensagens: [{ autor, texto }] }`. Não grava nem envia. */
     async testar(usuario, id, corpo) {
       // Gerenciar, não ler: cada teste é uma chamada de IA paga, e é parte de
