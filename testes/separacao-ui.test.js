@@ -108,6 +108,36 @@ test('Contatos: selos de origem escapados, filtro Todos/Clínica/agente, e o col
   assert.match(funcaoDoApp('verHistoricoDoContato'), /c\.agente_nome \?\? 'Clínica'/);
 });
 
+test('fim de sessão numa aba já usada recarrega a página: menu e inbox da sessão anterior não passam para a próxima (code review de 12e16b1)', () => {
+  // Sem isto: o colaborador sai, um gestor entra na mesma aba e fica sem os menus
+  // da clínica (aplicarEscopoNoMenu só esconde) e sem painel Hoje/leads (iniciarInbox
+  // roda uma vez por página); no inverso, carregarResumo seguia pedindo 403 a cada minuto.
+  const encerrar = funcaoDoApp('encerrarSessaoNaTela');
+  assert.match(encerrar, /limparSessao\(\);/);
+  assert.match(encerrar, /if \(!aplicacaoJaMostrada\) \{\s*mostrarPortao\(mensagem\);\s*return;\s*\}/,
+    'antes de o app rodar nesta página, só o portão — sem laço de recarga');
+  assert.match(encerrar, /window\.location\.reload\(\);/);
+  assert.match(funcaoDoApp('mostrarAplicacao'), /aplicacaoJaMostrada = true;/);
+
+  assert.match(funcaoDoApp('renovarSessao'), /catch \{\s*encerrarSessaoNaTela\(\);\s*return false;/);
+  const inicioSair = APP_JS.indexOf("seletor('#sair')?.addEventListener('click'");
+  assert.ok(inicioSair >= 0);
+  const sair = APP_JS.slice(inicioSair, APP_JS.indexOf('\n});', inicioSair));
+  assert.match(sair, /keepalive: true/, 'o logout no servidor não morre com o recarregamento');
+  assert.match(sair, /encerrarSessaoNaTela\(\);/);
+  assert.ok(!/mostrarPortao\(/.test(sair), 'o portão vem de encerrarSessaoNaTela');
+  assert.match(APP_JS, /setTimeout\(\(\) => encerrarSessaoNaTela\('Senha alterada\. Entre com a senha nova\.'\), 1500\);/);
+  // O aviso do portão sobrevive ao recarregamento.
+  assert.match(APP_JS, /else mostrarPortao\(lerEApagarAvisoDoPortao\(\)\);/);
+});
+
+test('ficha: "Editar" só para quem vê a clínica, também ao abrir cada conversa (code review de 12e16b1)', () => {
+  // desenharFicha roda a cada conversa aberta e desfazia o que aplicarEscopoNoMenu
+  // escondeu: gestor sem acesso à clínica via "Editar" e o salvar dava 403.
+  assert.match(funcaoDoApp('desenharFicha'),
+    /seletor\('#editar-ficha'\)\.hidden = !podeFazer\('contatos:editar'\) \|\| !veClinica\(\);/);
+});
+
 test('nada inline nas marcações novas (CSP estrita)', () => {
   for (const trecho of ['abas-escopo-conversas', 'agente-equipe-lista', 'contatos-origem', 'novo-acesso-clinica']) {
     const posicao = HTML.indexOf(trecho);

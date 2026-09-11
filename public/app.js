@@ -142,8 +142,13 @@ let cursorAuditoria = null;
 // e os agentes da equipe. `null` até carregar. O servidor garante o recorte;
 // aqui é para não oferecer (nem pedir) o que responderia 403.
 let escopoAtual = null;
+// A aplicação já rodou nesta página? Depois disso, fim de sessão recarrega a
+// página (encerrarSessaoNaTela): menu e inbox são montados uma vez por sessão.
+let aplicacaoJaMostrada = false;
 
 const CHAVE_REFRESH = 'crmclinica.refresh';
+// Aviso do portão que precisa sobreviver ao recarregamento (ex.: senha trocada).
+const CHAVE_AVISO_PORTAO = 'crmclinica.aviso-portao';
 
 function guardarSessao(sessao) {
   accessToken = sessao.access_token;
@@ -176,6 +181,43 @@ function limparSessao() {
     sessionStorage.removeItem(CHAVE_REFRESH);
   } catch {
     // nada a fazer
+  }
+}
+
+/**
+ * Fim de sessão na tela: Sair, renovação recusada, senha trocada.
+ *
+ * Com a aplicação já rodando nesta página, recarrega. O menu escondido pelo
+ * escopo (aplicarEscopoNoMenu só esconde), o inbox (iniciarInbox roda uma vez
+ * por página) e os relógios da sessão anterior não podem passar para quem
+ * entrar depois na mesma aba — code review de 12e16b1: o colaborador saía, um
+ * gestor entrava e ficava sem os menus da clínica; no inverso, o resumo seguia
+ * pedindo 403 a cada minuto. Antes de a aplicação rodar, só mostra o portão:
+ * sem laço de recarga.
+ */
+function encerrarSessaoNaTela(mensagem = '') {
+  limparSessao();
+  if (!aplicacaoJaMostrada) {
+    mostrarPortao(mensagem);
+    return;
+  }
+  if (mensagem) {
+    try {
+      sessionStorage.setItem(CHAVE_AVISO_PORTAO, mensagem);
+    } catch {
+      // Sem armazenamento: recarrega sem o aviso.
+    }
+  }
+  window.location.reload();
+}
+
+function lerEApagarAvisoDoPortao() {
+  try {
+    const aviso = sessionStorage.getItem(CHAVE_AVISO_PORTAO) || '';
+    sessionStorage.removeItem(CHAVE_AVISO_PORTAO);
+    return aviso;
+  } catch {
+    return '';
   }
 }
 
@@ -237,8 +279,7 @@ async function renovarSessao() {
     guardarSessao(await resposta.json());
     return true;
   } catch {
-    limparSessao();
-    mostrarPortao();
+    encerrarSessaoNaTela();
     return false;
   }
 }
@@ -845,7 +886,9 @@ function desenharFicha(conversa, ficha, temperatura) {
   definirTexto('#ficha-telefone', ficha?.telefone || '—');
   definirTexto('#ficha-identificador', ficha?.identificador || '—');
   definirTexto('#ficha-email', ficha?.email || '—');
-  seletor('#editar-ficha').hidden = !podeFazer('contatos:editar');
+  // Roda a cada conversa aberta: sem `veClinica()` desfazia o que
+  // aplicarEscopoNoMenu escondeu (code review de 12e16b1).
+  seletor('#editar-ficha').hidden = !podeFazer('contatos:editar') || !veClinica();
 
   // Atributos livres da ficha.
   const atributos = seletor('#ficha-atributos');
@@ -1763,6 +1806,7 @@ function aplicarEscopoNoMenu() {
 }
 
 function mostrarAplicacao() {
+  aplicacaoJaMostrada = true;
   seletor('#portao').hidden = true;
   seletor('#aplicacao').hidden = false;
 
@@ -2324,17 +2368,18 @@ async function carregarOpcoesDeEntrada() {
 
 seletor('#sair')?.addEventListener('click', async () => {
   const refresh = lerRefresh();
-  limparSessao();
 
   if (refresh) {
-    // Encerrar do lado do servidor é o que revoga de verdade.
+    // Encerrar do lado do servidor é o que revoga de verdade. `keepalive`: o
+    // pedido sobrevive ao recarregamento que encerrarSessaoNaTela faz logo abaixo.
     fetch('/api/auth/logout', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refresh_token: refresh }),
+      keepalive: true,
     }).catch(() => {});
   }
-  mostrarPortao();
+  encerrarSessaoNaTela();
 });
 
 // ---------------------------------------------------------------------------
@@ -2858,10 +2903,7 @@ seletor('#form-trocar-senha')?.addEventListener('submit', async (evento) => {
 
     // Trocar a senha derruba as sessões, inclusive esta: voltar ao portão é o
     // comportamento honesto, em vez de deixar a tela quebrar na próxima ação.
-    setTimeout(() => {
-      limparSessao();
-      mostrarPortao('Senha alterada. Entre com a senha nova.');
-    }, 1500);
+    setTimeout(() => encerrarSessaoNaTela('Senha alterada. Entre com a senha nova.'), 1500);
   } catch (erro) {
     retornar('#retorno-senha', erro.status === 401
       ? 'Senha atual incorreta.'
@@ -2949,7 +2991,7 @@ setInterval(atualizarRelogio, 30000);
 
   // Um F5 no meio do plantão não deve pedir senha de novo.
   if (lerRefresh() && await renovarSessao()) mostrarAplicacao();
-  else mostrarPortao();
+  else mostrarPortao(lerEApagarAvisoDoPortao());
 })();
 
 // ---------------------------------------------------------------------------
