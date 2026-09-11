@@ -15,16 +15,25 @@
 --   usuarios.acesso_clinica — padrão TRUE, para ninguém perder acesso no dia da
 --                             aplicação. É a aplicação (src/seguranca/escopo.js)
 --                             que decide com ela; o admin ignora a marca.
---   guard_usuario_acesso_clinica — a política crm008_u_u deixa o próprio usuário
---                             atualizar a sua linha (nome, telefone). Sem este
---                             gatilho, qualquer caminho de "editar o próprio
---                             perfil" que um dia repassasse campos a mais daria
---                             ao funcionário da loja um jeito de se dar acesso
---                             aos pacientes. Pela aplicação (crmclinica_app), só
---                             backend e admin mudam a marca. Fora dela (dono das
---                             tabelas no SQL Editor, manutenção) o gatilho não
---                             interfere: ali não há sessão de usuário a proteger,
---                             e o claim vazio faria current_app_role() falhar.
+--   guard_usuario_acesso_clinica — DEFESA EXTRA, não a proteção principal
+--                             (auditoria de acesso B2). A proteção real é da
+--                             APLICAÇÃO: PUT /api/perfil só aceita nome e
+--                             telefone, e a marca só muda por
+--                             POST /api/usuarios/:id/acesso-clinica (admin,
+--                             auditado). Essas rotas chegam ao banco com o claim
+--                             de `backend`, que o gatilho libera — ele NÃO
+--                             alcança o caminho do perfil. O que ele barra é
+--                             escrita feita como crmclinica_app com claim de
+--                             USUÁRIO (atendente, gestor, deny): a política
+--                             crm008_u_u deixa o próprio usuário atualizar a sua
+--                             linha, e sem o gatilho essa escrita poderia se dar
+--                             acesso à clínica. Endurecer mais no banco não tem
+--                             jeito simples: perfil e rota do admin usam o mesmo
+--                             claim, e o banco não distingue um do outro. Fora
+--                             da aplicação (dono das tabelas no SQL Editor,
+--                             semeadura, manutenção) o gatilho não interfere:
+--                             ali não há sessão de usuário, e o claim vazio faria
+--                             current_app_role() falhar.
 --                             Função separada de propósito: guard_usuario_sensitive
 --                             (008) vive fora do repositório e não é reescrita aqui.
 --

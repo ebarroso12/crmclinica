@@ -65,6 +65,16 @@ test('só backend e admin mudam acesso_clinica: gatilho próprio, sem reescrever
   assert.ok(!/guard_usuario_sensitive/.test(corpo), 'não mexe no guard da 008, que vive fora do repositório');
 });
 
+test('o comentário do gatilho diz a verdade: defesa extra; a proteção real é da aplicação (auditoria de acesso B2)', () => {
+  // O comentário antigo prometia que o gatilho protegia "editar o próprio
+  // perfil" — mas perfil e rotas de usuário chegam ao banco como `backend`,
+  // que o gatilho libera por desenho.
+  assert.ok(!SQL.includes('qualquer caminho de "editar o próprio'), 'a promessa falsa saiu');
+  assert.match(SQL, /guard_usuario_acesso_clinica — DEFESA EXTRA, não a proteção principal/);
+  assert.match(SQL, /A proteção real é da\s+--\s+APLICAÇÃO: PUT \/api\/perfil só aceita nome e\s+--\s+telefone/);
+  assert.match(SQL, /claim\s+--\s+de `backend`, que o gatilho libera — ele NÃO\s+--\s+alcança o caminho do perfil/);
+});
+
 test('RLS, política só para crmclinica_app, GRANT mínimo sem UPDATE/TRUNCATE, PUBLIC/anon/authenticated revogados', () => {
   const corpo = semComentarios(SQL);
   assert.match(corpo, /ALTER TABLE public\.agente_equipe ENABLE ROW LEVEL SECURITY;/);
