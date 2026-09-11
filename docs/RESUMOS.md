@@ -315,3 +315,17 @@ autorizado no cadastro (`docs/AGENTES.md`, "Colocar um agente no ar").
     - a mesma mudança cria o índice por `criado_em` que o job precisar.
 - Funcionário que também seja cliente/paciente, escrevendo do WhatsApp autorizado dele, não
   é atendido automaticamente (é tratado como equipe).
+- **Queda da Evolution por mais de ~4 h perde os resumos daquele período** (conferência final
+  sobre ee2faaa, B1 — troca consciente). Falha conhecida (HTTP de erro, conexão recusada) é
+  tentada no minuto 0, 120 e 240 e vira `desistido`, com a conversa marcada. Quando o canal
+  volta, esses atendimentos não chegam mais ao WhatsApp: ficam na auditoria
+  `resumo_desistido` (com as conversas). É o preço de nunca repetir a mesma mensagem a cada
+  minuto. Caso típico: instância da Evolution desconectada a noite toda.
+- **Restart com mudança na última parte pode repetir essa parte** (conferência final sobre
+  ee2faaa, B2). A chave depende das conversas da parte: se o worker cai depois de a pessoa
+  receber todas as partes e, antes do restart, uma conversa nova esfria e entra na última
+  parte (que ainda tinha espaço), a chave muda e aquela parte sai de novo. Janela estreita,
+  existente desde o registro de envios.
+- **Banco que já tenha uma versão anterior da 047** (PG local ou de teste) não ganha
+  `tentativas` nem o CHECK com `desistido` (`CREATE TABLE IF NOT EXISTS`): rode o rollback e
+  reaplique. Produção recebeu a 047 já na versão final.
