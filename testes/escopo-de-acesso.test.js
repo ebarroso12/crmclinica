@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  TODOS, montarEscopo, veAgente, veConversaDe, veContato,
+  TODOS, montarEscopo, veAgente, veConversaDe, veContato, selosDoContato,
   recortarPedidoDeAgente, filtroDeEscopo, rotaLiberadaSemClinica,
 } = require('../src/seguranca/escopo');
 
@@ -89,14 +89,14 @@ test('filtro do repositório espelha o escopo e nunca devolve a referência inte
   assert.deepEqual(filtroDeEscopo(null), { clinica: false, agentes: [] });
 });
 
-test('contato: da clínica se não tem conversa ou tem alguma da clínica; só de agente → daquele agente', () => {
+test('contato: base compartilhada para quem vê a clínica; colaborador da loja só vê cliente dos agentes dele', () => {
   const clinica = montarEscopo(ATENDENTE, { acesso_clinica: true, agentes: [] });
   const loja = montarEscopo(ATENDENTE, { acesso_clinica: false, agentes: [1] });
   const admin = montarEscopo(ADMIN, null);
 
-  assert.ok(veContato(clinica, []), 'contato manual sem conversa é da clínica');
-  assert.ok(veContato(clinica, [null, 1]), 'paciente que também falou com a loja continua da clínica');
-  assert.ok(!veContato(clinica, [1]), 'cliente só da loja não aparece para a clínica fora da equipe');
+  assert.ok(veContato(clinica, []), 'contato manual sem conversa');
+  assert.ok(veContato(clinica, [null, 1]));
+  assert.ok(veContato(clinica, [1]), 'decisão 11/09: quem vê a clínica vê todo contato, inclusive o só da loja');
 
   assert.ok(!veContato(loja, []), 'loja não vê contato manual da clínica');
   assert.ok(!veContato(loja, [null]), 'loja não vê paciente');
@@ -107,31 +107,59 @@ test('contato: da clínica se não tem conversa ou tem alguma da clínica; só d
   assert.ok(veContato(admin, [2]));
 });
 
-test('rotas liberadas para quem não vê a clínica: só conta própria, conversas, contato da conversa e agentes', () => {
+test('selos do contato: "Clínica" só para quem vê a clínica; agentes de todos para a clínica, só os da equipe para a loja', () => {
+  const nomes = new Map([[1, 'Agente Alpins'], [2, 'Agente Bravo']]);
+  const clinica = montarEscopo(ATENDENTE, { acesso_clinica: true, agentes: [] });
+  const loja = montarEscopo(ATENDENTE, { acesso_clinica: false, agentes: [1] });
+
+  assert.deepEqual(selosDoContato(clinica, { clinica: true, agentes: [2, 1, 1] }, nomes), {
+    clinica: true, agentes: [{ id: 1, nome: 'Agente Alpins' }, { id: 2, nome: 'Agente Bravo' }],
+  }, 'clínica fora da equipe vê o selo do Alpins (sem ver a conversa)');
+  assert.deepEqual(selosDoContato(clinica, { clinica: false, agentes: [1] }, nomes), {
+    clinica: false, agentes: [{ id: 1, nome: 'Agente Alpins' }],
+  });
+
+  assert.deepEqual(selosDoContato(loja, { clinica: true, agentes: [1, 2] }, nomes), {
+    clinica: false, agentes: [{ id: 1, nome: 'Agente Alpins' }],
+  }, 'para a loja, nunca "Clínica" (seria dizer que o cliente é paciente) nem agente de fora da equipe');
+
+  assert.deepEqual(selosDoContato(null, { clinica: true, agentes: [1] }, nomes), { clinica: false, agentes: [] });
+  assert.deepEqual(selosDoContato(clinica, { clinica: true, agentes: [3] }), { clinica: true, agentes: [{ id: 3, nome: null }] });
+});
+
+test('rotas liberadas para quem não vê a clínica: conta própria, conversas, contatos dos agentes dele e agentes', () => {
   const liberadas = [
-    '/api/auth/sessao', '/api/auth/refresh', '/api/perfil',
-    '/api/usuarios/termos/vigente', '/api/usuarios/termos/3/assinar', '/api/usuarios/onboarding/trilha', '/api/usuarios/ajuda',
-    '/api/conversas', '/api/conversas/filas', '/api/conversas/escopo',
-    '/api/conversas/eventos', '/api/conversas/eventos/ticket',
-    '/api/conversas/12', '/api/conversas/12/mensagens', '/api/conversas/12/anexos', '/api/conversas/12/assumir',
-    '/api/conversas/12/etiquetas', '/api/conversas/12/prioridade', '/api/conversas/12/estado',
-    '/api/conversas/12/notas', '/api/conversas/12/ficha',
-    '/api/contatos/5', '/api/contatos/5/conversas',
-    '/api/agentes', '/api/agentes/aguardando', '/api/agentes/1/operacao',
+    ['GET', '/api/auth/sessao'], ['POST', '/api/auth/refresh'], ['PUT', '/api/perfil'],
+    ['GET', '/api/usuarios/termos/vigente'], ['POST', '/api/usuarios/termos/3/assinar'],
+    ['GET', '/api/usuarios/onboarding/trilha'], ['GET', '/api/usuarios/ajuda'],
+    ['GET', '/api/conversas'], ['GET', '/api/conversas/filas'], ['GET', '/api/conversas/escopo'],
+    ['GET', '/api/conversas/eventos'], ['POST', '/api/conversas/eventos/ticket'],
+    ['GET', '/api/conversas/12'], ['GET', '/api/conversas/12/mensagens'], ['POST', '/api/conversas/12/mensagens'],
+    ['POST', '/api/conversas/12/anexos'], ['POST', '/api/conversas/12/assumir'], ['POST', '/api/conversas/12/etiquetas'],
+    ['POST', '/api/conversas/12/prioridade'], ['POST', '/api/conversas/12/estado'], ['POST', '/api/conversas/12/notas'],
+    ['PUT', '/api/conversas/12/ficha'],
+    ['GET', '/api/contatos'], ['GET', '/api/contatos/gestao'], ['GET', '/api/contatos/5'], ['PUT', '/api/contatos/5'],
+    ['GET', '/api/contatos/5/conversas'],
+    ['GET', '/api/agentes'], ['GET', '/api/agentes/aguardando'], ['GET', '/api/agentes/1/operacao'],
   ];
-  for (const rota of liberadas) assert.ok(rotaLiberadaSemClinica(rota), `deveria liberar ${rota}`);
+  for (const [metodo, rota] of liberadas) assert.ok(rotaLiberadaSemClinica(rota, metodo), `deveria liberar ${metodo} ${rota}`);
 
   const clinica = [
-    '/api/resumo', '/api/conversas/aguardando', '/api/conversas/liberar-todas', '/api/tarefas', '/api/tarefas/varrer',
-    '/api/tarefas/3/concluir', '/api/notificacoes', '/api/notificacoes/3/lida',
-    '/api/conversas/12/agenda', '/api/conversas/12/temperatura', '/api/conversas/12/encerrar',
-    '/api/leads', '/api/leads/3', '/api/leads/vocabulario', '/api/agenda', '/api/agenda/3/formulario',
-    '/api/metricas/resumo', '/api/ia/modelos', '/api/ia/assistente', '/api/serena', '/api/serena/interruptor',
-    '/api/serena/voz/sessoes', '/api/diagnostico', '/api/instagram', '/api/auditoria', '/api/bloqueios',
-    '/api/sincronia', '/api/lembretes', '/api/contatos', '/api/contatos/gestao', '/api/contatos/duplicatas',
-    '/api/contatos/qualidade', '/api/contatos/5/lembretes', '/api/contatos/5/responsavel', '/api/contatos/5/restaurar',
-    '/api/usuarios', '/api/usuarios/gestao', '/api/usuarios/7', '/api/usuarios/7/acesso-clinica', '/api/usuarios/termos',
-    '/api/conversas/12/../../resumo', '/api/conversasx', '/api/agentesx', '',
+    ['GET', '/api/resumo'], ['GET', '/api/conversas/aguardando'], ['POST', '/api/conversas/liberar-todas'],
+    ['GET', '/api/tarefas'], ['POST', '/api/tarefas/varrer'], ['POST', '/api/tarefas/3/concluir'],
+    ['GET', '/api/notificacoes'], ['POST', '/api/notificacoes/3/lida'],
+    ['GET', '/api/conversas/12/agenda'], ['POST', '/api/conversas/12/temperatura'], ['POST', '/api/conversas/12/encerrar'],
+    ['GET', '/api/leads'], ['GET', '/api/leads/3'], ['GET', '/api/leads/vocabulario'], ['GET', '/api/agenda'],
+    ['POST', '/api/agenda/3/formulario'], ['GET', '/api/metricas/resumo'], ['GET', '/api/ia/modelos'],
+    ['POST', '/api/ia/assistente'], ['GET', '/api/serena'], ['POST', '/api/serena/interruptor'],
+    ['POST', '/api/serena/voz/sessoes'], ['GET', '/api/diagnostico'], ['GET', '/api/instagram'], ['GET', '/api/auditoria'],
+    ['GET', '/api/bloqueios'], ['GET', '/api/sincronia'], ['GET', '/api/lembretes'],
+    ['POST', '/api/contatos'], ['DELETE', '/api/contatos/5'], ['POST', '/api/contatos/5/restaurar'],
+    ['GET', '/api/contatos/duplicatas'], ['GET', '/api/contatos/qualidade'], ['POST', '/api/contatos/5/lembretes'],
+    ['POST', '/api/contatos/5/responsavel'], ['POST', '/api/conversas'],
+    ['GET', '/api/usuarios'], ['GET', '/api/usuarios/gestao'], ['GET', '/api/usuarios/7'],
+    ['POST', '/api/usuarios/7/acesso-clinica'], ['GET', '/api/usuarios/termos'], ['POST', '/api/usuarios/termos'],
+    ['GET', '/api/conversas/12/../../resumo'], ['GET', '/api/conversasx'], ['GET', '/api/agentesx'], ['GET', ''],
   ];
-  for (const rota of clinica) assert.ok(!rotaLiberadaSemClinica(rota), `deveria bloquear ${rota}`);
+  for (const [metodo, rota] of clinica) assert.ok(!rotaLiberadaSemClinica(rota, metodo), `deveria bloquear ${metodo} ${rota}`);
 });

@@ -1227,6 +1227,121 @@ for (const { nome, montar } of implementacoes) {
       assert.deepEqual(await repositorio.listarConversasDoAgenteAguardandoEquipe(agente.id), [], 'resolvida sai da espera');
     });
 
+    await t.test('equipe e marca (047): escopo de acesso lê "vê a clínica" e a equipe; conta inativa ou ausente nega', async () => {
+      const agente = await criarAgenteDeTeste('contrato-equipe');
+      const outro = await criarAgenteDeTeste('contrato-equipe-outro');
+      const loja = await repositorio.criarUsuario({
+        nome: 'Colaborador Loja', email: 'loja-equipe@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      const clinica = await repositorio.criarUsuario({
+        nome: 'Atendente Clínica', email: 'clinica-equipe@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+
+      assert.equal(loja.acesso_clinica, true, 'padrão da coluna: ninguém perde a clínica');
+      assert.deepEqual(await repositorio.obterEscopoDeAcesso(loja.id), { acesso_clinica: true, agentes: [] });
+
+      assert.equal(await repositorio.adicionarMembroDaEquipe(outro.id, loja.id), true);
+      assert.equal(await repositorio.adicionarMembroDaEquipe(agente.id, loja.id, { criadoPor: clinica.id }), true);
+      assert.equal(await repositorio.adicionarMembroDaEquipe(agente.id, loja.id), false, 'repetir não duplica');
+
+      const atualizado = await repositorio.atualizarUsuario(loja.id, { acessoClinica: false });
+      assert.equal(atualizado.acesso_clinica, false);
+      assert.deepEqual(await repositorio.obterEscopoDeAcesso(loja.id), {
+        acesso_clinica: false, agentes: [agente.id, outro.id].sort((a, b) => a - b),
+      });
+
+      const equipe = await repositorio.listarEquipeDoAgente(agente.id);
+      assert.deepEqual(
+        equipe.map((membro) => [membro.usuario_id, membro.nome, membro.papel, membro.acesso_clinica]),
+        [[loja.id, 'Colaborador Loja', 'atendente', false]],
+      );
+      assert.ok(!('senha_hash' in equipe[0]), 'a equipe nunca carrega segredo');
+      assert.ok(Number.isFinite(new Date(equipe[0].criado_em).getTime()));
+      assert.ok((await repositorio.listarVinculosDeEquipe())
+        .some((vinculo) => vinculo.agente_id === agente.id && vinculo.usuario_id === loja.id));
+
+      assert.equal(await repositorio.removerMembroDaEquipe(outro.id, loja.id), true);
+      assert.equal(await repositorio.removerMembroDaEquipe(outro.id, loja.id), false);
+      assert.deepEqual((await repositorio.obterEscopoDeAcesso(loja.id)).agentes, [agente.id]);
+
+      await assert.rejects(() => repositorio.adicionarMembroDaEquipe(agente.id, 999999), (erro) => erro.code === '23503',
+        'vínculo com usuário que não existe não entra');
+      assert.equal(await repositorio.obterEscopoDeAcesso(999999), null);
+      await repositorio.atualizarUsuario(clinica.id, { ativo: false });
+      assert.equal(await repositorio.obterEscopoDeAcesso(clinica.id), null, 'conta inativa nega');
+    });
+
+    await t.test('escopo (047) em conversas, eventos ao vivo e contatos: clínica, colaborador da loja e admin', async () => {
+      const alpins = await criarAgenteDeTeste('contrato-escopo-alpins');
+      const bravo = await criarAgenteDeTeste('contrato-escopo-bravo');
+      const paciente = await repositorio.encontrarOuCriarContato({ telefone: '5516900004701', nome: 'Paciente Escopo' });
+      const daClinica = await repositorio.encontrarOuCriarConversaAberta(paciente.id, 'whatsapp');
+      const doAlpinsMesmoContato = await repositorio.encontrarOuCriarConversaAberta(paciente.id, 'whatsapp', { agenteId: alpins.id });
+      const clienteAlpins = await conversaDoAgente(alpins.id, '5516900004702');
+      const clienteBravo = await conversaDoAgente(bravo.id, '5516900004703');
+      const manual = await repositorio.criarContato({ nome: 'Manual Escopo', telefone: '5516900004704' });
+
+      const escopoClinica = { clinica: true, agentes: [] };
+      const escopoLoja = { clinica: false, agentes: [alpins.id] };
+      const escopoAdmin = { clinica: true, agentes: 'todos' };
+      const ordenar = (lista) => [...lista].sort((a, b) => a - b);
+      const ids = (lista) => ordenar(lista.map((item) => item.id));
+
+      const nossas = [daClinica.id, doAlpinsMesmoContato.id, clienteAlpins.id, clienteBravo.id];
+      const conversasDe = async (opcoes) => ids(await repositorio.listarConversas({ limite: 1000, ...opcoes }))
+        .filter((id) => nossas.includes(id));
+      assert.deepEqual(await conversasDe({ escopo: escopoClinica }), [daClinica.id]);
+      assert.deepEqual(await conversasDe({ escopo: escopoLoja }), ordenar([doAlpinsMesmoContato.id, clienteAlpins.id]));
+      assert.deepEqual(await conversasDe({ escopo: escopoAdmin }), ordenar(nossas));
+      assert.deepEqual(await conversasDe({ escopo: { clinica: false, agentes: 'todos' } }),
+        ordenar([doAlpinsMesmoContato.id, clienteAlpins.id, clienteBravo.id]));
+      assert.deepEqual(await conversasDe({ escopo: escopoLoja, agenteId: null }), [], 'forjar "só clínica" não abre nada');
+      assert.deepEqual(await conversasDe({ escopo: escopoClinica, contatoId: paciente.id }), [daClinica.id],
+        'as conversas anteriores do mesmo contato também passam pelo escopo');
+
+      assert.deepEqual(await repositorio.obterEscopoDaConversa(clienteAlpins.id), { estado: 'existe', atribuidoA: null, agenteId: alpins.id });
+      assert.deepEqual(await repositorio.obterEscopoDaConversa(daClinica.id), { estado: 'existe', atribuidoA: null, agenteId: null });
+
+      const ultimo = await repositorio.listarEventosDeConversasDesde({ papel: 'admin', escopo: escopoAdmin, limite: 1 });
+      const cursor = ultimo.at(-1)?.id ?? 0;
+      for (const conversa of [daClinica, clienteAlpins, clienteBravo]) {
+        await repositorio.registrarEventoDeConversa({ conversaId: conversa.id, tipo: 'mensagem_recebida', payload: {} });
+      }
+      const eventosDe = async (papel, escopo) => (await repositorio.listarEventosDeConversasDesde({
+        cursor, papel, usuarioId: null, escopo,
+      })).map((evento) => evento.conversa_id);
+      assert.deepEqual(await eventosDe('gestor', escopoClinica), [daClinica.id]);
+      assert.deepEqual(await eventosDe('atendente', escopoLoja), [clienteAlpins.id]);
+      assert.deepEqual(await eventosDe('admin', escopoAdmin), [daClinica.id, clienteAlpins.id, clienteBravo.id]);
+      assert.deepEqual(await eventosDe('gestor', null), [daClinica.id], 'sem escopo declarado, quem não é admin não recebe agente');
+      assert.deepEqual(await eventosDe('admin', null), [daClinica.id, clienteAlpins.id, clienteBravo.id]);
+
+      const nossosContatos = [paciente.id, clienteAlpins.contato_id, clienteBravo.contato_id, manual.id];
+      const contatosDe = async (opcoes) => (await repositorio.listarContatos({ limite: 500, ...opcoes }))
+        .filter((contato) => nossosContatos.includes(contato.id));
+
+      const clinicaVe = await contatosDe({ escopo: escopoClinica });
+      assert.deepEqual(ids(clinicaVe), ordenar(nossosContatos), 'quem vê a clínica vê a base inteira');
+      const fichaDoPaciente = clinicaVe.find((contato) => contato.id === paciente.id);
+      assert.deepEqual(fichaDoPaciente.origens, { clinica: true, agentes: [alpins.id] });
+      assert.equal(fichaDoPaciente.conversas, 1, 'conta só a conversa que a clínica vê');
+      assert.deepEqual(clinicaVe.find((contato) => contato.id === manual.id).origens, { clinica: true, agentes: [] });
+      assert.deepEqual(clinicaVe.find((contato) => contato.id === clienteBravo.contato_id).origens, { clinica: false, agentes: [bravo.id] });
+
+      const lojaVe = await contatosDe({ escopo: escopoLoja });
+      assert.deepEqual(ids(lojaVe), ordenar([paciente.id, clienteAlpins.contato_id]), 'loja só vê cliente do Alpins');
+      assert.equal(lojaVe.find((contato) => contato.id === paciente.id).conversas, 1);
+
+      assert.deepEqual(ids(await contatosDe({ origem: 'clinica' })), ordenar([paciente.id, manual.id]));
+      assert.deepEqual(ids(await contatosDe({ origem: bravo.id })), [clienteBravo.contato_id]);
+      assert.deepEqual(await repositorio.obterOrigensDoContato(paciente.id), { clinica: true, agentes: [alpins.id] });
+      assert.deepEqual(await repositorio.obterOrigensDoContato(manual.id), { clinica: true, agentes: [] });
+
+      assert.deepEqual(ids(await repositorio.buscarContatos({ termo: '55169000047', limite: 50, escopo: escopoLoja })),
+        ordenar([paciente.id, clienteAlpins.contato_id]));
+      assert.equal((await repositorio.buscarContatos({ termo: '55169000047', limite: 50, escopo: escopoClinica })).length, 4);
+    });
+
     await t.test('contarRespostasDaAutomacao conta só a automação visível', async () => {
       const agente = await criarAgenteDeTeste('contrato-contagem');
       const conversa = await conversaDoAgente(agente.id, '5516900001002');

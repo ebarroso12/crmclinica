@@ -76,47 +76,79 @@ function filtroDeEscopo(escopo) {
 }
 
 /**
- * Contato visível? `agentesDasConversas` é o `agente_id` de cada conversa dele
- * (null = clínica). Contato sem conversa, ou com alguma conversa da clínica, é
- * da clínica. Contato só com conversas de agente é daqueles agentes.
+ * Contato visível? Decisão do Dr. Edson (11/09): a base de contatos é
+ * COMPARTILHADA — quem vê a clínica vê todos os contatos, com selos de origem
+ * (ver `selosDoContato`). Quem não vê a clínica só vê o contato que tem
+ * conversa com um agente da própria equipe.
+ *
+ * `agentesDasConversas`: o `agente_id` de cada conversa do contato (null =
+ * clínica). O que o contato conversou fica sempre sujeito a `veConversaDe`.
  */
 function veContato(escopo, agentesDasConversas) {
   if (!escopo) return false;
-  if (escopo.admin) return true;
-  const lista = agentesDasConversas ?? [];
-  const soDeAgente = lista.length > 0 && lista.every((id) => id !== null && id !== undefined);
-  if (escopo.clinica && !soDeAgente) return true;
-  return lista.some((id) => id !== null && id !== undefined && veAgente(escopo, id));
+  if (escopo.clinica === true) return true;
+  return (agentesDasConversas ?? []).some((id) => id !== null && id !== undefined && veAgente(escopo, id));
+}
+
+/**
+ * Selos automáticos de origem do contato, calculados das conversas — nada é
+ * gravado. "Clínica" quando há conversa sem agente ou nenhuma conversa (contato
+ * criado à mão ou importado); um selo por agente com quem conversou.
+ *
+ * Para quem NÃO vê a clínica, o selo "Clínica" nunca aparece: dizer ao
+ * colaborador da loja que aquele cliente também é paciente já é dado de saúde.
+ * Quem vê a clínica enxerga o selo de todo agente (o contato é compartilhado),
+ * mesmo fora da equipe — a conversa e a prévia continuam fora do alcance dele.
+ *
+ * @param {{clinica: boolean, agentes: number[]}} origens  do repositório
+ * @param {Map<number,string>|Record<number,string>} nomes  nome de cada agente
+ */
+function selosDoContato(escopo, origens, nomes = new Map()) {
+  if (!escopo || !origens) return { clinica: false, agentes: [] };
+  const nomeDe = (id) => (nomes instanceof Map ? nomes.get(Number(id)) : nomes?.[id]) ?? null;
+  const agentes = [...new Set((origens.agentes ?? []).map(Number))]
+    .filter((id) => Number.isInteger(id) && id > 0)
+    .filter((id) => escopo.clinica === true || veAgente(escopo, id))
+    .sort((a, b) => a - b)
+    .map((id) => ({ id, nome: nomeDe(id) }));
+  return { clinica: escopo.clinica === true && origens.clinica === true, agentes };
 }
 
 // Rotas que quem NÃO vê a clínica ainda alcança. Tudo que não está aqui é da
 // clínica e responde 403 para essa pessoa — lista de permissão, não de
-// proibição: rota nova nasce fechada para o colaborador da loja.
+// proibição: rota nova nasce fechada para o colaborador da loja. `metodos`
+// ausente = qualquer método (o RBAC e o escopo da própria rota decidem).
 //
 // De fora, de propósito (clínica): fila de SLA, tarefas, notificações, resumo
 // do painel Hoje, "liberar todas", leads, agenda (inclusive a da conversa),
 // temperatura e encerramento de conversa (funil de leads), métricas, IA,
-// Serena, Instagram, auditoria, bloqueios, sincronia, lembretes, gestão e busca
-// de contatos, usuários. Dentro das liberadas, conversa e contato ainda passam
-// pelo escopo (404 quando não são dele).
+// Serena, Instagram, auditoria, bloqueios, sincronia, lembretes, cadastro,
+// exclusão, restauração, duplicatas e qualidade de contatos, usuários. Dentro
+// das liberadas, conversa e contato ainda passam pelo escopo (404 quando não
+// são dele).
 const ROTAS_SEM_CLINICA = Object.freeze([
-  /^\/api\/auth(\/.*)?$/,
-  /^\/api\/perfil$/,
-  /^\/api\/usuarios\/termos\/vigente$/,
-  /^\/api\/usuarios\/termos\/\d+\/assinar$/,
-  /^\/api\/usuarios\/onboarding\/trilha$/,
-  /^\/api\/usuarios\/ajuda$/,
-  /^\/api\/conversas$/,
-  /^\/api\/conversas\/filas$/,
-  /^\/api\/conversas\/escopo$/,
-  /^\/api\/conversas\/eventos(\/ticket)?$/,
-  /^\/api\/conversas\/\d+(\/(mensagens|anexos|assumir|etiquetas|prioridade|estado|notas|ficha))?$/,
-  /^\/api\/contatos\/\d+(\/conversas)?$/,
-  /^\/api\/agentes(\/.*)?$/,
+  { padrao: /^\/api\/auth(\/.*)?$/ },
+  { padrao: /^\/api\/perfil$/ },
+  { padrao: /^\/api\/usuarios\/termos\/vigente$/, metodos: ['GET'] },
+  { padrao: /^\/api\/usuarios\/termos\/\d+\/assinar$/, metodos: ['POST'] },
+  { padrao: /^\/api\/usuarios\/onboarding\/trilha$/, metodos: ['GET'] },
+  { padrao: /^\/api\/usuarios\/ajuda$/, metodos: ['GET'] },
+  { padrao: /^\/api\/conversas$/, metodos: ['GET'] },
+  { padrao: /^\/api\/conversas\/filas$/, metodos: ['GET'] },
+  { padrao: /^\/api\/conversas\/escopo$/, metodos: ['GET'] },
+  { padrao: /^\/api\/conversas\/eventos(\/ticket)?$/ },
+  { padrao: /^\/api\/conversas\/\d+(\/(mensagens|anexos|assumir|etiquetas|prioridade|estado|notas|ficha))?$/ },
+  { padrao: /^\/api\/contatos$/, metodos: ['GET'] },
+  { padrao: /^\/api\/contatos\/gestao$/, metodos: ['GET'] },
+  { padrao: /^\/api\/contatos\/\d+$/, metodos: ['GET', 'PUT'] },
+  { padrao: /^\/api\/contatos\/\d+\/conversas$/, metodos: ['GET'] },
+  { padrao: /^\/api\/agentes(\/.*)?$/ },
 ]);
 
-function rotaLiberadaSemClinica(rota) {
-  return ROTAS_SEM_CLINICA.some((padrao) => padrao.test(String(rota ?? '')));
+function rotaLiberadaSemClinica(rota, metodo = 'GET') {
+  const alvo = String(rota ?? '');
+  const verbo = String(metodo ?? '').toUpperCase();
+  return ROTAS_SEM_CLINICA.some((regra) => regra.padrao.test(alvo) && (!regra.metodos || regra.metodos.includes(verbo)));
 }
 
 class ErroSemAcessoAClinica extends Error {
@@ -135,6 +167,7 @@ module.exports = {
   veAgente,
   veConversaDe,
   veContato,
+  selosDoContato,
   recortarPedidoDeAgente,
   filtroDeEscopo,
   rotaLiberadaSemClinica,

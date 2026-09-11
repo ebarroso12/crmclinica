@@ -7,6 +7,7 @@
 const crypto = require('node:crypto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+const { TODOS, veConversaDe, veContato } = require('../seguranca/escopo');
 const { normalizarConfiguracoes } = require('../dominio/agentes/regras');
 
 const ETIQUETAS_INICIAIS = [
@@ -84,6 +85,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const agenteTreinamentos = [];
   const agenteAcoesInatividade = [];
   const agenteCanais = [];
+  // Migration 047: quem atende cada agente.
+  const agenteEquipe = [];
   // O catálogo em memória espelha o seed da migration 027.
   const iaModelos = [
     { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
@@ -220,6 +223,24 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
 
   for (const etiqueta of ETIQUETAS_INICIAIS) {
     etiquetas.set(etiqueta.nome, { id: proximoId.etiqueta++, ativa: true, ...etiqueta });
+  }
+
+  /** O `agente_id` de cada conversa do contato (null = clínica). */
+  function agentesDasConversasDoContato(contatoId) {
+    return [...conversas.values()]
+      .filter((conversa) => conversa.contato_id === Number(contatoId))
+      .map((conversa) => (conversa.agente_id === null || conversa.agente_id === undefined ? null : Number(conversa.agente_id)));
+  }
+
+  /** Selos de origem, mesma regra do SQL: clínica = sem conversa de agente OU com conversa da clínica. */
+  function origensDoContato(contatoId) {
+    const daPessoa = agentesDasConversasDoContato(contatoId);
+    const temDeAgente = daPessoa.some((id) => id !== null);
+    const temDaClinica = daPessoa.some((id) => id === null);
+    return {
+      clinica: !temDeAgente || temDaClinica,
+      agentes: [...new Set(daPessoa.filter((id) => id !== null))].sort((a, b) => a - b),
+    };
   }
 
   function montarConversa(conversa) {
@@ -409,6 +430,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       // Migration 046 — paridade com repositorio.js: `undefined` não filtra,
       // `null` é só a clínica, id é só aquele agente.
       agenteId = undefined,
+      // Migration 047 — paridade com repositorio.js: escopo de quem pede.
+      escopo = null,
     } = {}) {
       let lista = [...conversas.values()];
 
@@ -418,6 +441,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       else if (agenteId !== undefined) {
         lista = lista.filter((conversa) => (conversa.agente_id ?? null) === Number(agenteId));
       }
+      if (escopo) lista = lista.filter((conversa) => veConversaDe(escopo, conversa.agente_id ?? null));
       if (busca) {
         const termo = busca.toLowerCase();
         lista = lista.filter((conversa) => {
@@ -630,13 +654,14 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * "(11) 99999" olhando para a tela do paciente, e isso precisa achar o mesmo
      * contato que "11999990000" acha.
      */
-    async buscarContatos({ termo, limite = 10 }) {
+    async buscarContatos({ termo, limite = 10, escopo = null }) {
       const alvo = String(termo ?? '').trim().toLowerCase();
       if (!alvo) return [];
 
       const digitos = alvo.replace(/\D/g, '');
       return [...contatos.values()]
         .filter((contato) => !contato.excluido_em)
+        .filter((contato) => !escopo || veContato(escopo, agentesDasConversasDoContato(contato.id)))
         .filter((contato) => {
           const nome = (contato.nome ?? '').toLowerCase();
           const telefone = (contato.telefone ?? '').replace(/\D/g, '');
@@ -699,7 +724,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
      * Lista para a tela de gestão. Excluídos ficam de fora por padrão; a própria
      * tela pede os excluídos quando quer oferecer a restauração.
      */
-    async listarContatos({ termo = null, incluirExcluidos = false, limite = 100 } = {}) {
+    // Paridade com repositorio.js (migration 047 e selos de origem de 11/09).
+    async listarContatos({
+      termo = null, incluirExcluidos = false, limite = 100, escopo = null, origem = undefined,
+    } = {}) {
       const alvo = String(termo ?? '').trim().toLowerCase();
       const digitos = alvo.replace(/\D/g, '');
 
@@ -711,14 +739,27 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
           const telefone = (contato.telefone ?? '').replace(/\D/g, '');
           return nome.includes(alvo) || (digitos.length >= 3 && telefone.includes(digitos));
         })
+        .filter((contato) => !escopo || veContato(escopo, agentesDasConversasDoContato(contato.id)))
+        .filter((contato) => {
+          if (origem === undefined || origem === null) return true;
+          const origens = origensDoContato(contato.id);
+          return origem === 'clinica' ? origens.clinica : origens.agentes.includes(Number(origem));
+        })
         .sort((a, b) => Number(Boolean(a.excluido_em)) - Number(Boolean(b.excluido_em))
           || (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'))
         .slice(0, Number(limite))
         .map((contato) => ({
           ...contato,
-          conversas: [...conversas.values()].filter((c) => c.contato_id === contato.id).length,
+          conversas: [...conversas.values()]
+            .filter((c) => c.contato_id === contato.id && (!escopo || veConversaDe(escopo, c.agente_id ?? null)))
+            .length,
           agendamentos: agendamentos.filter((a) => a.contato_id === contato.id).length,
+          origens: origensDoContato(contato.id),
         }));
+    },
+
+    async obterOrigensDoContato(contatoId) {
+      return origensDoContato(Number(contatoId));
     },
 
     /** O contato de um telefone, mesmo excluído — é como o duplicado é impedido. */
@@ -1220,6 +1261,69 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return [...totais]
         .sort((a, b) => a[0] - b[0])
         .map(([agenteId, total]) => ({ agente_id: agenteId, total }));
+    },
+
+    // ------------------------------------------ equipe dos agentes (047)
+    // Paridade com repositorio.js — ver os comentários lá.
+
+    async obterEscopoDeAcesso(usuarioId) {
+      const usuario = usuarios.get(Number(usuarioId));
+      if (!usuario || usuario.ativo === false || usuario.excluido_em) return null;
+      return {
+        acesso_clinica: usuario.acesso_clinica !== false,
+        agentes: agenteEquipe
+          .filter((vinculo) => vinculo.usuario_id === usuario.id)
+          .map((vinculo) => vinculo.agente_id)
+          .sort((a, b) => a - b),
+      };
+    },
+
+    async listarEquipeDoAgente(agenteId) {
+      return agenteEquipe
+        .filter((vinculo) => vinculo.agente_id === Number(agenteId))
+        .map((vinculo) => ({ vinculo, usuario: usuarios.get(vinculo.usuario_id) }))
+        .filter(({ usuario }) => usuario)
+        .sort((a, b) => (a.usuario.nome ?? '').localeCompare(b.usuario.nome ?? '', 'pt-BR') || a.usuario.id - b.usuario.id)
+        .map(({ vinculo, usuario }) => ({
+          agente_id: vinculo.agente_id,
+          usuario_id: usuario.id,
+          nome: usuario.nome,
+          email: usuario.email,
+          papel: usuario.papel,
+          situacao: usuario.situacao,
+          acesso_clinica: usuario.acesso_clinica !== false,
+          criado_em: vinculo.criado_em,
+        }));
+    },
+
+    async listarVinculosDeEquipe() {
+      return agenteEquipe
+        .map((vinculo) => ({ agente_id: vinculo.agente_id, usuario_id: vinculo.usuario_id }))
+        .sort((a, b) => a.usuario_id - b.usuario_id || a.agente_id - b.agente_id);
+    },
+
+    async adicionarMembroDaEquipe(agenteId, usuarioId, { criadoPor = null } = {}) {
+      const agente = Number(agenteId);
+      const usuario = Number(usuarioId);
+      if (!agentes.has(agente) || !usuarios.has(usuario)) {
+        // Mesmo efeito da FK do PostgreSQL: vínculo órfão não entra.
+        const erro = new Error('insert or update on table "agente_equipe" violates foreign key constraint');
+        erro.code = '23503';
+        throw erro;
+      }
+      if (agenteEquipe.some((vinculo) => vinculo.agente_id === agente && vinculo.usuario_id === usuario)) return false;
+      agenteEquipe.push({
+        agente_id: agente, usuario_id: usuario, criado_por: criadoPor, criado_em: agora().toISOString(),
+      });
+      return true;
+    },
+
+    async removerMembroDaEquipe(agenteId, usuarioId) {
+      const indice = agenteEquipe.findIndex((vinculo) => vinculo.agente_id === Number(agenteId)
+        && vinculo.usuario_id === Number(usuarioId));
+      if (indice < 0) return false;
+      agenteEquipe.splice(indice, 1);
+      return true;
     },
 
     /**
@@ -2180,6 +2284,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         excluido_em: null,
         excluido_por: null,
         excluido_motivo: null,
+        // Migration 047: padrão sim, como a coluna.
+        acesso_clinica: true,
         criado_em: agora().toISOString(),
       };
       usuarios.set(usuario.id, usuario);
@@ -2201,6 +2307,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
         ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
         ['avatarUrl', 'avatar_url'],
+        // Migration 047.
+        ['acessoClinica', 'acesso_clinica'],
         // Cadastro estruturado e documentos — sempre cifrados/hash (P1-05).
         ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
         ['cpfCifrado', 'cpf_cifrado'], ['cpfBuscaHash', 'cpf_busca_hash'],
@@ -2296,11 +2404,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     // `podeAcessarConversaAoVivo` que o broadcast ao vivo usa. Sem SQL aqui,
     // então não há "filtrar no WHERE" — só a passada em JS, que já é a
     // única fonte de verdade nesta implementação.
-    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+    async listarEventosDeConversasDesde({
+      cursor = null, limite = 500, usuarioId = null, papel, escopo = null,
+    } = {}) {
       if (!papel) {
         throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
       }
       const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+      // Migration 047 — mesma omissão segura do SQL: admin vê todo agente, os demais só a clínica.
+      const filtro = escopo ?? (papel === 'admin' ? { clinica: true, agentes: TODOS } : { clinica: true, agentes: [] });
       const visivel = (linha) => {
         const conversa = conversas.get(linha.conversa_id);
         // Conversa inexistente NEGA — paridade exata com o SQL de
@@ -2312,7 +2424,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         if (!conversa) return false;
         const atribuidoA = conversa.atribuido_a !== null && conversa.atribuido_a !== undefined
           ? Number(conversa.atribuido_a) : null;
-        return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA);
+        return podeAcessarConversaAoVivo(papel, usuarioIdNumerico, atribuidoA)
+          && veConversaDe(filtro, conversa.agente_id ?? null);
       };
 
       // Filtra ANTES de limitar — mesma ordem de operações do SQL em
@@ -2338,6 +2451,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         estado: 'existe',
         atribuidoA: conversa.atribuido_a === null || conversa.atribuido_a === undefined
           ? null : Number(conversa.atribuido_a),
+        agenteId: conversa.agente_id === null || conversa.agente_id === undefined ? null : Number(conversa.agente_id),
       };
     },
 

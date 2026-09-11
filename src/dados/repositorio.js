@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const contexto = require('./contexto');
 const { redigirAuditoria } = require('../seguranca/redator-auditoria');
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+const { TODOS, veConversaDe } = require('../seguranca/escopo');
 const { normalizarConfiguracoes } = require('../dominio/agentes/regras');
 
 // Migration 046 (agentes, ver docs/AGENTES.md): `c.agente_id` e a junção com
@@ -50,6 +51,34 @@ const AGREGADOS_CONVERSA = `
     FROM conversa_etiquetas ce JOIN etiquetas e ON e.id = ce.etiqueta_id
     WHERE ce.conversa_id = c.id), '{}') AS etiquetas
 `;
+
+/**
+ * Filtro de conversa pelo escopo de quem pede (migration 047, src/seguranca/escopo.js):
+ * `{ clinica, agentes: 'todos'|ids }`. Empilha os parâmetros em `valores` e
+ * devolve a condição, ou `null` quando não há o que filtrar. Mesma regra de
+ * `veConversaDe`, que a implementação em memória usa direto.
+ */
+function condicaoDeConversaNoEscopo(escopo, valores, apelido = 'c') {
+  if (!escopo) return null;
+  if (escopo.agentes === TODOS) return escopo.clinica === true ? null : `${apelido}.agente_id IS NOT NULL`;
+  valores.push(escopo.clinica === true);
+  const posicaoClinica = valores.length;
+  valores.push((escopo.agentes ?? []).map(Number));
+  return `((${apelido}.agente_id IS NULL AND $${posicaoClinica}::boolean) OR ${apelido}.agente_id = ANY($${valores.length}::bigint[]))`;
+}
+
+/**
+ * Contato que quem NÃO vê a clínica alcança: só o que tem conversa com agente
+ * da equipe. Quem vê a clínica vê a base inteira (decisão 11/09) — `null`.
+ */
+function condicaoDeContatoNoEscopo(escopo, valores, colunaDoContato = 'c.id') {
+  if (!escopo || escopo.clinica === true) return null;
+  if (escopo.agentes === TODOS) {
+    return `EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = ${colunaDoContato} AND v.agente_id IS NOT NULL)`;
+  }
+  valores.push((escopo.agentes ?? []).map(Number));
+  return `EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = ${colunaDoContato} AND v.agente_id = ANY($${valores.length}::bigint[]))`;
+}
 
 function montarConversa(linha) {
   if (!linha) return null;
@@ -186,7 +215,7 @@ const CAMPOS_USUARIO = `
   id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
   telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em,
   nome_completo, nascimento, whatsapp_ddi, whatsapp_ddd, whatsapp_numero,
-  whatsapp_particular_autorizado, excluido_em
+  whatsapp_particular_autorizado, excluido_em, acesso_clinica
 `;
 
 function montarLead(linha) {
@@ -643,6 +672,9 @@ function criarRepositorio(pool) {
       // Migration 046: `undefined` (padrão) não filtra; `null` traz só as
       // conversas da clínica; um id traz só as daquele agente.
       agenteId = undefined,
+      // Migration 047: o escopo de quem pede (`{ clinica, agentes }`). Sem
+      // escopo, nada é filtrado — chamadas de sistema (workers, webhook).
+      escopo = null,
     } = {}) {
       const condicoes = [];
       const valores = [];
@@ -651,6 +683,8 @@ function criarRepositorio(pool) {
       if (contatoId) { valores.push(contatoId); condicoes.push(`c.contato_id = $${valores.length}`); }
       if (agenteId === null) condicoes.push('c.agente_id IS NULL');
       else if (agenteId !== undefined) { valores.push(agenteId); condicoes.push(`c.agente_id = $${valores.length}`); }
+      const noEscopo = condicaoDeConversaNoEscopo(escopo, valores);
+      if (noEscopo) condicoes.push(noEscopo);
       if (busca) {
         valores.push(`%${busca}%`);
         condicoes.push(`(ct.nome ILIKE $${valores.length} OR ct.telefone ILIKE $${valores.length})`);
@@ -951,11 +985,14 @@ function criarRepositorio(pool) {
      * olhando para a tela do paciente, e isso precisa achar o mesmo contato que
      * "11999990000" acha. Por isso o `regexp_replace` dos dois lados.
      */
-    async buscarContatos({ termo, limite = 10 }) {
+    async buscarContatos({ termo, limite = 10, escopo = null }) {
       const alvo = String(termo ?? '').trim();
       if (!alvo) return [];
 
       const digitos = alvo.replace(/\D/g, '');
+      const valores = [alvo, digitos, Number(limite)];
+      // Migration 047: quem não vê a clínica só acha cliente dos agentes dele.
+      const noEscopo = condicaoDeContatoNoEscopo(escopo, valores, 'contatos.id');
       const { rows } = await consultar(
         `SELECT id, nome, telefone
            FROM contatos
@@ -963,9 +1000,10 @@ function criarRepositorio(pool) {
             AND (nome ILIKE '%' || $1 || '%'
              OR ($2 <> '' AND length($2) >= 3
                  AND regexp_replace(COALESCE(telefone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%'))
+            ${noEscopo ? `AND ${noEscopo}` : ''}
           ORDER BY nome NULLS LAST
           LIMIT $3`,
-        [alvo, digitos, Number(limite)],
+        valores,
       );
 
       return rows.map((linha) => ({
@@ -1040,7 +1078,16 @@ function criarRepositorio(pool) {
      * própria tela poder mostrar quem saiu e oferecer a restauração — sem isso,
      * um contato apagado por engano viraria um chamado de suporte.
      */
-    async listarContatos({ termo = null, incluirExcluidos = false, limite = 100 } = {}) {
+    /**
+     * `escopo` (migration 047): quem não vê a clínica só lista cliente dos
+     * agentes dele, e a contagem de conversas conta só as que a pessoa vê.
+     * `origem` (decisão 11/09, selos automáticos): `'clinica'` = contato sem
+     * conversa ou com conversa sem agente; um id = contato que conversou com
+     * aquele agente. `origens` sai em cada linha — calculado, nada é gravado.
+     */
+    async listarContatos({
+      termo = null, incluirExcluidos = false, limite = 100, escopo = null, origem = undefined,
+    } = {}) {
       const condicoes = [];
       const valores = [];
 
@@ -1052,24 +1099,51 @@ function criarRepositorio(pool) {
           OR ($${valores.length} <> '' AND length($${valores.length}) >= 3
               AND regexp_replace(COALESCE(c.telefone, ''), '\\D', '', 'g') LIKE '%' || $${valores.length} || '%'))`);
       }
+      const contatoNoEscopo = condicaoDeContatoNoEscopo(escopo, valores);
+      if (contatoNoEscopo) condicoes.push(contatoNoEscopo);
+      if (origem === 'clinica') {
+        condicoes.push(`(NOT EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = c.id AND v.agente_id IS NOT NULL)
+          OR EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = c.id AND v.agente_id IS NULL))`);
+      } else if (origem !== undefined && origem !== null) {
+        valores.push(Number(origem));
+        condicoes.push(`EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = c.id AND v.agente_id = $${valores.length})`);
+      }
+      const conversaVisivel = condicaoDeConversaNoEscopo(escopo, valores, 'v');
       valores.push(Number(limite));
 
       const { rows } = await consultar(`
         SELECT c.id, c.nome, c.telefone, c.email, c.identificador, c.origem, c.observacoes,
                c.lembretes_optout, c.excluido_em, c.excluido_motivo, c.criado_em,
-               (SELECT count(*)::int FROM conversas v WHERE v.contato_id = c.id) AS conversas,
-               (SELECT count(*)::int FROM agendamentos a WHERE a.contato_id = c.id) AS agendamentos
+               (SELECT count(*)::int FROM conversas v
+                 WHERE v.contato_id = c.id ${conversaVisivel ? `AND ${conversaVisivel}` : ''}) AS conversas,
+               (SELECT count(*)::int FROM agendamentos a WHERE a.contato_id = c.id) AS agendamentos,
+               (NOT EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = c.id AND v.agente_id IS NOT NULL)
+                 OR EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = c.id AND v.agente_id IS NULL)) AS origem_clinica,
+               COALESCE((SELECT array_agg(DISTINCT v.agente_id ORDER BY v.agente_id) FROM conversas v
+                 WHERE v.contato_id = c.id AND v.agente_id IS NOT NULL), '{}') AS origem_agentes
           FROM contatos c
          ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
          ORDER BY c.excluido_em NULLS FIRST, c.nome NULLS LAST, c.id DESC
          LIMIT $${valores.length}
       `, valores);
 
-      return rows.map((linha) => ({
+      return rows.map(({ origem_clinica: origemClinica, origem_agentes: origemAgentes, ...linha }) => ({
         ...linha,
         id: Number(linha.id),
         lembretes_optout: linha.lembretes_optout === true,
+        origens: { clinica: origemClinica === true, agentes: (origemAgentes ?? []).map(Number) },
       }));
+    },
+
+    /** Selos de origem de UM contato — mesma regra de `listarContatos`. */
+    async obterOrigensDoContato(contatoId) {
+      const { rows: [linha] } = await consultar(`
+        SELECT (NOT EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = $1 AND v.agente_id IS NOT NULL)
+                 OR EXISTS (SELECT 1 FROM conversas v WHERE v.contato_id = $1 AND v.agente_id IS NULL)) AS clinica,
+               COALESCE((SELECT array_agg(DISTINCT v.agente_id ORDER BY v.agente_id) FROM conversas v
+                 WHERE v.contato_id = $1 AND v.agente_id IS NOT NULL), '{}') AS agentes
+      `, [contatoId]);
+      return { clinica: linha?.clinica === true, agentes: (linha?.agentes ?? []).map(Number) };
     },
 
     /** O contato de um telefone, mesmo excluído — é como o duplicado é impedido. */
@@ -1730,6 +1804,80 @@ function criarRepositorio(pool) {
         LIMIT $2
       `, [agenteId, limite]);
       return rows.map(montarConversa);
+    },
+
+    // ------------------------------------------ equipe dos agentes (047)
+    //
+    // Quem vê o quê entre a clínica e os agentes: src/seguranca/escopo.js.
+
+    /**
+     * O que o banco diz de um usuário para montar o escopo: a marca "vê a
+     * clínica" e os agentes da equipe dele. `null` quando a conta não existe,
+     * está inativa ou excluída — quem chama NEGA.
+     *
+     * Como sistema: a política de `usuarios` (crm008_u_s) só deixa o atendente
+     * ler a própria linha por `current_usuario_id()`, que depende de um claim
+     * que a transação da requisição não leva. Sem isto o atendente leria zero
+     * linhas e perderia a clínica em silêncio.
+     */
+    async obterEscopoDeAcesso(usuarioId) {
+      const { rows } = await comoSistema((cliente) => consultarNoCliente(cliente, `
+        SELECT u.acesso_clinica,
+               COALESCE(array_agg(e.agente_id ORDER BY e.agente_id) FILTER (WHERE e.agente_id IS NOT NULL), '{}') AS agentes
+          FROM usuarios u
+          LEFT JOIN agente_equipe e ON e.usuario_id = u.id
+         WHERE u.id = $1 AND u.ativo AND u.excluido_em IS NULL
+         GROUP BY u.id, u.acesso_clinica
+      `, [usuarioId]));
+      if (!rows[0]) return null;
+      return { acesso_clinica: rows[0].acesso_clinica !== false, agentes: (rows[0].agentes ?? []).map(Number) };
+    },
+
+    /** Quem atende um agente, com o que a tela de equipe mostra — nunca documento nem senha. */
+    async listarEquipeDoAgente(agenteId) {
+      const { rows } = await comoSistema((cliente) => consultarNoCliente(cliente, `
+        SELECT e.agente_id, e.usuario_id, e.criado_em, u.nome, u.email, u.papel, u.situacao, u.acesso_clinica
+          FROM agente_equipe e
+          JOIN usuarios u ON u.id = e.usuario_id
+         WHERE e.agente_id = $1
+         ORDER BY u.nome, u.id
+      `, [agenteId]));
+      return rows.map((linha) => ({
+        agente_id: Number(linha.agente_id),
+        usuario_id: Number(linha.usuario_id),
+        nome: linha.nome,
+        email: linha.email,
+        papel: linha.papel,
+        situacao: linha.situacao,
+        acesso_clinica: linha.acesso_clinica !== false,
+        criado_em: new Date(linha.criado_em).toISOString(),
+      }));
+    },
+
+    /** Todos os vínculos, para a tela de usuários dizer quem está (ou não) em alguma equipe. */
+    async listarVinculosDeEquipe() {
+      const { rows } = await consultar('SELECT agente_id, usuario_id FROM agente_equipe ORDER BY usuario_id, agente_id');
+      return rows.map((linha) => ({ agente_id: Number(linha.agente_id), usuario_id: Number(linha.usuario_id) }));
+    },
+
+    /** `true` quando entrou agora; `false` quando já estava. Agente e usuário são conferidos por quem chama. */
+    async adicionarMembroDaEquipe(agenteId, usuarioId, { criadoPor = null } = {}) {
+      const { rows } = await consultar(`
+        INSERT INTO agente_equipe (agente_id, usuario_id, criado_por)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (agente_id, usuario_id) DO NOTHING
+        RETURNING agente_id
+      `, [agenteId, usuarioId, criadoPor]);
+      return rows.length > 0;
+    },
+
+    /** `true` quando saiu; `false` quando não estava. */
+    async removerMembroDaEquipe(agenteId, usuarioId) {
+      const { rows } = await consultar(
+        'DELETE FROM agente_equipe WHERE agente_id = $1 AND usuario_id = $2 RETURNING agente_id',
+        [agenteId, usuarioId],
+      );
+      return rows.length > 0;
     },
 
     /** O mesmo recorte de `listarConversasDoAgenteAguardandoEquipe`, contado por agente. */
@@ -2477,6 +2625,9 @@ function criarRepositorio(pool) {
         ['totpConfirmadoEm', 'totp_confirmado_em'], ['aprovadoPor', 'aprovado_por'],
         ['aprovadoEm', 'aprovado_em'], ['ultimoLoginEm', 'ultimo_login_em'],
         ['avatarUrl', 'avatar_url'],
+        // Migration 047 — só a rota do admin passa este campo (e o gatilho do
+        // banco recusa qualquer outro papel).
+        ['acessoClinica', 'acesso_clinica'],
         // P1-01/P1-05 — cadastro completo. CPF/RG chegam já cifrados da camada
         // de domínio: o repositório não sabe decifrar, e não deve.
         ['nomeCompleto', 'nome_completo'], ['nascimento', 'nascimento'],
@@ -2813,36 +2964,45 @@ function criarRepositorio(pool) {
      * `WHERE` abaixo divergir da função por um erro de edição, esta segunda
      * passada garante que a resposta HTTP nunca vaza a linha mesmo assim.
      */
-    async listarEventosDeConversasDesde({ cursor = null, limite = 500, usuarioId = null, papel } = {}) {
+    async listarEventosDeConversasDesde({
+      cursor = null, limite = 500, usuarioId = null, papel,
+      // Migration 047: o escopo de quem assina. Sem escopo declarado, o admin
+      // vê todo agente e os demais só a clínica — nunca "tudo" por omissão.
+      escopo = null,
+    } = {}) {
       if (!papel) {
         throw new Error('listarEventosDeConversasDesde exige "papel" — replay sem escopo declarado é uma falha de autorização silenciosa');
       }
       const verTudo = papel === 'admin' || papel === 'gestor';
       const verRestrito = papel === 'atendente';
       const usuarioIdNumerico = usuarioId === null || usuarioId === undefined ? null : Number(usuarioId);
+      const filtro = escopo ?? (papel === 'admin' ? { clinica: true, agentes: TODOS } : { clinica: true, agentes: [] });
+
+      const valores = [limite];
+      const condicoes = [];
+      if (cursor !== null) {
+        valores.push(cursor);
+        condicoes.push(`ce.id > $${valores.length}`);
+      }
+      valores.push(verTudo, verRestrito, usuarioIdNumerico);
+      const [posTudo, posRestrito, posUsuario] = [valores.length - 2, valores.length - 1, valores.length];
+      condicoes.push(`($${posTudo}::boolean OR ($${posRestrito}::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $${posUsuario})))`);
+      const noEscopo = condicaoDeConversaNoEscopo(filtro, valores);
+      if (noEscopo) condicoes.push(noEscopo);
 
       const { rows } = await consultar(
-        cursor === null
-          ? `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a
-               FROM conversas_eventos ce
-               JOIN conversas c ON c.id = ce.conversa_id
-              WHERE ($2::boolean OR ($3::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $4)))
-              ORDER BY ce.id DESC LIMIT $1`
-          : `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a
-               FROM conversas_eventos ce
-               JOIN conversas c ON c.id = ce.conversa_id
-              WHERE ce.id > $2
-                AND ($3::boolean OR ($4::boolean AND (c.atribuido_a IS NULL OR c.atribuido_a = $5)))
-              ORDER BY ce.id ASC LIMIT $1`,
-        cursor === null
-          ? [limite, verTudo, verRestrito, usuarioIdNumerico]
-          : [limite, cursor, verTudo, verRestrito, usuarioIdNumerico],
+        `SELECT ce.id, ce.conversa_id, ce.tipo, ce.payload, ce.criado_em, c.atribuido_a, c.agente_id
+           FROM conversas_eventos ce
+           JOIN conversas c ON c.id = ce.conversa_id
+          WHERE ${condicoes.join(' AND ')}
+          ORDER BY ce.id ${cursor === null ? 'DESC' : 'ASC'} LIMIT $1`,
+        valores,
       );
       const ordenados = cursor === null ? rows.slice().reverse() : rows;
       return ordenados
         .filter((linha) => podeAcessarConversaAoVivo(
           papel, usuarioIdNumerico, linha.atribuido_a === null ? null : Number(linha.atribuido_a),
-        ))
+        ) && veConversaDe(filtro, linha.agente_id === null || linha.agente_id === undefined ? null : Number(linha.agente_id)))
         .map((linha) => ({
           id: Number(linha.id),
           conversa_id: Number(linha.conversa_id),
@@ -2875,11 +3035,13 @@ function criarRepositorio(pool) {
      * mãos para registrar — nada é mascarado aqui dentro.
      */
     async obterEscopoDaConversa(conversaId) {
-      const { rows } = await consultar('SELECT atribuido_a FROM conversas WHERE id = $1', [conversaId]);
+      const { rows } = await consultar('SELECT atribuido_a, agente_id FROM conversas WHERE id = $1', [conversaId]);
       if (rows.length === 0) return { estado: 'inexistente' };
       return {
         estado: 'existe',
         atribuidoA: rows[0].atribuido_a === null ? null : Number(rows[0].atribuido_a),
+        // Migration 047: de quem é a conversa decide quem recebe o evento ao vivo.
+        agenteId: rows[0].agente_id === null || rows[0].agente_id === undefined ? null : Number(rows[0].agente_id),
       };
     },
 
