@@ -2,6 +2,19 @@
 
 const { ErroDeContrato } = require('../contratos/erros');
 const { exigirPermissao, podeFazer } = require('../seguranca/rbac');
+const { veAgente } = require('../seguranca/escopo');
+
+/**
+ * Migration 047: agente fora da equipe de quem pede responde como inexistente.
+ * `escopo` nulo = chamada sem escopo (teste de unidade, chamada interna).
+ */
+function exigirAgenteVisivel(escopo, agenteId) {
+  if (!escopo || veAgente(escopo, agenteId)) return;
+  const erro = new Error('agente não encontrado');
+  erro.status = 404;
+  erro.codigo = 'agente_nao_encontrado';
+  throw erro;
+}
 
 // API dos agentes configuráveis — mesmo molde de rotas-instagram.js:
 // `exigirPermissao` é a PRIMEIRA linha de toda rota (antes até de validar o
@@ -41,17 +54,23 @@ function criarRotasDeAgentes({ servico, gateway = null }) {
   const podeGerenciar = (usuario) => podeFazer(usuario?.papel, 'agentes:gerenciar');
 
   return {
-    /** GET /api/agentes */
-    async listar(usuario) {
+    /** GET /api/agentes — só os agentes que a pessoa vê (admin: todos). */
+    async listar(usuario, escopo = null) {
       exigirPermissao(usuario, 'agentes:ler');
       const [agentes, catalogo] = await Promise.all([servico.listar(), catalogoSeguro()]);
-      return { agentes, catalogo, pode_gerenciar: podeGerenciar(usuario) };
+      return {
+        agentes: escopo ? agentes.filter((agente) => veAgente(escopo, agente.id)) : agentes,
+        catalogo,
+        pode_gerenciar: podeGerenciar(usuario),
+      };
     },
 
     /** GET /api/agentes/:id */
-    async obter(usuario, id) {
+    async obter(usuario, id, escopo = null) {
       exigirPermissao(usuario, 'agentes:ler');
-      const detalhe = await servico.obter(exigirIdentificador(id, 'agente_id'));
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      exigirAgenteVisivel(escopo, agenteId);
+      const detalhe = await servico.obter(agenteId);
       return { ...detalhe, pode_gerenciar: podeGerenciar(usuario) };
     },
 
@@ -108,23 +127,54 @@ function criarRotasDeAgentes({ servico, gateway = null }) {
 
     // ---------------------------------------------- painel de operação
 
-    /** GET /api/agentes/aguardando — conversas de agente esperando a equipe, por agente. */
-    async aguardando(usuario) {
+    /** GET /api/agentes/aguardando — conversas de agente esperando a equipe, por agente visível. */
+    async aguardando(usuario, escopo = null) {
       exigirPermissao(usuario, 'agentes:ler');
-      return servico.aguardandoPorAgente();
+      const resumo = await servico.aguardandoPorAgente();
+      if (!escopo) return resumo;
+      const porAgente = resumo.por_agente.filter((item) => veAgente(escopo, item.agente_id));
+      return { total: porAgente.reduce((soma, item) => soma + item.total, 0), por_agente: porAgente };
     },
 
     /** GET /api/agentes/:id/operacao — estado, números, aguardando e conversas recentes. */
-    async operacao(usuario, id) {
+    async operacao(usuario, id, escopo = null) {
       exigirPermissao(usuario, 'agentes:ler');
-      const operacao = await servico.operacao(exigirIdentificador(id, 'agente_id'));
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      exigirAgenteVisivel(escopo, agenteId);
+      const operacao = await servico.operacao(agenteId);
       return { ...operacao, pode_gerenciar: podeGerenciar(usuario) };
     },
 
     /** GET /api/agentes/:id/whatsapp — estado da instância do agente na Evolution. */
-    async whatsapp(usuario, id) {
+    async whatsapp(usuario, id, escopo = null) {
       exigirPermissao(usuario, 'agentes:ler');
-      return servico.whatsapp(exigirIdentificador(id, 'agente_id'));
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      exigirAgenteVisivel(escopo, agenteId);
+      return servico.whatsapp(agenteId);
+    },
+
+    // ---------------------------------------------- equipe do agente (047)
+
+    /** GET /api/agentes/:id/equipe — quem atende este agente. */
+    async equipe(usuario, id, escopo = null) {
+      exigirPermissao(usuario, 'agentes:ler');
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      exigirAgenteVisivel(escopo, agenteId);
+      return { ...(await servico.listarEquipe(agenteId)), pode_gerenciar: podeGerenciar(usuario) };
+    },
+
+    /** POST /api/agentes/:id/equipe — corpo `{ usuario_id }`. */
+    async adicionarNaEquipe(usuario, id, corpo) {
+      exigirPermissao(usuario, 'agentes:gerenciar');
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      return servico.adicionarNaEquipe(agenteId, corpo, { usuarioId: usuario.id });
+    },
+
+    /** DELETE /api/agentes/:id/equipe/:usuarioId */
+    async removerDaEquipe(usuario, id, usuarioAlvo) {
+      exigirPermissao(usuario, 'agentes:gerenciar');
+      const agenteId = exigirIdentificador(id, 'agente_id');
+      return servico.removerDaEquipe(agenteId, exigirIdentificador(usuarioAlvo, 'usuario_id'), { usuarioId: usuario.id });
     },
 
     /** POST /api/agentes/:id/whatsapp/conectar — corpo `{ numero? }`. Código de pareamento e QR. */

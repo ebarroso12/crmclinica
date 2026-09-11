@@ -3009,6 +3009,9 @@ function criarRepositorio(pool) {
           tipo: linha.tipo,
           payload: linha.payload,
           criado_em: linha.criado_em,
+          // Migration 047: a releitura cross-processo confere o escopo de novo
+          // com o mesmo predicado do ao vivo, e para isso precisa do dono.
+          agente_id: linha.agente_id === null || linha.agente_id === undefined ? null : Number(linha.agente_id),
         }));
     },
 

@@ -821,6 +821,39 @@ function criarServicoDeAgentes({
       return { agente, mudou: true };
     },
 
+    // ------------------------------------------ equipe (migration 047)
+
+    /** Quem atende o agente — docs/AGENTES.md, "Quem vê o quê". */
+    async listarEquipe(id) {
+      const agente = await exigirAgente(id);
+      return { agente: { id: agente.id, nome: agente.nome }, membros: await repositorio.listarEquipeDoAgente(agente.id) };
+    },
+
+    /**
+     * Coloca alguém na equipe. Repetir não duplica nem audita de novo. Conta
+     * excluída não entra: a equipe é de quem trabalha hoje.
+     */
+    async adicionarNaEquipe(id, dados, { usuarioId = null } = {}) {
+      const agente = await exigirAgente(id);
+      const alvo = exigirIdPositivo(exigirObjetoOuVazio(dados).usuario_id, 'usuario_id');
+      const pessoa = await repositorio.obterUsuarioPorId(alvo);
+      if (!pessoa || pessoa.excluido_em) throw erroComStatus('usuário não encontrado', 404, 'usuario_nao_encontrado');
+
+      const entrou = await repositorio.adicionarMembroDaEquipe(agente.id, pessoa.id, { criadoPor: usuarioId });
+      if (entrou) await auditar('agente_equipe_adicionado', agente.id, { usuario_id: pessoa.id }, usuarioId);
+      return { adicionado: entrou, membros: await repositorio.listarEquipeDoAgente(agente.id) };
+    },
+
+    /** Tira alguém da equipe. Quem não estava é 404 — a tela estava desatualizada. */
+    async removerDaEquipe(id, usuarioAlvo, { usuarioId = null } = {}) {
+      const agente = await exigirAgente(id);
+      const alvo = exigirIdPositivo(usuarioAlvo, 'usuario_id');
+      const saiu = await repositorio.removerMembroDaEquipe(agente.id, alvo);
+      if (!saiu) throw erroComStatus('essa pessoa não está na equipe do agente', 404, 'membro_nao_encontrado');
+      await auditar('agente_equipe_removido', agente.id, { usuario_id: alvo }, usuarioId);
+      return { removido: true, membros: await repositorio.listarEquipeDoAgente(agente.id) };
+    },
+
     /**
      * Conversa de teste: gera a resposta como o agente geraria, sem gravar
      * mensagem nem enviar nada. Vale para agente desativado — é justamente

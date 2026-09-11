@@ -1,6 +1,18 @@
 'use strict';
 
 const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
+const { TODOS, veConversaDe } = require('../seguranca/escopo');
+
+/**
+ * O escopo de agentes da assinatura (migration 047). Pode ser um valor ou uma
+ * função — a rota do SSE renova o escopo de tempos em tempos sem reinscrever.
+ * Sem escopo declarado: admin vê todo agente, os demais só a clínica.
+ */
+function filtroDaAssinatura(assinatura) {
+  const valor = typeof assinatura.escopo === 'function' ? assinatura.escopo() : assinatura.escopo;
+  if (valor) return valor;
+  return assinatura.papel === 'admin' ? { clinica: true, agentes: TODOS } : { clinica: true, agentes: [] };
+}
 
 /**
  * Decide se uma assinatura (ao vivo ou replay) pode receber um evento, dado o
@@ -9,11 +21,15 @@ const { podeAcessarConversaAoVivo } = require('../seguranca/rbac');
  * `empurrar`. Puro e síncrono: toda a I/O acontece antes, na resolução do escopo.
  */
 function podeReceberEvento(assinatura, escopo) {
-  // admin/gestor têm acesso global e a decisão deles NÃO depende de
-  // `atribuido_a` — por isso nunca tocam o banco.
-  if (assinatura.papel === 'admin' || assinatura.papel === 'gestor') return true;
-  if (assinatura.papel !== 'atendente') return false;
+  // admin vê tudo — clínica e todo agente — e por isso nunca toca o banco.
+  if (assinatura.papel === 'admin') return true;
+  if (assinatura.papel !== 'gestor' && assinatura.papel !== 'atendente') return false;
+  // Migration 047: o gestor deixou de ter acesso global. Conversa de agente só
+  // chega a quem está na equipe dele, e para saber de quem é a conversa é
+  // preciso o escopo resolvido — sem ele (inexistente ou erro), nega.
   if (!escopo || escopo.estado !== 'existe') return false;
+  if (!veConversaDe(filtroDaAssinatura(assinatura), escopo.agenteId ?? null)) return false;
+  if (assinatura.papel === 'gestor') return true;
   return podeAcessarConversaAoVivo(assinatura.papel, assinatura.usuarioId, escopo.atribuidoA);
 }
 
@@ -99,8 +115,8 @@ function criarEmissorDeConversas({ repositorio } = {}) {
    * http.js) — é o que `autorizada()` usa para decidir, evento a evento, se
    * ESTA conexão pode ver ESTA conversa (BLOQUEADOR 1, auditoria PR #34).
    */
-  function inscrever(res, { depoisDeCursor = 0, usuarioId = null, papel = null } = {}) {
-    const assinatura = { res, depoisDeCursor, usuarioId, papel, escritasSemDrenar: 0 };
+  function inscrever(res, { depoisDeCursor = 0, usuarioId = null, papel = null, escopo = null } = {}) {
+    const assinatura = { res, depoisDeCursor, usuarioId, papel, escopo, escritasSemDrenar: 0 };
     assinantes.add(assinatura);
     // Zera o contador de backpressure quando o socket alivia — ver `empurrar`.
     res.on?.('drain', () => { assinatura.escritasSemDrenar = 0; });
@@ -137,10 +153,10 @@ function criarEmissorDeConversas({ repositorio } = {}) {
 
     // UMA consulta por EVENTO — não por assinante (era o custo real que o
     // cache com TTL existia para evitar) e não reaproveitada entre eventos
-    // (era o TTL, a janela de exposição). Se nenhuma candidata é atendente,
-    // ninguém precisa de `atribuido_a` e não há consulta alguma.
+    // (era o TTL, a janela de exposição). Só admin dispensa a consulta: desde
+    // a migration 047 o gestor também depende de saber de qual agente é a conversa.
     let escopo = null;
-    if (candidatas.some((assinatura) => assinatura.papel === 'atendente')) {
+    if (candidatas.some((assinatura) => assinatura.papel !== 'admin')) {
       try {
         escopo = await resolverEscopo(evento.conversa_id);
       } catch (erro) {
@@ -302,6 +318,8 @@ function criarReleituraDeEventos({
   repositorio,
   usuarioId,
   papel,
+  // Migration 047: o mesmo escopo de agentes da assinatura (valor ou função).
+  escopo = null,
   cursorAtual,
   avancarCursor,
   intervaloMs = 5000,
@@ -313,17 +331,22 @@ function criarReleituraDeEventos({
   let ativa = true;
   let emTick = false;
   let desligadaPermanentemente = false;
+  const assinatura = { usuarioId, papel, escopo };
 
   async function tick() {
     if (!ativa || desligadaPermanentemente || emTick) return;
     emTick = true;
     try {
       const cursor = cursorAtual();
-      const eventos = await repositorio.listarEventosDeConversasDesde({ cursor, usuarioId, papel });
+      const eventos = await repositorio.listarEventosDeConversasDesde({
+        cursor, usuarioId, papel, escopo: typeof escopo === 'function' ? escopo() : escopo,
+      });
 
       for (const evento of eventos) {
         if (evento.id <= cursor) continue;
-        if (!podeReceberEvento({ usuarioId, papel }, { estado: 'existe', atribuidoA: evento.atribuido_a ?? null })) continue;
+        if (!podeReceberEvento(assinatura, {
+          estado: 'existe', atribuidoA: evento.atribuido_a ?? null, agenteId: evento.agente_id ?? null,
+        })) continue;
         res.write(`id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`);
         avancarCursor(evento.id);
       }

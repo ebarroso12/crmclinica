@@ -53,7 +53,11 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
     return true;
   }
 
-  async function tratar(req, res, rota, metodo, url, usuario) {
+  /**
+   * `escopoDoUsuario` (migration 047): o escopo de quem pede, ou uma função
+   * assíncrona que o lê. Só as leituras usam — gerenciar é do admin, que vê tudo.
+   */
+  async function tratar(req, res, rota, metodo, url, usuario, escopoDoUsuario = null) {
     if (!ehDoPrefixo(rota)) return false;
 
     // Permissão ANTES de ler o corpo. Sem isto, anônimo ou atendente com corpo
@@ -62,13 +66,16 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
     // resto (inclusive o teste, que gasta IA) é `agentes:gerenciar`. As rotas
     // continuam conferindo por conta própria: esta é a primeira porta, não a única.
     exigirPermissao(usuario, metodo === 'GET' ? 'agentes:ler' : 'agentes:gerenciar');
+    const escopo = metodo === 'GET'
+      ? (typeof escopoDoUsuario === 'function' ? await escopoDoUsuario() : escopoDoUsuario)
+      : null;
 
     const partes = rota.split('/').filter(Boolean);
     // partes: ['api', 'agentes', id, sub, alvo, acao]
     const [, , id, sub, alvo, acao] = partes;
 
     if (partes.length === 2) {
-      if (metodo === 'GET') return responder(res, 200, await rotas.listar(usuario));
+      if (metodo === 'GET') return responder(res, 200, await rotas.listar(usuario, escopo));
       if (metodo === 'POST') return responder(res, 201, await rotas.criar(usuario, await lerJson(req)));
       return naoPermitido(res, 'GET, POST');
     }
@@ -76,11 +83,11 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
     // Antes do bloco com id: "aguardando" não é um identificador.
     if (partes.length === 3 && id === 'aguardando') {
       if (metodo !== 'GET') return naoPermitido(res, 'GET');
-      return responder(res, 200, await rotas.aguardando(usuario));
+      return responder(res, 200, await rotas.aguardando(usuario, escopo));
     }
 
     if (partes.length === 3) {
-      if (metodo === 'GET') return responder(res, 200, await rotas.obter(usuario, id));
+      if (metodo === 'GET') return responder(res, 200, await rotas.obter(usuario, id, escopo));
       if (metodo === 'PUT') return responder(res, 200, await rotas.atualizar(usuario, id, await lerJson(req)));
       return naoPermitido(res, 'GET, PUT');
     }
@@ -104,11 +111,16 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
       }
       if (sub === 'operacao') {
         if (metodo !== 'GET') return naoPermitido(res, 'GET');
-        return responder(res, 200, await rotas.operacao(usuario, id));
+        return responder(res, 200, await rotas.operacao(usuario, id, escopo));
       }
       if (sub === 'whatsapp') {
         if (metodo !== 'GET') return naoPermitido(res, 'GET');
-        return responder(res, 200, await rotas.whatsapp(usuario, id));
+        return responder(res, 200, await rotas.whatsapp(usuario, id, escopo));
+      }
+      if (sub === 'equipe') {
+        if (metodo === 'GET') return responder(res, 200, await rotas.equipe(usuario, id, escopo));
+        if (metodo === 'POST') return responder(res, 200, await rotas.adicionarNaEquipe(usuario, id, await lerJson(req)));
+        return naoPermitido(res, 'GET, POST');
       }
       if (sub === 'pausar') {
         if (metodo !== 'POST') return naoPermitido(res, 'POST');
@@ -124,6 +136,11 @@ function criarDespachoDeAgentes({ rotas, lerJson, responderJson }) {
     if (partes.length === 5 && sub === 'treinamentos') {
       if (metodo !== 'DELETE') return naoPermitido(res, 'DELETE');
       return responder(res, 200, await rotas.removerTreinamento(usuario, id, alvo));
+    }
+
+    if (partes.length === 5 && sub === 'equipe') {
+      if (metodo !== 'DELETE') return naoPermitido(res, 'DELETE');
+      return responder(res, 200, await rotas.removerDaEquipe(usuario, id, alvo));
     }
 
     if (partes.length === 5 && sub === 'whatsapp' && alvo === 'conectar') {

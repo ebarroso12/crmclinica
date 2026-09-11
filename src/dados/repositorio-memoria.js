@@ -2436,7 +2436,7 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       const autorizados = (cursor === null ? conversasEventos : conversasEventos.filter((linha) => linha.id > Number(cursor)))
         .filter(visivel);
       const pagina = cursor === null ? autorizados.slice(-limite) : autorizados.slice(0, limite);
-      return pagina.map((linha) => ({ ...linha }));
+      return pagina.map((linha) => ({ ...linha, agente_id: conversas.get(linha.conversa_id)?.agente_id ?? null }));
     },
 
     /**

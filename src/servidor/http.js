@@ -26,6 +26,9 @@ const { criarGatewayDeIA } = require('../ia/gateway');
 const { criarMotorDeAgentes } = require('../dominio/agentes/motor');
 const { criarServicoDeAgentes } = require('../dominio/agentes/servico');
 const { criarRotasDeAgentes } = require('./rotas-agentes');
+const {
+  montarEscopo, rotaLiberadaSemClinica, filtroDeEscopo, veAgente, veConversaDe,
+} = require('../seguranca/escopo');
 const { criarDespachoDeAgentes } = require('./despacho-agentes');
 const { criarExtratorDeQualificacao } = require('../dominio/qualificacao-ia');
 const { criarServicoDeAvaliacao } = require('../dominio/avaliacao-ia');
@@ -903,6 +906,8 @@ function criarAplicacao(dependencias = {}) {
       const sobre = {
         situacao: (corpo) => auth.definirSituacao(usuario, partes[2], corpo),
         papel: (corpo) => auth.definirPapel(usuario, partes[2], corpo),
+        // Migration 047: "vê a clínica" (admin, auditado).
+        'acesso-clinica': (corpo) => auth.definirAcessoClinica(usuario, partes[2], corpo),
         // Recuperação sem e-mail: o master gera uma senha temporária e entrega
         // pessoalmente. Não lê corpo — não há nada a informar.
         senha: () => auth.definirSenhaTemporaria(usuario, partes[2]),
@@ -1406,7 +1411,25 @@ function criarAplicacao(dependencias = {}) {
 
   // Rotas da camada de conversas. Devolve `true` quando tratou a requisição.
   // Toda rota daqui exige autenticação e a permissão declarada.
-  async function tratarRotasDeConversas(req, res, rota, metodo, url, usuario) {
+  //
+  // `escopoDoUsuario` (migration 047): função assíncrona, memoizada por
+  // requisição, que devolve o escopo de quem pede (src/seguranca/escopo.js).
+  async function tratarRotasDeConversas(req, res, rota, metodo, url, usuario, escopoDoUsuario = async () => null) {
+    // O que a tela de Conversas pode mostrar: abas "Clínica | <agente>".
+    if (rota === '/api/conversas/escopo' && metodo === 'GET') {
+      exigirPermissao(usuario, 'conversas:ler');
+      const escopo = await escopoDoUsuario();
+      const agentes = repositorio.listarAgentes ? await repositorio.listarAgentes() : [];
+      responderJson(res, 200, {
+        admin: escopo?.admin === true,
+        clinica: escopo?.clinica === true,
+        agentes: agentes
+          .filter((agente) => veAgente(escopo, agente.id))
+          .map((agente) => ({ id: agente.id, nome: agente.nome, status: agente.status })),
+      }, { 'cache-control': 'no-store' });
+      return true;
+    }
+
     if (rota === '/api/conversas/filas' && metodo === 'GET') {
       exigirPermissao(usuario, 'conversas:ler');
       responderJson(res, 200, await conversas.listarFilas());
@@ -1415,7 +1438,9 @@ function criarAplicacao(dependencias = {}) {
 
     if (rota === '/api/conversas' && metodo === 'GET') {
       exigirPermissao(usuario, 'conversas:ler');
-      responderJson(res, 200, await conversas.listarConversas(url.searchParams), { 'cache-control': 'no-store' });
+      responderJson(res, 200, await conversas.listarConversas(url.searchParams, {
+        escopo: await escopoDoUsuario(),
+      }), { 'cache-control': 'no-store' });
       return true;
     }
 
@@ -1584,7 +1609,7 @@ function criarAplicacao(dependencias = {}) {
     if (await tratarRotasDeUsuarios(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeBloqueios(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeSincronia(req, res, rota, metodo, url, usuario)) return true;
-    if (await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario)) return true;
+    if (await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario, escopoDoUsuario)) return true;
 
     const partes = rota.split('/').filter(Boolean);
 
@@ -1595,7 +1620,9 @@ function criarAplicacao(dependencias = {}) {
         responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
         return true;
       }
-      responderJson(res, 200, await rotasDeContatos.listar(usuario, url.searchParams), { 'cache-control': 'no-store' });
+      responderJson(res, 200, await rotasDeContatos.listar(usuario, url.searchParams, {
+        escopo: usuario ? await escopoDoUsuario() : null,
+      }), { 'cache-control': 'no-store' });
       return true;
     }
 
@@ -1608,8 +1635,10 @@ function criarAplicacao(dependencias = {}) {
     // /api/contatos/:id — ficha, edição e exclusão lógica.
     if (partes[0] === 'api' && partes[1] === 'contatos' && partes.length === 3 && /^\d+$/.test(partes[2])) {
       const acoes = {
-        GET: async () => rotasDeContatos.obter(usuario, partes[2]),
-        PUT: async () => rotasDeContatos.editar(usuario, partes[2], await lerJson(req)),
+        GET: async () => rotasDeContatos.obter(usuario, partes[2], { escopo: usuario ? await escopoDoUsuario() : null }),
+        PUT: async () => rotasDeContatos.editar(usuario, partes[2], await lerJson(req), {
+          escopo: usuario ? await escopoDoUsuario() : null,
+        }),
         DELETE: async () => rotasDeContatos.excluir(usuario, partes[2], await lerJson(req).catch(() => ({}))),
       };
       const acao = acoes[metodo];
@@ -1680,6 +1709,8 @@ function criarAplicacao(dependencias = {}) {
       const contatos = await repositorio.buscarContatos({
         termo: url.searchParams.get('busca') ?? '',
         limite: 10,
+        // Migration 047: quem não vê a clínica só acha cliente dos agentes dele.
+        escopo: filtroDeEscopo(await escopoDoUsuario()),
       });
       responderJson(res, 200, { contatos }, { 'cache-control': 'no-store' });
       return true;
@@ -1702,7 +1733,9 @@ function criarAplicacao(dependencias = {}) {
         return true;
       }
       exigirPermissao(usuario, 'contatos:ler');
-      responderJson(res, 200, await conversas.historicoDoContato(partes[2]), { 'cache-control': 'no-store' });
+      responderJson(res, 200, await conversas.historicoDoContato(partes[2], {
+        escopo: await escopoDoUsuario(),
+      }), { 'cache-control': 'no-store' });
       return true;
     }
 
@@ -1711,13 +1744,29 @@ function criarAplicacao(dependencias = {}) {
 
     const conversaId = partes[2];
 
+    // Migration 047: conversa fora do escopo de quem pede responde como
+    // inexistente — numa trava só, ANTES de despachar a ação e de ler o corpo.
+    // Sem sessão, segue: a própria rota responde 401.
+    if (usuario && /^\d+$/.test(conversaId) && repositorio.obterEscopoDaConversa) {
+      const escopo = await escopoDoUsuario();
+      if (!escopo?.admin) {
+        const dona = await repositorio.obterEscopoDaConversa(Number(conversaId));
+        if (dona.estado === 'existe' && !veConversaDe(escopo, dona.agenteId ?? null)) {
+          responderJson(res, 404, { erro: 'conversa não encontrada' });
+          return true;
+        }
+      }
+    }
+
     if (partes.length === 3) {
       if (metodo !== 'GET') {
         responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'GET' });
         return true;
       }
       exigirPermissao(usuario, 'conversas:ler');
-      responderJson(res, 200, await conversas.obterConversa(conversaId), { 'cache-control': 'no-store' });
+      responderJson(res, 200, await conversas.obterConversa(conversaId, {
+        escopo: await escopoDoUsuario(),
+      }), { 'cache-control': 'no-store' });
       return true;
     }
     if (partes.length !== 4) return false;
@@ -1867,6 +1916,31 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
+      // Migration 047 (docs/AGENTES.md, "Quem vê o quê"). O escopo de quem pede
+      // — marca "vê a clínica" e agentes da equipe — é lido do banco uma vez por
+      // requisição, e nunca guardado no token: tirar a clínica de alguém vale na
+      // requisição seguinte. O admin vê tudo e não consulta nada.
+      let escopoEmCurso = null;
+      const escopoDoUsuario = async () => {
+        if (!usuario) return null;
+        if (usuario.papel === 'admin') return montarEscopo(usuario, null);
+        escopoEmCurso ??= Promise.resolve(
+          repositorio.obterEscopoDeAcesso ? repositorio.obterEscopoDeAcesso(usuario.id) : null,
+        ).then((dados) => montarEscopo(usuario, dados));
+        return escopoEmCurso;
+      };
+
+      // Quem não vê a clínica só alcança a lista de rotas de ROTAS_SEM_CLINICA;
+      // o resto responde 403 antes de qualquer outra coisa. Lista de permissão:
+      // rota nova nasce fechada para o colaborador da loja.
+      if (usuario && usuario.papel !== 'admin' && rota.startsWith('/api/') && !rotaLiberadaSemClinica(rota, metodo)) {
+        const escopo = await escopoDoUsuario();
+        if (!escopo.clinica) {
+          responderJson(res, 403, { erro: 'sem acesso à clínica', codigo: 'sem_acesso_clinica' }, { 'cache-control': 'no-store' });
+          return;
+        }
+      }
+
       // O gateway de voz não usa a sessão da interface. O contexto exige o JWT
       // curto da própria sessão; eventos exigem HMAC sobre o corpo bruto.
       if (rota === '/api/serena/voz/contexto') {
@@ -1911,7 +1985,9 @@ function criarAplicacao(dependencias = {}) {
         const [saudeInbox, conversasDoResumo, leadsDoResumo] = await comIdentidade(usuario, () => (
           Promise.all([
             repositorio.verificarSaude(),
-            repositorio.listarConversas({ limite: 200 }),
+            // Migration 047: o painel Hoje de quem está fora da equipe de um
+            // agente não conta nem mostra conversa desse agente.
+            escopoDoUsuario().then((escopo) => repositorio.listarConversas({ limite: 200, escopo: filtroDeEscopo(escopo) })),
             repositorio.listarLeads(),
           ])
         )).catch(() => [{ estado: 'indisponivel' }, [], []]);
@@ -2014,6 +2090,19 @@ function criarAplicacao(dependencias = {}) {
         const usuarioDoEvento = { id: resgate.usuarioId, papel: resgate.papel };
         exigirPermissao(usuarioDoEvento, 'conversas:ler');
 
+        // Migration 047: o escopo da conexão (clínica e agentes da equipe),
+        // lido antes do replay e renovado a cada minuto enquanto a aba está
+        // aberta — tirar alguém da equipe vale para o chat ao vivo sem esperar
+        // a pessoa recarregar. Falha ao renovar fecha o escopo (fail-closed).
+        const lerEscopoDoEvento = async () => montarEscopo(
+          usuarioDoEvento,
+          usuarioDoEvento.papel === 'admin' || !repositorio.obterEscopoDeAcesso
+            ? null
+            : await repositorio.obterEscopoDeAcesso(usuarioDoEvento.id),
+        );
+        let escopoDoEvento = await lerEscopoDoEvento();
+        const filtroDoEvento = () => filtroDeEscopo(escopoDoEvento);
+
         res.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache, no-transform',
@@ -2050,7 +2139,7 @@ function criarAplicacao(dependencias = {}) {
           // este catch abaixo NUNCA precisa (nem pode) tratar "sem
           // permissão" como um caso a mascarar.
           const eventosPerdidos = await repositorio.listarEventosDeConversasDesde({
-            cursor: cursorValido, usuarioId: usuarioDoEvento.id, papel: usuarioDoEvento.papel,
+            cursor: cursorValido, usuarioId: usuarioDoEvento.id, papel: usuarioDoEvento.papel, escopo: filtroDoEvento(),
           });
           for (const evento of eventosPerdidos) {
             res.write(`id: ${evento.id}\ndata: ${JSON.stringify(evento)}\n\n`);
@@ -2082,7 +2171,14 @@ function criarAplicacao(dependencias = {}) {
 
         const cancelarInscricao = emissorDeConversas.inscrever(res, {
           depoisDeCursor: cursorAposReplay, usuarioId: usuarioDoEvento.id, papel: usuarioDoEvento.papel,
+          escopo: filtroDoEvento,
         });
+        const renovacaoDoEscopo = usuarioDoEvento.papel === 'admin' ? null : setInterval(() => {
+          lerEscopoDoEvento()
+            .then((novo) => { escopoDoEvento = novo; })
+            .catch(() => { escopoDoEvento = montarEscopo(usuarioDoEvento, null); });
+        }, 60_000);
+        renovacaoDoEscopo?.unref?.();
 
         // RELEITURA CROSS-PROCESSO: a resposta da Serena (worker na VPS) grava
         // no banco, mas o push ao vivo só alcança quem está no MESMO processo.
@@ -2093,6 +2189,7 @@ function criarAplicacao(dependencias = {}) {
           repositorio,
           usuarioId: usuarioDoEvento.id,
           papel: usuarioDoEvento.papel,
+          escopo: filtroDoEvento,
           cursorAtual: () => cursorAposReplay,
           avancarCursor: (id) => { if (id > cursorAposReplay) cursorAposReplay = id; },
           intervaloMs: configuracao.eventos?.releituraMs ?? 5000,
@@ -2117,6 +2214,7 @@ function criarAplicacao(dependencias = {}) {
         function encerrarConexaoDeEventos() {
           if (encerrada) return;
           encerrada = true;
+          if (renovacaoDoEscopo) clearInterval(renovacaoDoEscopo);
           if (timerReleitura) clearInterval(timerReleitura);
           if (releitura) releitura.parar();
           clearInterval(batimento);
@@ -2213,14 +2311,14 @@ function criarAplicacao(dependencias = {}) {
       // busca a página — segundos de rede, pela mesma razão do teste da Serena
       // logo acima ficam fora da transação.
       if (despachoDeAgentes.ehRotaLenta(rota, metodo)) {
-        const tratouLenta = await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario);
+        const tratouLenta = await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario, escopoDoUsuario);
         if (tratouLenta) return;
       }
 
       // Daqui para baixo, tudo que toca o banco corre numa transação com o
       // usuário declarado — inbox, contatos, leads e agenda.
       const tratou = await comIdentidade(usuario, () => (
-        tratarRotasDeConversas(req, res, rota, metodo, url, usuario)
+        tratarRotasDeConversas(req, res, rota, metodo, url, usuario, escopoDoUsuario)
       ));
       if (tratou) return;
 

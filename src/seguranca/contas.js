@@ -53,6 +53,8 @@ function criarContas({
       precisa_trocar_senha: Boolean(usuario.precisa_trocar_senha),
       totp_ativo: Boolean(usuario.totp_ativo),
       google_vinculado: Boolean(usuario.google_sub),
+      // Migration 047: "vê a clínica". Admin vê sempre, com ou sem a marca.
+      acesso_clinica: usuario.papel === 'admin' || usuario.acesso_clinica !== false,
       permissoes: permissoesDoPapel(usuario.papel),
     };
   }

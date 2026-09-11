@@ -52,6 +52,11 @@ async function subir() {
     { usuarioId: null },
   );
   conversa.agenteDaMatriz = agente.id;
+  // Alvo das rotas de equipe e de "vê a clínica" (migration 047).
+  const alvo = await repositorio.criarUsuario({
+    nome: 'Alvo da Matriz', email: 'alvo-matriz@teste.local', papel: 'atendente', situacao: 'ativo',
+  });
+  conversa.usuarioDaMatriz = alvo.id;
 
   return { app, repositorio, conversa, atendimento };
 }
@@ -161,11 +166,38 @@ function casos(conversa) {
       // recusa do negócio (503); o que a matriz prova é que não é 401/403.
       recusaDoNegocio: [503],
     },
+    // Migration 047: equipe do agente e "vê a clínica". Quem vê o QUÊ (escopo)
+    // é provado em testes/separacao-clinica-agentes.test.js; aqui, só o papel.
+    {
+      o_que: 'ver as abas de Conversas (escopo)',
+      rota: '/api/conversas/escopo', metodo: 'GET',
+      podem: ['atendente', 'gestor', 'admin'],
+    },
+    {
+      o_que: 'ver a equipe de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/equipe`, metodo: 'GET',
+      podem: ['gestor', 'admin'],
+    },
+    {
+      o_que: 'colocar alguém na equipe de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/equipe`, metodo: 'POST', corpo: { usuario_id: conversa.usuarioDaMatriz },
+      podem: ['admin'],
+    },
+    {
+      o_que: 'tirar alguém da equipe de um agente',
+      rota: `/api/agentes/${conversa.agenteDaMatriz}/equipe/${conversa.usuarioDaMatriz}`, metodo: 'DELETE',
+      podem: ['admin'],
+    },
+    {
+      o_que: 'mudar "vê a clínica" de um usuário',
+      rota: `/api/usuarios/${conversa.usuarioDaMatriz}/acesso-clinica`, metodo: 'POST', corpo: { acesso_clinica: true },
+      podem: ['admin'],
+    },
   ];
 }
 
 test('matriz de perfis: cada rota exige a permissão certa', async (t) => {
-  const { app, conversa } = await subir();
+  const { app, conversa, repositorio } = await subir();
   t.after(() => app.encerrar());
 
   const sessoes = {};
@@ -174,6 +206,11 @@ test('matriz de perfis: cada rota exige a permissão certa', async (t) => {
       email: `${papel}-matriz@teste.local`,
       master: papel === 'admin',
     });
+    // Migration 047: esta matriz mede o PAPEL. Na equipe do agente, gestor e
+    // atendente enxergam o agente, e a única recusa possível é a do RBAC.
+    if (papel !== 'admin') {
+      await repositorio.adicionarMembroDaEquipe(conversa.agenteDaMatriz, sessoes[papel].usuario.id);
+    }
   }
 
   for (const caso of casos(conversa)) {
