@@ -614,6 +614,17 @@ function criarServicoDeAgentes({
       const validado = validarAgente(campos, { parcial: true });
       if (Object.keys(validado).length === 0) throw new ErroDeContrato('nada para atualizar');
 
+      // Achado B3: status só muda por POST /pausar e /retomar, que têm a
+      // confirmação do GPTMaker na tela e auditoria própria. Uma aba antiga com
+      // o select de status no perfil não pode religar nem pausar por aqui.
+      if (Object.prototype.hasOwnProperty.call(validado, 'status')) {
+        if (validado.status !== atual.status) {
+          throw erroComStatus('para pausar ou retomar use os botões do Controle', 409, 'status_pelo_controle');
+        }
+        delete validado.status;
+        if (Object.keys(validado).length === 0) return atual;
+      }
+
       if (validado.slug && validado.slug !== atual.slug) await recusarSlugOcupado(validado.slug, atual.id);
       if (validado.configuracoes) {
         // A tela pode mandar só o interruptor que mudou: mescla com o que o

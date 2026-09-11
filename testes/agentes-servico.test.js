@@ -163,10 +163,28 @@ test('atualizar mescla configurações: mudar um interruptor não zera os outros
   assert.deepEqual(ultima.detalhe, { campos: ['configuracoes'] });
 });
 
-test('atualizar status registra de/para na auditoria; vazio e campo desconhecido são recusados', async () => {
+test('atualizar não muda status: igual é ignorado, diferente é 409 — pausar e retomar são pelo Controle (B3)', async () => {
+  // Uma aba antiga do navegador ainda tinha o select de status no perfil: sem
+  // esta recusa, salvar ali religava ou pausava o agente sem a confirmação que
+  // lembra de desligar o GPTMaker.
   const { servico, agente, repositorio } = await servicoComAgente();
-  await servico.atualizar(agente.id, { status: 'ativo' }, { usuarioId: 3 });
-  assert.deepEqual(repositorio.auditoria.at(-1).detalhe, { campos: ['status'], status_de: 'desativado', status_para: 'ativo' });
+
+  const comStatusIgual = await servico.atualizar(agente.id, { status: 'desativado', descricao: 'Nova descrição' }, { usuarioId: 3 });
+  assert.equal(comStatusIgual.status, 'desativado');
+  assert.equal(comStatusIgual.descricao, 'Nova descrição');
+  assert.deepEqual(repositorio.auditoria.at(-1).detalhe, { campos: ['descricao'] }, 'status igual não entra na auditoria');
+  assert.equal((await servico.atualizar(agente.id, { status: 'desativado' })).status, 'desativado', 'só status igual: nada muda');
+
+  const auditoriasAntes = repositorio.auditoria.length;
+  await assert.rejects(servico.atualizar(agente.id, { status: 'ativo', nome: 'Outro nome' }, { usuarioId: 3 }), (erro) => {
+    assert.equal(erro.status, 409);
+    assert.equal(erro.message, 'para pausar ou retomar use os botões do Controle');
+    return true;
+  });
+  const depois = await repositorio.obterAgente(agente.id);
+  assert.equal(depois.status, 'desativado');
+  assert.equal(depois.nome, 'Agente Teste', 'a recusa não grava nenhum campo');
+  assert.equal(repositorio.auditoria.length, auditoriasAntes, 'a recusa não audita');
 
   await assert.rejects(servico.atualizar(agente.id, {}), ErroDeContrato);
   await assert.rejects(servico.atualizar(agente.id, { stats: 'ativo' }), ErroDeContrato);
