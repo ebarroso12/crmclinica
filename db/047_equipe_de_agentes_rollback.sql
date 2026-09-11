@@ -39,6 +39,8 @@ DROP FUNCTION IF EXISTS public.guard_usuario_acesso_clinica();
 ALTER TABLE usuarios DROP COLUMN IF EXISTS acesso_clinica;
 -- Sem recusa: o código anterior manda o resumo à lista do ambiente e ignora a pausa.
 ALTER TABLE usuarios DROP COLUMN IF EXISTS recebe_resumo;
+-- Registro de envios do resumo (sem telefone, sem texto): o código anterior não o usa.
+DROP TABLE IF EXISTS resumo_envios;
 
 DROP TABLE IF EXISTS agente_equipe;
 

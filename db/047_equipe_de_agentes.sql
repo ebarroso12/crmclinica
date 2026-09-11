@@ -112,12 +112,37 @@ DROP TRIGGER IF EXISTS trg_usuarios_acesso_clinica_guard ON usuarios;
 CREATE TRIGGER trg_usuarios_acesso_clinica_guard BEFORE UPDATE ON usuarios
   FOR EACH ROW EXECUTE FUNCTION public.guard_usuario_acesso_clinica();
 
+-- ----------------------------------------------------------- resumo_envios
+--
+-- Registro de envio do resumo por pessoa e parte (docs/RESUMOS.md, auditoria de
+-- 7f8275b, M2). A Evolution não recebe chave de idempotência: um restart do
+-- worker no meio do resumo reenviava tudo. Cada envio é reservado aqui ANTES de
+-- sair; 'enviado' não sai de novo, 'enviando' encontrado depois é INCERTO (o
+-- processo morreu, ou a Evolution não confirmou) e também não sai de novo,
+-- 'falhou' volta a ser tentado.
+--
+-- SEM telefone e SEM texto: a chave é derivada da pessoa e do conteúdo da parte
+-- (ids das conversas e da última entrada, com hash), nunca do número.
+
+CREATE TABLE IF NOT EXISTS resumo_envios (
+  chave         text PRIMARY KEY,
+  grupo         text NOT NULL CHECK (grupo IN ('clinica', 'agente')),
+  agente_id     bigint REFERENCES agentes(id) ON DELETE SET NULL,
+  usuario_id    bigint NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  parte         integer NOT NULL CHECK (parte > 0),
+  status        text NOT NULL CHECK (status IN ('enviando', 'enviado', 'falhou')),
+  criado_em     timestamptz NOT NULL DEFAULT now(),
+  atualizado_em timestamptz NOT NULL DEFAULT now()
+);
+
 -- ---------------------------------------------------------------- RLS/GRANT
 
 ALTER TABLE public.agente_equipe ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.resumo_envios ENABLE ROW LEVEL SECURITY;
 
 -- Tabela nova não nasce aberta para PUBLIC (DEFAULT PRIVILEGES, db/029).
 REVOKE ALL ON public.agente_equipe FROM PUBLIC;
+REVOKE ALL ON public.resumo_envios FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_usuario_acesso_clinica() FROM PUBLIC;
 
 DO $$
@@ -130,6 +155,14 @@ BEGIN
     -- PostgreSQL 17, sem MAINTAIN. Vínculo não se edita: entra ou sai.
     REVOKE ALL ON public.agente_equipe FROM crmclinica_app;
     GRANT SELECT, INSERT, DELETE ON public.agente_equipe TO crmclinica_app;
+
+    DROP POLICY IF EXISTS app_trabalho ON public.resumo_envios;
+    CREATE POLICY app_trabalho ON public.resumo_envios
+      FOR ALL TO crmclinica_app USING (true) WITH CHECK (true);
+    -- O registro reserva (INSERT), conclui (UPDATE) e confere (SELECT). Nunca
+    -- apaga: sem DELETE e sem TRUNCATE.
+    REVOKE ALL ON public.resumo_envios FROM crmclinica_app;
+    GRANT SELECT, INSERT, UPDATE ON public.resumo_envios TO crmclinica_app;
   END IF;
 END $$;
 
@@ -139,6 +172,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('REVOKE ALL ON public.agente_equipe FROM %I', r);
+      EXECUTE format('REVOKE ALL ON public.resumo_envios FROM %I', r);
       EXECUTE format('REVOKE ALL ON FUNCTION public.guard_usuario_acesso_clinica() FROM %I', r);
     END IF;
   END LOOP;

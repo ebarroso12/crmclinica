@@ -355,12 +355,21 @@ async function main() {
       + `(silencio de ${configuracao.resumoDeAtendimento.silencioMin} min); destinatarios pelo cadastro de usuarios.`);
   }
 
+  // O ciclo de resumo em andamento (auditoria M2): o encerramento espera por ele.
+  let resumoEmAndamento = null;
   async function enviarResumos() {
-    if (!resumoParaEquipe.ativo) return;
+    if (!resumoParaEquipe.ativo || encerrando) return;
+    resumoEmAndamento = (async () => {
+      try {
+        await resumoParaEquipe.enviarPendentes();
+      } catch (erro) {
+        console.error(`[resumo] falhou: ${erro.message}`);
+      }
+    })();
     try {
-      await resumoParaEquipe.enviarPendentes();
-    } catch (erro) {
-      console.error(`[resumo] falhou: ${erro.message}`);
+      await resumoEmAndamento;
+    } finally {
+      resumoEmAndamento = null;
     }
   }
 
@@ -461,6 +470,19 @@ async function main() {
     // Espera o lote em andamento. Matar no meio deixaria linhas em
     // 'processando' — recuperáveis, mas só depois do lease de 5 minutos.
     while (rodando) await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // O resumo em andamento também (auditoria M2): parar no meio deixaria parte
+    // entregue sem marca. Teto de 60 s, abaixo do TimeoutStopSec padrão do
+    // systemd (90 s); passando disso, sai — o registro de envios (resumo_envios)
+    // impede que o que ficou 'enviando' saia duas vezes.
+    const ESPERA_MAXIMA_DO_RESUMO_MS = 60_000;
+    if (resumoEmAndamento) {
+      console.log('[lembretes] esperando o resumo em andamento terminar…');
+      await Promise.race([
+        resumoEmAndamento,
+        new Promise((resolve) => { setTimeout(resolve, ESPERA_MAXIMA_DO_RESUMO_MS).unref(); }),
+      ]);
+    }
 
     await encerrarPool();
     console.log('[lembretes] encerrado');

@@ -358,11 +358,33 @@ function criarResumoDeAtendimento({
     const partes = dividirEmMensagens({ titulo, blocos, rodape, limite: limitePorMensagem });
     relatorio.mensagens = partes.length;
 
-    // Mesma chave para o mesmo conteúdo: se o gateway reenviar, deduplica.
-    const assinatura = crypto.createHash('sha256')
-      .update(blocos.map((bloco) => `${bloco.conversaId}:${bloco.ultimaEntradaId}`).join(','))
-      .digest('hex').slice(0, 16);
+    // Registro de envios (auditoria M2): a Evolution não recebe chave de
+    // idempotência, e um restart no meio do resumo reenviava tudo. Cada envio
+    // (pessoa × parte) é reservado em `resumo_envios` ANTES de sair:
+    //   • chave nova, ou que tinha 'falhou' → reserva e envia;
+    //   • 'enviado' → já chegou: não reenvia e conta como entregue;
+    //   • 'enviando' → INCERTO (o processo morreu no meio, ou a Evolution não
+    //     confirmou): não reenvia — mesma política de falha indeterminada de
+    //     evolution-envio.js — e conta como entregue, para a conversa não ficar
+    //     presa na fila.
+    // A chave é da pessoa e do CONTEÚDO da parte (conversas + última entrada):
+    // a mesma parte num ciclo seguinte é reconhecida, mesmo que outras
+    // conversas tenham entrado no fim do resumo.
+    const tipoDeGrupo = doAgente ? 'agente' : 'clinica';
     const grupo = doAgente ? `agente:${agenteId}` : 'clinica';
+    const entradaDe = new Map(blocos.map((bloco) => [bloco.conversaId, bloco.ultimaEntradaId]));
+    const assinaturaDaParte = (parte) => crypto.createHash('sha256')
+      .update(parte.conversas.map((id) => `${id}:${entradaDe.get(id) ?? ''}`).join(','))
+      .digest('hex').slice(0, 24);
+    async function concluir(chave, status) {
+      try {
+        await repositorio.concluirEnvioDeResumo?.(chave, status);
+      } catch (erro) {
+        // Fica 'enviando' (incerto): no próximo ciclo não sai de novo.
+        console.error(`[resumo] envio ${status} não registrado: ${erro.message}`);
+      }
+    }
+    relatorio.incertos = 0;
 
     // Entrega ANTES de marcar. Marcar primeiro fazia toda falha de canal virar
     // resumo perdido para sempre, sem retentativa e sem rastro.
@@ -370,16 +392,46 @@ function criarResumoDeAtendimento({
     const falhas = new Map(blocos.map((bloco) => [bloco.conversaId, []]));
     for (const destino of destinatarios) {
       for (const [indice, parte] of partes.entries()) {
+        const chave = `resumo:${grupo}:${destino.usuario_id}:${assinaturaDaParte(parte)}`;
+        const contarComoEntregue = () => { for (const id of parte.conversas) recebidas.set(id, recebidas.get(id) + 1); };
+
+        let reserva = 'reservado';
+        if (repositorio.reservarEnvioDeResumo) {
+          try {
+            reserva = await repositorio.reservarEnvioDeResumo({
+              chave, grupo: tipoDeGrupo, agenteId, usuarioId: destino.usuario_id, parte: indice + 1,
+            });
+          } catch (erro) {
+            // Sem registro não se envia: sair sem reserva é o que duplicava.
+            for (const id of parte.conversas) falhas.get(id).push(motivoSemTelefone(`registro de envio indisponível: ${erro?.message}`));
+            continue;
+          }
+        }
+        if (reserva !== 'reservado') {
+          if (reserva === 'enviando') relatorio.incertos += 1;
+          contarComoEntregue();
+          continue;
+        }
+
         try {
           await canal.enviar({
             telefone: destino.telefone,
             texto: parte.texto,
-            chave: `resumo:${grupo}:${destino.usuario_id}:${assinatura}:${indice + 1}`,
+            chave,
             ...(instancia ? { instancia } : {}),
           });
-          for (const id of parte.conversas) recebidas.set(id, recebidas.get(id) + 1);
+          await concluir(chave, 'enviado');
+          contarComoEntregue();
         } catch (erro) {
-          for (const id of parte.conversas) falhas.get(id).push(motivoSemTelefone(erro?.message));
+          if (erro?.indeterminado === true) {
+            // Não sabemos se chegou: fica 'enviando' e não é repetido.
+            relatorio.incertos += 1;
+            contarComoEntregue();
+            console.error(`[resumo] envio sem confirmação (indeterminado), não será repetido: ${motivoSemTelefone(erro.message)}`);
+          } else {
+            await concluir(chave, 'falhou');
+            for (const id of parte.conversas) falhas.get(id).push(motivoSemTelefone(erro?.message));
+          }
         }
       }
     }

@@ -2872,6 +2872,36 @@ function criarRepositorio(pool) {
       }));
     },
 
+    /**
+     * Reserva um envio do resumo (pessoa × parte) ANTES de ele sair (auditoria
+     * M2, docs/RESUMOS.md). Devolve 'reservado' para chave nova ou que tinha
+     * 'falhou' (volta a ser tentada); senão, o status que já está lá —
+     * 'enviado' (já chegou) ou 'enviando' (incerto) —, e quem chama não envia.
+     * A reserva é atômica: duas execuções não reservam a mesma chave.
+     */
+    async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte }) {
+      const { rows } = await consultar(`
+        INSERT INTO resumo_envios (chave, grupo, agente_id, usuario_id, parte, status)
+        VALUES ($1, $2, $3, $4, $5, 'enviando')
+        ON CONFLICT (chave) DO UPDATE SET status = 'enviando', atualizado_em = now()
+          WHERE resumo_envios.status = 'falhou'
+        RETURNING chave
+      `, [chave, grupo, agenteId, usuarioId, parte]);
+      if (rows.length > 0) return 'reservado';
+      const { rows: [atual] } = await consultar('SELECT status FROM resumo_envios WHERE chave = $1', [chave]);
+      return atual?.status ?? 'enviando';
+    },
+
+    /** Conclui a reserva com 'enviado' ou 'falhou'. `true` = havia a reserva. */
+    async concluirEnvioDeResumo(chave, status) {
+      if (!['enviado', 'falhou'].includes(status)) throw new Error('status de envio de resumo inválido');
+      const { rowCount } = await consultar(
+        'UPDATE resumo_envios SET status = $2, atualizado_em = now() WHERE chave = $1',
+        [chave, status],
+      );
+      return rowCount > 0;
+    },
+
     /** O agendamento futuro do contato, para o resumo dizer se ele marcou. */
     async obterAgendamentoDoContato(contatoId) {
       const { rows } = await consultar(

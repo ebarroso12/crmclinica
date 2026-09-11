@@ -1441,6 +1441,32 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
         }));
     },
 
+    // Registro de envios do resumo (auditoria M2) — paridade com repositorio.js.
+    ...(() => {
+      const enviosDeResumo = new Map();
+      return {
+        async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte }) {
+          const atual = enviosDeResumo.get(chave);
+          if (atual && atual.status !== 'falhou') return atual.status;
+          const instante = agora().toISOString();
+          enviosDeResumo.set(chave, {
+            chave, grupo, agente_id: agenteId, usuario_id: usuarioId, parte, status: 'enviando',
+            criado_em: atual?.criado_em ?? instante, atualizado_em: instante,
+          });
+          return 'reservado';
+        },
+
+        async concluirEnvioDeResumo(chave, status) {
+          if (!['enviado', 'falhou'].includes(status)) throw new Error('status de envio de resumo inválido');
+          const atual = enviosDeResumo.get(chave);
+          if (!atual) return false;
+          atual.status = status;
+          atual.atualizado_em = agora().toISOString();
+          return true;
+        },
+      };
+    })(),
+
     // ---------------------------------------------------------------- etiquetas
 
     async listarEtiquetas() {

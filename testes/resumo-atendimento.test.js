@@ -401,6 +401,80 @@ test('conversa de agente pede à IA o prompt do agente; a da clínica, o de semp
   assert.deepEqual(contextos.sort(), ['agente', 'clinica']);
 });
 
+// ------------------------------------------------------ registro de envios (M2)
+
+test('restart entre a parte 1 e a parte 2: o ciclo seguinte não reenvia a parte que saiu nem a incerta (auditoria M2)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000141' });
+  for (let i = 0; i < 6; i += 1) await c.conversa(`55169000150${String(i).padStart(2, '0')}`, { nome: `Pessoa ${i}` });
+  c.relogio.avancar(31);
+  const gerador = { async gerar() { return `Procura: ${'x'.repeat(1200)}`; } };
+  const ehParte = (carga, numero) => carga.texto.startsWith(`RESUMO DA CLÍNICA (${numero}/`);
+
+  // Primeiro processo: a entrega da parte 2 nunca volta — o processo morre ali.
+  const primeiros = [];
+  c.resumo({
+    gerador,
+    canal: {
+      async enviar(carga) {
+        primeiros.push(carga);
+        if (ehParte(carga, 2)) return new Promise(() => {});
+        return { identificador: 'p' };
+      },
+    },
+  }).enviarPendentes();
+  for (let espera = 0; !primeiros.some((carga) => ehParte(carga, 2)) && espera < 2000; espera += 1) {
+    await new Promise((seguir) => { setImmediate(seguir); });
+  }
+  assert.ok(primeiros.some((carga) => ehParte(carga, 1)) && primeiros.some((carga) => ehParte(carga, 2)), 'o primeiro processo chegou à parte 2');
+
+  // Processo novo. A trava do processo morto cai (no PostgreSQL, com a conexão).
+  const reiniciado = { ...c.repositorio, executarComTravaDeResumo: async (executar) => ({ obtida: true, resultado: await executar() }) };
+  const segundos = [];
+  await criarResumoDeAtendimento({
+    repositorio: reiniciado, agora: c.relogio.agora, silencioMin: 30, intervaloMin: 120, gerador,
+    canal: { async enviar(carga) { segundos.push(carga); return { identificador: 's' }; } },
+  }).enviarPendentes();
+
+  assert.equal(segundos.filter((carga) => ehParte(carga, 1)).length, 0, 'a parte 1 não sai de novo');
+  assert.equal(segundos.filter((carga) => ehParte(carga, 2)).length, 0, 'a parte 2, incerta, não sai de novo');
+  assert.equal(segundos.filter((carga) => ehParte(carga, 3)).length, 1, 'a parte 3, que não tinha saído, sai');
+  assert.deepEqual(await c.pendentes(), [], 'as conversas das três partes ficam marcadas');
+});
+
+test('envio indeterminado (timeout da Evolution) conta como entregue e não é repetido (auditoria M2)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000151' });
+  await c.conversa('5516900016001');
+  c.relogio.avancar(31);
+  let tentativas = 0;
+  const canal = {
+    async enviar() {
+      tentativas += 1;
+      const erro = new Error('falha de rede ao chamar a Evolution API: The operation was aborted due to timeout');
+      erro.indeterminado = true;
+      throw erro;
+    },
+  };
+
+  const resultado = await c.resumo({ canal }).enviarPendentes();
+  assert.equal(resultado.enviados, 1, 'talvez tenha chegado: não volta para a fila');
+  assert.equal(resultado.grupos[0].incertos, 1);
+  c.relogio.avancar(1);
+  await c.resumo({ canal }).enviarPendentes();
+  assert.equal(tentativas, 1, 'não repete o que talvez tenha chegado');
+  assert.deepEqual(await c.pendentes(), []);
+});
+
+test('SIGTERM espera o resumo em andamento, com teto abaixo do TimeoutStopSec do systemd (auditoria M2)', () => {
+  const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
+  assert.match(fonte, /resumoEmAndamento = \(async \(\) => \{/, 'o ciclo de resumo fica registrado enquanto roda');
+  const encerrar = fonte.slice(fonte.indexOf('const encerrar = async (sinal) => {'), fonte.indexOf("process.on('SIGINT'"));
+  assert.match(encerrar, /const ESPERA_MAXIMA_DO_RESUMO_MS = 60_000;/);
+  assert.match(encerrar, /if \(resumoEmAndamento\) \{/);
+  assert.ok(encerrar.indexOf('resumoEmAndamento') < encerrar.indexOf('await encerrarPool()'), 'espera o resumo antes de fechar o pool');
+});
+
 // ------------------------------------------------------------- janela (A1)
 
 test('primeira execução: histórico nunca resumido NÃO sai — só o que teve entrada do contato dentro da janela', async () => {

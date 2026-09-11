@@ -196,12 +196,14 @@ const ESPERADO = {
   // responde 500 a toda requisição de quem não é admin: é a prova de "047
   // antes do deploy". Grants, FKs e o gatilho são conferidos mais abaixo.
   '047_equipe_de_agentes': {
-    tabelas: ['agente_equipe'],
+    tabelas: ['agente_equipe', 'resumo_envios'],
     colunas: [
       ['usuarios', 'acesso_clinica'],
       // Sem ela, o login (CAMPOS_USUARIO) e o resumo por equipe falham.
       ['usuarios', 'recebe_resumo'],
       ['agente_equipe', 'agente_id'], ['agente_equipe', 'usuario_id'],
+      // Registro de envios do resumo: sem ele, o worker não envia (auditoria M2).
+      ['resumo_envios', 'chave'], ['resumo_envios', 'status'],
     ],
   },
 };
@@ -249,8 +251,9 @@ const TABELAS_COM_RLS = [
   'google_sincronia_conflitos', 'termos', 'termo_assinaturas',
   // Agentes configuráveis (migration 046, docs/AGENTES.md).
   'agentes', 'agente_comportamentos', 'agente_treinamentos', 'agente_acoes_inatividade', 'agente_canais',
-  // Equipe dos agentes (migration 047).
+  // Equipe dos agentes e registro de envios do resumo (migration 047).
   'agente_equipe',
+  'resumo_envios',
 ];
 
 const verde = (texto) => `\x1b[32m${texto}\x1b[0m`;
@@ -558,6 +561,25 @@ async function main() {
       const gatilhoLigado = gatilhos.length === 1 && gatilhos[0].tgenabled !== 'D';
       marcar(gatilhoLigado, 'gatilho trg_usuarios_acesso_clinica_guard em usuarios',
         gatilhos.length === 0 ? 'ausente: o próprio usuário pode se dar acesso à clínica' : (gatilhoLigado ? '' : 'desligado'));
+    }
+
+    // Registro de envios do resumo (migration 047, auditoria M2). Sem INSERT ou
+    // UPDATE o worker não reserva nem conclui envio — e sem reserva não envia;
+    // com DELETE/TRUNCATE sobrando, o registro que impede reenvio pode sumir.
+    if (porNome.has('resumo_envios')) {
+      const { rows: [privEnvios] } = await pool.query(`
+        SELECT has_table_privilege('crmclinica_app', 'public.resumo_envios', 'SELECT') AS le,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'INSERT') AS insere,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'UPDATE') AS atualiza,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'DELETE') AS apaga,
+               has_table_privilege('crmclinica_app', 'public.resumo_envios', 'TRUNCATE') AS trunca
+      `);
+      marcar(privEnvios.le && privEnvios.insere && privEnvios.atualiza, 'SELECT/INSERT/UPDATE em resumo_envios',
+        privEnvios.insere ? '' : 'o worker não reserva envio: nenhum resumo sai');
+      marcar(!privEnvios.apaga && !privEnvios.trunca, 'sem DELETE/TRUNCATE em resumo_envios',
+        privEnvios.trunca ? 'TRUNCATE ignora o RLS' : '');
+      const temPoliticaEnvios = (politicasPorTabela.get('resumo_envios') ?? []).includes('app_trabalho');
+      marcar(temPoliticaEnvios, 'política app_trabalho em resumo_envios', temPoliticaEnvios ? '' : 'a aplicação não enxerga as linhas');
     }
 
     const { rows: sobraram } = await pool.query(

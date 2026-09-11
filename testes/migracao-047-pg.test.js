@@ -51,6 +51,26 @@ test('[pg] 047: privilégios mínimos, RLS, FKs em cascata e gatilho de acesso_c
   assert.ok(!forma.atualiza && !forma.trunca, 'sem UPDATE e sem TRUNCATE (TRUNCATE ignora o RLS)');
   assert.ok(!forma.anon && !forma.autenticado, 'anon e authenticated sem acesso');
 
+  // Registro de envios do resumo (auditoria M2): reserva, conclui e confere; nunca apaga.
+  const { rows: [registro] } = await db.query(`
+    SELECT (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.resumo_envios'::regclass) AS rls,
+           (SELECT count(*)::int FROM pg_policies WHERE tablename = 'resumo_envios' AND policyname = 'app_trabalho') AS politicas,
+           has_table_privilege('crmclinica_app', 'public.resumo_envios', 'SELECT') AS le,
+           has_table_privilege('crmclinica_app', 'public.resumo_envios', 'INSERT') AS insere,
+           has_table_privilege('crmclinica_app', 'public.resumo_envios', 'UPDATE') AS atualiza,
+           has_table_privilege('crmclinica_app', 'public.resumo_envios', 'DELETE') AS apaga,
+           has_table_privilege('crmclinica_app', 'public.resumo_envios', 'TRUNCATE') AS trunca,
+           has_table_privilege('anon', 'public.resumo_envios', 'SELECT') AS anon,
+           (SELECT count(*)::int FROM information_schema.columns WHERE table_name = 'resumo_envios'
+              AND column_name ~ '(telefone|texto|conteudo|whatsapp)') AS sensiveis
+  `);
+  assert.equal(registro.rls, true, 'RLS ligada em resumo_envios');
+  assert.equal(registro.politicas, 1);
+  assert.ok(registro.le && registro.insere && registro.atualiza, 'a aplicação reserva, conclui e confere');
+  assert.ok(!registro.apaga && !registro.trunca, 'a aplicação nunca apaga o registro');
+  assert.equal(registro.anon, false);
+  assert.equal(registro.sensiveis, 0, 'sem coluna de telefone ou texto');
+
   // ------------------------------------------------------------ FKs em cascata
   const sufixo = `${process.pid}-${Date.now()}`;
   const { rows: [agente] } = await db.query('INSERT INTO agentes (slug, nome) VALUES ($1, $2) RETURNING id', [`pg-047-${sufixo}`, 'Agente PG 047']);

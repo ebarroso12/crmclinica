@@ -1659,6 +1659,71 @@ for (const { nome, montar } of implementacoes) {
       assert.equal((await repositorio.obterConversa(daClinica.id)).pagamento, 'convenio');
     });
 
+    await t.test('registro de envios do resumo: reserva única por chave; falhou volta a ser tentado; enviado e enviando não (auditoria M2)', async () => {
+      const usuario = await repositorio.criarUsuario({ nome: 'Envio Resumo', email: 'envio-resumo@teste.local', papel: 'gestor', situacao: 'ativo' });
+      const base = { grupo: 'clinica', agenteId: null, usuarioId: usuario.id, parte: 1 };
+
+      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:um' }), 'reservado');
+      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:um' }), 'enviando',
+        'reservado e não concluído é incerto: não sai de novo');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:um', 'enviado'), true);
+      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:um' }), 'enviado');
+
+      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:dois' }), 'reservado');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou'), true);
+      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:dois' }), 'reservado', 'falhou volta a ser tentado');
+
+      await assert.rejects(() => repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'qualquer'));
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:inexistente', 'enviado'), false);
+    });
+
+    await t.test('resumo: restart entre a parte 1 e a parte 2 não reenvia a parte 1 nem a incerta (auditoria M2)', async () => {
+      const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+      const respirar = (ms = 5) => new Promise((seguir) => { setTimeout(seguir, ms); });
+      const agente = await criarAgenteDeTeste('contrato-resumo-restart');
+      await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'contrato-restart', ativo: true }]);
+      const membro = await repositorio.criarUsuario({
+        nome: 'Restart Loja', email: 'restart-loja@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(membro.id, {
+        acessoClinica: false, whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '991230048', whatsappParticularAutorizado: true,
+      });
+      await repositorio.adicionarMembroDaEquipe(agente.id, membro.id);
+      for (let i = 0; i < 6; i += 1) {
+        const conversa = await conversaDoAgente(agente.id, `55169000011${String(i).padStart(2, '0')}`);
+        await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: `quero o modelo ${i}`, autor_tipo: 'contato' });
+      }
+      await respirar();
+      const gerador = { async gerar() { return `Procura: ${'x'.repeat(1200)}`; } };
+      const ehParte = (carga, numero) => carga.instancia === 'contrato-restart' && carga.texto.includes(`(${numero}/`);
+
+      // Primeiro processo: a entrega da parte 2 fica presa — o processo "morre" ali.
+      const primeiros = [];
+      let soltar;
+      const presa = new Promise((resolver) => { soltar = resolver; });
+      const primeiro = criarResumoDeAtendimento({
+        repositorio, silencioMin: 0, intervaloMin: 120, gerador,
+        canal: { async enviar(carga) { primeiros.push(carga); if (ehParte(carga, 2)) await presa; return { identificador: 'p' }; } },
+      }).enviarPendentes();
+      for (let espera = 0; !primeiros.some((carga) => ehParte(carga, 2)) && espera < 1000; espera += 1) await respirar(2);
+      assert.ok(primeiros.some((carga) => ehParte(carga, 2)), 'o primeiro processo chegou à parte 2');
+
+      // Processo novo: a trava do morto caiu (no PostgreSQL, com a conexão).
+      const reiniciado = { ...repositorio, executarComTravaDeResumo: async (executar) => ({ obtida: true, resultado: await executar() }) };
+      const segundos = [];
+      await criarResumoDeAtendimento({
+        repositorio: reiniciado, silencioMin: 0, intervaloMin: 120, gerador,
+        canal: { async enviar(carga) { segundos.push(carga); return { identificador: 's' }; } },
+      }).enviarPendentes();
+
+      assert.equal(segundos.filter((carga) => ehParte(carga, 1)).length, 0, 'a parte 1 não sai de novo');
+      assert.equal(segundos.filter((carga) => ehParte(carga, 2)).length, 0, 'a parte 2 incerta não sai de novo');
+      assert.equal(segundos.filter((carga) => ehParte(carga, 3)).length, 1, 'a parte 3 sai');
+
+      soltar();
+      await primeiro;
+    });
+
     await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {
       const contato = await repositorio.encontrarOuCriarContato({ telefone: '5516900001031', nome: 'Fila Agendada' });
       const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'whatsapp');

@@ -47,6 +47,30 @@ test('047 acrescenta usuarios.recebe_resumo (pausa do resumo por pessoa), padrã
   assert.match(verificador, /\['usuarios', 'recebe_resumo'\]/);
 });
 
+test('047 cria resumo_envios sem telefone nem texto, com RLS, política e GRANT mínimo; rollback e verificar-banco cobrem (auditoria M2)', () => {
+  const corpo = semComentarios(SQL);
+  const bloco = SQL.match(/CREATE TABLE IF NOT EXISTS resumo_envios \(([\s\S]*?)\n\);/)?.[1] ?? '';
+  assert.match(bloco, /chave\s+text PRIMARY KEY/);
+  assert.match(bloco, /grupo\s+text NOT NULL CHECK \(grupo IN \('clinica', 'agente'\)\)/);
+  assert.match(bloco, /agente_id\s+bigint REFERENCES agentes\(id\) ON DELETE SET NULL/);
+  assert.match(bloco, /usuario_id\s+bigint NOT NULL REFERENCES usuarios\(id\) ON DELETE CASCADE/);
+  assert.match(bloco, /status\s+text NOT NULL CHECK \(status IN \('enviando', 'enviado', 'falhou'\)\)/);
+  assert.ok(!/telefone|texto|conteudo|whatsapp/i.test(bloco), 'sem telefone e sem texto no registro');
+
+  assert.match(corpo, /ALTER TABLE public\.resumo_envios ENABLE ROW LEVEL SECURITY;/);
+  assert.match(corpo, /REVOKE ALL ON public\.resumo_envios FROM PUBLIC;/);
+  assert.match(corpo, /CREATE POLICY app_trabalho ON public\.resumo_envios\s+FOR ALL TO crmclinica_app USING \(true\) WITH CHECK \(true\);/);
+  assert.match(corpo, /REVOKE ALL ON public\.resumo_envios FROM crmclinica_app;\s+GRANT SELECT, INSERT, UPDATE ON public\.resumo_envios TO crmclinica_app;/);
+  assert.ok(!/GRANT[^;]*(DELETE|TRUNCATE)[^;]*resumo_envios/.test(corpo), 'o registro nunca é apagado pela aplicação');
+  assert.match(corpo, /REVOKE ALL ON public\.resumo_envios FROM %I/);
+
+  assert.match(semComentarios(ROLLBACK), /DROP TABLE IF EXISTS resumo_envios;/);
+  const verificador = fs.readFileSync(path.join(RAIZ, 'bin', 'verificar-banco.js'), 'utf8');
+  assert.match(verificador, /tabelas: \['agente_equipe', 'resumo_envios'\]/);
+  assert.match(verificador, /'resumo_envios',\s*\n\];/, 'resumo_envios na lista de RLS');
+  assert.match(verificador, /has_table_privilege\('crmclinica_app', 'public\.resumo_envios', 'DELETE'\)/);
+});
+
 test('agente_equipe: chave (agente, usuário), CASCADE nas duas FKs e índice por usuário', () => {
   const bloco = SQL.match(/CREATE TABLE IF NOT EXISTS agente_equipe \(([\s\S]*?)\n\);/)[1];
   assert.match(bloco, /agente_id\s+bigint NOT NULL REFERENCES agentes\(id\) ON DELETE CASCADE/);
