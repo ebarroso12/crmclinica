@@ -226,9 +226,60 @@ Permissões: `agentes:ler` (admin, gestor) e `agentes:gerenciar` (admin).
 | `PUT /api/agentes/:id/inatividade` | gerenciar |
 | `PUT /api/agentes/:id/canais` | gerenciar |
 | `POST /api/agentes/:id/teste` | gerenciar — conversa de teste, sem gravar nem enviar |
+| `GET /api/agentes/aguardando` | ler — conversas de agente esperando a equipe, por agente (selo do menu) |
+| `GET /api/agentes/:id/operacao` | ler — status e quem mudou, números de hoje/7 dias, aguardando, recentes |
+| `GET /api/agentes/:id/whatsapp` | ler — estado da instância do agente na Evolution (rota lenta) |
+| `POST /api/agentes/:id/whatsapp/conectar` | gerenciar — `{ numero? }`: código de pareamento e QR (rota lenta) |
+| `POST /api/agentes/:id/pausar` | gerenciar — `{ motivo? }`: status `desativado`, audita `agente_pausado` |
+| `POST /api/agentes/:id/retomar` | gerenciar — sem corpo: status `ativo`, audita `agente_retomado` |
 
 Treinamento por website: só `https`, recusa host local/privado, teto de
 tamanho e de tempo, HTML reduzido a texto.
+
+`GET /api/conversas` aceita `agente`: vazio = todas, `clinica` = só as sem
+agente, id = só daquele agente; valor inválido é 400. A linha do inbox mostra o
+nome do agente como primeiro selo, e a conversa aberta diz "atendida pelo
+<agente>" — a thread não assina a resposta do agente como "Serena".
+
+## Painel de operação
+
+A página do agente segue o desenho da tela da Serena, porque é assim que a
+equipe já opera a Serena:
+
+1. Cartões de estado: **AGENTE** (Atendendo / Pausado, desde quando, por quem,
+   motivo), **WHATSAPP** (estado da instância na Evolution, número e perfil),
+   **ENTREGA** (última resposta e última falha `agente_resposta_nao_entregue`)
+   e **AGUARDANDO VOCÊ**.
+2. **Aguardando você**: conversas do agente com `assumida_por_humano` e sem
+   responsável (transferidas pelo agente ou escalonadas). A fila de
+   escalonadas da clínica exclui conversa de agente de propósito — sem este
+   bloco, o cliente que pediu gente não aparecia para ninguém. O mesmo total
+   vira selo no menu Agentes (atualiza a cada minuto).
+3. **WhatsApp do agente**: "Conectar WhatsApp" pede à Evolution o código de
+   pareamento (com o número) e o QR da instância do canal. O painel **não**
+   cria nem apaga instância e **não** mexe em webhook — isso é feito uma vez,
+   no servidor. A apikey nunca vai ao navegador
+   (`src/integracoes/evolution-instancia.js`).
+4. **Controle da automação**: Pausar (motivo opcional, até 200 caracteres) e
+   Retomar. A 046 não tem estado "pausado": pausar grava `desativado`, que
+   para quem responde cliente tem o mesmo efeito. Retomar sempre pede
+   confirmação lembrando de desligar o atendimento do número em outra
+   plataforma (GPTMaker) antes — os dois ligados = resposta dupla. O status
+   saiu do formulário do perfil: salvar o comportamento nunca muda quem responde.
+5. Números de hoje (meia-noite em São Paulo) e dos últimos 7 dias, contados
+   pela auditoria das conversas do agente; conversas recentes com botão para
+   abrir na tela Conversas.
+6. Abas de configuração, na ordem da Serena: Testar o agente, Horário de
+   atendimento, Comportamento no ar (com as Versões), Treinamentos; depois
+   Trabalho, Configurações, Ações de inatividade e Canais.
+
+O painel nunca recebe conteúdo de mensagem: a API devolve contagens, horários,
+nome/telefone do contato e estado — sem prévia. Falha da Evolution vira estado
+`erro` no cartão, nunca derruba a página.
+
+Resíduo conhecido: dois administradores pausando no mesmo instante gravam duas
+auditorias `agente_pausado` (o status fica certo); a atualização do agente não
+é condicional.
 
 ## Sinais da clínica não misturam agente
 
