@@ -1241,6 +1241,16 @@ for (const { nome, montar } of implementacoes) {
       assert.equal(loja.recebe_resumo, true, 'padrão da coluna: ninguém deixa de receber resumo pela migration');
       assert.equal((await repositorio.atualizarUsuario(clinica.id, { recebeResumo: false })).recebe_resumo, false);
       assert.equal((await repositorio.atualizarUsuario(clinica.id, { recebeResumo: true })).recebe_resumo, true);
+      // P1-06 na tela de Usuários: quem autorizou o WhatsApp e quando vêm na leitura do usuário.
+      const autorizado = await repositorio.atualizarUsuario(clinica.id, {
+        whatsappParticularAutorizado: true,
+        whatsappParticularAutorizadoEm: new Date().toISOString(),
+        whatsappParticularAutorizadoPor: loja.id,
+      });
+      assert.equal(autorizado.whatsapp_particular_autorizado, true);
+      assert.equal(autorizado.whatsapp_particular_autorizado_por, loja.id);
+      assert.ok(Number.isFinite(new Date(autorizado.whatsapp_particular_autorizado_em).getTime()));
+      assert.equal((await repositorio.obterUsuarioPorId(clinica.id)).whatsapp_particular_autorizado_por, loja.id);
       assert.deepEqual(await repositorio.obterEscopoDeAcesso(loja.id), { acesso_clinica: true, agentes: [] });
 
       assert.equal(await repositorio.adicionarMembroDaEquipe(outro.id, loja.id), true);

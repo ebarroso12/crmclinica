@@ -215,7 +215,8 @@ const CAMPOS_USUARIO = `
   id, nome, email, papel, ativo, situacao, master, precisa_trocar_senha,
   telefone, avatar_url, google_sub, totp_ativo, aprovado_em, ultimo_login_em, criado_em,
   nome_completo, nascimento, whatsapp_ddi, whatsapp_ddd, whatsapp_numero,
-  whatsapp_particular_autorizado, excluido_em, acesso_clinica, recebe_resumo
+  whatsapp_particular_autorizado, whatsapp_particular_autorizado_em, whatsapp_particular_autorizado_por,
+  excluido_em, acesso_clinica, recebe_resumo
 `;
 
 function montarLead(linha) {

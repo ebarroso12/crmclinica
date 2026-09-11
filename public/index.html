@@ -1603,6 +1603,33 @@
           </ul>
         </article>
 
+        <!-- WhatsApp de uma pessoa da equipe (docs/RESUMOS.md): número e autorização de uso (P1-06).
+             O número em claro só aparece neste formulário do administrador. -->
+        <article class="card" id="cartao-whatsapp-usuario" hidden>
+          <div class="card-titulo">
+            <div>
+              <h3 id="whatsapp-usuario-titulo">WhatsApp</h3>
+              <p id="whatsapp-usuario-situacao">—</p>
+            </div>
+            <button type="button" class="secundario" id="whatsapp-usuario-fechar">Fechar</button>
+          </div>
+          <form id="form-whatsapp-usuario" class="form-regra">
+            <label for="whatsapp-usuario-ddi">DDI</label>
+            <input id="whatsapp-usuario-ddi" type="text" inputmode="numeric" maxlength="3" autocomplete="off" value="55">
+            <label for="whatsapp-usuario-ddd">DDD (2 dígitos)</label>
+            <input id="whatsapp-usuario-ddd" type="text" inputmode="numeric" maxlength="2" autocomplete="off">
+            <label for="whatsapp-usuario-numero">Número (8 ou 9 dígitos)</label>
+            <input id="whatsapp-usuario-numero" type="text" inputmode="numeric" maxlength="9" autocomplete="off">
+            <p class="nota" id="whatsapp-usuario-erro" role="alert" hidden></p>
+            <div class="linha-acoes">
+              <button type="submit" class="primario" id="whatsapp-usuario-salvar">Salvar WhatsApp</button>
+            </div>
+          </form>
+          <label class="marcador"><input type="checkbox" id="whatsapp-usuario-autorizado"> WhatsApp autorizado para avisos e resumos</label>
+          <p class="nota" id="whatsapp-usuario-registro">—</p>
+          <p class="nota">A autorização é o consentimento da pessoa registrado pelo administrador: quem autorizou e quando ficam gravados e auditados. A própria pessoa não autoriza pelo perfil.</p>
+        </article>
+
         <!-- Resumo por equipe (docs/RESUMOS.md): destinatários efetivos, sempre mascarados. -->
         <article class="card" id="cartao-resumos" hidden>
           <div class="card-titulo">

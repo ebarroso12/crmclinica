@@ -153,8 +153,13 @@ function criarServicoDeUsuarios({
 
     const alvo = await carregarUsuario(usuarioId);
     const documentos = await repositorio.obterDocumentosDoUsuario(usuarioId);
+    // P1-06: a tela mostra quem registrou a autorização do WhatsApp, não só o id.
+    const autorizador = alvo.whatsapp_particular_autorizado_por
+      ? await repositorio.obterUsuarioPorId(alvo.whatsapp_particular_autorizado_por)
+      : null;
     return {
       ...alvo,
+      whatsapp_particular_autorizado_por_nome: autorizador?.nome ?? null,
       cpf_cadastrado: Boolean(documentos?.cpfCifrado),
       cpf_mascarado: documentos?.cpfCifrado
         ? sensiveis.mascararCpf(sensiveis.decifrar(segredo, documentos.cpfCifrado) ?? '')

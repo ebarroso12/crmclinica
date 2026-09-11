@@ -2495,6 +2495,16 @@ function montarLinhaDeUsuario(usuario) {
   recebeResumo.append(caixaDoResumo, textoDoResumo);
   acoes.append(recebeResumo);
 
+  // WhatsApp e autorização (P1-06): abre o cartão do admin. O número em claro
+  // só existe lá; a lista nunca o recebe.
+  const botaoWhatsapp = document.createElement('button');
+  botaoWhatsapp.type = 'button';
+  botaoWhatsapp.className = 'acao';
+  botaoWhatsapp.textContent = 'WhatsApp';
+  botaoWhatsapp.setAttribute('aria-label', `WhatsApp de ${usuario.nome}`);
+  botaoWhatsapp.addEventListener('click', () => abrirWhatsappDoUsuario(usuario.id));
+  acoes.append(botaoWhatsapp);
+
   const estariaNumaEquipe = usuario.papel === 'admin' || usuario.acesso_clinica !== false || (usuario.equipes ?? []).length > 0;
   if (usuario.recebe_resumo !== false && estariaNumaEquipe
     && ['sem_whatsapp', 'whatsapp_nao_autorizado'].includes(usuario.motivo_sem_resumo)) {
@@ -2542,6 +2552,104 @@ ${resposta.senha_temporaria}
     window.alert(`Não foi possível redefinir: ${erro.message}`);
   }
 }
+
+// WhatsApp de uma pessoa da equipe (docs/RESUMOS.md). O número vai pela edição
+// completa já existente (PUT /api/usuarios/:id, validação de `whatsappValido`); a
+// autorização, pela rota de P1-06 (POST /api/usuarios/:id/whatsapp-particular),
+// que grava e audita quem autorizou e quando. O número em claro só existe neste
+// formulário do admin; na lista e no painel, nunca.
+let whatsappEmEdicao = null;
+
+function desenharWhatsappDoUsuario(ficha) {
+  const cartao = seletor('#cartao-whatsapp-usuario');
+  if (!cartao) return;
+  whatsappEmEdicao = Number(ficha.id);
+  cartao.hidden = false;
+  definirTexto('#whatsapp-usuario-titulo', `WhatsApp de ${ficha.nome ?? 'usuário'}`);
+  seletor('#whatsapp-usuario-ddi').value = ficha.whatsapp_ddi ?? '55';
+  seletor('#whatsapp-usuario-ddd').value = ficha.whatsapp_ddd ?? '';
+  seletor('#whatsapp-usuario-numero').value = ficha.whatsapp_numero ?? '';
+  const erro = seletor('#whatsapp-usuario-erro');
+  erro.textContent = '';
+  erro.hidden = true;
+
+  const temNumero = Boolean(ficha.whatsapp_ddd && ficha.whatsapp_numero);
+  const caixa = seletor('#whatsapp-usuario-autorizado');
+  caixa.checked = ficha.whatsapp_particular_autorizado === true;
+  caixa.disabled = !temNumero && !caixa.checked;
+  definirTexto('#whatsapp-usuario-situacao', !temNumero
+    ? 'Sem WhatsApp no cadastro: não recebe resumos.'
+    : (caixa.checked ? 'WhatsApp cadastrado e autorizado.' : 'WhatsApp cadastrado, sem autorização: não recebe resumos.'));
+  definirTexto('#whatsapp-usuario-registro', caixa.checked
+    ? `Autorizado por ${ficha.whatsapp_particular_autorizado_por_nome ?? 'administrador'} em ${dataHoraDoPainelDoAgente(ficha.whatsapp_particular_autorizado_em) || '—'}.`
+    : (temNumero ? 'Ainda não autorizado.' : 'Cadastre o número antes de autorizar.'));
+}
+
+async function abrirWhatsappDoUsuario(id) {
+  const alvo = Number(id);
+  whatsappEmEdicao = alvo;
+  try {
+    const { usuario: ficha } = await pedirJson(`/api/usuarios/${alvo}`);
+    // Outra pessoa aberta enquanto esta carregava: a resposta velha é descartada.
+    if (whatsappEmEdicao !== alvo) return;
+    desenharWhatsappDoUsuario(ficha);
+    seletor('#whatsapp-usuario-ddd')?.focus();
+  } catch (erro) {
+    definirTexto('#resumo-usuarios', erro.detalhe || 'Não foi possível abrir o WhatsApp desta pessoa.');
+  }
+}
+
+/** Depois de gravar: a ficha de novo, a lista (avisos) e o painel "Quem recebe os resumos". */
+async function depoisDeMudarWhatsapp(alvo) {
+  const { usuario: ficha } = await pedirJson(`/api/usuarios/${alvo}`);
+  if (whatsappEmEdicao === alvo) desenharWhatsappDoUsuario(ficha);
+  await carregarUsuarios();
+}
+
+seletor('#form-whatsapp-usuario')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  const alvo = whatsappEmEdicao;
+  if (!alvo) return;
+  const erro = seletor('#whatsapp-usuario-erro');
+  erro.hidden = true;
+
+  const ddd = seletor('#whatsapp-usuario-ddd').value.trim();
+  const numero = seletor('#whatsapp-usuario-numero').value.trim();
+  // DDD e número vazios = tirar o WhatsApp do cadastro (o DDI sozinho não é número).
+  const whatsapp = !ddd && !numero
+    ? { ddi: null, ddd: null, numero: null }
+    : { ddi: seletor('#whatsapp-usuario-ddi').value.trim() || '55', ddd, numero };
+
+  try {
+    await pedirJson(`/api/usuarios/${alvo}`, { metodo: 'PUT', corpo: { whatsapp } });
+    await depoisDeMudarWhatsapp(alvo);
+  } catch (falha) {
+    erro.textContent = falha.detalhe || 'WhatsApp inválido: informe DDD (2 dígitos) e número (8 ou 9 dígitos).';
+    erro.hidden = false;
+  }
+});
+
+seletor('#whatsapp-usuario-autorizado')?.addEventListener('change', async (evento) => {
+  const alvo = whatsappEmEdicao;
+  const caixa = evento.target;
+  if (!alvo) return;
+  if (caixa.checked && !window.confirm('Confirma que a pessoa autorizou o uso deste WhatsApp para avisos e resumos? Fica registrado quem autorizou e quando.')) {
+    caixa.checked = false;
+    return;
+  }
+  try {
+    await pedirJson(`/api/usuarios/${alvo}/whatsapp-particular`, { metodo: 'POST', corpo: { autorizado: caixa.checked } });
+    await depoisDeMudarWhatsapp(alvo);
+  } catch (falha) {
+    caixa.checked = !caixa.checked;
+    definirTexto('#whatsapp-usuario-registro', falha.detalhe || 'A autorização não pôde ser gravada.');
+  }
+});
+
+seletor('#whatsapp-usuario-fechar')?.addEventListener('click', () => {
+  whatsappEmEdicao = null;
+  seletor('#cartao-whatsapp-usuario').hidden = true;
+});
 
 // Resumo por equipe (docs/RESUMOS.md): quem recebe o resumo de cada equipe. O
 // número chega mascarado do servidor; nomes de pessoa e de agente só por textContent.
