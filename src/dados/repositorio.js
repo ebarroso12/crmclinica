@@ -2888,32 +2888,63 @@ function criarRepositorio(pool) {
 
     /**
      * Reserva um envio do resumo (pessoa × parte) ANTES de ele sair (auditoria
-     * M2, docs/RESUMOS.md). Devolve 'reservado' para chave nova ou que tinha
-     * 'falhou' (volta a ser tentada); senão, o status que já está lá —
-     * 'enviado' (já chegou) ou 'enviando' (incerto) —, e quem chama não envia.
-     * A reserva é atômica: duas execuções não reservam a mesma chave.
+     * M2, docs/RESUMOS.md). Devolve 'reservado' para chave nova, ou que tinha
+     * 'falhou' há pelo menos `esperaMs` (conta mais uma em `tentativas`); senão,
+     * o status que já está lá — 'enviado' (já chegou), 'enviando' (incerto),
+     * 'falhou' (ainda na espera) ou 'desistido' (esgotou as tentativas) —, e
+     * quem chama não envia. A reserva é atômica: duas execuções não reservam a
+     * mesma chave.
      */
-    async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte }) {
+    async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte, esperaMs = 0 }) {
       const { rows } = await consultar(`
-        INSERT INTO resumo_envios (chave, grupo, agente_id, usuario_id, parte, status)
-        VALUES ($1, $2, $3, $4, $5, 'enviando')
-        ON CONFLICT (chave) DO UPDATE SET status = 'enviando', atualizado_em = now()
+        INSERT INTO resumo_envios (chave, grupo, agente_id, usuario_id, parte, status, tentativas)
+        VALUES ($1, $2, $3, $4, $5, 'enviando', 1)
+        ON CONFLICT (chave) DO UPDATE
+          SET status = 'enviando', tentativas = resumo_envios.tentativas + 1, atualizado_em = now()
           WHERE resumo_envios.status = 'falhou'
+            AND resumo_envios.atualizado_em <= now() - make_interval(secs => $6::double precision / 1000)
         RETURNING chave
-      `, [chave, grupo, agenteId, usuarioId, parte]);
+      `, [chave, grupo, agenteId, usuarioId, parte, Math.max(0, Number(esperaMs) || 0)]);
       if (rows.length > 0) return 'reservado';
       const { rows: [atual] } = await consultar('SELECT status FROM resumo_envios WHERE chave = $1', [chave]);
       return atual?.status ?? 'enviando';
     },
 
-    /** Conclui a reserva com 'enviado' ou 'falhou'. `true` = havia a reserva. */
-    async concluirEnvioDeResumo(chave, status) {
+    /**
+     * Conclui a reserva com 'enviado' ou 'falhou'. A falha que chega a
+     * `maximoDeTentativas` vira 'desistido' — definitiva. Devolve o status
+     * gravado, ou `null` se não havia a reserva.
+     */
+    async concluirEnvioDeResumo(chave, status, { maximoDeTentativas = 3 } = {}) {
       if (!['enviado', 'falhou'].includes(status)) throw new Error('status de envio de resumo inválido');
-      const { rowCount } = await consultar(
-        'UPDATE resumo_envios SET status = $2, atualizado_em = now() WHERE chave = $1',
-        [chave, status],
+      const { rows } = await consultar(
+        `UPDATE resumo_envios
+            SET status = CASE WHEN $2::text = 'falhou' AND tentativas >= $3::int THEN 'desistido' ELSE $2::text END,
+                atualizado_em = now()
+          WHERE chave = $1
+          RETURNING status`,
+        [chave, status, Math.max(1, Number(maximoDeTentativas) || 3)],
       );
-      return rowCount > 0;
+      return rows[0]?.status ?? null;
+    },
+
+    /**
+     * A última falha de envio de resumo de cada grupo (`agente_id` null = a
+     * clínica). O domínio a soma ao relógio do grupo: sem ela, com o canal fora
+     * do ar nada era marcado e o grupo tentava de novo a cada minuto.
+     */
+    async listarUltimasFalhasDeResumo() {
+      const { rows } = await consultar(
+        `SELECT CASE WHEN grupo = 'clinica' THEN NULL ELSE agente_id END AS agente_id,
+                max(atualizado_em) AS ultima_falha
+           FROM resumo_envios
+          WHERE status IN ('falhou', 'desistido') AND (grupo = 'clinica' OR agente_id IS NOT NULL)
+          GROUP BY 1`,
+      );
+      return rows.map((linha) => ({
+        agente_id: linha.agente_id === null ? null : Number(linha.agente_id),
+        ultima_falha: new Date(linha.ultima_falha).toISOString(),
+      }));
     },
 
     /** O agendamento futuro do contato, para o resumo dizer se ele marcou. */

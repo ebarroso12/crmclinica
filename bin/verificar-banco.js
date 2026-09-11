@@ -204,6 +204,8 @@ const ESPERADO = {
       ['agente_equipe', 'agente_id'], ['agente_equipe', 'usuario_id'],
       // Registro de envios do resumo: sem ele, o worker não envia (auditoria M2).
       ['resumo_envios', 'chave'], ['resumo_envios', 'status'],
+      // Sem ela, a reserva falha e nenhum resumo sai (conferência final, item 1).
+      ['resumo_envios', 'tentativas'],
     ],
   },
 };

@@ -1659,22 +1659,32 @@ for (const { nome, montar } of implementacoes) {
       assert.equal((await repositorio.obterConversa(daClinica.id)).pagamento, 'convenio');
     });
 
-    await t.test('registro de envios do resumo: reserva única por chave; falhou volta a ser tentado; enviado e enviando não (auditoria M2)', async () => {
+    await t.test('registro de envios do resumo: reserva única; falhou volta só depois da espera e no máximo 3 vezes; enviado e enviando não (auditoria M2; conferência final, item 1)', async () => {
       const usuario = await repositorio.criarUsuario({ nome: 'Envio Resumo', email: 'envio-resumo@teste.local', papel: 'gestor', situacao: 'ativo' });
-      const base = { grupo: 'clinica', agenteId: null, usuarioId: usuario.id, parte: 1 };
+      // Grupo de um agente só deste teste: a falha gravada segura o relógio do grupo.
+      const agente = await criarAgenteDeTeste('contrato-registro-envios');
+      const base = { grupo: 'agente', agenteId: agente.id, usuarioId: usuario.id, parte: 1 };
+      const reservar = (chave, extra = {}) => repositorio.reservarEnvioDeResumo({ ...base, chave, ...extra });
 
-      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:um' }), 'reservado');
-      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:um' }), 'enviando',
-        'reservado e não concluído é incerto: não sai de novo');
-      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:um', 'enviado'), true);
-      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:um' }), 'enviado');
+      assert.equal(await reservar('resumo:contrato:um'), 'reservado');
+      assert.equal(await reservar('resumo:contrato:um'), 'enviando', 'reservado e não concluído é incerto: não sai de novo');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:um', 'enviado'), 'enviado');
+      assert.equal(await reservar('resumo:contrato:um'), 'enviado');
 
-      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:dois' }), 'reservado');
-      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou'), true);
-      assert.equal(await repositorio.reservarEnvioDeResumo({ ...base, chave: 'resumo:contrato:dois' }), 'reservado', 'falhou volta a ser tentado');
+      assert.equal(await reservar('resumo:contrato:dois'), 'reservado');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou'), 'falhou', 'primeira falha');
+      assert.equal(await reservar('resumo:contrato:dois', { esperaMs: 60 * 60_000 }), 'falhou', 'dentro da espera não volta');
+      assert.equal(await reservar('resumo:contrato:dois'), 'reservado', 'passada a espera: segunda tentativa');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou'), 'falhou');
+      assert.equal(await reservar('resumo:contrato:dois'), 'reservado', 'terceira tentativa');
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'falhou', { maximoDeTentativas: 3 }), 'desistido',
+        'a terceira falha é definitiva');
+      assert.equal(await reservar('resumo:contrato:dois'), 'desistido', 'desistido não volta');
+      assert.ok((await repositorio.listarUltimasFalhasDeResumo()).some((linha) => linha.agente_id === agente.id),
+        'a falha entra no relógio do grupo');
 
       await assert.rejects(() => repositorio.concluirEnvioDeResumo('resumo:contrato:dois', 'qualquer'));
-      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:inexistente', 'enviado'), false);
+      assert.equal(await repositorio.concluirEnvioDeResumo('resumo:contrato:inexistente', 'enviado'), null);
     });
 
     await t.test('resumo: restart entre a parte 1 e a parte 2 não reenvia a parte 1 nem a incerta (auditoria M2)', async () => {
@@ -1722,6 +1732,39 @@ for (const { nome, montar } of implementacoes) {
 
       soltar();
       await primeiro;
+    });
+
+    await t.test('resumo: canal que responde erro — a falha gravada segura o grupo e a cópia seguinte não bate no canal (conferência final, item 1)', async () => {
+      const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
+      const respirar = (ms = 5) => new Promise((seguir) => { setTimeout(seguir, ms); });
+      const agente = await criarAgenteDeTeste('contrato-resumo-falha');
+      await repositorio.definirCanaisDoAgente(agente.id, [{ canal: 'whatsapp', instancia: 'contrato-falha', ativo: true }]);
+      const membro = await repositorio.criarUsuario({
+        nome: 'Falha Loja', email: 'falha-loja@teste.local', papel: 'atendente', situacao: 'ativo',
+      });
+      await repositorio.atualizarUsuario(membro.id, {
+        acessoClinica: false, whatsappDdi: '55', whatsappDdd: '16', whatsappNumero: '991230049', whatsappParticularAutorizado: true,
+      });
+      await repositorio.adicionarMembroDaEquipe(agente.id, membro.id);
+      const conversa = await conversaDoAgente(agente.id, '5516900001291');
+      await repositorio.registrarMensagem(conversa.id, { direcao: 'entrada', conteudo: 'tem o 44?', autor_tipo: 'contato' });
+      await respirar();
+
+      let tentativas = 0;
+      const canal = {
+        async enviar(carga) {
+          if (carga.instancia !== 'contrato-falha') return { identificador: 'outro-grupo' };
+          tentativas += 1;
+          throw new Error('Evolution API respondeu HTTP 500');
+        },
+      };
+      const copia = () => criarResumoDeAtendimento({ repositorio, canal, silencioMin: 0, intervaloMin: 120 });
+
+      await copia().enviarPendentes();
+      assert.equal(tentativas, 1);
+      const depois = await copia().enviarPendentes();
+      assert.equal(tentativas, 1, 'a falha está no banco: a cópia seguinte espera o intervalo');
+      assert.equal(depois.grupos.find((grupo) => grupo.agente_id === agente.id)?.situacao, 'aguardando_intervalo');
     });
 
     await t.test('outbox: disponivelEm agenda o trabalho; sem ele, fica disponível já', async () => {

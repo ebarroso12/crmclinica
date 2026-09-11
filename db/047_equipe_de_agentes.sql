@@ -118,8 +118,11 @@ CREATE TRIGGER trg_usuarios_acesso_clinica_guard BEFORE UPDATE ON usuarios
 -- 7f8275b, M2). A Evolution não recebe chave de idempotência: um restart do
 -- worker no meio do resumo reenviava tudo. Cada envio é reservado aqui ANTES de
 -- sair; 'enviado' não sai de novo, 'enviando' encontrado depois é INCERTO (o
--- processo morreu, ou a Evolution não confirmou) e também não sai de novo,
--- 'falhou' volta a ser tentado.
+-- processo morreu, ou a Evolution não confirmou) e também não sai de novo.
+-- 'falhou' volta a ser tentado só depois do intervalo do grupo, e no máximo 3
+-- vezes (`tentativas`); na terceira falha vira 'desistido', definitivo
+-- (conferência final sobre 54f6225: HTTP de erro da Evolution que entregava de
+-- verdade repetia a mesma mensagem a cada minuto).
 --
 -- SEM telefone e SEM texto: a chave é derivada da pessoa e do conteúdo da parte
 -- (ids das conversas e da última entrada, com hash), nunca do número.
@@ -130,7 +133,8 @@ CREATE TABLE IF NOT EXISTS resumo_envios (
   agente_id     bigint REFERENCES agentes(id) ON DELETE SET NULL,
   usuario_id    bigint NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
   parte         integer NOT NULL CHECK (parte > 0),
-  status        text NOT NULL CHECK (status IN ('enviando', 'enviado', 'falhou')),
+  status        text NOT NULL CHECK (status IN ('enviando', 'enviado', 'falhou', 'desistido')),
+  tentativas    integer NOT NULL DEFAULT 0 CHECK (tentativas >= 0),
   criado_em     timestamptz NOT NULL DEFAULT now(),
   atualizado_em timestamptz NOT NULL DEFAULT now()
 );

@@ -54,7 +54,10 @@ test('047 cria resumo_envios sem telefone nem texto, com RLS, política e GRANT 
   assert.match(bloco, /grupo\s+text NOT NULL CHECK \(grupo IN \('clinica', 'agente'\)\)/);
   assert.match(bloco, /agente_id\s+bigint REFERENCES agentes\(id\) ON DELETE SET NULL/);
   assert.match(bloco, /usuario_id\s+bigint NOT NULL REFERENCES usuarios\(id\) ON DELETE CASCADE/);
-  assert.match(bloco, /status\s+text NOT NULL CHECK \(status IN \('enviando', 'enviado', 'falhou'\)\)/);
+  assert.match(bloco, /status\s+text NOT NULL CHECK \(status IN \('enviando', 'enviado', 'falhou', 'desistido'\)\)/);
+  // Conferência final, item 1: tentativas contadas por chave; o verificador exige a coluna.
+  assert.match(bloco, /tentativas\s+integer NOT NULL DEFAULT 0 CHECK \(tentativas >= 0\)/);
+  assert.match(fs.readFileSync(path.join(RAIZ, 'bin', 'verificar-banco.js'), 'utf8'), /\['resumo_envios', 'tentativas'\]/);
   assert.ok(!/telefone|texto|conteudo|whatsapp/i.test(bloco), 'sem telefone e sem texto no registro');
 
   assert.match(corpo, /ALTER TABLE public\.resumo_envios ENABLE ROW LEVEL SECURITY;/);

@@ -1445,24 +1445,43 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     ...(() => {
       const enviosDeResumo = new Map();
       return {
-        async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte }) {
+        async reservarEnvioDeResumo({ chave, grupo, agenteId = null, usuarioId, parte, esperaMs = 0 }) {
           const atual = enviosDeResumo.get(chave);
-          if (atual && atual.status !== 'falhou') return atual.status;
-          const instante = agora().toISOString();
+          const instante = agora();
+          if (atual) {
+            if (atual.status !== 'falhou') return atual.status;
+            if (instante.getTime() - new Date(atual.atualizado_em).getTime() < Math.max(0, Number(esperaMs) || 0)) return 'falhou';
+          }
           enviosDeResumo.set(chave, {
             chave, grupo, agente_id: agenteId, usuario_id: usuarioId, parte, status: 'enviando',
-            criado_em: atual?.criado_em ?? instante, atualizado_em: instante,
+            tentativas: (atual?.tentativas ?? 0) + 1,
+            criado_em: atual?.criado_em ?? instante.toISOString(), atualizado_em: instante.toISOString(),
           });
           return 'reservado';
         },
 
-        async concluirEnvioDeResumo(chave, status) {
+        async concluirEnvioDeResumo(chave, status, { maximoDeTentativas = 3 } = {}) {
           if (!['enviado', 'falhou'].includes(status)) throw new Error('status de envio de resumo inválido');
           const atual = enviosDeResumo.get(chave);
-          if (!atual) return false;
-          atual.status = status;
+          if (!atual) return null;
+          const esgotou = status === 'falhou' && atual.tentativas >= Math.max(1, Number(maximoDeTentativas) || 3);
+          atual.status = esgotou ? 'desistido' : status;
           atual.atualizado_em = agora().toISOString();
-          return true;
+          return atual.status;
+        },
+
+        async listarUltimasFalhasDeResumo() {
+          const ultimas = new Map();
+          for (const envio of enviosDeResumo.values()) {
+            if (!['falhou', 'desistido'].includes(envio.status)) continue;
+            if (envio.grupo !== 'clinica' && envio.agente_id === null) continue;
+            const grupo = envio.grupo === 'clinica' ? null : Number(envio.agente_id);
+            const instante = new Date(envio.atualizado_em).getTime();
+            if (!ultimas.has(grupo) || instante > ultimas.get(grupo)) ultimas.set(grupo, instante);
+          }
+          return [...ultimas].map(([agenteId, instante]) => ({
+            agente_id: agenteId, ultima_falha: new Date(instante).toISOString(),
+          }));
         },
       };
     })(),

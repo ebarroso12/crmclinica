@@ -48,6 +48,9 @@ const LIMITE_POR_MENSAGEM = 3500;
 // Teto de atendimentos num resumo: depois de uma parada longa, o resto vai no
 // seguinte — um resumo de 30 mensagens seguidas ninguém lê.
 const MAXIMO_POR_RESUMO = 40;
+// Tentativas por envio (pessoa × parte) que falhou com erro conhecido — uma por
+// intervalo do grupo; na última, desiste (conferência final sobre 54f6225).
+const TENTATIVAS_POR_ENVIO = 3;
 const LIMITE_DA_VARREDURA = 500;
 // Teto da janela (auditoria A1): nada anterior a 24 h entra num resumo.
 const JANELA_MAXIMA_MS = 24 * 60 * 60 * 1000;
@@ -389,7 +392,11 @@ function criarResumoDeAtendimento({
     // Registro de envios (auditoria M2): a Evolution não recebe chave de
     // idempotência, e um restart no meio do resumo reenviava tudo. Cada envio
     // (pessoa × parte) é reservado em `resumo_envios` ANTES de sair:
-    //   • chave nova, ou que tinha 'falhou' → reserva e envia;
+    //   • chave nova → reserva e envia;
+    //   • 'falhou' → só volta depois de um intervalo, e no máximo
+    //     TENTATIVAS_POR_ENVIO vezes: HTTP de erro não prova que não chegou, e
+    //     a mesma mensagem saía a cada minuto (conferência final, item 1). Na
+    //     última falha vira 'desistido' — definitivo, com auditoria;
     //   • 'enviado' → já chegou: não reenvia e conta como entregue;
     //   • 'enviando' → INCERTO (o processo morreu no meio, ou a Evolution não
     //     confirmou): não reenvia — mesma política de falha indeterminada de
@@ -404,12 +411,39 @@ function criarResumoDeAtendimento({
     const assinaturaDaParte = (parte) => crypto.createHash('sha256')
       .update(parte.conversas.map((id) => `${id}:${entradaDe.get(id) ?? ''}`).join(','))
       .digest('hex').slice(0, 24);
+    // Devolve o status gravado ('enviado', 'falhou', 'desistido') ou null.
     async function concluir(chave, status) {
       try {
-        await repositorio.concluirEnvioDeResumo?.(chave, status);
+        return await repositorio.concluirEnvioDeResumo?.(chave, status, { maximoDeTentativas: TENTATIVAS_POR_ENVIO }) ?? null;
       } catch (erro) {
         // Fica 'enviando' (incerto): no próximo ciclo não sai de novo.
         console.error(`[resumo] envio ${status} não registrado: ${erro.message}`);
+        return null;
+      }
+    }
+    // Desistência (conferência final, item 1): a mesma pessoa e parte falharam
+    // TENTATIVAS_POR_ENVIO vezes. Não é tentado de novo; log e auditoria com as
+    // conversas, sem telefone.
+    async function registrarDesistencia({ destino, parte, indice, motivo }) {
+      console.error(`[resumo] ${nome}: ${TENTATIVAS_POR_ENVIO} tentativas falharam para o usuário ${destino.usuario_id}, `
+        + `parte ${indice + 1}, conversas ${parte.conversas.join(', ')} — desistido, não será tentado de novo`);
+      try {
+        await repositorio.registrarAuditoria?.({
+          entidade: doAgente ? 'agente' : 'sistema',
+          entidadeId: doAgente ? agenteId : 1,
+          acao: 'resumo_desistido',
+          detalhe: {
+            grupo: tipoDeGrupo,
+            agente_id: agenteId,
+            usuario_id: destino.usuario_id,
+            conversas: [...parte.conversas],
+            parte: indice + 1,
+            tentativas: TENTATIVAS_POR_ENVIO,
+            motivo,
+          },
+        });
+      } catch {
+        // Auditoria indisponível não pode derrubar a varredura de resumos.
       }
     }
     // Envio incerto (auditoria M-n1): não é repetido e conta como entregue, mas
@@ -438,27 +472,40 @@ function criarResumoDeAtendimento({
       }
     }
     relatorio.incertos = 0;
+    relatorio.desistidos = 0;
+    relatorio.conversas_desistidas = 0;
 
     // Entrega ANTES de marcar. Marcar primeiro fazia toda falha de canal virar
     // resumo perdido para sempre, sem retentativa e sem rastro.
     const recebidas = new Map(blocos.map((bloco) => [bloco.conversaId, 0]));
     const falhas = new Map(blocos.map((bloco) => [bloco.conversaId, []]));
+    const desistidas = new Map(blocos.map((bloco) => [bloco.conversaId, 0]));
     for (const destino of destinatarios) {
       for (const [indice, parte] of partes.entries()) {
         const chave = `resumo:${grupo}:${destino.usuario_id}:${assinaturaDaParte(parte)}`;
         const contarComoEntregue = () => { for (const id of parte.conversas) recebidas.set(id, recebidas.get(id) + 1); };
+        const contarComoDesistida = () => { for (const id of parte.conversas) desistidas.set(id, desistidas.get(id) + 1); };
 
         let reserva = 'reservado';
         if (repositorio.reservarEnvioDeResumo) {
           try {
             reserva = await repositorio.reservarEnvioDeResumo({
-              chave, grupo: tipoDeGrupo, agenteId, usuarioId: destino.usuario_id, parte: indice + 1,
+              chave, grupo: tipoDeGrupo, agenteId, usuarioId: destino.usuario_id, parte: indice + 1, esperaMs: intervaloMs,
             });
           } catch (erro) {
             // Sem registro não se envia: sair sem reserva é o que duplicava.
             for (const id of parte.conversas) falhas.get(id).push(motivoSemTelefone(`registro de envio indisponível: ${erro?.message}`));
             continue;
           }
+        }
+        if (reserva === 'falhou') {
+          // Falhou há menos de um intervalo: não sai agora (conferência final, item 1).
+          for (const id of parte.conversas) falhas.get(id).push('falhou há pouco; nova tentativa só depois do intervalo');
+          continue;
+        }
+        if (reserva === 'desistido') {
+          contarComoDesistida();
+          continue;
         }
         if (reserva !== 'reservado') {
           if (reserva === 'enviando') {
@@ -485,8 +532,11 @@ function criarResumoDeAtendimento({
             contarComoEntregue();
             console.error(`[resumo] envio sem confirmação (indeterminado): ${motivoSemTelefone(erro.message)}`);
             await registrarIncerto({ destino, parte, indice, motivo: 'timeout' });
+          } else if (await concluir(chave, 'falhou') === 'desistido') {
+            relatorio.desistidos += 1;
+            contarComoDesistida();
+            await registrarDesistencia({ destino, parte, indice, motivo: motivoSemTelefone(erro?.message) });
           } else {
-            await concluir(chave, 'falhou');
             for (const id of parte.conversas) falhas.get(id).push(motivoSemTelefone(erro?.message));
           }
         }
@@ -506,14 +556,20 @@ function criarResumoDeAtendimento({
 
       // Marca quando ALGUÉM recebeu: repetir para todos por causa de um que
       // falhou mandaria o mesmo resumo duas vezes a quem já leu. Ninguém
-      // recebeu: fica sem marca e o próximo ciclo tenta de novo.
-      if (confirmados > 0) {
+      // recebeu: fica sem marca e volta no próximo resumo do grupo.
+      // Também marca quando o que falta são só envios DESISTIDOS (conferência
+      // final, item 1): sem a marca, a parte mudaria de composição, a chave
+      // mudaria e as tentativas recomeçariam — a auditoria resumo_desistido
+      // guarda quais conversas ficaram sem entrega.
+      const desistida = confirmados === 0 && motivos.length === 0 && desistidas.get(bloco.conversaId) > 0;
+      if (confirmados > 0 || desistida) {
         try {
           await repositorio.marcarResumoEnviado(bloco.conversaId, { ultimaEntradaId: bloco.ultimaEntradaId });
         } catch (erro) {
-          console.error(`[resumo] conversa ${bloco.conversaId} entregue mas não marcada: ${erro.message}`);
+          console.error(`[resumo] conversa ${bloco.conversaId} ${desistida ? 'desistida' : 'entregue'} mas não marcada: ${erro.message}`);
         }
-        relatorio.enviados += 1;
+        if (desistida) relatorio.conversas_desistidas += 1;
+        else relatorio.enviados += 1;
       } else {
         relatorio.nao_entregues += 1;
       }
@@ -551,7 +607,8 @@ function criarResumoDeAtendimento({
       }
     }
 
-    relatorio.situacao = relatorio.enviados > 0 ? 'enviado' : 'nao_entregue';
+    relatorio.situacao = relatorio.enviados > 0 ? 'enviado'
+      : (relatorio.nao_entregues === 0 && relatorio.conversas_desistidas > 0 ? 'desistido' : 'nao_entregue');
     return relatorio;
   }
 
@@ -570,6 +627,15 @@ function criarResumoDeAtendimento({
     // que decide se o grupo já pode receber outro resumo.
     const ultimos = new Map((await repositorio.listarUltimosEnviosDeResumo?.() ?? [])
       .map((linha) => [linha.agente_id === null ? null : Number(linha.agente_id), new Date(linha.ultimo_envio).getTime()]));
+    // A última FALHA também anda o relógio (conferência final, item 1): com o
+    // canal fora do ar nada é marcado, e o relógio só de envios deixava o grupo
+    // tentar a cada minuto — 362 tentativas em 3 h. Fica no banco: reiniciar o
+    // worker não antecipa.
+    for (const linha of await repositorio.listarUltimasFalhasDeResumo?.() ?? []) {
+      const agenteId = linha.agente_id === null ? null : Number(linha.agente_id);
+      const falha = new Date(linha.ultima_falha).getTime();
+      if (!(ultimos.get(agenteId) >= falha)) ultimos.set(agenteId, falha);
+    }
     const instante = agora().getTime();
     const janelas = { padrao: new Date(instante - JANELA_MAXIMA_MS).toISOString(), porGrupo: [] };
 

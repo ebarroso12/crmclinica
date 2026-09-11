@@ -10,6 +10,7 @@ const {
   criarResumoDeAtendimento, dividirEmMensagens, LIMITE_POR_MENSAGEM,
 } = require('../src/dominio/resumo-atendimento');
 const { carregarConfiguracao } = require('../src/config');
+const { criarClienteEvolucaoEnvio } = require('../src/integracoes/evolution-envio');
 
 // Resumo por equipe (docs/RESUMOS.md). Repositório em memória REAL com relógio
 // injetado — o mesmo contrato do PostgreSQL; a consulta, a trava e duas cópias
@@ -342,7 +343,7 @@ test('parte que não chegou a ninguém não marca os atendimentos dela; a que ch
   assert.ok(!/990000071|990000072/.test(JSON.stringify(registro.detalhe)), 'telefone de pessoa não entra na auditoria');
 });
 
-test('quando NINGUÉM recebe, nada é marcado e o ciclo seguinte tenta de novo — sem esperar as 2 h', async () => {
+test('quando NINGUÉM recebe, nada é marcado e a próxima tentativa espera o intervalo — não o minuto seguinte (conferência final, item 1)', async () => {
   const c = await montarCenario();
   await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000081' });
   const conversa = await c.conversa('5516900010001');
@@ -353,10 +354,108 @@ test('quando NINGUÉM recebe, nada é marcado e o ciclo seguinte tenta de novo �
   assert.deepEqual(await c.pendentes(), [conversa.id]);
   assert.equal(c.auditoria.at(-1).acao, 'resumo_nao_entregue');
 
+  // Cópia nova do resumo (um restart): a falha está no banco e segura o grupo.
   c.relogio.avancar(1);
   const deVolta = canalFalso();
+  const logoDepois = await c.resumo({ canal: deVolta }).enviarPendentes();
+  assert.equal(deVolta.envios.length, 0, 'não bate no canal no minuto seguinte');
+  assert.equal(logoDepois.grupos[0].situacao, 'aguardando_intervalo');
+
+  c.relogio.avancar(120);
   await c.resumo({ canal: deVolta }).enviarPendentes();
   assert.equal(deVolta.envios.length, 1);
+  assert.deepEqual(await c.pendentes(), []);
+});
+
+test('Evolution que responde erro (e talvez entregue) sempre: no máximo 3 envios em 6 h por pessoa e parte, depois desiste com auditoria (conferência final, item 1)', async () => {
+  const c = await montarCenario();
+  const admin = await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000211' });
+  const conversa = await c.conversa('5516980000001', { nome: 'Evolution Teimosa' });
+  c.relogio.avancar(31);
+  const chamadas = [];
+  const evolucao = criarClienteEvolucaoEnvio({ apiUrl: 'http://evolution.teste', apiKey: 'chave-de-teste', instancia: 'clinica' }, {
+    async fetchImpl() {
+      chamadas.push(c.relogio.agora().getTime());
+      return { ok: false, status: 500, text: async () => 'Internal Server Error' };
+    },
+  });
+  const resumo = c.resumo({ canal: evolucao });
+
+  for (let minuto = 0; minuto < 6 * 60; minuto += 1) {
+    await resumo.enviarPendentes();
+    c.relogio.avancar(1);
+  }
+
+  assert.equal(chamadas.length, 3, 'três tentativas em 6 h, não uma por minuto');
+  for (let i = 1; i < chamadas.length; i += 1) {
+    assert.ok(chamadas[i] - chamadas[i - 1] >= 120 * 60_000, 'uma tentativa por intervalo');
+  }
+  const desistencias = c.auditoria.filter((item) => item.acao === 'resumo_desistido');
+  assert.equal(desistencias.length, 1);
+  assert.equal(desistencias[0].entidade, 'sistema');
+  const { motivo, ...detalhe } = desistencias[0].detalhe;
+  assert.deepEqual(detalhe, { grupo: 'clinica', agente_id: null, usuario_id: admin.id, conversas: [conversa.id], parte: 1, tentativas: 3 });
+  assert.match(motivo, /HTTP 500/);
+  assert.ok(!/990000211/.test(JSON.stringify(desistencias)), 'sem telefone');
+  assert.deepEqual(await c.pendentes(), [], 'desistida sai da fila: a chave não recomeça com outra composição');
+
+  c.relogio.avancar(24 * 60);
+  await resumo.enviarPendentes();
+  assert.equal(chamadas.length, 3, 'nada depois de desistir');
+});
+
+test('canal fora do ar: no máximo 1 tentativa por intervalo, mesmo com conversa nova esfriando a cada meia hora (conferência final, item 1)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000221' });
+  await c.conversa('5516980001000');
+  c.relogio.avancar(31);
+  const instantes = new Set();
+  const canal = {
+    async enviar() {
+      instantes.add(c.relogio.agora().getTime());
+      throw new Error('gateway fora do ar (HTTP 503)');
+    },
+  };
+  const resumo = c.resumo({ canal });
+
+  for (let minuto = 0; minuto < 6 * 60; minuto += 1) {
+    if (minuto % 30 === 0) await c.conversa(`55169800020${String(minuto / 30).padStart(2, '0')}`);
+    await resumo.enviarPendentes();
+    c.relogio.avancar(1);
+  }
+
+  const ciclos = [...instantes].sort((a, b) => a - b);
+  assert.ok(ciclos.length >= 1 && ciclos.length <= 3, `${ciclos.length} ciclos bateram no canal em 6 h`);
+  for (let i = 1; i < ciclos.length; i += 1) {
+    assert.ok(ciclos[i] - ciclos[i - 1] >= 120 * 60_000, 'no máximo uma tentativa por intervalo');
+  }
+});
+
+test('parte que falhou uma vez e depois funciona: uma entrega, no intervalo seguinte, sem dobro (conferência final, item 1)', async () => {
+  const c = await montarCenario();
+  await c.pessoa('Admin', { papel: 'admin', whatsapp: '16990000231' });
+  await c.conversa('5516980002001');
+  c.relogio.avancar(31);
+  const tentativas = [];
+  const entregues = [];
+  const canal = {
+    async enviar(carga) {
+      tentativas.push(c.relogio.agora().getTime());
+      if (tentativas.length === 1) throw new Error('Evolution API respondeu HTTP 500');
+      entregues.push(carga);
+      return { identificador: 'ok' };
+    },
+  };
+  const resumo = c.resumo({ canal });
+
+  for (let minuto = 0; minuto < 5 * 60; minuto += 1) {
+    await resumo.enviarPendentes();
+    c.relogio.avancar(1);
+  }
+
+  assert.equal(entregues.length, 1, 'uma entrega, sem dobro');
+  assert.equal(tentativas.length, 2);
+  assert.ok(tentativas[1] - tentativas[0] >= 120 * 60_000, 'a segunda tentativa espera o intervalo');
   assert.deepEqual(await c.pendentes(), []);
 });
 

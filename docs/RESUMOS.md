@@ -124,8 +124,16 @@ A Evolution não recebe chave de idempotência. Cada envio (pessoa × parte) é 
 `resumo_envios` **antes** de sair — a tabela não guarda telefone nem texto; a chave é da
 pessoa e do conteúdo da parte (ids das conversas e da última entrada, com hash):
 
-- chave nova, ou que tinha `falhou` → reserva (`enviando`) e envia; depois grava `enviado`
-  ou `falhou`;
+- chave nova → reserva (`enviando`, `tentativas = 1`) e envia; depois grava `enviado` ou
+  `falhou`;
+- `falhou` → **só volta depois de um intervalo do grupo** (120 min) e **no máximo 3
+  tentativas por chave** (conferência final, item 1). A Evolution trata qualquer HTTP de
+  erro como recusa, mas pode ter entregado: o auditor simulou a mesma mensagem chegando 60
+  vezes por hora. Na terceira falha a chave vira **`desistido`**, definitiva:
+  - auditoria `resumo_desistido` com `grupo`, `agente_id`, `usuario_id`, `conversas`,
+    `parte`, `tentativas` e `motivo`, sem telefone;
+  - as conversas que só esperavam esse envio são marcadas. Sem a marca, a parte mudaria de
+    composição, a chave mudaria e as tentativas recomeçariam;
 - `enviado` → já chegou: não reenvia e conta como entregue;
 - `enviando` encontrado depois → **incerto** (o processo morreu no meio, ou a Evolution não
   confirmou — timeout/ECONNRESET): não reenvia, mesma política de `evolution-envio.js`, e
@@ -158,8 +166,9 @@ chegou a **pelo menos uma** pessoa (enviado ou incerto).
 
 | Situação | O que acontece |
 |---|---|
-| Ninguém do grupo recebeu nada (canal fora do ar) | Nada é marcado, o relógio não anda: o ciclo seguinte (1 min) tenta de novo; as chaves com `falhou` voltam a ser tentadas |
-| Uma parte não chegou a ninguém, outra parte do mesmo resumo chegou | O relógio anda, então a parte que falhou **espera o intervalo** e volta nos resumos seguintes enquanto a entrada tiver menos de 24 h; depois disso fica só na auditoria |
+| Ninguém do grupo recebeu nada (canal fora do ar) | Nada é marcado, mas a falha fica em `resumo_envios` e **anda o relógio do grupo**: a próxima tentativa só sai depois do intervalo, mesmo com o worker reiniciado. Antes era a cada minuto (362 tentativas em 3 h na simulação do auditor) |
+| Uma parte não chegou a ninguém, outra parte do mesmo resumo chegou | O relógio anda, então a parte que falhou **espera o intervalo** e volta nos resumos seguintes (no máximo 3 tentativas por chave) enquanto a entrada tiver menos de 24 h; depois disso fica só na auditoria |
+| A mesma pessoa e parte falharam 3 vezes | `desistido`: não é tentado de novo; auditoria `resumo_desistido`; a conversa é marcada se não esperava mais nenhum envio |
 | Uma pessoa falhou e outra recebeu | O atendimento é marcado e não volta para quem falhou (auditoria "parcial") |
 | Envio incerto | Não é repetido; o atendimento é marcado; auditoria `resumo_envio_incerto` |
 
@@ -268,8 +277,11 @@ autorizado no cadastro (`docs/AGENTES.md`, "Colocar um agente no ar").
   (233 linhas em produção em 11/09).
 - A limitação de auditoria (uma por grupo por intervalo) vive no processo: reiniciar o
   worker pode antecipar uma auditoria — nunca um envio.
-- Parte que falhou para todos volta a cada resumo do grupo enquanto a entrada tiver menos de
-  24 h (no máximo ~12 tentativas com intervalo de 2 h); depois fica só na auditoria.
+- **Tentativas contadas por chave** (pessoa × conteúdo da parte). Se conversas novas mudam a
+  composição da parte, a chave é outra e a contagem recomeça. Mesmo assim, sai no máximo uma
+  tentativa por intervalo do grupo (até ~12 por dia, dentro da janela de 24 h). Com a
+  Evolution respondendo erro e entregando mesmo assim, o pior caso cai de 60 mensagens por
+  hora para 1 a cada 2 h.
 - **`resumo_envios` cresce sem limpeza** (resíduo aceito na reconferência de acesso).
   - **Crescimento:** cerca de uma linha por pessoa × parte a cada resumo do grupo. Com
     intervalo de 2 h são até 12 resumos por grupo por dia; com 5 pessoas e 1–2 partes, dá
