@@ -5,7 +5,7 @@ const { exigirPermissao } = require('../seguranca/rbac');
 const { normalizarTelefone, telefoneValido } = require('../dominio/serena');
 const { mascararTelefone } = require('../dominio/lembretes');
 const {
-  TODOS, veAgente, veContato, veConversaDe, selosDoContato, filtroDeEscopo,
+  TODOS, veAgente, veContato, veConversaDe, selosDoContato, filtroDeEscopo, contatoParaColaborador,
 } = require('../seguranca/escopo');
 
 // Sem escopo declarado (chamada interna ou teste de unidade): vê tudo.
@@ -54,15 +54,29 @@ function exigirTexto(valor, campo, limite = 200) {
  * pessoa pode ser paciente.
  */
 function publicar(contato, { telefoneCompleto = false, selos = null, semDadoClinico = false } = {}) {
+  // Na lista o telefone sai mascarado; na ficha aberta, inteiro — é onde a
+  // equipe precisa dele para ligar.
+  const telefone = telefoneCompleto ? contato.telefone : mascararTelefone(contato.telefone);
+
+  // Quem não vê a clínica (auditoria de acesso A2 e M1): LISTA BRANCA de
+  // `contatoParaColaborador` — id, nome, telefone e selos dos agentes dele — e
+  // a contagem das conversas que ele vê. E-mail, origem, observações, opt-out,
+  // exclusão e a contagem de agendamentos são da clínica e não saem.
+  if (semDadoClinico) {
+    return {
+      ...contatoParaColaborador(contato, { selos }),
+      telefone,
+      ...(contato.conversas !== undefined ? { conversas: contato.conversas } : {}),
+    };
+  }
+
   return {
     id: contato.id,
     nome: contato.nome,
-    // Na lista o telefone sai mascarado; na ficha aberta, inteiro — é onde a
-    // equipe precisa dele para ligar.
-    telefone: telefoneCompleto ? contato.telefone : mascararTelefone(contato.telefone),
+    telefone,
     email: contato.email ?? null,
     origem: contato.origem ?? null,
-    observacoes: semDadoClinico ? null : (contato.observacoes ?? null),
+    observacoes: contato.observacoes ?? null,
     ...(selos ? { selos } : {}),
     recebe_lembretes: contato.lembretes_optout !== true,
     excluido: Boolean(contato.excluido_em),

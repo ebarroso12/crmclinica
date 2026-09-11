@@ -134,7 +134,8 @@ test('ficha da conversa: conversas anteriores, notas e observações seguem o es
   assert.deepEqual(daLoja.json.ficha.conversas_anteriores.map((conversa) => conversa.id), [],
     'a conversa da clínica do mesmo paciente não aparece para a loja');
   assert.deepEqual(daLoja.json.ficha.notas, [], 'nota interna da clínica não vai para a loja');
-  assert.equal(daLoja.json.ficha.observacoes, null, 'observação clínica não vai para a loja');
+  // Auditoria de acesso A2: lista branca — o campo nem existe para a loja.
+  assert.ok(!('observacoes' in daLoja.json.ficha), 'observação clínica não vai para a loja');
 
   const daClinica = await c.pedir('atendenteClinica', `/api/conversas/${c.conversaClinica.id}`);
   assert.equal(daClinica.status, 200);
@@ -220,7 +221,7 @@ test('contatos: base compartilhada com selos para a clínica; loja só vê clien
   assert.deepEqual(ordenar([...lojaVe.keys()]), ordenar([c.paciente.id, c.clienteAlpins.id]));
   assert.deepEqual(lojaVe.get(c.paciente.id).selos, { clinica: false, agentes: [{ id: c.alpins.id, nome: 'Agente Alpins' }] },
     'para a loja o paciente nunca aparece como "Clínica"');
-  assert.equal(lojaVe.get(c.paciente.id).observacoes, null);
+  assert.ok(!('observacoes' in lojaVe.get(c.paciente.id)), 'lista branca: observação nem existe para a loja');
   assert.deepEqual(daLoja.agentes.map((agente) => agente.nome), ['Agente Alpins'], 'filtro só com os agentes da equipe');
 
   assert.equal((await c.pedir('loja', `/api/contatos/${c.manual.id}`)).status, 404);

@@ -111,3 +111,58 @@ test('A1: conversa de agente não traz lead nem próxima ação da clínica — 
   assert.equal(daClinica.pagamento, 'convenio');
   assert.equal(daClinica.interesse, 'INTERESSE-SIGILOSO');
 });
+
+// ------------------------------------------------------------- A2 + M1
+
+test('A2 + M1: quem não vê a clínica recebe contato por LISTA BRANCA em toda rota — id, nome, telefone e selos dos agentes dele', async (t) => {
+  const c = await montar();
+  t.after(() => c.app.encerrar());
+  const LISTA_BRANCA = new Set(['id', 'nome', 'telefone', 'selos']);
+  const foraDaLista = (objeto, extras = []) => Object.keys(objeto ?? {})
+    .filter((campo) => !LISTA_BRANCA.has(campo) && !extras.includes(campo));
+
+  for (const quem of ['loja', 'gestorLoja']) {
+    const conversa = await c.pedir(quem, `/api/conversas/${c.conversaPacienteLoja.id}`);
+    assert.equal(conversa.status, 200, quem);
+    assert.deepEqual(foraDaLista(conversa.json.ficha, ['notas', 'conversas_anteriores']), [], `${quem}: ficha da conversa`);
+    assert.deepEqual(foraDaLista(conversa.json.conversa.contato), [], `${quem}: contato da conversa aberta`);
+
+    const listaDeConversas = await c.pedir(quem, '/api/conversas?fila=todos');
+    assert.ok(listaDeConversas.json.conversas.length > 0);
+    for (const item of listaDeConversas.json.conversas) {
+      assert.deepEqual(foraDaLista(item.contato), [], `${quem}: contato na lista de conversas`);
+    }
+
+    const ficha = await c.pedir(quem, `/api/contatos/${c.paciente.id}`);
+    assert.equal(ficha.status, 200);
+    assert.deepEqual(foraDaLista(ficha.json.contato), [], `${quem}: /api/contatos/:id`);
+    assert.deepEqual(ficha.json.contato.selos, { clinica: false, agentes: [{ id: c.alpins.id, nome: 'Agente Alpins' }] });
+
+    const historico = await c.pedir(quem, `/api/contatos/${c.paciente.id}/conversas`);
+    assert.equal(historico.status, 200);
+    assert.deepEqual(foraDaLista(historico.json.contato), [], `${quem}: /api/contatos/:id/conversas`);
+    for (const item of historico.json.conversas) assert.deepEqual(foraDaLista(item.contato), []);
+
+    const gestao = await c.pedir(quem, '/api/contatos/gestao?limite=500');
+    const doPaciente = gestao.json.contatos.find((contato) => contato.id === c.paciente.id);
+    assert.deepEqual(foraDaLista(doPaciente, ['conversas']), [], `${quem}: /api/contatos/gestao`);
+    assert.ok(!('agendamentos' in doPaciente), 'M1: a contagem de agendamentos não vai para o colaborador');
+
+    const busca = await c.pedir(quem, '/api/contatos?busca=5516900006');
+    assert.ok(busca.json.contatos.some((contato) => contato.id === c.paciente.id));
+    for (const item of busca.json.contatos) assert.deepEqual(foraDaLista(item), [], `${quem}: busca`);
+
+    for (const resposta of [conversa, listaDeConversas, ficha, historico, gestao, busca]) {
+      for (const sigilo of SIGILOS) assert.ok(!resposta.texto.includes(sigilo), `${quem}: "${sigilo}" vazou`);
+    }
+  }
+
+  // Quem vê a clínica continua com a ficha inteira.
+  const fichaDaClinica = await c.pedir('gestorClinica', `/api/contatos/${c.paciente.id}`);
+  assert.equal(fichaDaClinica.json.contato.observacoes, 'OBS-CLINICA-SIGILOSA');
+  assert.ok('agendamentos' in (await c.pedir('gestorClinica', '/api/contatos/gestao?limite=500')).json.contatos
+    .find((contato) => contato.id === c.paciente.id));
+  const conversaDaClinica = await c.pedir('gestorClinica', `/api/conversas/${c.conversaClinica.id}`);
+  assert.equal(conversaDaClinica.json.ficha.nome_completo, 'NOME-COMPLETO-SIGILOSO');
+  assert.equal(conversaDaClinica.json.conversa.contato.email, 'sigilo@clinica.test');
+});

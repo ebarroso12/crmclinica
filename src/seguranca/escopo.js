@@ -160,9 +160,28 @@ class ErroSemAcessoAClinica extends Error {
   }
 }
 
+/**
+ * O contato como chega a quem NÃO vê a clínica (auditoria de acesso A2): LISTA
+ * BRANCA, nunca lista negra. A mesma pessoa pode ser paciente — nome completo,
+ * nascimento, responsável, consentimento, e-mail, identificador, observações,
+ * atributos, documentos, opt-out e agenda são da clínica. Campo novo do contato
+ * nasce FECHADO para o colaborador. `selos` já vem recortada por `selosDoContato`
+ * (só os agentes dele); as datas de conversa vêm das conversas que ele vê.
+ */
+function contatoParaColaborador(contato, { selos = null } = {}) {
+  if (!contato) return contato;
+  return {
+    id: contato.id,
+    nome: contato.nome ?? null,
+    telefone: contato.telefone ?? null,
+    ...(selos ? { selos } : {}),
+  };
+}
+
 module.exports = {
   TODOS,
   ROTAS_SEM_CLINICA,
+  contatoParaColaborador,
   montarEscopo,
   veAgente,
   veConversaDe,

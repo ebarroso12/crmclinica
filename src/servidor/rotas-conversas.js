@@ -6,15 +6,21 @@ const { FILAS, ESTADOS, PRIORIDADES, TEMPERATURAS, lerTemperatura } = require('.
 const { agruparPorColuna, sugerirTemperatura } = require('../dominio/leads');
 const { proximaAcao } = require('../dominio/qualificacao');
 const {
-  TODOS, veConversaDe, veContato, selosDoContato, recortarPedidoDeAgente, filtroDeEscopo,
+  TODOS, veConversaDe, veContato, selosDoContato, recortarPedidoDeAgente, filtroDeEscopo, contatoParaColaborador,
 } = require('../seguranca/escopo');
 
-// Migration 047 (docs/AGENTES.md, "Quem vê o quê"). Quem não vê a clínica não
-// recebe notas da ficha nem observações/atributos do contato: a mesma pessoa
-// pode ser paciente, e essas anotações são da clínica.
+// Migration 047 + auditoria de acesso A2 (docs/AGENTES.md, "Quem vê o quê").
+// Quem não vê a clínica recebe o contato por LISTA BRANCA — antes só
+// observações e atributos saíam, e nome completo, nascimento, responsável,
+// consentimento e documentos iam junto. Notas da ficha também não vão.
 function fichaSemDadoClinico(contato) {
-  if (!contato) return contato;
-  return { ...contato, observacoes: null, atributos: {} };
+  return contatoParaColaborador(contato);
+}
+
+/** A conversa como o colaborador a recebe: o contato embutido também por lista branca. */
+function conversaSemDadoClinico(conversa) {
+  if (!conversa) return conversa;
+  return { ...conversa, contato: contatoParaColaborador(conversa.contato) };
 }
 
 function erroNaoEncontrado(mensagem) {
@@ -222,8 +228,10 @@ function criarRotasDeConversas({
           : conversas;
 
       // A próxima ação vai junto: é o que a recepção lê sem abrir a conversa.
+      // Quem não vê a clínica recebe o contato de cada conversa por lista branca.
+      const listaSemClinica = Boolean(escopo) && escopo.clinica !== true;
       const comAcao = filtradas.map((conversa) => ({
-        ...conversa,
+        ...(listaSemClinica ? conversaSemDadoClinico(conversa) : conversa),
         proxima_acao: conversa.lead_id ? proximaAcao(conversa) : null,
       }));
 
@@ -254,7 +262,7 @@ function criarRotasDeConversas({
         // A próxima ação acompanha a conversa aberta, não só a lista: quem já
         // está na thread precisa ver o que perguntar sem voltar para a esquerda.
         conversa: {
-          ...conversa,
+          ...(semClinica ? conversaSemDadoClinico(conversa) : conversa),
           proxima_acao: conversa.lead_id ? proximaAcao(conversa) : null,
         },
         ficha: {
@@ -607,7 +615,7 @@ function criarRotasDeConversas({
       return {
         contato: semClinica ? fichaSemDadoClinico(contatoBruto) : contatoBruto,
         notas,
-        conversas,
+        conversas: semClinica ? conversas.map(conversaSemDadoClinico) : conversas,
         selos: selosDoContato(efetivo, origens, nomes),
       };
     },
