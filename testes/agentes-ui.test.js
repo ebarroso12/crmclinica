@@ -31,7 +31,7 @@ function blocoDeAgentes() {
   return APP_JS.slice(inicio, fim);
 }
 
-const ABAS = ['perfil', 'trabalho', 'treinamentos', 'configuracoes', 'inatividade', 'canais', 'teste'];
+const ABAS = ['teste', 'horario', 'perfil', 'treinamentos', 'trabalho', 'configuracoes', 'inatividade', 'canais'];
 
 test('o menu tem Agentes escondido por padrão e liberado só por agentes:ler', () => {
   assert.match(HTML, /<li id="item-agentes" hidden>\s*<button type="button" data-tela="agentes">/);
@@ -86,22 +86,91 @@ test('a tela chama todas as rotas da API de agentes', () => {
   const bloco = blocoDeAgentes();
   assert.ok(bloco.includes("pedirJson('/api/agentes')"));
   assert.ok(bloco.includes("pedirJson('/api/agentes', {"));
-  for (const trecho of ['/treinamentos', '/inatividade', '/canais', '/teste', '/comportamento/', '/restaurar']) {
+  for (const trecho of [
+    '/treinamentos', '/inatividade', '/canais', '/teste', '/comportamento/', '/restaurar',
+    '/operacao`', '/whatsapp`', '/whatsapp/conectar`', '/pausar`', '/retomar`', "'/api/agentes/aguardando'",
+  ]) {
     assert.ok(bloco.includes(trecho), `a tela não usa ${trecho}`);
   }
   assert.ok(bloco.includes("metodo: 'DELETE'"));
   assert.ok(bloco.includes("metodo: 'PUT'"));
 });
 
-test('ligar um agente pede confirmação antes de salvar', () => {
+/** Trecho do bloco de agentes a partir de um marcador, até o próximo `seletor('#…')?.addEventListener`. */
+function tratadorDe(marcador) {
   const bloco = blocoDeAgentes();
-  const inicio = bloco.indexOf("seletor('#agente-aba-perfil')?.addEventListener('submit'");
+  const inicio = bloco.indexOf(marcador);
+  assert.ok(inicio >= 0, `falta o tratador: ${marcador}`);
+  const proximo = bloco.indexOf("?.addEventListener('", inicio + marcador.length);
+  return bloco.slice(inicio, proximo < 0 ? undefined : proximo);
+}
+
+test('retomar o agente pede confirmação que cita a resposta dupla do GPTMaker ANTES de chamar a API', () => {
+  const retomar = tratadorDe("seletor('#agente-retomar')?.addEventListener('click'");
+  const confirmacao = retomar.indexOf('window.confirm(');
+  const chamada = retomar.indexOf('/retomar`');
+  assert.ok(confirmacao >= 0 && chamada > confirmacao, 'a confirmação vem antes da chamada');
+  assert.match(retomar, /GPTMaker/);
+  assert.match(retomar, /resposta dupla/);
+});
+
+test('pausar pede confirmação e manda o motivo opcional', () => {
+  const pausar = tratadorDe("seletor('#agente-pausar')?.addEventListener('click'");
+  assert.ok(pausar.indexOf('window.confirm(') >= 0 && pausar.indexOf('window.confirm(') < pausar.indexOf('/pausar`'));
+  assert.match(pausar, /motivo: seletor\('#agente-pausa-motivo'\)/);
+});
+
+test('a página do agente segue o desenho da Serena: estado, aguardando, WhatsApp, controle e então as abas', () => {
+  const secao = secaoDeAgentes();
+  const ordem = [
+    'id="agente-op-agente"', 'id="agente-op-whatsapp"', 'id="agente-op-entrega"', 'id="agente-op-aguardando"',
+    'id="agente-aguardando"', 'id="agente-whatsapp-card"', 'id="agente-controle"',
+    'data-aba-agente="teste"', 'data-aba-agente="horario"', 'data-aba-agente="perfil"', 'data-aba-agente="treinamentos"',
+  ].map((trecho) => {
+    const posicao = secao.indexOf(trecho);
+    assert.ok(posicao >= 0, `falta ${trecho}`);
+    return posicao;
+  });
+  assert.deepEqual([...ordem].sort((a, b) => a - b), ordem, 'a ordem dos blocos segue a tela da Serena');
+
+  for (const rotulo of [
+    'Aguardando você', 'WhatsApp do agente', 'Controle da automação', 'Pausar agente', 'Retomar agente',
+    'Testar o agente', 'Horário de atendimento', 'Comportamento no ar', 'Versões', 'Treinamentos',
+  ]) {
+    assert.ok(secao.includes(rotulo), `rótulo ausente: ${rotulo}`);
+  }
+});
+
+test('o painel de operação recarrega ao abrir o agente e o selo do menu conta quem aguarda', () => {
+  const bloco = blocoDeAgentes();
+  const abrir = bloco.slice(bloco.indexOf('async function abrirAgente('), bloco.indexOf('function selecionarAbaDoAgente('));
+  assert.match(abrir, /carregarOperacaoDoAgente\(\)/);
+  assert.match(HTML, /data-tela="agentes">[^<]*<span[^>]*>◈<\/span> Agentes <b class="contador" id="contador-agentes"[^>]*hidden>/);
+  assert.match(APP_JS, /iniciarSeloDeAgentes\(\);/, 'o selo começa junto com a aplicação');
+  assert.match(bloco, /pedirJson\('\/api\/agentes\/aguardando'\)/);
+});
+
+test('o QR do pareamento só entra na tela como data URL PNG, por propriedade do img', () => {
+  const bloco = blocoDeAgentes();
+  assert.match(bloco, /\/\^data:image\\\/png;base64,\[A-Za-z0-9\+\/=\]\+\$\/\.test\(resultado\.qr\)/);
+  assert.match(bloco, /qr\.src = resultado\.qr/);
+  assert.doesNotMatch(bloco, /innerHTML[^;]*resultado\.qr/);
+});
+
+test('a conversa aguardando abre na tela Conversas, sem filtro que a esconda', () => {
+  const bloco = blocoDeAgentes();
+  const inicio = bloco.indexOf('async function abrirConversaDoAgente(');
   assert.ok(inicio >= 0);
-  const perfil = bloco.slice(inicio, inicio + 1200);
-  const confirmacao = perfil.indexOf('window.confirm(');
-  const salvar = perfil.indexOf('salvarAgenteAberto(');
-  assert.ok(perfil.includes("status === 'ativo'"));
-  assert.ok(confirmacao >= 0 && confirmacao < salvar, 'a confirmação vem antes do salvamento');
+  const funcao = bloco.slice(inicio, bloco.indexOf('\n}\n', inicio));
+  assert.match(funcao, /filaAtual = 'todos'/);
+  assert.match(funcao, /abrirTela\('conversas'\)/);
+  assert.match(funcao, /abrirConversa\(conversaId\)/);
+});
+
+test('o status saiu do formulário do perfil: ligar e desligar é só pelo Controle da automação', () => {
+  assert.doesNotMatch(secaoDeAgentes(), /id="agente-status"/);
+  const perfil = tratadorDe("seletor('#agente-aba-perfil')?.addEventListener('submit'");
+  assert.doesNotMatch(perfil, /\bstatus\b/, 'salvar o comportamento não pode mudar o status');
 });
 
 test('texto dinâmico em atributo usa escaparAtributo, nunca escapar (que não escapa aspas)', () => {
@@ -110,6 +179,15 @@ test('texto dinâmico em atributo usa escaparAtributo, nunca escapar (que não e
   assert.doesNotMatch(bloco, /="\$\{escapar\(/, 'escapar() dentro de atributo deixa aspas passarem');
   assert.match(bloco, /value="\$\{escaparAtributo\(acao\.instrucao/);
   assert.match(bloco, /value="\$\{escaparAtributo\(canal\.instancia/);
+});
+
+test('a tela de agentes não aninha <section>: blocos internos são div com role="region"', () => {
+  // Um <section> interno fechava cedo o recorte da tela (regex até o primeiro
+  // </section>) e escondia do teste metade dos ids — pego ao montar o painel.
+  const inicio = HTML.indexOf('<section id="agentes" class="tela"');
+  const fim = HTML.indexOf('<section id="contatos" class="tela"');
+  assert.ok(inicio >= 0 && fim > inicio);
+  assert.equal((HTML.slice(inicio, fim).match(/<section\b/g) ?? []).length, 1);
 });
 
 test('a seção não tem script, estilo ou manipulador inline (CSP estrita)', () => {

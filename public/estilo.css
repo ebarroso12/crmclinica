@@ -485,6 +485,15 @@ nav button[aria-current="page"] { background: #e4f5f8; color: #0a6f7e; font-weig
 /* Conversa de agente: outro negócio, outro número — não pode parecer da clínica. */
 .etiqueta.agente { background: #e0e7ff; color: #3730a3; }
 
+/* Painel de operação do agente: os blocos repetem o desenho da tela da Serena. */
+.agente-bloco { border-top: 1px solid var(--borda); padding-top: 14px; margin-top: 14px; }
+.agente-bloco h4 { margin: 0 0 4px; }
+.agente-numeros { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; margin: 8px 0 16px; }
+.agente-numeros dt { color: var(--apoio); }
+.agente-numeros dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.pareamento strong { font-size: 22px; letter-spacing: 0.12em; }
+.qr-pareamento { display: block; width: 220px; max-width: 100%; margin-top: 8px; image-rendering: pixelated; }
+
 .compromissos li, .agenda-lista li {
   display: flex;
   gap: 16px;

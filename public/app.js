@@ -1713,6 +1713,9 @@ function mostrarAplicacao() {
   // Agentes: admin e gestor veem; o atendente não tem nada para operar ali.
   const itemAgentes = seletor('#item-agentes');
   if (itemAgentes) itemAgentes.hidden = !podeFazer('agentes:ler');
+  // Selo do menu: cliente de agente que pediu a equipe não entra na fila de
+  // escalonadas da clínica — o número no menu é por onde alguém fica sabendo.
+  iniciarSeloDeAgentes();
 
   // O inbox começa a carregar de qualquer forma: a faixa de saúde não pode ficar
   // em "verificando…" só porque a pessoa foi levada ao perfil.
@@ -3872,12 +3875,16 @@ async function abrirAgente(id) {
     agenteAberto = dados;
     if (trocouDeAgente) {
       conversaDeTesteDoAgente = [];
-      selecionarAbaDoAgente('perfil');
+      // Como na Serena: quem configura cai em "Testar o agente"; quem só
+      // acompanha (o teste gasta IA e é de quem gerencia), no comportamento no ar.
+      selecionarAbaDoAgente(dados.pode_gerenciar ? 'teste' : 'perfil');
     }
     preencherEditorDeAgente();
     const editor = seletor('#agente-editor');
     editor.hidden = false;
     if (trocouDeAgente) editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Sem `await`: o painel de operação espera a Evolution e não pode travar o editor.
+    carregarOperacaoDoAgente();
   } catch (erro) {
     informar(`Não foi possível abrir o agente: ${mensagemDeErroDoAgente(erro)}`);
   }
@@ -3912,7 +3919,6 @@ function preencherEditorDeAgente() {
 
   seletor('#agente-nome').value = agente.nome ?? '';
   seletor('#agente-descricao').value = agente.descricao ?? '';
-  seletor('#agente-status').value = agente.status;
   seletor('#agente-comunicacao').value = agente.comunicacao;
   seletor('#agente-comportamento').value = agente.comportamento ?? '';
   atualizarContadorDoComportamento();
@@ -4184,18 +4190,12 @@ seletor('#agente-aba-perfil')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   if (!agenteAberto) return;
 
-  const status = seletor('#agente-status').value;
-  if (status === 'ativo' && agenteAberto.agente.status !== 'ativo') {
-    const confirmou = window.confirm('Ligar o agente faz ele responder clientes de verdade pelos canais configurados. '
-      + 'Já conferiu as respostas na aba Teste? Confirmar?');
-    if (!confirmou) return;
-  }
-
+  // Pausar e retomar moram no Controle da automação, com confirmação própria:
+  // salvar o comportamento nunca muda quem responde o cliente.
   const [provedor, modelo] = seletor('#agente-modelo').value.split('|');
   await salvarAgenteAberto({
     nome: seletor('#agente-nome').value,
     descricao: seletor('#agente-descricao').value,
-    status,
     comunicacao: seletor('#agente-comunicacao').value,
     comportamento: seletor('#agente-comportamento').value,
     provedor: provedor || null,
@@ -4285,12 +4285,20 @@ seletor('#agente-aba-configuracoes')?.addEventListener('submit', async (evento) 
 
   const configuracoes = {};
   for (const chave of BOOLEANAS_DO_AGENTE) configuracoes[chave] = seletor(`#agente-cfg-${chave}`).checked;
-  configuracoes.fuso = seletor('#agente-cfg-fuso').value.trim();
   configuracoes.tempo_resposta_segundos = Number(seletor('#agente-cfg-tempo_resposta_segundos').value || 0);
   const limite = seletor('#agente-cfg-limite_interacoes').value.trim();
   configuracoes.limite_interacoes = limite === '' ? null : Number(limite);
   configuracoes.acao_limite = seletor('#agente-cfg-acao_limite').value;
 
+  // Fuso e horário têm aba própria (Horário de atendimento); o servidor mescla
+  // configurações parciais, então salvar aqui não apaga a grade.
+  await salvarAgenteAberto({ configuracoes });
+});
+
+seletor('#agente-aba-horario')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+
+  const configuracoes = { fuso: seletor('#agente-cfg-fuso').value.trim() };
   const horario = seletor('#agente-cfg-horario').value.trim();
   if (horario) {
     try {
@@ -4397,6 +4405,310 @@ seletor('#agente-teste-form')?.addEventListener('submit', async (evento) => {
 seletor('#agente-teste-recomecar')?.addEventListener('click', () => {
   conversaDeTesteDoAgente = [];
   desenharConversaDeTesteDoAgente();
+});
+
+// --- Painel de operação do agente, no desenho da tela da Serena ---
+//
+// Estado (agente, WhatsApp, entrega, aguardando), quem espera a equipe, o
+// WhatsApp do agente e o Controle da automação (Pausar/Retomar). Nada aqui
+// mostra conteúdo de mensagem: a API do painel não devolve.
+
+const ROTULO_WHATSAPP_DO_AGENTE = {
+  conectado: ['Conectado', 'ok'],
+  desconectado: ['Desconectado', 'ruim'],
+  conectando: ['Conectando…', 'alerta'],
+  inexistente: ['Instância não existe', 'ruim'],
+  desconhecido: ['Estado desconhecido', 'alerta'],
+  sem_canal: ['Sem canal', 'alerta'],
+  nao_configurado: ['Evolution não configurada', 'alerta'],
+  erro: ['Sem resposta da Evolution', 'ruim'],
+};
+
+const DESCRICAO_WHATSAPP_DO_AGENTE = {
+  conectado: 'O celular do agente está vinculado. As respostas saem por ele.',
+  desconectado: 'O celular não está vinculado: o agente não recebe nem envia. Conecte com o código ou o QR.',
+  conectando: 'A Evolution está tentando conectar. Se demorar, gere um novo código.',
+  inexistente: 'A instância não existe na Evolution — ela precisa ser criada no servidor.',
+  sem_canal: 'O agente não tem canal de WhatsApp. Cadastre a instância na aba Canais.',
+  nao_configurado: 'O servidor não tem a Evolution API configurada.',
+  erro: 'Não foi possível consultar a Evolution agora. Tente Atualizar.',
+};
+
+const NUMEROS_DO_AGENTE = [
+  ['conversas_novas', 'Conversas novas'],
+  ['agente_respondida', 'Respostas do agente'],
+  ['transferida_para_humano', 'Transferidas para a equipe'],
+  ['agente_escalonada', 'Escalonadas por falha'],
+  ['agente_automacao_silenciada', 'Recebidas sem resposta (pausado ou fora do horário)'],
+  ['agente_resposta_nao_entregue', 'Falhas de entrega'],
+];
+
+function dataHoraDoPainelDoAgente(instante) {
+  if (!instante) return '';
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo',
+  }).format(new Date(instante));
+}
+
+/** "desde 11/09 14:30, por Dra. Ana, motivo: almoço" — o que a Serena mostra ao lado do interruptor. */
+function descreverMudancaDoAgente(alteracao) {
+  if (!alteracao) return '';
+  return [
+    alteracao.em ? `desde ${dataHoraDoPainelDoAgente(alteracao.em)}` : null,
+    alteracao.por ? `por ${alteracao.por}` : null,
+    alteracao.motivo ? `motivo: ${alteracao.motivo}` : null,
+  ].filter(Boolean).join(', ');
+}
+
+async function carregarOperacaoDoAgente() {
+  if (!agenteAberto) return;
+  const id = Number(agenteAberto.agente.id);
+  const [operacao, whatsapp] = await Promise.allSettled([
+    pedirJson(`/api/agentes/${id}/operacao`),
+    pedirJson(`/api/agentes/${id}/whatsapp`),
+  ]);
+  // Trocou de agente (ou fechou) enquanto a resposta vinha: não pinta o errado.
+  if (!agenteAberto || Number(agenteAberto.agente.id) !== id) return;
+
+  if (operacao.status === 'fulfilled') {
+    desenharOperacaoDoAgente(operacao.value);
+  } else {
+    pintarEstado('#agente-op-agente', 'Indisponível', 'ruim');
+    definirTexto('#agente-op-agente-detalhe', mensagemDeErroDoAgente(operacao.reason));
+  }
+  desenharWhatsappDoAgente(whatsapp.status === 'fulfilled'
+    ? whatsapp.value
+    : { estado: 'erro', erro: mensagemDeErroDoAgente(whatsapp.reason) });
+  atualizarSeloDeAgentes();
+}
+
+function desenharOperacaoDoAgente(operacao) {
+  const { agente, status_alterado: alteracao, numeros, aguardando = [], conversas = [], pode_gerenciar: pode } = operacao;
+  const atendendo = agente.status === 'ativo';
+  const rotulo = atendendo ? 'Atendendo' : agente.status === 'treinamento' ? 'Em treinamento' : 'Pausado';
+  const quando = descreverMudancaDoAgente(alteracao);
+
+  pintarEstado('#agente-op-agente', rotulo, atendendo ? 'ok' : 'alerta');
+  definirTexto('#agente-op-agente-detalhe', quando || (atendendo ? 'respondendo clientes' : 'não responde clientes'));
+  definirTexto('#agente-controle-estado', `${rotulo}${quando ? ` (${quando})` : ''}.`);
+
+  seletor('#agente-controle-acoes').hidden = !pode;
+  seletor('#agente-pausar').hidden = !atendendo;
+  seletor('#agente-pausa-motivo').hidden = !atendendo;
+  seletor('#agente-retomar').hidden = atendendo;
+
+  const respondida = numeros?.por_acao?.agente_respondida;
+  const falha = numeros?.por_acao?.agente_resposta_nao_entregue;
+  const falhaMaisRecente = Boolean(falha?.ultima)
+    && (!respondida?.ultima || new Date(falha.ultima) > new Date(respondida.ultima));
+  if (falhaMaisRecente) pintarEstado('#agente-op-entrega', 'Falha na última entrega', 'ruim');
+  else if (respondida?.ultima) pintarEstado('#agente-op-entrega', 'Entregando', 'ok');
+  else pintarEstado('#agente-op-entrega', 'Sem respostas ainda', 'neutro');
+  definirTexto('#agente-op-entrega-detalhe', [
+    respondida?.ultima ? `última resposta ${haQuanto(respondida.ultima)}` : null,
+    falha?.ultima ? `última falha ${haQuanto(falha.ultima)}` : null,
+  ].filter(Boolean).join(' · ') || '—');
+
+  // A lista vem com teto de 20: "20+" em vez de fingir que são exatamente 20.
+  const esperando = aguardando.length >= 20 ? '20+' : String(aguardando.length);
+  pintarEstado('#agente-op-aguardando', esperando, aguardando.length > 0 ? 'ruim' : 'ok');
+  definirTexto('#agente-op-aguardando-detalhe', aguardando.length > 0
+    ? 'cliente(s) pediram a equipe e estão sem responsável'
+    : 'ninguém esperando a equipe');
+
+  desenharConversasDoPainelDoAgente('#agente-aguardando', aguardando, 'Ninguém aguardando a equipe.');
+  desenharConversasDoPainelDoAgente('#agente-conversas-recentes', conversas, 'Nenhuma conversa ainda.');
+  desenharNumerosDoAgente(numeros);
+}
+
+function desenharConversasDoPainelDoAgente(alvo, conversas, vazio) {
+  const lista = seletor(alvo);
+  if (!lista) return;
+  if (conversas.length === 0) {
+    lista.innerHTML = `<li class="vazio">${escapar(vazio)}</li>`;
+    return;
+  }
+  lista.innerHTML = conversas.map((conversa) => {
+    const quem = conversa.contato_nome || conversa.contato_telefone || `Conversa ${Number(conversa.id)}`;
+    const detalhe = [
+      conversa.status,
+      conversa.assumida_por_humano ? 'com a equipe' : null,
+      conversa.responsavel_nome,
+      conversa.ultima_msg_em ? haQuanto(conversa.ultima_msg_em) : 'sem mensagens',
+    ].filter(Boolean).join(' · ');
+    return `
+    <li>
+      <div>
+        <strong>${escapar(quem)}</strong>
+        <small>${escapar(detalhe)}</small>
+      </div>
+      <div class="linha-acoes">
+        <button type="button" class="secundario" data-abrir-conversa-do-agente="${Number(conversa.id)}">Abrir conversa</button>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function desenharNumerosDoAgente(numeros) {
+  const lista = seletor('#agente-numeros');
+  if (!lista) return;
+  lista.innerHTML = NUMEROS_DO_AGENTE.map(([chave, rotulo]) => {
+    const valor = chave === 'conversas_novas' ? numeros?.conversas_novas : numeros?.por_acao?.[chave];
+    return `<dt>${escapar(rotulo)}</dt><dd>${Number(valor?.hoje ?? 0)} hoje · ${Number(valor?.semana ?? 0)} em 7 dias</dd>`;
+  }).join('');
+}
+
+function desenharWhatsappDoAgente(estado) {
+  const [rotulo, tom] = ROTULO_WHATSAPP_DO_AGENTE[estado?.estado] ?? ['Estado desconhecido', 'alerta'];
+  pintarEstado('#agente-op-whatsapp', rotulo, tom);
+  definirTexto('#agente-op-whatsapp-detalhe', [
+    estado?.instancia ? `instância ${estado.instancia}` : null,
+    estado?.numero ? `+${estado.numero}` : null,
+    estado?.perfil,
+    estado?.instancia && estado?.canal_ativo === false ? 'canal desligado na aba Canais' : null,
+    estado?.erro,
+  ].filter(Boolean).join(' · ') || '—');
+  definirTexto('#agente-whatsapp-descricao', DESCRICAO_WHATSAPP_DO_AGENTE[estado?.estado] ?? 'Estado desconhecido.');
+
+  const podeConectar = Boolean(agenteAberto?.pode_gerenciar)
+    && ['desconectado', 'conectando', 'desconhecido'].includes(estado?.estado);
+  seletor('#agente-whatsapp-acoes').hidden = !podeConectar;
+  if (estado?.estado === 'conectado') {
+    seletor('#agente-whatsapp-form').hidden = true;
+    seletor('#agente-whatsapp-pareamento').hidden = true;
+  }
+}
+
+function desenharPareamentoDoAgente(resultado) {
+  const caixa = seletor('#agente-whatsapp-pareamento');
+  if (resultado.ja_conectado) {
+    caixa.hidden = true;
+    informar('O WhatsApp do agente já está conectado.');
+    carregarOperacaoDoAgente();
+    return;
+  }
+  definirTexto('#agente-whatsapp-codigo', resultado.codigo_pareamento || 'use o QR abaixo');
+  // O servidor já filtra; conferir de novo aqui custa nada e o valor vai para um img.src.
+  const qr = seletor('#agente-whatsapp-qr');
+  if (typeof resultado.qr === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(resultado.qr)) {
+    qr.src = resultado.qr;
+    qr.hidden = false;
+  } else {
+    qr.removeAttribute('src');
+    qr.hidden = true;
+  }
+  caixa.hidden = false;
+}
+
+/** Abre a conversa na tela Conversas, na fila "Todos" e sem filtro que a esconda. */
+async function abrirConversaDoAgente(conversaId) {
+  filaAtual = 'todos';
+  for (const aba of document.querySelectorAll('.aba[data-fila]')) {
+    const ativa = aba.dataset.fila === 'todos';
+    aba.classList.toggle('selecionada', ativa);
+    aba.setAttribute('aria-selected', String(ativa));
+  }
+  const filtro = seletor('#filtro-agente-conversas');
+  if (filtro) filtro.value = '';
+  abrirTela('conversas');
+  await abrirConversa(conversaId);
+}
+
+/** Selo do menu Agentes: quantos clientes de agente aguardam a equipe. */
+async function atualizarSeloDeAgentes() {
+  const selo = seletor('#contador-agentes');
+  if (!selo || !podeFazer('agentes:ler')) return;
+  try {
+    const dados = await pedirJson('/api/agentes/aguardando');
+    const total = Number(dados.total) || 0;
+    selo.textContent = String(total);
+    selo.hidden = total === 0;
+  } catch {
+    selo.hidden = true;
+  }
+}
+
+// Declarada como função (e não `let`) de propósito: é chamada quando a sessão
+// abre, e o intervalo fica guardado nela mesma, sem depender da ordem do script.
+function iniciarSeloDeAgentes() {
+  if (!podeFazer('agentes:ler')) return;
+  atualizarSeloDeAgentes();
+  if (!iniciarSeloDeAgentes.intervalo) iniciarSeloDeAgentes.intervalo = setInterval(atualizarSeloDeAgentes, 60000);
+}
+
+seletor('#agente-op-atualizar')?.addEventListener('click', () => carregarOperacaoDoAgente());
+
+for (const alvo of ['#agente-aguardando', '#agente-conversas-recentes']) {
+  seletor(alvo)?.addEventListener('click', (evento) => {
+    const botao = evento.target.closest('[data-abrir-conversa-do-agente]');
+    if (botao) abrirConversaDoAgente(Number(botao.dataset.abrirConversaDoAgente));
+  });
+}
+
+seletor('#agente-pausar')?.addEventListener('click', async () => {
+  if (!agenteAberto) return;
+  if (!window.confirm('Pausar o agente? Ele para de responder clientes até alguém retomar. As mensagens continuam sendo gravadas.')) return;
+  const botao = seletor('#agente-pausar');
+  botao.disabled = true;
+  try {
+    await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/pausar`, {
+      metodo: 'POST', corpo: { motivo: seletor('#agente-pausa-motivo').value.trim() || null },
+    });
+    seletor('#agente-pausa-motivo').value = '';
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível pausar o agente: ${mensagemDeErroDoAgente(erro)}`);
+  } finally {
+    botao.disabled = false;
+  }
+});
+
+seletor('#agente-retomar')?.addEventListener('click', async () => {
+  if (!agenteAberto) return;
+  const confirmou = window.confirm('Retomar o agente faz ele responder clientes de verdade pelo WhatsApp dele.\n\n'
+    + 'ANTES: o atendimento desse número no GPTMaker (ou em qualquer outra plataforma) está DESLIGADO? '
+    + 'Com os dois ligados, o cliente recebe resposta dupla.\n\n'
+    + 'As respostas já foram conferidas em "Testar o agente"? Confirmar?');
+  if (!confirmou) return;
+  const botao = seletor('#agente-retomar');
+  botao.disabled = true;
+  try {
+    await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/retomar`, { metodo: 'POST' });
+    await carregarAgentes();
+  } catch (erro) {
+    informar(`Não foi possível retomar o agente: ${mensagemDeErroDoAgente(erro)}`);
+  } finally {
+    botao.disabled = false;
+  }
+});
+
+seletor('#agente-whatsapp-conectar')?.addEventListener('click', () => {
+  seletor('#agente-whatsapp-form').hidden = false;
+  seletor('#agente-whatsapp-numero').focus();
+});
+
+seletor('#agente-whatsapp-cancelar')?.addEventListener('click', () => {
+  seletor('#agente-whatsapp-form').hidden = true;
+});
+
+seletor('#agente-whatsapp-form')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (!agenteAberto) return;
+  const botao = seletor('#agente-whatsapp-gerar');
+  botao.disabled = true;
+  try {
+    const numero = seletor('#agente-whatsapp-numero').value.trim();
+    const resultado = await pedirJson(`/api/agentes/${Number(agenteAberto.agente.id)}/whatsapp/conectar`, {
+      metodo: 'POST', corpo: numero ? { numero } : {},
+    });
+    desenharPareamentoDoAgente(resultado);
+    // A pessoa digita o código no celular: confere o estado de novo daqui a pouco.
+    setTimeout(() => carregarOperacaoDoAgente(), 30000);
+  } catch (erro) {
+    informar(`Não foi possível gerar o código: ${mensagemDeErroDoAgente(erro)}`);
+  } finally {
+    botao.disabled = false;
+  }
 });
 
 // ---------------------------------------------------------------------------
