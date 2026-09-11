@@ -3803,8 +3803,10 @@ function abrirEditorDeGatilho(gatilho = null) {
 // ele responde clientes de verdade.
 // ---------------------------------------------------------------------------
 
-const ROTULO_STATUS_AGENTE = { ativo: 'Ativo', treinamento: 'Em treinamento', desativado: 'Desativado' };
-const TOM_STATUS_AGENTE = { ativo: 'ok', treinamento: 'alerta', desativado: '' };
+// `desativado` é o que Pausar grava (a 046 não tem "pausado"): na tela é "Pausado",
+// o mesmo nome do Controle da automação.
+const ROTULO_STATUS_AGENTE = { ativo: 'Atendendo', treinamento: 'Em treinamento', desativado: 'Pausado' };
+const TOM_STATUS_AGENTE = { ativo: 'ok', treinamento: 'alerta', desativado: 'alerta' };
 const ROTULO_TIPO_TREINAMENTO = { texto: 'Texto', website: 'Website', documento: 'Documento', video: 'Vídeo' };
 const BOOLEANAS_DO_AGENTE = [
   'transferir_para_humano', 'resumo_ao_transferir', 'usar_emojis', 'assinar_nome',

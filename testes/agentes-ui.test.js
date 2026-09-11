@@ -167,6 +167,12 @@ test('a conversa aguardando abre na tela Conversas, sem filtro que a esconda', (
   assert.match(funcao, /abrirConversa\(conversaId\)/);
 });
 
+test('a lista e a pílula dizem Atendendo/Pausado, os mesmos nomes do Controle da automação', () => {
+  const bloco = blocoDeAgentes();
+  assert.match(bloco, /const ROTULO_STATUS_AGENTE = \{ ativo: 'Atendendo', treinamento: 'Em treinamento', desativado: 'Pausado' \};/);
+  assert.doesNotMatch(bloco, /'Desativado'/, 'a tela não mistura "Desativado" com "Pausado"');
+});
+
 test('o status saiu do formulário do perfil: ligar e desligar é só pelo Controle da automação', () => {
   assert.doesNotMatch(secaoDeAgentes(), /id="agente-status"/);
   const perfil = tratadorDe("seletor('#agente-aba-perfil')?.addEventListener('submit'");
