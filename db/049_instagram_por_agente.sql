@@ -31,8 +31,11 @@ CREATE INDEX IF NOT EXISTS instagram_regras_por_agente
 -- 2. O comentário processado registra de qual perfil veio. Sem isto, a
 --    métrica "quantos comentários" somaria loja e clínica, e a idempotência
 --    não saberia distinguir dois comentários de contas diferentes.
+-- SET NULL, e nao CASCADE: apagar o agente nao pode apagar o historico de
+-- comentarios ja processados. A marca de idempotencia vive aqui — perde-la
+-- faria comentarios antigos serem respondidos de novo se o webhook reentregar.
 ALTER TABLE instagram_comentarios_processados
-  ADD COLUMN IF NOT EXISTS agente_id bigint REFERENCES agentes(id) ON DELETE CASCADE;
+  ADD COLUMN IF NOT EXISTS agente_id bigint REFERENCES agentes(id) ON DELETE SET NULL;
 
 ALTER TABLE instagram_comentarios_processados
   ADD COLUMN IF NOT EXISTS conta_comercial_id text;

@@ -3,7 +3,7 @@
 O código já está pronto e publicado. O que falta são credenciais e um cadastro
 — coisas que só quem tem a senha da Meta pode fazer.
 
-Enquanto os passos 1 a 4 não forem feitos, **nada muda**: a clínica continua
+Enquanto os passos abaixo não forem feitos, **nada muda**: a clínica continua
 respondendo como sempre, e o perfil da loja simplesmente não é atendido.
 
 Painel da Meta: conta **majolicursos@gmail.com** (developers.facebook.com).
@@ -37,10 +37,27 @@ No painel (developers.facebook.com), no **mesmo app** onde a clínica já está:
 3. Gere o **token de acesso** dessa conta
 4. Anote também o **ID da conta comercial** (aparece na mesma tela)
 
-Se por algum motivo a loja precisar de um app separado, me avise: o código
-suporta, mas exige uma variável a mais (`INSTAGRAM_ALPINS_APP_SECRET`).
+Se a loja ficar num app separado da Meta, acrescente também
+`INSTAGRAM_ALPINS_APP_SECRET` com o segredo daquele app — o webhook aceita a
+assinatura de qualquer app configurado.
 
-## Passo 3 — guardar o token (você digita, ninguém mais vê)
+> **Confira antes de seguir:** na tela de Configurações da API, veja o ID da
+> conta comercial **da clínica** e compare com o valor de
+> `INSTAGRAM_BUSINESS_ACCOUNT_ID` que já está na Vercel. Se forem diferentes,
+> corrija a variável da clínica ANTES do passo 4 — ligar o segundo perfil com
+> esse id errado faria a clínica parar de responder. (Com um perfil só, esse id
+> nem é consultado; por isso o problema não existe hoje.)
+
+## Passo 3 — aplicar a migration 049 (ANTES de ligar as variáveis)
+
+No SQL Editor do Supabase, cole e rode o conteúdo de
+`db/049_instagram_por_agente.sql`. Depois confirme com `npm run verificar-banco`
+— ele deve dizer "Tudo aplicado".
+
+**Por que antes:** é essa migration que dá dono às regras. Sem ela, ligar o
+segundo perfil faria as regras da **clínica** dispararem nos posts da **loja**.
+
+## Passo 4 — guardar o token (você digita, ninguém mais vê)
 
 Na Vercel, em Settings → Environment Variables do projeto, crie três variáveis:
 
@@ -58,17 +75,17 @@ As mesmas três precisam ir para o `.env` do VPS
 > O token é segredo: ele fica só no painel e no servidor, nunca em tabela do
 > banco nem em arquivo do projeto.
 
-## Passo 4 — cadastrar o canal no CRM
+## Passo 5 — cadastrar o canal no CRM
 
 No CRM: **Agentes → Agente Alpins → Canais → Novo canal**
 
 - Canal: `instagram`
-- Instância: o **mesmo ID da conta comercial** do passo 2/3
+- Instância: o **mesmo ID da conta comercial** do passo 2
 
 É esse cadastro que liga o perfil ao agente. Sem ele, o comentário chega mas o
 sistema não sabe de quem é o perfil.
 
-## Passo 5 — criar as regras da loja
+## Passo 6 — criar as regras da loja
 
 **Instagram → Nova regra**, com o Agente Alpins selecionado.
 
@@ -87,7 +104,7 @@ loja.
    continua respondendo. É a verificação que prova que ligar o segundo perfil
    não atrapalhou o primeiro.
 
-Se o comentário da clínica parar de ser respondido depois do passo 3, o
+Se o comentário da clínica parar de ser respondido depois do passo 4, o
 `INSTAGRAM_BUSINESS_ACCOUNT_ID` da clínica provavelmente está diferente do id
 que a Meta manda no webhook. Solução: conferir os dois ids na tela de
 Configurações da API e corrigir a variável da clínica. (Enquanto só existe um

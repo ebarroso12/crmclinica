@@ -3923,12 +3923,34 @@ function criarRepositorio(pool) {
 
     async criarRegraDeGatilho({
       nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, criadoPor = null,
+      agenteId = null,
     }) {
-      const { rows } = await consultar(`
-        INSERT INTO instagram_regras_gatilho (nome, palavra_gatilho, mensagem_dm, mensagem_publica, cta_whatsapp, criado_por)
-        VALUES ($1, $2, $3, $4, $5, $6)
+      // Dono da regra (049). Sem a coluna, a regra nasce da clínica — que é o
+      // único perfil que existe num banco sem a migration.
+      const inserir = (comDono) => consultar(`
+        INSERT INTO instagram_regras_gatilho
+          (nome, palavra_gatilho, mensagem_dm, mensagem_publica, cta_whatsapp, criado_por${comDono ? ', agente_id' : ''})
+        VALUES ($1, $2, $3, $4, $5, $6${comDono ? ', $7' : ''})
         RETURNING *
-      `, [nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp, criadoPor]);
+      `, comDono
+        ? [nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp, criadoPor, agenteId === null ? null : Number(agenteId)]
+        : [nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp, criadoPor]);
+
+      let rows;
+      try {
+        ({ rows } = await inserir(true));
+      } catch (erro) {
+        if (erro.code !== '42703') throw erro;
+        // Recusa em vez de criar a regra com o dono errado: uma regra da loja
+        // gravada como da clínica responderia nos posts do consultório.
+        if (agenteId !== null && agenteId !== undefined) {
+          const falta = new Error('a migration 049 (instagram por agente) ainda não foi aplicada neste banco');
+          falta.codigo = 'migration_049_pendente';
+          falta.status = 503;
+          throw falta;
+        }
+        ({ rows } = await inserir(false));
+      }
 
       return { ...rows[0], id: Number(rows[0].id), ativa: rows[0].ativa === true, cta_whatsapp: rows[0].cta_whatsapp === true };
     },
@@ -3937,6 +3959,8 @@ function criarRepositorio(pool) {
       const permitidos = new Map([
         ['nome', 'nome'], ['palavra_gatilho', 'palavra_gatilho'], ['mensagem_dm', 'mensagem_dm'],
         ['mensagem_publica', 'mensagem_publica'], ['cta_whatsapp', 'cta_whatsapp'], ['ativa', 'ativa'],
+        // Trocar o dono é mover a regra de perfil (049) — a tela usa ao editar.
+        ['agente_id', 'agente_id'],
       ]);
 
       const partes = ['atualizado_em = now()'];

@@ -1048,6 +1048,16 @@
                 <input id="gatilho-palavra" type="text" maxlength="100" required>
               </div>
             </div>
+            <!-- De qual perfil é a regra (049). Só aparece quando existe mais
+                 de um perfil com canal cadastrado: com um só, perguntar
+                 confundiria quem nunca vai ter outro. -->
+            <div id="gatilho-perfil-campo" hidden>
+              <label for="gatilho-perfil">Perfil do Instagram</label>
+              <select id="gatilho-perfil">
+                <option value="">Clínica (Serena)</option>
+              </select>
+              <p class="nota">A regra só vale nos posts deste perfil.</p>
+            </div>
             <label for="gatilho-mensagem-publica">Mensagem pública (resposta ao comentário)</label>
             <textarea id="gatilho-mensagem-publica" rows="2" maxlength="500" required></textarea>
             <label for="gatilho-mensagem-dm">Mensagem de DM</label>

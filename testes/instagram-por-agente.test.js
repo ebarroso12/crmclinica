@@ -243,3 +243,77 @@ test('o filtro de auto-comentário sem perfis extras é o de antes', () => {
   assert.equal(antes.length, 0, 'o comentário da própria clínica continua sendo ignorado');
   assert.equal(depois.length, antes.length, 'passar `contas: []` não muda nada');
 });
+
+// ---------------------------------------------------------------- achados da revisão
+
+test('perfil conhecido pelo ambiente mas sem agente no CRM não é atendido', () => {
+  // Achado A1: cair para `agenteId: null` publicaria as regras da CLÍNICA no
+  // post da loja, assinadas pela loja. É a janela entre configurar as
+  // variáveis (passo 4 do guia) e cadastrar o canal (passo 5).
+  const http = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'servidor', 'http.js'), 'utf8',
+  );
+  assert.match(http, /if \(apelido && !agenteDoPerfil\) \{/,
+    'perfil sem agente tem de ser recusado, não tratado como clínica');
+  assert.match(http, /perfil_sem_agente/);
+  assert.match(http, /obterAgentePorCanal\?\.\('instagram', comentario\.conta_comercial_id, \{ incluirInativos: true \}\)/,
+    'canal desligado ainda diz de quem é o perfil');
+});
+
+test('a assinatura aceita o segredo de qualquer app configurado', () => {
+  // Achado M2: `INSTAGRAM_<X>_APP_SECRET` era lido e nunca usado — um perfil
+  // em outro app da Meta levaria 401 em todo evento.
+  const http = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'servidor', 'http.js'), 'utf8',
+  );
+  assert.match(http, /const segredos = \[segredo, \.\.\.\(configuracao\.instagram\.contas \?\? \[\]\)\.map\(\(conta\) => conta\.appSecret\)\]/);
+  assert.match(http, /\.some\(\(candidato\) => assinaturaValida\(\{/, 'basta um app assinar');
+  assert.match(http, /responderJson\(res, 401, \{ erro: 'assinatura inválida' \}\)/,
+    'e sem nenhum assinar, continua 401');
+});
+
+test('a regra pode nascer de um perfil, e o dono é conferido', async () => {
+  // Achado A3: a 049 criou a coluna e nada sabia preenchê-la — a loja ficaria
+  // muda, e cada comentário queimaria a idempotência com regra_id nulo.
+  const criadas = [];
+  const repositorio = {
+    async obterAgente(id) { return id === 7 ? { id: 7, nome: 'Agente Alpins' } : null; },
+    async criarRegraDeGatilho(dados) { criadas.push(dados); return { id: 1, ...dados }; },
+  };
+  const servico = criarServicoDeGatilhos({ repositorio });
+
+  await servico.criarRegra({
+    nome: 'Preço', palavraGatilho: 'preco', mensagemDm: 'Oi! Sobre os valores da loja...',
+    mensagemPublica: 'Respondemos no direct!', agenteId: 7,
+  });
+  assert.equal(criadas[0].agenteId, 7, 'a regra nasce do perfil escolhido');
+
+  await servico.criarRegra({
+    nome: 'Agendar', palavraGatilho: 'agendar', mensagemDm: 'Vamos agendar sua consulta?',
+    mensagemPublica: 'Te chamamos no direct!',
+  });
+  assert.equal(criadas[1].agenteId, null, 'sem perfil escolhido, a regra é da clínica');
+
+  await assert.rejects(
+    () => servico.criarRegra({
+      nome: 'Orfa', palavraGatilho: 'teste', mensagemDm: 'Uma mensagem de teste aqui.',
+      mensagemPublica: 'Outra mensagem.', agenteId: 999,
+    }),
+    (erro) => erro.codigo === 'agente_nao_encontrado',
+    'regra apontando para agente inexistente nunca dispararia: recusa antes de gravar',
+  );
+});
+
+test('a tela oferece o perfil e manda o dono junto', () => {
+  const fsLocal = require('node:fs');
+  const pathLocal = require('node:path');
+  const html = fsLocal.readFileSync(pathLocal.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const app = fsLocal.readFileSync(pathLocal.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+
+  assert.ok(html.includes('id="gatilho-perfil"'), 'o seletor de perfil precisa existir');
+  assert.ok(html.includes('id="gatilho-perfil-campo" hidden'), 'e nascer escondido: com um perfil só, não se pergunta');
+  assert.match(app, /campo\.hidden = comInstagram\.length === 0/,
+    'só aparece quando há agente com canal de Instagram');
+  assert.match(app, /agente_id: seletor\('#gatilho-perfil'\)\?\.value/,
+    'e o dono vai junto ao salvar');
+});

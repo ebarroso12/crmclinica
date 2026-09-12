@@ -772,9 +772,20 @@ function criarAplicacao(dependencias = {}) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
 
     const segredo = configuracao.instagram.appSecret;
-    if (segredo) {
+    // Perfil em OUTRO app da Meta tem segredo próprio (INSTAGRAM_<X>_APP_SECRET).
+    // Aceitar qualquer um dos segredos configurados é o mesmo que confiar em
+    // mais de um emissor: cada um é um app nosso, e a mensagem só passa se
+    // ALGUM deles assinar. Sem isto, o segundo app levaria 401 em todo evento
+    // e a Meta acabaria desativando a inscrição.
+    const segredos = [segredo, ...(configuracao.instagram.contas ?? []).map((conta) => conta.appSecret)]
+      .filter(Boolean);
+
+    if (segredos.length > 0) {
       const recebida = req.headers['x-hub-signature-256'];
-      if (!assinaturaValida({ corpoBruto, assinaturaRecebida: recebida, segredo })) {
+      const alguemAssinou = segredos.some((candidato) => assinaturaValida({
+        corpoBruto, assinaturaRecebida: recebida, segredo: candidato,
+      }));
+      if (!alguemAssinou) {
         responderJson(res, 401, { erro: 'assinatura inválida' });
         return;
       }
@@ -805,9 +816,24 @@ function criarAplicacao(dependencias = {}) {
           // agente dono; sem apelido, é o perfil da clínica. Responder pelo
           // cliente errado publicaria a resposta da clínica no post da loja.
           const apelido = roteadorDeInstagram.apelidoDaConta(comentario.conta_comercial_id);
+          // `incluirInativos`: o canal desligado ainda diz de QUEM é o perfil.
+          // Sem isto, um canal inativo faria o comentário da loja ser tratado
+          // como da clínica — mesmo cuidado de fluxo.js, que usa true para não
+          // "responder pelo número da clínica".
           const agenteDoPerfil = apelido
-            ? await repositorio.obterAgentePorCanal?.('instagram', comentario.conta_comercial_id)
+            ? await repositorio.obterAgentePorCanal?.('instagram', comentario.conta_comercial_id, { incluirInativos: true })
             : null;
+
+          // Perfil que o ambiente conhece (tem token) mas que ninguém ligou a
+          // um agente no CRM. Cair para `agenteId: null` aqui publicaria as
+          // regras da CLÍNICA no post da loja, assinadas pela loja — é a
+          // janela entre configurar as variáveis e cadastrar o canal.
+          if (apelido && !agenteDoPerfil) {
+            console.error("[instagram] perfil sem agente cadastrado: " + comentario.conta_comercial_id
+              + " (Agentes > canal instagram). Comentario nao respondido.");
+            resultados.push({ erro: 'perfil_sem_agente', conta: comentario.conta_comercial_id });
+            continue;
+          }
 
           // Com um perfil só, `entry[].id` é ignorado e tudo segue pelo
           // cliente da clínica — exatamente como antes desta mudança. O

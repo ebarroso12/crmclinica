@@ -112,13 +112,18 @@ function criarServicoDeGatilhos({
 
   async function criarRegra({
     nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, usuarioId = null,
+    agenteId = null,
   }) {
     const validada = validarRegraDeGatilho({
       nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp,
     });
 
+    // Dono da regra (049): null = clínica. Um id que não existe viraria regra
+    // órfã, que nunca dispara em perfil nenhum — recusa antes de gravar.
+    const dono = await donoValido(agenteId);
+
     try {
-      return await repositorio.criarRegraDeGatilho({ ...validada, criadoPor: usuarioId });
+      return await repositorio.criarRegraDeGatilho({ ...validada, criadoPor: usuarioId, agenteId: dono });
     } catch (erro) {
       // Nome repetido é conflito, não erro interno — `nome` é UNIQUE
       // (db/045_instagram_gatilhos.sql).
@@ -149,6 +154,24 @@ function criarServicoDeGatilhos({
       }
       throw erro;
     }
+  }
+
+  /**
+   * O agente existe? (049)
+   *
+   * `null`/ausente = clínica, que é sempre válido. Qualquer outro valor é
+   * conferido: regra apontando para agente que não existe não dispararia em
+   * lugar nenhum, e o erro só apareceria como "a loja não responde".
+   */
+  async function donoValido(agenteId) {
+    if (agenteId === null || agenteId === undefined || agenteId === '') return null;
+    const numero = Number(agenteId);
+    if (!Number.isInteger(numero) || numero <= 0) {
+      throw new ErroDoInstagram('agente inválido para a regra', 'agente_invalido');
+    }
+    const agente = await repositorio.obterAgente?.(numero);
+    if (!agente) throw new ErroDoInstagram('agente não encontrado', 'agente_nao_encontrado', 404);
+    return numero;
   }
 
   /** Liga ou desliga uma regra — ação separada da edição (mesmo raciocínio de `serena.definirRegraAtiva`). */
