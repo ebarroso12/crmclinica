@@ -131,3 +131,19 @@ test('as listas em cartão de Auditoria e Bloqueios continuam com estilo', () =>
   assert.match(MARCACAO, /<ul class="lista-cartoes" id="lista-bloqueios">/);
   assert.match(CSS, /\.lista-versoes, \.lista-regras, \.lista-cartoes \{/);
 });
+
+test('no telefone a tabela vira cartão, e cada valor leva o rótulo da coluna', () => {
+  // Cinco colunas em 390px não cabem: o nome quebra no meio da palavra e as
+  // últimas colunas ficam fora da tela, atrás de uma rolagem lateral que
+  // ninguém vê. Com o cabeçalho escondido, o rótulo precisa vir da célula.
+  const inicio = APP_JS.indexOf('async function carregarContatos(');
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\nfunction ', inicio + 1));
+
+  for (const rotulo of ['Telefone', 'Conversas', 'Agendamentos']) {
+    assert.ok(funcao.includes(`data-rotulo="${rotulo}"`), `a célula de ${rotulo} precisa do data-rotulo`);
+  }
+
+  const estreito = CSS.slice(CSS.indexOf('@media (max-width: 720px) {', CSS.indexOf('.tabela-dados tr.desligada')));
+  assert.match(estreito, /\.tabela-dados td::before \{[\s\S]{0,120}content: attr\(data-rotulo\)/);
+  assert.match(estreito, /\.tabela-rolagem \{ overflow-x: visible; \}/);
+});

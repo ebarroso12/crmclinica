@@ -5959,9 +5959,9 @@ async function carregarContatos() {
           ${contato.recebe_lembretes === false ? '<small>não recebe lembretes</small>' : ''}
           ${contato.excluido ? `<small>excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}</small>` : ''}
         </td>
-        <td class="telefone">${escapar(contato.telefone)}</td>
-        <td class="numero">${contato.conversas ?? 0}</td>
-        ${contato.agendamentos !== undefined ? `<td class="numero" data-agendamentos>${Number(contato.agendamentos) || 0}</td>` : ''}
+        <td class="telefone" data-rotulo="Telefone">${escapar(contato.telefone)}</td>
+        <td class="numero" data-rotulo="Conversas">${contato.conversas ?? 0}</td>
+        ${contato.agendamentos !== undefined ? `<td class="numero" data-rotulo="Agendamentos" data-agendamentos>${Number(contato.agendamentos) || 0}</td>` : ''}
         <td class="celula-acoes">
           ${contato.excluido
             ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`

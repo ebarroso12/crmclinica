@@ -1682,6 +1682,67 @@ button.perigo:hover { background: #fecaca; }
 /* Contato excluído continua visível — sai da operação, não da tela. */
 .tabela-dados tr.desligada { opacity: 0.55; }
 
+/* No telefone a tabela deixa de ser tabela.
+
+   Cinco colunas em 390px nao cabem: o nome quebra no meio da palavra e as
+   ultimas colunas (agendamentos, acoes) ficam fora da tela, atras de uma
+   rolagem lateral que ninguem ve. Cada linha vira um cartao, e cada valor
+   passa a dizer o que e — o rotulo vem do `data-rotulo` da celula, ja que o
+   cabecalho some. */
+@media (max-width: 720px) {
+  .tabela-rolagem { overflow-x: visible; }
+  .tabela-dados thead {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .tabela-dados, .tabela-dados tbody, .tabela-dados tr, .tabela-dados td { display: block; }
+  .tabela-dados tr {
+    border: 1px solid var(--linha);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .tabela-dados td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 14px;
+    padding: 3px 0;
+    border-bottom: 0;
+  }
+  .tabela-dados td::before {
+    content: attr(data-rotulo);
+    color: var(--apoio);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  /* O nome ocupa a linha toda, como titulo do cartao: nao tem rotulo porque
+     nao precisa de um. */
+  .tabela-dados td:first-child { display: block; margin-bottom: 6px; }
+  .tabela-dados td:first-child::before { content: none; }
+  .tabela-dados .numero, .tabela-dados .telefone { text-align: right; }
+  .tabela-dados .celula-acoes {
+    width: auto;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--linha);
+  }
+  .tabela-dados .celula-acoes::before { content: none; }
+  .tabela-dados .celula-acoes button { margin: 0; }
+  .tabela-dados .vazio { padding: 14px 0; }
+  /* Quebra dentro da palavra so quando a palavra nao cabe mesmo. */
+  .tabela-dados strong { overflow-wrap: break-word; }
+}
+
 /* Barra de filtros: a busca fica com a sobra, porque é ela que se usa. */
 .filtros { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .filtros input[type="search"] { flex: 1 1 220px; min-width: 180px; }
