@@ -2004,3 +2004,30 @@ button.perigo:hover { background: #fecaca; }
   .secoes .secao[aria-current="page"] { outline: 2px solid; outline-offset: -2px; }
   .secoes .luz { border: 1px solid; }
 }
+
+/* ---------- Gráficos das Métricas (12/09/2026) ----------
+
+   SVG à mão: a CSP do projeto não deixa entrar biblioteca de fora, e três
+   formas não justificariam uma dependência. */
+
+.grafico { width: 100%; height: auto; display: block; margin: 6px 0 2px; }
+.grafico .grade { stroke: var(--linha); stroke-width: 1; }
+.grafico .eixo { fill: var(--apoio); font-size: 10.5px; font-family: inherit; }
+.grafico .area { fill: rgba(14, 143, 161, 0.12); stroke: none; }
+.grafico .linha { fill: none; stroke: var(--ciano, #0e8fa1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+/* O último ponto é onde o olho procura "como estamos agora". */
+.grafico .ponto { fill: var(--ciano, #0e8fa1); stroke: var(--superficie); stroke-width: 2; }
+
+/* Funil: a queda de uma etapa para a outra é a informação; por isso cada
+   faixa carrega quantos por cento passaram da anterior. */
+.funil { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 12px; counter-reset: etapa; }
+.funil-topo { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
+.funil-topo b { font-variant-numeric: tabular-nums; font-size: 15px; }
+.funil-trilho { height: 22px; background: #eef2f7; border-radius: 6px; overflow: hidden; }
+.funil-barra { height: 100%; background: linear-gradient(90deg, #0e8fa1, #1aa7bb); border-radius: 6px; }
+.funil-queda { display: block; margin-top: 4px; color: var(--apoio); font-size: 11.5px; }
+
+@media (forced-colors: active) {
+  .grafico .linha, .grafico .ponto { forced-color-adjust: none; }
+  .funil-barra { border: 1px solid; }
+}

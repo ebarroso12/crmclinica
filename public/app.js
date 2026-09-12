@@ -1271,10 +1271,12 @@ async function carregarMetricas() {
     const esquerda = seletor('#painel-leads-conversas');
     esquerda.innerHTML = '';
     esquerda.append(
+      // Primeiro a tendência: "está crescendo?" vem antes de "de onde vem?".
+      blocoDeMetricas('Leads por dia', graficoDeLinha(resumo.leads.por_dia, { rotuloValor: 'total' })),
       blocoDeMetricas('Leads por origem', tabelaDeBarras(resumo.leads.por_origem, {
         rotulo: 'origem', valor: 'total', denominador: 'denominador',
       })),
-      blocoDeMetricas('Funil (fotografia de agora)', tabelaDeBarras(resumo.leads.funil_fotografia, {
+      blocoDeMetricas('Funil (fotografia de agora)', graficoDeFunil(resumo.leads.funil_fotografia, {
         rotulo: 'estagio', valor: 'total',
       })),
       blocoDeMetricas('Motivos de perda', resumo.leads.motivos_perda.length
@@ -4364,6 +4366,144 @@ async function carregarInstagram() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Gráficos (12/09/2026) — SVG à mão, porque a CSP do projeto não deixa entrar
+// biblioteca de fora e três formas não justificam uma dependência.
+
+/** Um nó SVG com atributos, sem innerHTML — a CSP não aceita HTML solto. */
+function svgEl(nome, atributos = {}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', nome);
+  for (const [chave, valor] of Object.entries(atributos)) {
+    if (valor !== null && valor !== undefined) el.setAttribute(chave, String(valor));
+  }
+  return el;
+}
+
+/**
+ * Linha do tempo: um ponto por dia.
+ *
+ * Área preenchida sob a linha porque o que importa aqui é volume, não valor
+ * exato — e o último ponto ganha um círculo, que é onde o olho procura "como
+ * estamos agora".
+ */
+function graficoDeLinha(pontos, { rotuloValor = 'total' } = {}) {
+  const dados = (pontos ?? []).filter((ponto) => ponto && ponto.dia);
+  if (dados.length === 0) {
+    const vazio = document.createElement('p');
+    vazio.className = 'vazio';
+    vazio.textContent = 'Sem dados no período.';
+    return vazio;
+  }
+
+  const L = 560;
+  const A = 160;
+  const margem = { cima: 14, baixo: 26, lado: 34 };
+  const maximo = Math.max(...dados.map((d) => Number(d[rotuloValor]) || 0), 1);
+  const largura = L - margem.lado * 2;
+  const altura = A - margem.cima - margem.baixo;
+
+  const x = (i) => margem.lado + (dados.length === 1 ? largura / 2 : (i * largura) / (dados.length - 1));
+  const y = (v) => margem.cima + altura - ((Number(v) || 0) / maximo) * altura;
+
+  const svg = svgEl('svg', {
+    viewBox: `0 0 ${L} ${A}`, class: 'grafico', role: 'img',
+    'aria-label': `Evolução por dia. Maior valor: ${maximo}.`,
+  });
+
+  // Três linhas de grade: o suficiente para estimar altura sem virar papel
+  // quadriculado.
+  for (const fracao of [0, 0.5, 1]) {
+    const linhaY = margem.cima + altura * fracao;
+    svg.append(svgEl('line', {
+      x1: margem.lado, x2: L - margem.lado, y1: linhaY, y2: linhaY, class: 'grade',
+    }));
+    const marca = svgEl('text', { x: margem.lado - 8, y: linhaY + 4, class: 'eixo', 'text-anchor': 'end' });
+    marca.textContent = String(Math.round(maximo * (1 - fracao)));
+    svg.append(marca);
+  }
+
+  const caminho = dados.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(d[rotuloValor]).toFixed(1)}`).join(' ');
+  svg.append(svgEl('path', {
+    d: `${caminho} L ${x(dados.length - 1).toFixed(1)} ${margem.cima + altura} L ${x(0).toFixed(1)} ${margem.cima + altura} Z`,
+    class: 'area',
+  }));
+  svg.append(svgEl('path', { d: caminho, class: 'linha' }));
+
+  const ultimo = dados.length - 1;
+  svg.append(svgEl('circle', { cx: x(ultimo), cy: y(dados[ultimo][rotuloValor]), r: 4, class: 'ponto' }));
+
+  // Só primeiro e último rótulo: com 30 dias, todos viram borrão.
+  for (const i of [...new Set([0, ultimo])]) {
+    const texto = svgEl('text', {
+      x: x(i), y: A - 8, class: 'eixo',
+      'text-anchor': i === 0 ? 'start' : 'end',
+    });
+    texto.textContent = String(dados[i].dia).slice(5).split('-').reverse().join('/');
+    svg.append(texto);
+  }
+
+  return svg;
+}
+
+/**
+ * Funil: cada etapa como uma faixa, com a queda para a seguinte.
+ *
+ * Barras lado a lado tratam as etapas como categorias independentes. O funil
+ * mostra o que se quer saber: quantos sobraram de uma etapa para a outra.
+ */
+function graficoDeFunil(etapas, { rotulo = 'estagio', valor = 'total' } = {}) {
+  const dados = (etapas ?? []).filter(Boolean);
+  if (dados.length === 0) {
+    const vazio = document.createElement('p');
+    vazio.className = 'vazio';
+    vazio.textContent = 'Sem leads no funil.';
+    return vazio;
+  }
+
+  const topo = Math.max(...dados.map((d) => Number(d[valor]) || 0), 1);
+  const lista = document.createElement('ol');
+  lista.className = 'funil';
+
+  dados.forEach((etapa, i) => {
+    const total = Number(etapa[valor]) || 0;
+    const fatia = Math.max((total / topo) * 100, total > 0 ? 6 : 2);
+
+    const item = document.createElement('li');
+
+    const cabecalho = document.createElement('div');
+    cabecalho.className = 'funil-topo';
+    const nome = document.createElement('span');
+    nome.textContent = String(etapa[rotulo] ?? '—');
+    const numero = document.createElement('b');
+    numero.textContent = String(total);
+    cabecalho.append(nome, numero);
+
+    const trilho = document.createElement('div');
+    trilho.className = 'funil-trilho';
+    const barra = document.createElement('div');
+    barra.className = 'funil-barra';
+    barra.style.width = `${fatia.toFixed(1)}%`;
+    trilho.append(barra);
+
+    item.append(cabecalho, trilho);
+
+    // A queda para a etapa seguinte é a informação que o funil existe para dar.
+    const anterior = i > 0 ? Number(dados[i - 1][valor]) || 0 : null;
+    if (anterior !== null && anterior > 0) {
+      const queda = document.createElement('small');
+      queda.className = 'funil-queda';
+      const passou = Math.round((total / anterior) * 100);
+      queda.textContent = `${passou}% de quem estava em "${dados[i - 1][rotulo]}"`;
+      item.append(queda);
+    }
+
+    lista.append(item);
+  });
+
+  return lista;
+}
+
 function desenharMetricasInstagram(metricas) {
   definirTexto('#ig-metrica-total', metricas ? String(metricas.total_comentarios) : '—');
   definirTexto('#ig-metrica-com-gatilho', metricas ? String(metricas.com_gatilho) : '—');
@@ -4639,6 +4779,7 @@ async function abrirAgente(id) {
       zerarWhatsappDoAgente();
     }
     destacarAgenteNoMenu(dados.agente.id);
+    desenharLuzesDoAgente(dados);
     preencherEditorDeAgente();
     carregarEquipeDoAgente();
     const editor = seletor('#agente-editor');
@@ -4651,11 +4792,58 @@ async function abrirAgente(id) {
   }
 }
 
+/**
+ * O ponto de estado de cada aba do agente.
+ *
+ * Mesma leitura da tela da Serena: verde no ar, vermelho parado, cinza quando
+ * não há o que ligar. Aqui "parado" quase sempre quer dizer "falta
+ * configurar" — é o que a pessoa precisa ver antes de ligar um agente.
+ */
+function desenharLuzesDoAgente(dados = {}) {
+  const agente = dados.agente ?? {};
+  const canais = dados.canais ?? agente.canais ?? [];
+  const treinamentos = dados.treinamentos ?? [];
+  const equipe = dados.equipe ?? [];
+
+  const estado = {
+    // Ferramenta: não tem liga/desliga.
+    teste: 'neutro',
+    horario: agente.horario?.ativa ? 'ok' : 'neutro',
+    // O comportamento publicado é o que o agente diz ao paciente: sem ele, o
+    // agente não tem identidade e não deveria atender.
+    perfil: agente.comportamento_publicado || agente.prompt ? 'ok' : 'parado',
+    treinamentos: treinamentos.length > 0 ? 'ok' : 'neutro',
+    trabalho: 'neutro',
+    configuracoes: 'neutro',
+    inatividade: agente.inatividade?.ativa ? 'ok' : 'neutro',
+    // Sem canal o agente não recebe nem responde nada.
+    canais: canais.length > 0 ? 'ok' : 'parado',
+    // Sem equipe, ninguém recebe o resumo nem vê as conversas dele.
+    equipe: equipe.length > 0 ? 'ok' : 'parado',
+  };
+
+  for (const [nome, valor] of Object.entries(estado)) {
+    const luz = seletor(`[data-luz-agente="${nome}"]`);
+    if (!luz) continue;
+    luz.dataset.estado = valor;
+    const aba = luz.closest('[data-aba-agente]');
+    if (aba) {
+      const rotulo = (aba.textContent || '').trim();
+      const legenda = valor === 'ok' ? 'configurado' : valor === 'parado' ? 'falta configurar' : '';
+      aba.title = legenda ? `${rotulo}: ${legenda}` : rotulo;
+    }
+  }
+}
+
 function selecionarAbaDoAgente(nome) {
   for (const aba of document.querySelectorAll('[data-aba-agente]')) {
     const ativa = aba.dataset.abaAgente === nome;
     aba.classList.toggle('selecionada', ativa);
     aba.setAttribute('aria-selected', String(ativa));
+    // `aria-current` é o que o estilo das seções usa para pintar o item
+    // aberto — o mesmo desenho da tela da Serena.
+    if (ativa) aba.setAttribute('aria-current', 'page');
+    else aba.removeAttribute('aria-current');
   }
   for (const painel of document.querySelectorAll('[data-painel-agente]')) {
     painel.hidden = painel.dataset.painelAgente !== nome;
