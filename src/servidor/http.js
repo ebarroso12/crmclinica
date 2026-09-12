@@ -98,6 +98,9 @@ const ARQUIVOS_PUBLICOS = new Map([
   ['/apple-touch-icon.png', ['apple-touch-icon.png', 'image/png']],
   ['/icone-512.png', ['icone-512.png', 'image/png']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
+  // Da raiz, e não de uma subpasta: o escopo de um service worker é o diretório
+  // de onde ele é servido, e o CRM inteiro precisa estar dentro dele.
+  ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
 ]);
 
 const CABECALHOS_SEGURANCA = Object.freeze({
