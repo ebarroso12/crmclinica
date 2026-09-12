@@ -295,12 +295,12 @@ nav button[aria-current="page"] {
 /* Ponto âmbar só quando o agente NÃO está atendendo: no menu, cor é aviso. */
 .aviso-menu {
   margin-left: auto;
-  color: #b57d0a;
+  color: #8a5d00;
   font-size: 15px;
   line-height: 1;
 }
 .divisor {
-  color: #8f9bb1;
+  color: var(--apoio);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -317,7 +317,7 @@ nav button[aria-current="page"] {
   margin: 0;
   padding: 9px 10px;
   width: 100%;
-  border: 1px solid #e6bcc3;
+  border: 1px solid #d99aa5;
   border-radius: 8px;
   background: #fff5f6;
   color: #a3182b;
@@ -356,7 +356,7 @@ nav button[aria-current="page"] {
 
 .rodape-lateral {
   margin: 0;
-  color: #97a2b5;
+  color: var(--apoio);
   font-size: 10.5px;
   padding: 8px 6px 0;
   border-top: 1px solid var(--linha);
@@ -931,9 +931,9 @@ nav button[aria-current="page"] {
 /* ---------- Telas estreitas ---------- */
 
 @media (max-width: 980px) {
-  /* Em uma coluna a lateral caia na linha elastica (1fr) da grade e esticava
-     ~54px alem do conteudo, empurrando a tela para baixo. Aqui a linha
-     elastica passa a ser a do conteudo, que e quem deve crescer. */
+  /* Em uma coluna a lateral caía na linha elástica (1fr) da grade e esticava
+     ~54px além do conteúdo, empurrando a tela para baixo. Aqui a linha
+     elástica passa a ser a do conteúdo, que é quem deve crescer. */
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; }
   /* A lateral vira um cabeçalho de duas linhas: marca e controles da Serena em
      cima, menu rolando embaixo. Sem isto os dois botões ocupavam a largura
@@ -944,22 +944,23 @@ nav button[aria-current="page"] {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
-    /* Sem isto as tres linhas (marca, controles, menu) se espalhavam para
+    /* Sem isto as três linhas (marca, controles, menu) se espalhavam para
        preencher a altura que a lateral herda da grade, abrindo ~38px de vazio
-       entre elas e empurrando o conteudo para baixo da dobra no telefone. */
+       entre elas e empurrando o conteúdo para baixo da dobra no telefone. */
     align-content: flex-start;
     gap: 6px 8px;
     padding: 8px 10px;
   }
   .rodape-lateral, .marca small, .divisor { display: none; }
   .marca { margin: 0; padding: 0; flex: 0 0 auto; }
+  .banner-atualizar { order: 4; flex: 1 1 100%; width: auto; margin: 0; }
   .liberar-em-massa { order: 2; width: auto; margin-left: auto; padding: 6px 9px; }
   .parada-emergencia { order: 2; width: auto; padding: 6px 9px; }
-  .liberar-em-massa + .parada-emergencia { margin-left: 0; }
+  .liberar-em-massa:not([hidden]) + .parada-emergencia { margin-left: 0; }
   /* O menu vira uma faixa que rola dentro de si mesma, sem empurrar a página.
-     Os tres grupos (principal, AGENTES, CONTROLE) entram na MESMA faixa: um ul
-     por linha custava duas linhas de altura antes do conteudo no telefone. */
-  .lateral nav { order: 3; flex: 1 1 100%; margin-bottom: 0; overflow-x: auto; display: flex; gap: 4px; }
+     Os três grupos (principal, AGENTES, CONTROLE) entram na MESMA faixa: um ul
+     por linha custava duas linhas de altura antes do conteúdo no telefone. */
+  .lateral nav { order: 3; flex: 1 1 100%; margin-bottom: 0; overflow-x: auto; display: flex; gap: 18px; padding: 5px 0; }
   nav ul { grid-auto-flow: column; grid-auto-columns: max-content; gap: 4px; }
   nav button { white-space: nowrap; }
   nav button[aria-current="page"] { box-shadow: inset 0 -3px 0 var(--ciano); }
@@ -975,7 +976,14 @@ nav button[aria-current="page"] {
 @media (max-width: 560px) {
   /* O rótulo (ORQUESTRADOR, INBOX…) repete o nome ao lado: em tela estreita
      ele só fazia a faixa virar três linhas. Fica o nome, o ponto e o estado. */
-  .plantao small { display: none; }
+  .plantao small {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
   .plantao { gap: 2px 12px; padding: 7px 12px; }
   .plantao strong { font-size: 11.5px; }
   /* Marca em uma linha, os dois controles da Serena dividindo a seguinte:
@@ -1498,6 +1506,7 @@ button.perigo:hover { background: #fecaca; }
 .lista-versoes li.publicada { border-color: #99f6e4; background: #f0fdfa; }
 
 /* Regra ou contato desligado continua visível — some da operação, não da tela. */
+.lista-regras strong { overflow-wrap: anywhere; }
 .lista-regras li.desligada, .lista-contatos li.desligada { opacity: 0.55; }
 
 .form-regra, #form-prompt, #form-contato { display: block; margin-bottom: 14px; }
@@ -1887,3 +1896,10 @@ button.perigo:hover { background: #fecaca; }
 .sino-item:last-child { border-bottom: none; }
 .sino-item b { display: block; }
 .sino-item small { color: #64748b; }
+
+/* Alto contraste do Windows: fundo e box-shadow são descartados por forced-colors,
+   e o item aberto ficava marcado só pelo negrito, que os títulos de grupo também
+   usam. O outline sobrevive e volta a dizer onde a pessoa está. */
+@media (forced-colors: active) {
+  nav button[aria-current="page"] { outline: 2px solid; outline-offset: -2px; }
+}

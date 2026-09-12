@@ -145,7 +145,7 @@ test('o painel de operação recarrega ao abrir o agente e o selo do menu conta 
   const bloco = blocoDeAgentes();
   const abrir = bloco.slice(bloco.indexOf('async function abrirAgente('), bloco.indexOf('function selecionarAbaDoAgente('));
   assert.match(abrir, /carregarOperacaoDoAgente\(\)/);
-  assert.match(HTML, /data-tela="agentes">[^<]*<span[^>]*>◈<\/span> Todos os agentes <b class="contador" id="contador-agentes"[^>]*hidden>/);
+  assert.match(HTML, /data-tela="agentes">[^<]*<span[^>]*>☰<\/span> Todos os agentes <b class="contador" id="contador-agentes"[^>]*hidden>/);
   assert.match(APP_JS, /iniciarSeloDeAgentes\(\);/, 'o selo começa junto com a aplicação');
   assert.match(bloco, /pedirJson\('\/api\/agentes\/aguardando'\)/);
 });
@@ -355,4 +355,89 @@ test('o teste de agente não reaproveita os rótulos dos botões órfãos removi
   for (const rotulo of ['Nova tarefa', 'Nova conversa', 'Novo lead']) {
     assert.ok(!bloco.includes(rotulo), `"${rotulo}" não pode aparecer no bloco de agentes`);
   }
+});
+
+// ------------------------------------------- grupo AGENTES do menu (Serena + agentes)
+
+test('o menu tem um grupo AGENTES com a Serena e o ponto de ancoragem dos agentes', () => {
+  assert.match(HTML, /<p class="divisor" id="grupo-agentes">AGENTES<\/p>/);
+  assert.match(HTML, /<ul aria-labelledby="grupo-agentes" id="menu-agentes">/);
+  const grupo = HTML.match(/<ul aria-labelledby="grupo-agentes" id="menu-agentes">[\s\S]*?<\/ul>/)?.[0];
+  assert.ok(grupo, 'o grupo AGENTES precisa existir');
+  assert.match(grupo, /data-tela="serena"/, 'a Serena mora no grupo dos agentes');
+  assert.match(grupo, /id="item-agentes"/, 'e o item da lista é a âncora dos itens por agente');
+  assert.doesNotMatch(
+    HTML.match(/<ul aria-labelledby="grupo-controle">[\s\S]*?<\/ul>/)?.[0] ?? '',
+    /data-tela="serena"|id="item-agentes"/,
+    'nada de agente sobrou no grupo CONTROLE',
+  );
+});
+
+test('desenharMenuDeAgentes recria os itens sem duplicar e sem HTML de texto do banco', () => {
+  const funcao = funcaoDoApp('desenharMenuDeAgentes');
+  assert.match(funcao, /querySelectorAll\('\[data-agente-menu\]'\)\) antigo\.remove\(\)/,
+    'os itens antigos saem antes de inserir os novos — agente apagado não fica no menu');
+  assert.match(funcao, /grupo\.insertBefore\(item, ancora\)/, 'os itens entram antes de "Todos os agentes"');
+  assert.match(funcao, /botao\.append\(icone, /, 'o nome vai como nó de texto (append), nunca como innerHTML');
+  assert.doesNotMatch(funcao, /innerHTML/, 'nada de innerHTML com dado de agente no menu');
+  assert.match(funcao, /botao\.title = nome/, 'o nome inteiro fica no title: o visível é truncado em 24');
+  assert.match(funcao, /nome\.length > 24/, 'nome longo não pode transbordar a lateral de 232px');
+});
+
+test('o ponto âmbar do menu só aparece quando o agente não está atendendo, e o estado vai em texto junto', () => {
+  const funcao = funcaoDoApp('desenharMenuDeAgentes');
+  assert.match(funcao, /if \(agente\.status !== 'ativo'\) \{/);
+  assert.match(funcao, /aviso\.className = 'aviso-menu'/);
+  assert.match(funcao, /aviso\.setAttribute\('aria-hidden', 'true'\)/, 'o ponto é decoração');
+  assert.match(funcao, /estado\.className = 'oculto-visual'/);
+  assert.match(funcao, /ROTULO_STATUS_AGENTE\[agente\.status\]/,
+    'quem diz "Pausado" é o texto, não a cor: title não é lido por leitor de tela nem por teclado');
+});
+
+test('item de agente nasce escondido para quem não vê a clínica', () => {
+  assert.match(
+    funcaoDoApp('desenharMenuDeAgentes'),
+    /if \(escopoAtual && !veClinica\(\)\) item\.hidden = true;/,
+    'escopo já lido e sem clínica: o item não pode nascer visível',
+  );
+});
+
+test('só o agente aberto fica marcado no menu — abrirTela não acende todos de uma vez', () => {
+  const abrirTela = funcaoDoApp('abrirTela');
+  assert.match(abrirTela, /botao\.dataset\.tela === tela && !botao\.dataset\.abrirAgenteMenu/,
+    'os itens por agente ficam de fora do destaque genérico da tela');
+  const destacar = funcaoDoApp('destacarAgenteNoMenu');
+  assert.match(destacar, /botao\.dataset\.abrirAgenteMenu === alvo/);
+  assert.match(destacar, /removeAttribute\('aria-current'\)/);
+  assert.match(funcaoDoApp('abrirAgente'), /destacarAgenteNoMenu\(dados\.agente\.id\)/);
+});
+
+test('clicar no agente pelo menu não deixa o agente anterior em voo', () => {
+  const delegado = APP_JS.match(/seletor\('#menu-agentes'\)\?\.addEventListener\([\s\S]*?\}\);/)?.[0];
+  assert.ok(delegado, 'o clique do menu é delegado, porque os itens nascem depois da página');
+  const zera = delegado.indexOf('agenteAberto = null;');
+  const abre = delegado.indexOf("abrirTela('agentes')");
+  assert.ok(zera >= 0 && abre > zera,
+    'zera antes de abrir a tela: senão carregarAgentes reabre o agente anterior e a tela troca sozinha');
+  assert.match(delegado, /abrirAgente\(botao\.dataset\.abrirAgenteMenu\)/);
+});
+
+test('a lista da tela Agentes começa pela Serena, com o mesmo estado do botão de parada', () => {
+  const lista = funcaoDoApp('desenharListaDeAgentes');
+  assert.match(lista, /linhaDaSerena\(\)/, 'a Serena entra na lista junto com os demais agentes');
+  assert.match(lista, /desenharMenuDeAgentes\(agentes\)/, 'a mesma carga alimenta o menu');
+  const linha = funcaoDoApp('linhaDaSerena');
+  assert.match(linha, /data-abrir-serena="1"/, '"Abrir" leva para a tela da Serena');
+  assert.match(linha, /data-pilula-serena/);
+  assert.match(APP_JS, /if \(evento\.target\.closest\('\[data-abrir-serena\]'\)\) \{\s*abrirTela\('serena'\);/);
+  assert.match(funcaoDoApp('desenharParadaDeEmergencia'), /serenaNoAr = ativa;\s*desenharEstadoDaSerenaNaLista\(\);/,
+    'parar ou religar a Serena atualiza a linha da lista');
+  const estado = funcaoDoApp('desenharEstadoDaSerenaNaLista');
+  assert.match(estado, /pilula\.hidden = false;/, 'a pílula existe desde o começo e só aparece quando o estado é conhecido');
+  assert.doesNotMatch(linha, /desligada/,
+    'Serena parada não pode ser a linha mais apagada da tela: é o estado que mais precisa ser visto');
+});
+
+test('o menu nasce com os agentes: carregarAgentes roda na abertura da sessão, só com permissão', () => {
+  assert.match(APP_JS, /if \(podeFazer\('agentes:ler'\)\) carregarAgentes\(\);/);
 });

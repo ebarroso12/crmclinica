@@ -28,7 +28,7 @@ function abrirTela(tela) {
     secao.hidden = secao.id !== tela;
   }
   for (const botao of document.querySelectorAll('nav button[data-tela]')) {
-    const ativo = botao.dataset.tela === tela;
+    const ativo = botao.dataset.tela === tela && !botao.dataset.abrirAgenteMenu;
     if (ativo) botao.setAttribute('aria-current', 'page');
     else botao.removeAttribute('aria-current');
   }
@@ -4251,11 +4251,10 @@ async function carregarAgentes() {
 /** Linha da Serena na lista: ela não está na tabela `agentes` (é o motor da
  *  clínica), mas quem opera precisa ver os dois no mesmo lugar. */
 function linhaDaSerena() {
-  const pilula = serenaNoAr === null
-    ? ''
-    : ` <span class="pilula pequena" data-pilula-serena data-tom="${serenaNoAr ? 'ok' : 'alerta'}">${serenaNoAr ? 'Atendendo' : 'Parada'}</span>`;
+  const desconhecido = serenaNoAr === null;
+  const pilula = ` <span class="pilula pequena" data-pilula-serena data-tom="${serenaNoAr ? 'ok' : 'alerta'}"${desconhecido ? ' hidden' : ''}>${serenaNoAr ? 'Atendendo' : 'Parada'}</span>`;
   return `
-    <li class="${serenaNoAr === false ? 'desligada' : ''}">
+    <li>
       <div>
         <strong>Serena${pilula}</strong>
         <small>Agente da clínica · WhatsApp e Instagram da Clínica Dr. Edson Barroso</small>
@@ -4272,11 +4271,25 @@ function desenharEstadoDaSerenaNaLista() {
   if (!pilula || serenaNoAr === null) return;
   pilula.dataset.tom = serenaNoAr ? 'ok' : 'alerta';
   pilula.textContent = serenaNoAr ? 'Atendendo' : 'Parada';
+  pilula.hidden = false;
 }
 
 /** Um item de menu por agente cadastrado, ao lado da Serena. Clicar abre a tela
  *  Agentes já com aquele agente aberto — era o caminho de quatro cliques que
  *  fazia parecer que o Alpins "não estava no CRM". */
+/** Marca no menu qual agente está aberto (null = nenhum, volta para a lista). */
+function destacarAgenteNoMenu(id) {
+  const alvo = id === null || id === undefined ? null : String(Number(id));
+  for (const botao of document.querySelectorAll('#menu-agentes [data-abrir-agente-menu]')) {
+    if (botao.dataset.abrirAgenteMenu === alvo) botao.setAttribute('aria-current', 'page');
+    else botao.removeAttribute('aria-current');
+  }
+  const lista = seletor('#item-agentes button');
+  if (!lista) return;
+  if (alvo) lista.removeAttribute('aria-current');
+  else if (seletor('#agentes')?.hidden === false) lista.setAttribute('aria-current', 'page');
+}
+
 function desenharMenuDeAgentes(agentes) {
   const grupo = seletor('#menu-agentes');
   const ancora = seletor('#item-agentes');
@@ -4295,19 +4308,29 @@ function desenharMenuDeAgentes(agentes) {
     icone.className = 'icone-menu';
     icone.setAttribute('aria-hidden', 'true');
     icone.textContent = '◈';
-    botao.append(icone, ` ${agente.nome}`);
+    const nome = String(agente.nome ?? '');
+    botao.title = nome;
+    botao.append(icone, ` ${nome.length > 24 ? `${nome.slice(0, 23)}…` : nome}`);
     // Cor só quando há o que avisar: agente que não está atendendo ganha ponto
-    // âmbar; o que está no ar fica igual aos demais itens do menu.
+    // âmbar; o que está no ar fica igual aos demais itens do menu. O ponto é
+    // decoração — quem diz o estado é o texto ao lado, lido só por leitor de
+    // tela (o `title` do ponto não era anunciado nem alcançável por teclado).
     if (agente.status !== 'ativo') {
       const aviso = document.createElement('b');
       aviso.className = 'aviso-menu';
-      aviso.title = ROTULO_STATUS_AGENTE[agente.status] ?? agente.status;
+      aviso.setAttribute('aria-hidden', 'true');
       aviso.textContent = '•';
-      botao.append(aviso);
+      const estado = document.createElement('span');
+      estado.className = 'oculto-visual';
+      estado.textContent = ` — ${ROTULO_STATUS_AGENTE[agente.status] ?? agente.status}`;
+      botao.append(aviso, estado);
     }
+    if (escopoAtual && !veClinica()) item.hidden = true;
     item.append(botao);
     grupo.insertBefore(item, ancora);
   }
+
+  destacarAgenteNoMenu(agenteAberto?.agente?.id ?? null);
 }
 
 function desenharListaDeAgentes(agentes) {
@@ -4351,6 +4374,7 @@ async function abrirAgente(id) {
       zerarOperacaoDoAgente();
       zerarWhatsappDoAgente();
     }
+    destacarAgenteNoMenu(dados.agente.id);
     preencherEditorDeAgente();
     carregarEquipeDoAgente();
     const editor = seletor('#agente-editor');
@@ -4656,6 +4680,7 @@ seletor('#lista-agentes')?.addEventListener('click', (evento) => {
 seletor('#menu-agentes')?.addEventListener('click', (evento) => {
   const botao = evento.target.closest('[data-abrir-agente-menu]');
   if (!botao) return;
+  agenteAberto = null;
   abrirTela('agentes');
   abrirAgente(botao.dataset.abrirAgenteMenu);
 });
@@ -4664,6 +4689,7 @@ seletor('#agente-fechar')?.addEventListener('click', () => {
   agenteAberto = null;
   conversaDeTesteDoAgente = [];
   seletor('#agente-editor').hidden = true;
+  destacarAgenteNoMenu(null);
 });
 
 for (const aba of document.querySelectorAll('[data-aba-agente]')) {
@@ -5166,8 +5192,13 @@ async function atualizarSeloDeAgentes() {
     const total = Number(dados.total) || 0;
     selo.textContent = String(total);
     selo.hidden = total === 0;
+    // O numero sozinho nao diz nada a quem ouve a tela: o rotulo invisivel vai junto.
+    const rotulo = seletor('#contador-agentes-rotulo');
+    if (rotulo) rotulo.hidden = total === 0;
   } catch {
     selo.hidden = true;
+    const rotulo = seletor('#contador-agentes-rotulo');
+    if (rotulo) rotulo.hidden = true;
   }
 }
 

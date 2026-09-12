@@ -156,16 +156,16 @@
           <li><button type="button" data-tela="metricas"><span class="icone-menu" aria-hidden="true">∿</span> Métricas</button></li>
           <li><button type="button" data-tela="contatos"><span class="icone-menu" aria-hidden="true">☏</span> Contatos</button></li>
         </ul>
-        <!-- Um grupo so para quem atende no automatico. A Serena e o agente da
-             clinica e os demais (Alpins...) sao criados na tela Agentes: te-los
-             em cantos diferentes do menu era o que mais confundia quem opera os
-             dois no mesmo dia. Os itens por agente sao inseridos por app.js
+        <!-- Um grupo só para quem atende no automático. A Serena é a agente da
+             clínica e os demais (Alpins…) são criados na tela Agentes: tê-los em
+             cantos diferentes do menu era o que mais confundia quem opera os
+             dois no mesmo dia. Os itens por agente são inseridos por app.js
              (desenharMenuDeAgentes) antes de "Todos os agentes". -->
         <p class="divisor" id="grupo-agentes">AGENTES</p>
         <ul aria-labelledby="grupo-agentes" id="menu-agentes">
           <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena <small class="rotulo-menu">clínica</small></button></li>
           <li id="item-agentes" hidden>
-            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Todos os agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b></button>
+            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">☰</span> Todos os agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b><span class="oculto-visual" id="contador-agentes-rotulo" hidden> clientes de agentes aguardando a equipe</span></button>
           </li>
         </ul>
         <p class="divisor" id="grupo-controle">CONTROLE</p>
