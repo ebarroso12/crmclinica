@@ -147,11 +147,6 @@
         <span><b>crmclinica</b><small>Clínica Dr. Edson Barroso</small></span>
       </p>
 
-      <p class="relogio">
-        <b id="hora">--:--</b>
-        <span id="hora-local">Franca - SP</span>
-      </p>
-
       <nav aria-label="Seções do CRM">
         <ul>
           <li><button type="button" data-tela="painel" aria-current="page"><span class="icone-menu" aria-hidden="true">▦</span> Hoje</button></li>
@@ -161,13 +156,21 @@
           <li><button type="button" data-tela="metricas"><span class="icone-menu" aria-hidden="true">∿</span> Métricas</button></li>
           <li><button type="button" data-tela="contatos"><span class="icone-menu" aria-hidden="true">☏</span> Contatos</button></li>
         </ul>
+        <!-- Um grupo só para quem atende no automático. A Serena é a agente da
+             clínica e os demais (Alpins…) são criados na tela Agentes: tê-los em
+             cantos diferentes do menu era o que mais confundia quem opera os
+             dois no mesmo dia. Os itens por agente são inseridos por app.js
+             (desenharMenuDeAgentes) antes de "Todos os agentes". -->
+        <p class="divisor" id="grupo-agentes">AGENTES</p>
+        <ul aria-labelledby="grupo-agentes" id="menu-agentes">
+          <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena <small class="rotulo-menu">clínica</small></button></li>
+          <li id="item-agentes" hidden>
+            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">☰</span> Todos os agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b><span class="oculto-visual" id="contador-agentes-rotulo" hidden> clientes de agentes aguardando a equipe</span></button>
+          </li>
+        </ul>
         <p class="divisor" id="grupo-controle">CONTROLE</p>
         <ul aria-labelledby="grupo-controle">
-          <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
           <li><button type="button" data-tela="instagram"><span class="icone-menu" aria-hidden="true">◘</span> Instagram</button></li>
-          <li id="item-agentes" hidden>
-            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b></button>
-          </li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
           <li id="item-bloqueios" hidden>
             <button type="button" data-tela="bloqueios"><span class="icone-menu" aria-hidden="true">⊘</span> Bloqueio de Contato</button>
@@ -192,7 +195,7 @@
            botão libera de uma vez só as que a PRÓPRIA automação travou —
            nunca as que um humano assumiu de verdade (ver liberarEmMassa). -->
       <button type="button" class="liberar-em-massa" id="liberar-em-massa" hidden>
-        ✓ Liberar todas as travadas por falha
+        ✓ Liberar travadas por falha
       </button>
 
       <button type="button" class="parada-emergencia" id="parada-emergencia" data-estado="armada" hidden>
@@ -222,6 +225,13 @@
           <h1 id="titulo">Hoje</h1>
         </div>
         <div class="acoes">
+          <!-- O relógio saiu do menu (onde ocupava um bloco de 23px só para a
+               hora) e virou contexto da barra do topo, ao lado de quem está
+               logado. Mesmos ids: app.js continua atualizando os dois. -->
+          <p class="relogio">
+            <b id="hora">--:--</b>
+            <span id="hora-local">Franca - SP</span>
+          </p>
           <span class="sino" id="sino">
             <button type="button" class="acao" id="sino-botao" aria-label="Notificações">
               🔔<b class="contador" id="sino-contador" hidden>0</b>
@@ -1042,7 +1052,7 @@
         <div class="cabecalho">
           <div>
             <h2 id="titulo-agentes">Agentes</h2>
-            <p>Assistentes de atendimento montados aqui: perfil, trabalho, treinamentos, configurações e canais. Agente novo nasce desligado.</p>
+            <p>Quem atende no automático. A Serena é a agente da clínica e se configura na tela dela; os demais são montados aqui — perfil, trabalho, treinamentos, configurações e canais. Agente novo nasce desligado.</p>
           </div>
           <div class="linha-acoes" id="agentes-acoes" hidden>
             <button type="button" class="primario" id="agente-novo">Novo agente</button>
