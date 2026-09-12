@@ -3539,12 +3539,17 @@ function criarRepositorio(pool) {
         // e não restringia. Os defaults abaixo batem com os da migration 028
         // (DEFAULT 'todos' / DEFAULT 100).
         modo_ativacao: 'todos', ativacao_percentual: 100,
+        // Sem a 048 a lista é vazia — e vazia é a verdade, não um palpite:
+        // enquanto a coluna não existe, nenhuma rota consegue gravar canal
+        // desligado, então não há decisão humana sendo ignorada aqui.
+        canais_desligados: [],
       };
 
-      const consulta = (colunas013, colunas028) => consultar(`
+      const consulta = (colunas013, colunas028, colunas048) => consultar(`
         SELECT c.id, c.ativa, c.alterado_por, c.alterado_em, c.motivo,
                ${colunas013 ? 'c.agenda, c.pausada_ate, c.ligada_ate,' : ''}
                ${colunas028 ? 'c.modo_ativacao, c.ativacao_percentual,' : ''}
+               ${colunas048 ? 'c.canais_desligados,' : ''}
                u.nome AS alterado_por_nome
           FROM serena_configuracao c
           LEFT JOIN usuarios u ON u.id = c.alterado_por
@@ -3567,23 +3572,40 @@ function criarRepositorio(pool) {
       // o horário configurado, o mesmo fail-open que este arquivo existe
       // para evitar. Por isso a segunda tentativa mantém as colunas da 013 e
       // só solta as da 028; só a terceira solta as duas.
+      // A 048 (canais_desligados) entra como a guarda mais externa: é a
+      // migration mais nova, então é a primeira a faltar num banco atrasado.
+      // Cair para a tentativa seguinte só apaga a lista de canais calados —
+      // que, sem a coluna, ninguém conseguiu preencher.
       let rows;
       try {
-        ({ rows } = await consulta(true, true));
+        ({ rows } = await consulta(true, true, true));
       } catch (erro) {
         if (erro.code !== '42703') throw erro;
         try {
-          ({ rows } = await consulta(true, false));
+          ({ rows } = await consulta(true, true, false));
         } catch (erro2) {
           if (erro2.code !== '42703') throw erro2;
-          ({ rows } = await consulta(false, false));
+          try {
+            ({ rows } = await consulta(true, false, false));
+          } catch (erro3) {
+            if (erro3.code !== '42703') throw erro3;
+            ({ rows } = await consulta(false, false, false));
+          }
         }
       }
 
       // Linha ausente nasce ligada e sem limite: um sistema que sobe mudo sem
       // ninguém pedir é pior que um que sobe falando.
       if (!rows[0]) return PADRAO;
-      return { ...PADRAO, ...rows[0], ativa: rows[0].ativa === true };
+      return {
+        ...PADRAO,
+        ...rows[0],
+        ativa: rows[0].ativa === true,
+        // jsonb devolve array; qualquer outra coisa (null, objeto solto de um
+        // banco mexido à mão) vira lista vazia em vez de calar um canal por
+        // acidente.
+        canais_desligados: Array.isArray(rows[0].canais_desligados) ? rows[0].canais_desligados : [],
+      };
     },
 
     /**
@@ -3645,6 +3667,47 @@ function criarRepositorio(pool) {
       `, [ativa === true, motivo, usuarioId]);
 
       return { ...rows[0], ativa: rows[0].ativa === true };
+    },
+
+    /**
+     * Quais canais ficam calados enquanto a automação está ligada.
+     *
+     * Grava a lista inteira de uma vez (não "adiciona"/"remove"): duas abas
+     * mexendo ao mesmo tempo terminam num estado que alguém escolheu, em vez
+     * de na soma de duas escolhas parciais — e é o mesmo contrato de
+     * `definirConfiguracaoDaSerena`, que também substitui.
+     *
+     * Sem a 048 o Postgres devolve 42703. Aqui isso NÃO é degradado em
+     * silêncio como na leitura: quem pediu para calar um canal precisa saber
+     * que o pedido não valeu, senão acha que o WhatsApp está mudo quando ele
+     * está respondendo pacientes.
+     */
+    async definirCanaisDesligadosDaSerena({ canais, usuarioId = null }) {
+      const lista = Array.isArray(canais) ? canais : [];
+      try {
+        const { rows } = await consultar(`
+          INSERT INTO serena_configuracao (id, canais_desligados, alterado_por, alterado_em)
+          VALUES (1, $1::jsonb, $2, now())
+          ON CONFLICT (id) DO UPDATE
+             SET canais_desligados = EXCLUDED.canais_desligados,
+                 alterado_por = EXCLUDED.alterado_por,
+                 alterado_em = now()
+          RETURNING id, ativa, canais_desligados, alterado_por, alterado_em
+        `, [JSON.stringify(lista), usuarioId]);
+        return {
+          ...rows[0],
+          ativa: rows[0].ativa === true,
+          canais_desligados: Array.isArray(rows[0].canais_desligados) ? rows[0].canais_desligados : [],
+        };
+      } catch (erro) {
+        if (erro.code === '42703') {
+          const falta = new Error('a migration 048 (canais_desligados) ainda não foi aplicada neste banco');
+          falta.codigo = 'migration_048_pendente';
+          falta.status = 503;
+          throw falta;
+        }
+        throw erro;
+      }
     },
 
     // ---------------------------------------------------------------- prompts
