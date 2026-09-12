@@ -713,8 +713,43 @@
         </div>
 
 
+
+        <!-- Navegação da tela (12/09/2026): uma seção por vez, em vez de oito
+             cartões empilhados. O ponto de cada botão diz o estado sem abrir:
+             verde no ar, vermelho parado, cinza quando não se aplica. -->
+        <nav class="secoes" id="serena-secoes" aria-label="Seções da Serena">
+          <button type="button" class="secao" data-secao-serena="canal-card" aria-current="page">
+            <span class="luz" data-luz="whatsapp" aria-hidden="true"></span>
+            WhatsApp da clínica
+          </button>
+          <button type="button" class="secao" data-secao-serena="diagnostico-card">
+            <span class="luz" data-luz="diagnostico" aria-hidden="true"></span>
+            Centro operacional
+          </button>
+          <button type="button" class="secao" data-secao-serena="serena-teste-card">
+            <span class="luz" data-luz="teste" aria-hidden="true"></span>
+            Testar a Serena
+          </button>
+          <button type="button" class="secao" data-secao-serena="serena-voz-card">
+            <span class="luz" data-luz="voz" aria-hidden="true"></span>
+            Laboratório de voz
+          </button>
+          <button type="button" class="secao" data-secao-serena="serena-horario-card">
+            <span class="luz" data-luz="horario" aria-hidden="true"></span>
+            Horário de atendimento
+          </button>
+          <button type="button" class="secao" data-secao-serena="serena-prompt-card">
+            <span class="luz" data-luz="prompt" aria-hidden="true"></span>
+            Prompt e versões
+          </button>
+          <button type="button" class="secao" data-secao-serena="serena-regras-card">
+            <span class="luz" data-luz="regras" aria-hidden="true"></span>
+            Regras
+          </button>
+        </nav>
+
         <!-- Conexão do WhatsApp da clínica -->
-        <article class="card estreito" id="canal-card">
+        <article class="card estreito" id="canal-card" data-painel-serena>
           <div class="card-titulo">
             <div>
               <h3>WhatsApp da clínica</h3>
@@ -744,6 +779,8 @@
           </div>
         </article>
         <!-- Interruptor global: só o admin vê os botões. -->
+        <!-- Fora da navegação de propósito: numa urgência, o desligamento
+             não pode depender de lembrar em qual aba ele está. -->
         <article class="card estreito" id="serena-controle" hidden>
           <div class="card-titulo">
             <div>
@@ -787,7 +824,7 @@
              próprio raciocínio na conversa. -->
         <!-- Centro operacional. Sete peças que falham em silêncio, perguntadas
              de uma vez: banco, RLS, esquema, fila, canal, automação e worker. -->
-        <article class="card" id="diagnostico-card" hidden>
+        <article class="card" id="diagnostico-card" data-painel-serena hidden>
           <div class="card-titulo">
             <div>
               <h3>Centro operacional</h3>
@@ -811,7 +848,7 @@
           </p>
         </article>
 
-        <article class="card" id="serena-teste-card" hidden>
+        <article class="card" id="serena-teste-card" data-painel-serena hidden>
           <div class="card-titulo">
             <div>
               <h3>Testar a Serena</h3>
@@ -841,7 +878,7 @@
           </p>
         </article>
 
-        <article class="card voz-card" id="serena-voz-card">
+        <article class="card voz-card" id="serena-voz-card" data-painel-serena hidden>
           <div class="card-titulo">
             <div>
               <h3>Laboratório de voz <span class="pilula pequena" id="serena-voz-estado">verificando…</span></h3>
@@ -867,7 +904,7 @@
         </article>
 
         <!-- Horário, pausa e plantão. Só quem gerencia a Serena vê. -->
-        <article class="card estreito" id="serena-horario-card" hidden>
+        <article class="card estreito" id="serena-horario-card" data-painel-serena hidden>
           <div class="card-titulo">
             <div>
               <h3>Horário de atendimento</h3>
@@ -900,7 +937,7 @@
         </article>
 
         <!-- Prompt publicado -->
-        <article class="card" id="serena-prompt-card">
+        <article class="card" id="serena-prompt-card" data-painel-serena hidden>
           <div class="card-titulo">
             <div>
               <h3>Prompt no ar <span class="pilula pequena" id="serena-versao">—</span></h3>
@@ -917,7 +954,7 @@
         </article>
 
         <!-- Editor de versão (aparece ao criar ou editar) -->
-        <article class="card" id="serena-editor" hidden>
+        <article class="card" id="serena-editor" data-segue="serena-prompt-card" hidden>
           <div class="card-titulo">
             <div>
               <h3 id="serena-editor-titulo">Nova versão do prompt</h3>
@@ -937,7 +974,7 @@
         </article>
 
         <!-- Histórico de versões -->
-        <article class="card">
+        <article class="card" id="serena-versoes-card" data-painel-serena data-segue="serena-prompt-card" hidden>
           <div class="card-titulo">
             <div>
               <h3>Versões</h3>
@@ -950,7 +987,7 @@
         </article>
 
         <!-- Regras -->
-        <article class="card">
+        <article class="card" id="serena-regras-card" data-painel-serena hidden>
           <div class="card-titulo">
             <div>
               <h3>Regras</h3>

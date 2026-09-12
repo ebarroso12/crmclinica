@@ -1920,3 +1920,87 @@ button.perigo:hover { background: #fecaca; }
 .linha-canal small { display: block; color: var(--apoio); font-size: 12px; }
 .linha-canal input:disabled + span { opacity: 0.6; }
 .canais-automacao[data-inerte="true"] .linha-canal { opacity: 0.55; }
+
+/* ---------- Seções da Serena e dos agentes (12/09/2026) ----------
+
+   Eram oito cartões abertos ao mesmo tempo. Agora é um por vez, e a barra
+   abaixo é a única coisa que compete por atenção no topo da tela.
+
+   O ponto à esquerda de cada botão diz o estado sem precisar abrir: verde no
+   ar, vermelho parado, cinza quando aquela seção não tem o que ligar. Cor
+   sozinha não basta — o `title` de cada botão repete em palavra. */
+
+.secoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 18px 0 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--linha);
+}
+
+/* `nav button` (o menu lateral) vale para qualquer botao dentro de um <nav>,
+   inclusive esta barra: a largura de 100% dali empilhava as pilulas uma por
+   linha. Reafirmar aqui e mais claro do que trocar a semantica do <nav>. */
+.secoes .secao {
+  width: auto;
+  flex: 0 0 auto;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  border: 1px solid var(--linha);
+  border-radius: 999px;
+  background: var(--superficie);
+  color: #45506a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+
+.secoes .secao:hover { border-color: #b9c6d8; background: #f7fafd; }
+
+/* O item aberto: fundo cheio, e não só borda — com sete pílulas na mesma
+   linha, uma borda mais grossa some no meio das outras. */
+.secoes .secao[aria-current="page"] {
+  background: var(--navy, #16233c);
+  border-color: var(--navy, #16233c);
+  color: #fff;
+}
+
+/* Ponto de estado. 7px é pequeno o bastante para não virar decoração e grande
+   o bastante para ler de relance. */
+.secoes .luz {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #c3ccd9;
+}
+.secoes .luz[data-estado="ok"] { background: #12a150; }
+.secoes .luz[data-estado="parado"] { background: #d4342a; }
+.secoes .luz[data-estado="neutro"] { background: #c3ccd9; }
+
+/* No botão aberto (fundo escuro) o cinza sumiria. */
+.secoes .secao[aria-current="page"] .luz[data-estado="neutro"] { background: #7d8ba3; }
+
+@media (max-width: 720px) {
+  /* Vira faixa que rola de lado: sete pílulas empilhadas comeriam a tela
+     inteira antes do conteúdo aparecer. */
+  .secoes {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+  }
+  .secoes .secao { white-space: nowrap; }
+}
+
+@media (forced-colors: active) {
+  /* Alto contraste descarta background: sem isto, o item aberto e o ponto de
+     estado ficariam indistinguíveis. */
+  .secoes .secao[aria-current="page"] { outline: 2px solid; outline-offset: -2px; }
+  .secoes .luz { border: 1px solid; }
+}

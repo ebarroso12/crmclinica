@@ -4015,6 +4015,85 @@ function escapar(texto) {
   return div.innerHTML;
 }
 
+
+// ---------------------------------------------------------------------------
+// Seções da tela da Serena (12/09/2026)
+//
+// Eram oito cartões abertos ao mesmo tempo; agora é um por vez. A escolha fica
+// guardada: quem passa o dia no Centro operacional não quer voltar para o
+// WhatsApp a cada carga da página.
+
+const SECAO_SERENA_PADRAO = 'canal-card';
+const CHAVE_SECAO_SERENA = 'crmclinica:serena:secao';
+
+function abrirSecaoDaSerena(id, { lembrar = true } = {}) {
+  const paineis = [...document.querySelectorAll('[data-painel-serena]')];
+  if (paineis.length === 0) return;
+
+  const existe = paineis.some((painel) => painel.id === id);
+  const alvo = existe ? id : SECAO_SERENA_PADRAO;
+
+  for (const painel of paineis) painel.hidden = painel.id !== alvo;
+
+  // Cartoes que pertencem ao mesmo assunto (Versoes, ao lado do Prompt)
+  // aparecem junto. O editor de prompt tambem tem `data-segue`, mas quem
+  // decide se ele abre e o clique em editar — aqui so garantimos que ele nao
+  // sobre numa secao a que nao pertence.
+  for (const extra of document.querySelectorAll('[data-segue]')) {
+    if (extra.dataset.segue !== alvo) extra.hidden = true;
+    else if (!extra.id || extra.id !== 'serena-editor') extra.hidden = false;
+  }
+
+  for (const botao of document.querySelectorAll('[data-secao-serena]')) {
+    const ativo = botao.dataset.secaoSerena === alvo;
+    if (ativo) botao.setAttribute('aria-current', 'page');
+    else botao.removeAttribute('aria-current');
+  }
+
+  if (lembrar) {
+    // localStorage pode falhar (janela anônima, site bloqueado): a tela não
+    // pode cair por causa de uma preferência.
+    try { localStorage.setItem(CHAVE_SECAO_SERENA, alvo); } catch { }
+  }
+}
+
+/**
+ * O ponto de cada botão.
+ *
+ * Verde = no ar, vermelho = parado, cinza = não se aplica (nada a ligar ali).
+ * O par verde/vermelho é a convenção que todo mundo lê sem pensar; num painel
+ * de operação, inverter custaria mais do que economiza.
+ */
+function desenharLuzesDaSerena(dados = {}) {
+  const estado = {
+    whatsapp: dados?.canal?.estado === 'conectado' ? 'ok' : 'parado',
+    // Centro operacional e Testar não têm liga/desliga: são ferramentas.
+    diagnostico: 'neutro',
+    teste: 'neutro',
+    voz: dados?.voz_disponivel === false ? 'parado' : 'neutro',
+    horario: dados?.horario?.atendendo_agora === true ? 'ok'
+      : (dados?.horario?.agenda?.ativa ? 'parado' : 'neutro'),
+    prompt: dados?.prompt_publicado ? 'ok' : 'parado',
+    regras: (dados?.regras_ativas ?? 0) > 0 ? 'ok' : 'neutro',
+  };
+
+  for (const [nome, valor] of Object.entries(estado)) {
+    const luz = seletor(`[data-luz="${nome}"]`);
+    if (!luz) continue;
+    luz.dataset.estado = valor;
+    const botao = luz.closest('[data-secao-serena]');
+    if (botao) {
+      const rotulo = (botao.textContent || '').trim();
+      const legenda = valor === 'ok' ? 'no ar' : valor === 'parado' ? 'parado' : '';
+      botao.title = legenda ? `${rotulo}: ${legenda}` : rotulo;
+    }
+  }
+}
+
+for (const botao of document.querySelectorAll('[data-secao-serena]')) {
+  botao.addEventListener('click', () => abrirSecaoDaSerena(botao.dataset.secaoSerena));
+}
+
 async function carregarSerena() {
   try {
     const dados = await pedirJson('/api/serena');
@@ -4024,6 +4103,20 @@ async function carregarSerena() {
 
     const controle = seletor('#serena-controle');
     if (controle) controle.hidden = !dados.pode_gerenciar;
+
+    // A seção guardada vale entre visitas; sem ela, quem trabalha no Centro
+    // operacional voltaria ao WhatsApp a cada carga.
+    let guardada = null;
+    try { guardada = localStorage.getItem(CHAVE_SECAO_SERENA); } catch { }
+    abrirSecaoDaSerena(guardada || SECAO_SERENA_PADRAO, { lembrar: false });
+
+    desenharLuzesDaSerena({
+      canal: dados.canal,
+      horario: dados.horario,
+      prompt_publicado: Boolean(dados.prompt?.publicado ?? dados.prompt_publicado),
+      regras_ativas: dados.regras_ativas ?? (dados.regras ?? []).filter((r) => r.ativa).length,
+      voz_disponivel: dados.voz_disponivel,
+    });
     // Mesmo gate do cartão: escolher canal é mexer no atendimento.
     const canais = seletor('#serena-canais');
     if (canais) canais.hidden = !dados.pode_gerenciar;
