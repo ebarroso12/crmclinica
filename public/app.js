@@ -2456,6 +2456,43 @@ async function carregarUsuarios() {
   }
 }
 
+/**
+ * Apaga a conta de vez, com confirmacao que diz o que nao tem volta.
+ *
+ * O nome digitado nao e teatro: e o que separa "cliquei sem ler" de "eu quis
+ * apagar esta pessoa". Um ato sem volta merece um segundo de atrito.
+ */
+async function excluirUsuario(usuario) {
+  const aviso = [
+    `Excluir a conta de ${usuario.nome} (${usuario.email})?`,
+    '',
+    'Isto NAO tem volta. O que acontece:',
+    '• a conta some da lista e do sistema;',
+    '• o historico de atendimento permanece, mas sem o nome de quem fez;',
+    '• fica registrado na Auditoria quem excluiu, quando, e os dados da conta.',
+    '',
+    'Se voce so quer tirar o acesso, use Desativar — e reversivel.',
+  ].join(String.fromCharCode(10));
+  if (!window.confirm(aviso)) return;
+
+  const digitado = window.prompt(`Para confirmar, digite o nome da pessoa: ${usuario.nome}`);
+  if (digitado === null) return;
+  if (digitado.trim().toLowerCase() !== String(usuario.nome ?? '').trim().toLowerCase()) {
+    informar('Nome nao confere. Nada foi excluido.');
+    return;
+  }
+
+  const motivo = window.prompt('Motivo (opcional, fica na auditoria):') ?? null;
+
+  try {
+    await pedirJson(`/api/usuarios/${Number(usuario.id)}`, { metodo: 'DELETE', corpo: { motivo } });
+    informar(`Conta de ${usuario.nome} excluida.`);
+    await carregarUsuarios();
+  } catch (erro) {
+    informar(`Nao consegui excluir: ${erro.detalhe || erro.message}`);
+  }
+}
+
 function montarLinhaDeUsuario(usuario) {
   const linha = document.createElement('li');
   linha.className = `usuario situacao-${usuario.situacao}`;
@@ -2556,6 +2593,22 @@ function montarLinhaDeUsuario(usuario) {
       botao.textContent = rotulo;
       botao.addEventListener('click', () => agirNoUsuario(usuario.id, 'situacao', { situacao: situacaoNova }));
       acoes.append(botao);
+    }
+
+    // Excluir de vez (pedido de 12/09/2026). So em conta ja desativada: quem
+    // ainda trabalha na clinica se desativa primeiro, e o primeiro passo ja
+    // tira o acesso — que e a urgencia real quando alguem sai. Dois passos
+    // para um ato sem volta.
+    const podeExcluir = usuario.situacao !== 'ativo' && !usuario.master
+      && Number(usuario.id) !== Number(usuarioAtual?.id);
+    if (podeExcluir) {
+      const excluir = document.createElement('button');
+      excluir.type = 'button';
+      excluir.className = 'perigo';
+      excluir.textContent = 'Excluir';
+      excluir.setAttribute('aria-label', `Excluir a conta de ${usuario.nome}`);
+      excluir.addEventListener('click', () => excluirUsuario(usuario));
+      acoes.append(excluir);
     }
   }
 

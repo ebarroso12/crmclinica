@@ -958,6 +958,17 @@ function criarAplicacao(dependencias = {}) {
       return true;
     }
 
+    const partesDaRota = rota.split('/').filter(Boolean);
+
+    // DELETE /api/usuarios/:id — apaga a conta de vez (pedido de 12/09/2026).
+    // Fica aqui, e nao no mapa de rotas fixas, porque o id e parte do caminho.
+    if (partesDaRota[0] === 'api' && partesDaRota[1] === 'usuarios'
+        && partesDaRota.length === 3 && /^[0-9]+$/.test(partesDaRota[2]) && metodo === 'DELETE') {
+      const resultado = await auth.excluirUsuario(usuario, partesDaRota[2], await lerJson(req).catch(() => ({})));
+      responderJson(res, 200, resultado, semCache);
+      return true;
+    }
+
     // /api/usuarios/:id/situacao e /papel — exclusivas do master.
     // O identificador precisa ser numérico: termos/onboarding/ajuda também
     // têm quatro partes e pertencem ao tratador de gestão, não a este.

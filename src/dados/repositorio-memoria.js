@@ -2417,6 +2417,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return semSegredos(usuario);
     },
 
+    async excluirUsuario(id) {
+      return usuarios.delete(Number(id));
+    },
+
     async atualizarUsuario(id, campos) {
       const usuario = usuarios.get(Number(id));
       if (!usuario) return null;

@@ -2617,6 +2617,20 @@ function criarRepositorio(pool) {
       return { ...rows[0], id: Number(rows[0].id) };
     },
 
+    /**
+     * Apaga a conta. O que aponta para ela ja esta resolvido nas FKs: quase
+     * tudo e ON DELETE SET NULL (a nota, a conversa e a etiqueta ficam, sem o
+     * nome do autor) e o que e pessoal do usuario e CASCADE (sessao,
+     * notificacao, equipe de agente).
+     *
+     * Duas tabelas recusam de proposito (RESTRICT/NO ACTION): sessao de voz e
+     * exportacao de auditoria. Ali o 23503 sobe para quem chamou traduzir.
+     */
+    async excluirUsuario(id) {
+      const { rowCount } = await consultar('DELETE FROM usuarios WHERE id = $1', [Number(id)]);
+      return rowCount > 0;
+    },
+
     async atualizarUsuario(id, campos) {
       const permitidos = new Map([
         ['nome', 'nome'], ['telefone', 'telefone'], ['papel', 'papel'],
