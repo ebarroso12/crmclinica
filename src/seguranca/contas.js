@@ -149,6 +149,90 @@ function criarContas({
     return retratoDoUsuario(atualizado);
   }
 
+  /**
+   * Apaga a conta de vez.
+   *
+   * Pedido do Dr. Edson (12/09/2026): desativar nao bastava — ele quer tirar a
+   * pessoa da lista, com rastro.
+   *
+   * Tres travas, nesta ordem:
+   *
+   *   1. so o master apaga (a mesma porta de `definirSituacao`);
+   *   2. so conta DESATIVADA. Quem ainda trabalha na clinica se desativa
+   *      primeiro — dois passos para um ato sem volta, e o primeiro ja tira o
+   *      acesso, que e a urgencia real quando alguem sai;
+   *   3. o master nao se apaga, e nao apaga o outro master: uma clinica sem
+   *      administrador nao tem como criar o proximo.
+   *
+   * A auditoria e gravada ANTES de apagar, com nome, email e papel dentro do
+   * detalhe. E o unico jeito de o rastro sobreviver: `audit_log.usuario_id` e
+   * ON DELETE SET NULL, entao apagar a conta apagaria o autor de todas as
+   * acoes dela — inclusive desta.
+   */
+  async function excluirUsuario(master, usuarioId, { motivo = null } = {}) {
+    if (!master?.master) {
+      const erro = new Error('apenas o administrador master exclui contas');
+      erro.status = 403;
+      throw erro;
+    }
+
+    const alvo = await repositorio.obterUsuarioPorId(usuarioId);
+    if (!alvo) {
+      const erro = new Error('usuário não encontrado');
+      erro.status = 404;
+      throw erro;
+    }
+    if (Number(alvo.id) === Number(master.id)) {
+      const erro = new Error('você não pode excluir a própria conta');
+      erro.status = 409;
+      throw erro;
+    }
+    if (alvo.master) {
+      const erro = new Error('a conta do administrador master não pode ser excluída');
+      erro.status = 409;
+      throw erro;
+    }
+    if (alvo.situacao === 'ativo') {
+      const erro = new Error('desative a conta antes de excluir: excluir não tem volta');
+      erro.status = 409;
+      throw erro;
+    }
+
+    // Antes de apagar, porque depois nao ha de quem falar.
+    await repositorio.registrarAuditoria({
+      entidade: 'usuario',
+      entidadeId: usuarioId,
+      acao: 'usuario_excluido',
+      usuarioId: master.id,
+      detalhe: {
+        nome: alvo.nome ?? null,
+        email: alvo.email ?? null,
+        papel: alvo.papel ?? null,
+        situacao_anterior: alvo.situacao ?? null,
+        motivo: motivo ? String(motivo).trim().slice(0, 300) : null,
+      },
+    });
+
+    try {
+      await repositorio.excluirUsuario(usuarioId);
+    } catch (erro) {
+      // 23503 = alguma tabela ainda aponta para esta conta com RESTRICT/NO
+      // ACTION (sessao de voz, exportacao de auditoria). O banco recusando e
+      // protecao, nao defeito — mas a mensagem precisa dizer o que fazer.
+      if (erro.code === '23503') {
+        const falha = new Error(
+          'esta conta tem registros que não podem ficar sem dono (sessão de voz ou exportação de auditoria). '
+          + 'Ela continua desativada, sem acesso ao sistema.',
+        );
+        falha.status = 409;
+        throw falha;
+      }
+      throw erro;
+    }
+
+    return { excluido: true, id: Number(usuarioId), nome: alvo.nome ?? null };
+  }
+
   // ---------------------------------------------------------------- senha
 
   /** Troca a própria senha. Exige a senha atual — token roubado não troca senha. */
@@ -466,6 +550,7 @@ function criarContas({
     erroDeSituacao,
     cadastrar,
     definirSituacao,
+    excluirUsuario,
     trocarSenha,
     definirSenhaTemporaria,
     pedirRecuperacao,

@@ -15,6 +15,8 @@
 // nenhuma conversa é exceção. Só depois vale a decisão por conversa — humano
 // assumiu, alguém é responsável, conversa resolvida, pausa temporária.
 
+const { feriadoEm } = require('./feriados');
+
 const CATEGORIAS = Object.freeze(['barreira', 'encaminhamento', 'fluxo', 'estilo', 'geral']);
 
 // Ordem de leitura no prompt montado. Barreira clínica primeiro: o que a Serena
@@ -137,6 +139,24 @@ function momentoLocal(agora, fuso = FUSO_PADRAO) {
  */
 function dentroDoHorario(agenda, agora = new Date()) {
   if (!agenda || agenda.ativa !== true) return true;
+
+  // Feriado é dia sem equipe na clínica, e a grade entende só dia da SEMANA:
+  // um feriado na terça seria lido como "terça" e calaria a Serena das 7:45 às
+  // 18:30, justo quando não há ninguém para atender. Regra do Dr. Edson
+  // (12/09/2026): feriado é como fim de semana — ela atende o dia inteiro.
+  //
+  // `feriados.ativo !== false` para que agenda antiga (sem a chave) continue
+  // valendo com feriados ligados: quem configurou a grade antes desta mudança
+  // não pediu para trabalhar em feriado.
+  if (agenda.feriados?.ativo !== false) {
+    const ehFeriado = feriadoEm(agora, {
+      fuso: agenda.fuso || FUSO_PADRAO,
+      extras: agenda.feriados?.extras ?? {},
+      removidos: agenda.feriados?.removidos ?? [],
+      incluirFacultativos: agenda.feriados?.incluirFacultativos === true,
+    });
+    if (ehFeriado) return true;
+  }
 
   const { dia, minutos } = momentoLocal(agora, agenda.fuso || FUSO_PADRAO);
   const ontem = (dia + 6) % 7;
