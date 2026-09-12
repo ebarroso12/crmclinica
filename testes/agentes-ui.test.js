@@ -381,8 +381,8 @@ test('desenharMenuDeAgentes recria os itens sem duplicar e sem HTML de texto do 
   assert.match(funcao, /botao\.append\(icone, /, 'o nome vai como nó de texto (append), nunca como innerHTML');
   assert.doesNotMatch(funcao, /innerHTML/, 'nada de innerHTML com dado de agente no menu');
   assert.match(funcao, /botao\.title = nome/, 'o nome inteiro fica no title: o visível é truncado em 24');
-  assert.match(funcao, /nome\.length > \d+\s*\?\s*`\$\{nome\.slice\(/,
-    'nome longo é encurtado no menu para não transbordar a lateral de 232px');
+  assert.match(funcao, /nome\.length > 24\s*\?\s*`\$\{nome\.slice\(0, 23\)\}…`/,
+    'o corte em 24 É a proteção: sem o número aqui, um corte em 240 passaria e a lateral de 232px voltaria a transbordar');
 });
 
 test('o ponto âmbar do menu só aparece quando o agente não está atendendo, e o estado vai em texto junto', () => {
@@ -397,7 +397,11 @@ test('o ponto âmbar do menu só aparece quando o agente não está atendendo, e
 
 test('redesenhar o menu não tira o foco de quem navega por teclado', () => {
   const funcao = funcaoDoApp('desenharMenuDeAgentes');
-  assert.match(funcao, /document\.activeElement\?\.dataset\?\.abrirAgenteMenu/, 'guarda quem estava focado');
+  // A leitura do activeElement tem de estar na MESMA linha da declaração: com
+  // `const focado = null` cedo e o activeElement lido depois da remoção, o
+  // teste de ordem abaixo passaria e o foco continuaria se perdendo.
+  assert.match(funcao, /const focado = document\.activeElement\?\.dataset\?\.abrirAgenteMenu/,
+    'guarda quem estava focado, lendo o activeElement na própria declaração');
   const guarda = funcao.indexOf('const focado');
   const remove = funcao.indexOf('antigo.remove()');
   const devolve = funcao.indexOf('.focus()');
@@ -460,10 +464,23 @@ test('quem só lê a Serena também vê o estado dela na lista', () => {
   const sincronizar = funcaoDoApp('sincronizarParadaDeEmergencia');
   assert.match(sincronizar, /const podeGerenciar = podeFazer\('serena:gerenciar'\);/);
   assert.match(sincronizar, /botao\.hidden = !podeGerenciar;/, 'sem permissão some o botão, não a leitura');
-  assert.match(sincronizar, /if \(!podeGerenciar && !podeFazer\('serena:ler'\)\) return;/,
-    'gestor e atendente têm serena:ler (rbac.js) e precisam do estado: era o que deixava a linha da Serena sem pílula');
+  assert.match(sincronizar, /if \(!podeGerenciar && !\(podeFazer\('serena:ler'\) && podeFazer\('agentes:ler'\)\)\) return;/,
+    'o gestor (serena:ler + agentes:ler) precisa do estado para a linha da Serena; o atendente não vê aquela lista, então não pergunta');
   assert.match(sincronizar, /if \(podeGerenciar\) desenharParadaDeEmergencia\(true\);/,
     'na falha, "armado" vale para o botão; para quem só lê, nada é afirmado');
+  // Sem re-tentativa, uma falha de rede na abertura deixaria a linha da Serena
+  // sem pílula até alguém recarregar a página inteira.
+  assert.match(funcaoDoApp('carregarAgentes'), /if \(serenaNoAr === null\) sincronizarParadaDeEmergencia\(\);/,
+    'abrir a tela de agentes com o estado ainda desconhecido pergunta de novo');
+});
+
+test('a pílula da Serena não afirma estado antes de conhecê-lo', () => {
+  const linha = funcaoDoApp('linhaDaSerena');
+  assert.match(linha, /const desconhecido = serenaNoAr === null;/);
+  assert.match(linha, /\$\{desconhecido \? ' hidden' : ''\}/,
+    'estado desconhecido não pode sair da tela como "Parada": a pílula existe, mas escondida');
+  assert.match(funcaoDoApp('desenharEstadoDaSerenaNaLista'), /if \(!pilula \|\| serenaNoAr === null\) return;/,
+    'e só é revelada quando o estado chega');
 });
 
 test('"Todos os agentes" volta para a lista em vez de piscar', () => {
@@ -496,4 +513,84 @@ test('o rótulo invisível do contador concorda em número', () => {
   assert.match(funcao, /total === 1/, '"1 clientes" não pode chegar ao leitor de tela');
   assert.match(funcao, /cliente de agente aguardando a equipe/);
   assert.match(funcao, /clientes de agentes aguardando a equipe/);
+});
+
+// ------------------------------------------- o que a guarda de reabertura NAO pode quebrar
+
+test('toda recarga legítima da lista continua reabrindo o agente aberto', () => {
+  // A guarda `abertoAoEntrar` existe para o clique no menu, que dispara a carga
+  // da lista e a abertura do agente ao mesmo tempo. Ela não pode ter custado as
+  // recargas que acontecem DEPOIS de mexer no agente que está na tela: em todas
+  // elas o agente aberto é o mesmo antes e depois, então a guarda deixa passar.
+  const bloco = blocoDeAgentes();
+  const acoes = [
+    ["/api/agentes/${Number(agenteAberto.agente.id)}`, { metodo: 'PUT'", 'salvar a configuração'],
+    ['/comportamento/', 'restaurar versão do comportamento'],
+    ["/treinamentos`, { metodo: 'POST'", 'cadastrar treinamento'],
+    ['/inatividade`', 'salvar inatividade'],
+    ['/canais`', 'salvar canais'],
+    ['/pausar`', 'pausar o agente'],
+    ['/retomar`', 'retomar o agente'],
+  ];
+  for (const [trecho, nome] of acoes) {
+    const inicio = bloco.indexOf(trecho);
+    assert.ok(inicio >= 0, `falta a chamada de ${nome}`);
+    const depois = bloco.slice(inicio, inicio + 900);
+    assert.ok(depois.includes('carregarAgentes()'), `${nome} precisa recarregar a lista`);
+    assert.ok(!depois.slice(0, depois.indexOf('carregarAgentes()')).includes('agenteAberto = null'),
+      `${nome} não pode zerar o agente aberto antes de recarregar: a guarda impediria a reabertura`);
+  }
+
+  // E a guarda compara o agente do começo com o do fim, em vez de olhar só se
+  // existe algum aberto — é o que distingue "recarga legítima" de "o usuário
+  // fechou ou trocou de agente enquanto a lista vinha".
+  const carregar = funcaoDoApp('carregarAgentes');
+  assert.match(carregar, /if \(abertoAoEntrar && agenteAberto\?\.agente\?\.id === abertoAoEntrar\)/);
+});
+
+test('não existe exclusão de agente: nada some da lista pelas costas da guarda', () => {
+  // Se um dia existir, a guarda precisa ser revista: apagar o agente aberto
+  // deixaria `abertoAoEntrar` apontando para um id que não volta mais na lista.
+  const bloco = blocoDeAgentes();
+  const exclusoes = [...bloco.matchAll(/\/api\/agentes\/\$\{[^}]+\}`, \{ metodo: 'DELETE'/g)];
+  assert.equal(exclusoes.length, 0,
+    'apareceu exclusão de agente: revisar a guarda abertoAoEntrar em carregarAgentes');
+});
+
+test('os dois tratadores do clique em "Todos os agentes" chegam ao mesmo estado', () => {
+  // Os dois rodam no mesmo clique, na ordem de registro: primeiro o genérico do
+  // menu (abrirTela, que dispara a carga da lista), depois o do item. Se o
+  // segundo viesse antes, a carga leria `agenteAberto` já nulo e daria no mesmo;
+  // o que não pode é a carga reabrir o agente que o clique acabou de fechar —
+  // por isso este teste anda junto com a guarda de carregarAgentes.
+  const generico = APP_JS.indexOf("for (const gatilho of document.querySelectorAll('nav [data-tela]'))");
+  const doItem = APP_JS.indexOf("seletor('#item-agentes button')?.addEventListener");
+  assert.ok(generico >= 0 && doItem > generico,
+    'o tratador do item é registrado depois do genérico, então roda depois dele');
+
+  // O tratador é síncrono: a ordem das linhas dentro dele não muda nada, e
+  // travá-la seria prender o teste a uma escrita, não a um comportamento. O que
+  // importa é que as três coisas aconteçam antes de qualquer resposta chegar —
+  // e que a carga da lista, já disparada pelo genérico, não desfaça nenhuma.
+  const handler = APP_JS.slice(doItem, APP_JS.indexOf('});', doItem));
+  for (const efeito of ['agenteAberto = null', 'editor.hidden = true', 'destacarAgenteNoMenu(null)']) {
+    assert.ok(handler.includes(efeito), `o tratador precisa de: ${efeito}`);
+  }
+  assert.doesNotMatch(handler, /await|then\(/, 'nada assíncrono aqui: a tela fica consistente no mesmo clique');
+  assert.match(funcaoDoApp('carregarAgentes'), /if \(abertoAoEntrar && agenteAberto\?\.agente\?\.id === abertoAoEntrar\)/,
+    'e a carga em voo não reabre o agente que este tratador acabou de fechar');
+});
+
+test('o par de botões da Serena fica estável nos três estados', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'estilo.css'), 'utf8');
+  // Sozinha, a parada encosta à direita; com o "Liberar" visível, o par anda
+  // junto; no telefone os dois dividem a linha. Sem o `margin-left: auto` da
+  // parada, a regra seguinte não teria o que cancelar e o botão mudava de lugar
+  // conforme o vizinho aparecia.
+  assert.match(css, /\.parada-emergencia \{ order: 2; width: auto; margin-left: auto;/,
+    'sozinha, a parada tem posição fixa à direita');
+  assert.match(css, /\.liberar-em-massa:not\(\[hidden\]\) \+ \.parada-emergencia \{ margin-left: 0; \}/,
+    'com o vizinho VISÍVEL (não só presente no HTML), o par anda junto');
+  assert.match(css, /\.liberar-em-massa, \.parada-emergencia \{ flex: 1 1 45%; margin-left: 0;/,
+    'no telefone os dois dividem a linha, sem margem automática');
 });

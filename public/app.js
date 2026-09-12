@@ -1902,9 +1902,12 @@ async function sincronizarParadaDeEmergencia() {
   // Quem não pode desligar não vê o botão: um clique que devolve 403 no meio
   // de uma urgência é pior que botão nenhum. Mas continua vendo o ESTADO — ele
   // alimenta a linha da Serena na tela Agentes, e ler é de todos (serena:ler).
+  // Quem gerencia precisa do estado para o botao; quem so le, para a linha da
+  // Serena na tela Agentes. O atendente nao tem nenhuma das duas: o botao fica
+  // escondido e ele nunca ve aquela lista, entao nao ha o que perguntar.
   const podeGerenciar = podeFazer('serena:gerenciar');
   botao.hidden = !podeGerenciar;
-  if (!podeGerenciar && !podeFazer('serena:ler')) return;
+  if (!podeGerenciar && !(podeFazer('serena:ler') && podeFazer('agentes:ler'))) return;
 
   try {
     const estado = await pedirJson('/api/serena/interruptor');
@@ -4238,6 +4241,10 @@ function mensagemDeErroDoAgente(erro) {
 
 async function carregarAgentes() {
   if (!podeFazer('agentes:ler')) return;
+  // Estado da Serena ainda desconhecido (a leitura do interruptor falhou na
+  // abertura da sessao): pergunta de novo, senao a linha dela ficaria sem
+  // pilula ate alguem recarregar a pagina.
+  if (serenaNoAr === null) sincronizarParadaDeEmergencia();
   const abertoAoEntrar = agenteAberto?.agente?.id ?? null;
   try {
     agentesPainel = await pedirJson('/api/agentes');
