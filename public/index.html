@@ -106,12 +106,24 @@
       <!-- Recuperar senha -->
       <form id="form-recuperar" class="painel-portao" hidden>
         <h2>Recuperar senha</h2>
-        <p class="nota">Enviaremos um link para o e-mail cadastrado.</p>
+        <p class="nota" id="recuperar-nota">Enviaremos um link para o e-mail cadastrado.</p>
 
-        <label for="recuperar-email">E-mail</label>
-        <input id="recuperar-email" type="email" autocomplete="username" required>
+        <!-- Sem SMTP configurado o link nunca chegaria. Em vez de sumir com a
+             opcao (era o que acontecia antes) ou de fingir que enviou, a tela
+             diz o caminho que funciona hoje: o administrador gera uma senha
+             temporaria na tela Usuarios. -->
+        <p class="instalar-ajuda" id="recuperar-sem-email" hidden>
+          O envio automático por e-mail ainda não está ligado neste servidor.
+          Peça ao administrador (edson.barroso@gmail.com) uma senha temporária:
+          ele gera em Usuários, na própria conta, e ela vale para uma entrada.
+        </p>
 
-        <button type="submit" class="primario">Enviar link</button>
+        <div id="recuperar-campos">
+          <label for="recuperar-email">E-mail</label>
+          <input id="recuperar-email" type="email" autocomplete="username" required>
+
+          <button type="submit" class="primario">Enviar link</button>
+        </div>
         <div class="rodape-portao">
           <button type="button" class="link" data-portao="login">Voltar para a entrada</button>
         </div>
