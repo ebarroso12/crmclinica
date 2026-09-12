@@ -1271,10 +1271,12 @@ async function carregarMetricas() {
     const esquerda = seletor('#painel-leads-conversas');
     esquerda.innerHTML = '';
     esquerda.append(
+      // Primeiro a tendência: "está crescendo?" vem antes de "de onde vem?".
+      blocoDeMetricas('Leads por dia', graficoDeLinha(totalPorDia(resumo.leads.por_dia), { rotuloValor: 'total' })),
       blocoDeMetricas('Leads por origem', tabelaDeBarras(resumo.leads.por_origem, {
         rotulo: 'origem', valor: 'total', denominador: 'denominador',
       })),
-      blocoDeMetricas('Funil (fotografia de agora)', tabelaDeBarras(resumo.leads.funil_fotografia, {
+      blocoDeMetricas('Funil (fotografia de agora)', graficoDeFunil(resumo.leads.funil_fotografia, {
         rotulo: 'estagio', valor: 'total',
       })),
       blocoDeMetricas('Motivos de perda', resumo.leads.motivos_perda.length
@@ -4015,6 +4017,117 @@ function escapar(texto) {
   return div.innerHTML;
 }
 
+
+// ---------------------------------------------------------------------------
+// Seções da tela da Serena (12/09/2026)
+//
+// Eram oito cartões abertos ao mesmo tempo; agora é um por vez. A escolha fica
+// guardada: quem passa o dia no Centro operacional não quer voltar para o
+// WhatsApp a cada carga da página.
+
+const SECAO_SERENA_PADRAO = 'canal-card';
+const CHAVE_SECAO_SERENA = 'crmclinica:serena:secao';
+
+// Seções que só existem para quem gerencia a Serena. Antes da navegação por
+// botões elas nasciam `hidden` e a tela não tinha como revelá-las; com um botão
+// para cada uma, abrir passou a ser um clique — e abrir É mostrar. Sem esta
+// lista, quem atende paciente veria o Centro operacional (nome do usuário do
+// banco, serviços parados) e o Horário já preenchido.
+//
+// A permissão continua sendo do servidor: as ações batem em 403 de qualquer
+// jeito. Isto é a tela voltando a esconder o que escondia.
+const SECOES_SO_DE_QUEM_GERENCIA = new Set(['diagnostico-card', 'serena-teste-card', 'serena-horario-card']);
+let podeGerenciarSerena = false;
+
+/** Guarda a permissão e tira da barra os botões que não são dessa pessoa. */
+function aplicarPermissaoNasSecoesDaSerena(pode) {
+  podeGerenciarSerena = pode === true;
+  for (const botao of document.querySelectorAll('[data-secao-serena]')) {
+    const restrita = SECOES_SO_DE_QUEM_GERENCIA.has(botao.dataset.secaoSerena);
+    botao.hidden = restrita && !podeGerenciarSerena;
+  }
+}
+
+function abrirSecaoDaSerena(id, { lembrar = true } = {}) {
+  const paineis = [...document.querySelectorAll('[data-painel-serena]')];
+  if (paineis.length === 0) return;
+
+  // Um id restrito (digitado, ou guardado no localStorage de quando a pessoa
+  // tinha outra permissão) cai no padrão em vez de abrir — ou de deixar a tela
+  // sem nenhum painel, que era o outro final possível.
+  const permitido = (painel) => !SECOES_SO_DE_QUEM_GERENCIA.has(painel) || podeGerenciarSerena;
+  const existe = paineis.some((painel) => painel.id === id);
+  const alvo = existe && permitido(id) ? id : SECAO_SERENA_PADRAO;
+
+  for (const painel of paineis) painel.hidden = painel.id !== alvo;
+
+  // Cartoes que pertencem ao mesmo assunto (Versoes, ao lado do Prompt)
+  // aparecem junto. O editor de prompt tambem tem `data-segue`, mas quem
+  // decide se ele abre e o clique em editar — aqui so garantimos que ele nao
+  // sobre numa secao a que nao pertence.
+  for (const extra of document.querySelectorAll('[data-segue]')) {
+    if (extra.dataset.segue !== alvo) extra.hidden = true;
+    else if (!extra.id || extra.id !== 'serena-editor') extra.hidden = false;
+  }
+
+  for (const botao of document.querySelectorAll('[data-secao-serena]')) {
+    const ativo = botao.dataset.secaoSerena === alvo;
+    if (ativo) botao.setAttribute('aria-current', 'page');
+    else botao.removeAttribute('aria-current');
+  }
+
+  if (lembrar) {
+    // localStorage pode falhar (janela anônima, site bloqueado): a tela não
+    // pode cair por causa de uma preferência.
+    try { localStorage.setItem(CHAVE_SECAO_SERENA, alvo); } catch { }
+  }
+}
+
+/**
+ * O ponto de cada botão.
+ *
+ * Verde = no ar, vermelho = parado, cinza = não se aplica (nada a ligar ali).
+ * O par verde/vermelho é a convenção que todo mundo lê sem pensar; num painel
+ * de operação, inverter custaria mais do que economiza.
+ */
+// Os nomes abaixo são os da resposta de GET /api/serena (src/servidor/rotas-serena.js).
+// A primeira versão inventou `dados.canal`, `prompt_publicado` e
+// `horario.atendendo_agora` — nenhum existe, então as três luzes ficavam
+// vermelhas com tudo funcionando. testes/luzes-serena.test.js roda esta função
+// contra a resposta REAL da rota, que é o que pega esse tipo de erro.
+function desenharLuzesDaSerena(dados = {}) {
+  const horario = dados?.horario ?? {};
+  const estado = {
+    whatsapp: dados?.whatsapp?.estado === 'conectado' ? 'ok' : 'parado',
+    // Centro operacional e Testar não têm liga/desliga: são ferramentas.
+    diagnostico: 'neutro',
+    teste: 'neutro',
+    voz: 'neutro',
+    // `atendendo` já combina interruptor, pausa, plantão e grade — o servidor
+    // resolve essa precedência e a tela não a reimplementa.
+    horario: horario.atendendo === true ? 'ok'
+      : (horario.agenda?.ativa ? 'parado' : 'neutro'),
+    prompt: dados?.prompt_ativo ? 'ok' : 'parado',
+    regras: (dados?.regras ?? []).filter((regra) => regra.ativa).length > 0 ? 'ok' : 'neutro',
+  };
+
+  for (const [nome, valor] of Object.entries(estado)) {
+    const luz = seletor(`[data-luz="${nome}"]`);
+    if (!luz) continue;
+    luz.dataset.estado = valor;
+    const botao = luz.closest('[data-secao-serena]');
+    if (botao) {
+      const rotulo = (botao.textContent || '').trim();
+      const legenda = valor === 'ok' ? 'no ar' : valor === 'parado' ? 'parado' : '';
+      botao.title = legenda ? `${rotulo}: ${legenda}` : rotulo;
+    }
+  }
+}
+
+for (const botao of document.querySelectorAll('[data-secao-serena]')) {
+  botao.addEventListener('click', () => abrirSecaoDaSerena(botao.dataset.secaoSerena));
+}
+
 async function carregarSerena() {
   try {
     const dados = await pedirJson('/api/serena');
@@ -4024,26 +4137,34 @@ async function carregarSerena() {
 
     const controle = seletor('#serena-controle');
     if (controle) controle.hidden = !dados.pode_gerenciar;
+
+    // A permissão vem ANTES de escolher a seção: é ela que diz quais botões
+    // existem para esta pessoa e qual seção pode abrir.
+    aplicarPermissaoNasSecoesDaSerena(dados.pode_gerenciar);
+
+    // A seção guardada vale entre visitas; sem ela, quem trabalha no Centro
+    // operacional voltaria ao WhatsApp a cada carga.
+    let guardada = null;
+    try { guardada = localStorage.getItem(CHAVE_SECAO_SERENA); } catch { }
+    abrirSecaoDaSerena(guardada || SECAO_SERENA_PADRAO, { lembrar: false });
+
+    desenharLuzesDaSerena(dados);
+
     // Mesmo gate do cartão: escolher canal é mexer no atendimento.
     const canais = seletor('#serena-canais');
     if (canais) canais.hidden = !dados.pode_gerenciar;
-    const cartaoDeHorario = seletor('#serena-horario-card');
-    if (cartaoDeHorario) cartaoDeHorario.hidden = !dados.pode_gerenciar;
-    // Testar o prompt é mexer no que a clínica diz ao paciente: mesma permissão
-    // de quem publica a versão.
-    const cartaoDeTeste = seletor('#serena-teste-card');
-    if (cartaoDeTeste) {
-      cartaoDeTeste.hidden = !dados.pode_gerenciar;
-      // A lista de modelos precisa existir antes da primeira mensagem: quem vai
-      // testar escolhe o modelo primeiro, não depois de já ter conversado.
-      if (dados.pode_gerenciar) carregarModelosDoTeste().catch(() => {});
-    }
-    // A varredura mostra o estado interno da infraestrutura — nome do usuário do
-    // banco, serviços parados. Quem atende paciente não precisa disso.
-    const cartaoDeDiagnostico = seletor('#diagnostico-card');
-    if (cartaoDeDiagnostico) {
-      cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
-      if (dados.pode_gerenciar) carregarSeletorDeIaDoDiagnostico().catch(() => {});
+
+    // Os cartões restritos (Horário, Testar, Centro operacional) NÃO são
+    // revelados aqui. Quem decide qual painel está aberto é a navegação
+    // (abrirSecaoDaSerena, logo acima); `hidden = !pode_gerenciar` punha os
+    // três de volta na tela para o admin — e a tela voltava a ser a pilha de
+    // cartões abertos que a navegação veio substituir. Esconder quem não pode
+    // já é feito por SECOES_SO_DE_QUEM_GERENCIA + abrirSecaoDaSerena.
+    if (dados.pode_gerenciar) {
+      // As duas listas precisam existir antes do primeiro uso da seção: quem
+      // vai testar escolhe o modelo primeiro, não depois de já ter conversado.
+      carregarModelosDoTeste().catch(() => {});
+      carregarSeletorDeIaDoDiagnostico().catch(() => {});
     }
     desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
@@ -4271,6 +4392,194 @@ async function carregarInstagram() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Gráficos (12/09/2026) — SVG à mão, porque a CSP do projeto não deixa entrar
+// biblioteca de fora e três formas não justificam uma dependência.
+
+/**
+ * Soma as linhas do mesmo dia.
+ *
+ * `leads.por_dia` vem com uma linha por dia E POR ORIGEM (vw_leads_por_dia,
+ * ORDER BY dia, origem). Plotar linha a linha desenhava 30 dias × 3 origens =
+ * 90 pontos serrilhados, com o mesmo dia repetido três vezes e nenhum deles
+ * mostrando o total daquele dia.
+ */
+function totalPorDia(linhas) {
+  const soma = new Map();
+  for (const linha of linhas ?? []) {
+    if (!linha?.dia) continue;
+    const dia = String(linha.dia).slice(0, 10);
+    soma.set(dia, (soma.get(dia) ?? 0) + (Number(linha.total) || 0));
+  }
+  return [...soma.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([dia, total]) => ({ dia, total }));
+}
+
+/**
+ * Põe as etapas na ordem do funil e separa as que não fazem parte da descida.
+ *
+ * A consulta devolve `ORDER BY estagio` — ordem alfabética: agendado,
+ * convertido, novo, perdido, qualificando. Desenhar o funil nessa ordem faz o
+ * gráfico anunciar conversões inventadas ("Novos: 900% de quem estava em
+ * convertido") e põe "perdido" no meio da descida. A ordem verdadeira é a de
+ * src/dominio/leads.js; "perdido" é terminal e sai do cálculo de queda.
+ */
+const ORDEM_DO_FUNIL = ['novo', 'qualificando', 'agendado', 'convertido'];
+const ESTAGIOS_TERMINAIS = ['perdido'];
+
+function ordenarFunil(etapas, { rotulo = 'estagio' } = {}) {
+  const porEstagio = new Map((etapas ?? []).filter(Boolean).map((etapa) => [String(etapa[rotulo]), etapa]));
+  // Etapa sem nenhum lead não vem na consulta; entra como zero para o funil
+  // não pular degrau.
+  const descida = ORDEM_DO_FUNIL.map((estagio) => porEstagio.get(estagio) ?? { [rotulo]: estagio, total: 0 });
+  const terminais = ESTAGIOS_TERMINAIS.map((estagio) => porEstagio.get(estagio)).filter(Boolean);
+  // Qualquer estágio que apareça no banco e não esteja em nenhuma das listas
+  // continua sendo mostrado — no fim, sem queda calculada.
+  const conhecidos = new Set([...ORDEM_DO_FUNIL, ...ESTAGIOS_TERMINAIS]);
+  const sobras = [...porEstagio.values()].filter((etapa) => !conhecidos.has(String(etapa[rotulo])));
+  return { descida, fora: [...terminais, ...sobras] };
+}
+
+/** Um nó SVG com atributos, sem innerHTML — a CSP não aceita HTML solto. */
+function svgEl(nome, atributos = {}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', nome);
+  for (const [chave, valor] of Object.entries(atributos)) {
+    if (valor !== null && valor !== undefined) el.setAttribute(chave, String(valor));
+  }
+  return el;
+}
+
+/**
+ * Linha do tempo: um ponto por dia.
+ *
+ * Área preenchida sob a linha porque o que importa aqui é volume, não valor
+ * exato — e o último ponto ganha um círculo, que é onde o olho procura "como
+ * estamos agora".
+ */
+function graficoDeLinha(pontos, { rotuloValor = 'total' } = {}) {
+  const dados = (pontos ?? []).filter((ponto) => ponto && ponto.dia);
+  if (dados.length === 0) {
+    const vazio = document.createElement('p');
+    vazio.className = 'vazio';
+    vazio.textContent = 'Sem dados no período.';
+    return vazio;
+  }
+
+  const L = 560;
+  const A = 160;
+  const margem = { cima: 14, baixo: 26, lado: 34 };
+  const maximo = Math.max(...dados.map((d) => Number(d[rotuloValor]) || 0), 1);
+  const largura = L - margem.lado * 2;
+  const altura = A - margem.cima - margem.baixo;
+
+  const x = (i) => margem.lado + (dados.length === 1 ? largura / 2 : (i * largura) / (dados.length - 1));
+  const y = (v) => margem.cima + altura - ((Number(v) || 0) / maximo) * altura;
+
+  const svg = svgEl('svg', {
+    viewBox: `0 0 ${L} ${A}`, class: 'grafico', role: 'img',
+    'aria-label': `Evolução por dia. Maior valor: ${maximo}.`,
+  });
+
+  // Três linhas de grade: o suficiente para estimar altura sem virar papel
+  // quadriculado.
+  for (const fracao of [0, 0.5, 1]) {
+    const linhaY = margem.cima + altura * fracao;
+    svg.append(svgEl('line', {
+      x1: margem.lado, x2: L - margem.lado, y1: linhaY, y2: linhaY, class: 'grade',
+    }));
+    const marca = svgEl('text', { x: margem.lado - 8, y: linhaY + 4, class: 'eixo', 'text-anchor': 'end' });
+    marca.textContent = String(Math.round(maximo * (1 - fracao)));
+    svg.append(marca);
+  }
+
+  const caminho = dados.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(d[rotuloValor]).toFixed(1)}`).join(' ');
+  svg.append(svgEl('path', {
+    d: `${caminho} L ${x(dados.length - 1).toFixed(1)} ${margem.cima + altura} L ${x(0).toFixed(1)} ${margem.cima + altura} Z`,
+    class: 'area',
+  }));
+  svg.append(svgEl('path', { d: caminho, class: 'linha' }));
+
+  const ultimo = dados.length - 1;
+  svg.append(svgEl('circle', { cx: x(ultimo), cy: y(dados[ultimo][rotuloValor]), r: 4, class: 'ponto' }));
+
+  // Só primeiro e último rótulo: com 30 dias, todos viram borrão.
+  for (const i of [...new Set([0, ultimo])]) {
+    const texto = svgEl('text', {
+      x: x(i), y: A - 8, class: 'eixo',
+      'text-anchor': i === 0 ? 'start' : 'end',
+    });
+    texto.textContent = String(dados[i].dia).slice(5).split('-').reverse().join('/');
+    svg.append(texto);
+  }
+
+  return svg;
+}
+
+/**
+ * Funil: cada etapa como uma faixa, com a queda para a seguinte.
+ *
+ * Barras lado a lado tratam as etapas como categorias independentes. O funil
+ * mostra o que se quer saber: quantos sobraram de uma etapa para a outra.
+ */
+function graficoDeFunil(etapas, { rotulo = 'estagio', valor = 'total' } = {}) {
+  const { descida, fora } = ordenarFunil(etapas, { rotulo });
+  // Só a descida calcula queda; "perdido" entra depois, sem porcentagem, para
+  // não parecer um degrau do caminho.
+  const dados = [...descida, ...fora];
+  const quantasDaDescida = descida.length;
+  if ((etapas ?? []).length === 0) {
+    const vazio = document.createElement('p');
+    vazio.className = 'vazio';
+    vazio.textContent = 'Sem leads no funil.';
+    return vazio;
+  }
+
+  const topo = Math.max(...dados.map((d) => Number(d[valor]) || 0), 1);
+  const lista = document.createElement('ol');
+  lista.className = 'funil';
+
+  dados.forEach((etapa, i) => {
+    const total = Number(etapa[valor]) || 0;
+    const fatia = Math.max((total / topo) * 100, total > 0 ? 6 : 2);
+
+    const item = document.createElement('li');
+
+    const cabecalho = document.createElement('div');
+    cabecalho.className = 'funil-topo';
+    const nome = document.createElement('span');
+    nome.textContent = String(etapa[rotulo] ?? '—');
+    const numero = document.createElement('b');
+    numero.textContent = String(total);
+    cabecalho.append(nome, numero);
+
+    const trilho = document.createElement('div');
+    trilho.className = 'funil-trilho';
+    const barra = document.createElement('div');
+    barra.className = 'funil-barra';
+    barra.style.width = `${fatia.toFixed(1)}%`;
+    trilho.append(barra);
+
+    item.append(cabecalho, trilho);
+
+    // A queda para a etapa seguinte é a informação que o funil existe para dar
+    // — e só faz sentido dentro da descida.
+    const anterior = i > 0 && i < quantasDaDescida ? Number(dados[i - 1][valor]) || 0 : null;
+    if (anterior !== null && anterior > 0) {
+      const queda = document.createElement('small');
+      queda.className = 'funil-queda';
+      const passou = Math.round((total / anterior) * 100);
+      queda.textContent = `${passou}% de quem estava em "${dados[i - 1][rotulo]}"`;
+      item.append(queda);
+    }
+
+    lista.append(item);
+  });
+
+  return lista;
+}
+
 function desenharMetricasInstagram(metricas) {
   definirTexto('#ig-metrica-total', metricas ? String(metricas.total_comentarios) : '—');
   definirTexto('#ig-metrica-com-gatilho', metricas ? String(metricas.com_gatilho) : '—');
@@ -4474,10 +4783,14 @@ function desenharMenuDeAgentes(agentes) {
     botao.type = 'button';
     botao.dataset.tela = 'agentes';
     botao.dataset.abrirAgenteMenu = String(Number(agente.id));
-    const icone = document.createElement('span');
-    icone.className = 'icone-menu';
+    // Mesmo sprite dos itens fixos: um agente criado pela tela não pode
+    // parecer de outra família que a Serena.
+    const icone = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icone.setAttribute('class', 'icone-menu');
     icone.setAttribute('aria-hidden', 'true');
-    icone.textContent = '◈';
+    const uso = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    uso.setAttribute('href', '#i-agente');
+    icone.append(uso);
     const nome = String(agente.nome ?? '');
     botao.title = nome;
     botao.append(icone, ` ${nome.length > 24 ? `${nome.slice(0, 23)}…` : nome}`);
@@ -4546,6 +4859,7 @@ async function abrirAgente(id) {
       zerarWhatsappDoAgente();
     }
     destacarAgenteNoMenu(dados.agente.id);
+    desenharLuzesDoAgente(dados);
     preencherEditorDeAgente();
     carregarEquipeDoAgente();
     const editor = seletor('#agente-editor');
@@ -4558,11 +4872,62 @@ async function abrirAgente(id) {
   }
 }
 
+/**
+ * O ponto de estado de cada aba do agente.
+ *
+ * Mesma leitura da tela da Serena: verde no ar, vermelho parado, cinza quando
+ * não há o que ligar. Aqui "parado" quase sempre quer dizer "falta
+ * configurar" — é o que a pessoa precisa ver antes de ligar um agente.
+ */
+/** Pinta uma luz da barra de abas do agente e explica o estado no title. */
+function acenderLuzDoAgente(nome, valor) {
+  const luz = seletor(`[data-luz-agente="${nome}"]`);
+  if (!luz) return;
+  luz.dataset.estado = valor;
+  const aba = luz.closest('[data-aba-agente]');
+  if (!aba) return;
+  const rotulo = (aba.textContent || '').trim();
+  const legenda = valor === 'ok' ? 'configurado' : valor === 'parado' ? 'falta configurar' : '';
+  aba.title = legenda ? `${rotulo}: ${legenda}` : rotulo;
+}
+
+function desenharLuzesDoAgente(dados = {}) {
+  const agente = dados.agente ?? {};
+  const canais = dados.canais ?? agente.canais ?? [];
+  const treinamentos = dados.treinamentos ?? [];
+  const configuracoes = agente.configuracoes ?? {};
+
+  const estado = {
+    // Ferramenta: não tem liga/desliga.
+    teste: 'neutro',
+    horario: configuracoes.horario?.ativa ? 'ok' : 'neutro',
+    // O comportamento é o que o agente diz ao cliente: sem ele, o agente não
+    // tem identidade e não deveria atender.
+    perfil: String(agente.comportamento ?? '').trim() ? 'ok' : 'parado',
+    treinamentos: treinamentos.length > 0 ? 'ok' : 'neutro',
+    trabalho: 'neutro',
+    configuracoes: 'neutro',
+    inatividade: (agente.acoes_inatividade ?? []).some((acao) => acao.ativa !== false) ? 'ok' : 'neutro',
+    // Sem canal o agente não recebe nem responde nada.
+    canais: canais.length > 0 ? 'ok' : 'parado',
+  };
+
+  for (const [nome, valor] of Object.entries(estado)) acenderLuzDoAgente(nome, valor);
+
+  // Enquanto a equipe não chega, a luz dela fica neutra em vez de mentir que
+  // falta configurar.
+  acenderLuzDoAgente('equipe', 'neutro');
+}
+
 function selecionarAbaDoAgente(nome) {
   for (const aba of document.querySelectorAll('[data-aba-agente]')) {
     const ativa = aba.dataset.abaAgente === nome;
     aba.classList.toggle('selecionada', ativa);
     aba.setAttribute('aria-selected', String(ativa));
+    // `aria-current` é o que o estilo das seções usa para pintar o item
+    // aberto — o mesmo desenho da tela da Serena.
+    if (ativa) aba.setAttribute('aria-current', 'page');
+    else aba.removeAttribute('aria-current');
   }
   for (const painel of document.querySelectorAll('[data-painel-agente]')) {
     painel.hidden = painel.dataset.painelAgente !== nome;
@@ -5428,6 +5793,11 @@ async function carregarEquipeDoAgente() {
 function desenharEquipeDoAgente({ membros = [], pode_gerenciar: pode = false } = {}) {
   const lista = seletor('#agente-equipe-lista');
   if (!lista) return;
+
+  // A luz da aba Equipe é acesa aqui, e não junto das outras: a equipe vem de
+  // /api/agentes/:id/equipe, que é uma requisição separada da do agente. Sem
+  // equipe ninguém recebe o resumo nem vê as conversas dele.
+  acenderLuzDoAgente('equipe', membros.length > 0 ? 'ok' : 'parado');
   if (membros.length === 0) {
     lista.innerHTML = '<li class="vazio">Ninguém na equipe ainda: só o administrador vê as conversas deste agente, e ninguém recebe o resumo dele.</li>';
     return;
@@ -5621,28 +5991,42 @@ async function carregarContatos() {
     if (total) total.textContent = `${dados.total} contato(s)`;
     if (!lista) return;
 
+    // A coluna de agendamentos só existe para quem vê a clínica: a API não
+    // manda o campo para os demais (lista branca, achado M1), e uma coluna
+    // vazia diria "nenhum agendamento" onde o certo é "você não vê isso".
+    //
+    // Quem decide é a RESPOSTA, não `veClinica()`. As duas concordam no caminho
+    // normal, mas podem divergir: se /api/conversas/escopo falha, o fallback
+    // assume clínica (app.js, prepararEscopoDaSessao) — aí a coluna apareceria
+    // e as linhas viriam com uma célula a menos, torcendo a tabela inteira.
+    const temAgendamentos = dados.contatos.some((contato) => contato.agendamentos !== undefined);
+    const colunaAgendamentos = seletor('#coluna-agendamentos');
+    if (colunaAgendamentos) colunaAgendamentos.hidden = !temAgendamentos;
+    const colunas = temAgendamentos ? 5 : 4;
+
     if (dados.contatos.length === 0) {
-      lista.innerHTML = '<li class="vazio">Nenhum contato encontrado.</li>';
+      lista.innerHTML = `<tr><td colspan="${colunas}" class="vazio">Nenhum contato encontrado.</td></tr>`;
       return;
     }
 
     lista.innerHTML = dados.contatos.map((contato) => `
-      <li class="${contato.excluido ? 'desligada' : ''}">
-        <div>
+      <tr class="${contato.excluido ? 'desligada' : ''}">
+        <td>
           <strong>${escapar(contato.nome ?? 'sem nome')}</strong> ${selosDoContatoEmHtml(contato.selos)}
-          <small>${escapar(contato.telefone)} · ${contato.conversas ?? 0} conversa(s)
-            ${contato.agendamentos !== undefined ? ` · ${Number(contato.agendamentos) || 0} agendamento(s)` : ''}
-            ${contato.recebe_lembretes === false ? ' · não recebe lembretes' : ''}
-            ${contato.excluido ? ` · excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}` : ''}</small>
-        </div>
-        <div class="linha-acoes">
+          ${contato.recebe_lembretes === false ? '<small>não recebe lembretes</small>' : ''}
+          ${contato.excluido ? `<small>excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}</small>` : ''}
+        </td>
+        <td class="telefone" data-rotulo="Telefone">${escapar(contato.telefone)}</td>
+        <td class="numero" data-rotulo="Conversas">${contato.conversas ?? 0}</td>
+        ${contato.agendamentos !== undefined ? `<td class="numero" data-rotulo="Agendamentos" data-agendamentos>${Number(contato.agendamentos) || 0}</td>` : ''}
+        <td class="celula-acoes">
           ${contato.excluido
             ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`
             : `<button type="button" class="secundario" data-ver-contato="${contato.id}">Histórico</button>
                ${veClinica() ? `<button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
                <button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>` : ''}`}
-        </div>
-      </li>`).join('');
+        </td>
+      </tr>`).join('');
   } catch (erro) {
     informar(`Não foi possível carregar os contatos: ${erro.message}`);
   }

@@ -145,7 +145,9 @@ test('o painel de operação recarrega ao abrir o agente e o selo do menu conta 
   const bloco = blocoDeAgentes();
   const abrir = bloco.slice(bloco.indexOf('async function abrirAgente('), bloco.indexOf('function selecionarAbaDoAgente('));
   assert.match(abrir, /carregarOperacaoDoAgente\(\)/);
-  assert.match(HTML, /data-tela="agentes">[^<]*<span[^>]*>☰<\/span> Todos os agentes <b class="contador" id="contador-agentes"[^>]*hidden>/);
+  // O ícone deixou de ser um caractere solto e virou <svg><use>; o que este
+  // teste prova é o rótulo e o contador que nasce escondido, não o desenho.
+  assert.match(HTML, /data-tela="agentes">[\s\S]{0,180}Todos os agentes <b class="contador" id="contador-agentes"[^>]*hidden>/);
   assert.match(APP_JS, /iniciarSeloDeAgentes\(\);/, 'o selo começa junto com a aplicação');
   assert.match(bloco, /pedirJson\('\/api\/agentes\/aguardando'\)/);
 });

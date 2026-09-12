@@ -12,13 +12,23 @@
   --linha: #e2e8f1;
   --ciano: #0e8fa1;
   --roxo: #5b4bd6;
+  /* Azul da logomarca (12/09/2026) — o gradiente da marca e dos botoes sai
+     dela, nao mais do roxo, que vinha de antes e brigava na mesma tela. */
+  --azul-marca: #1f6fb2;
   --verde: #0f7a58;
   --ambar: #8a5b00;
   --sombra: 0 12px 30px rgba(16, 35, 68, 0.06);
   --raio: 12px;
+  /* Altura da barra do topo (sticky). Quem gruda abaixo dela se desloca por
+     esta medida em vez de repetir o numero. */
+  --altura-topo: 66px;
 }
 
 * { box-sizing: border-box; }
+
+/* O sprite guarda os símbolos do menu; quem desenha são os <use>. Fora da
+   tela, mas dentro do DOM — é assim que <use href="#..."> os encontra. */
+.sprite-icones { display: none; }
 
 /* Regras com `display` explícito vencem o `display: none` que o navegador dá a
    [hidden] — sem isto, um painel marcado como oculto continua aparecendo. */
@@ -81,6 +91,13 @@ h1, h2, h3 { line-height: 1.25; }
   box-shadow: 0 20px 50px rgba(6, 14, 30, 0.35);
 }
 .cartao-login .marca-icone { margin-bottom: 10px; }
+.logo-entrada {
+  display: block;
+  width: 100%;
+  max-width: 230px;
+  height: auto;
+  margin: 0 auto 6px;
+}
 .cartao-login h1 { margin: 0; font-size: 22px; }
 .cartao-login > p { margin: 0 0 16px; color: var(--apoio); font-size: 13px; }
 .cartao-login label { font-size: 12px; color: var(--apoio); margin-top: 8px; }
@@ -208,6 +225,16 @@ h1, h2, h3 { line-height: 1.25; }
 .plantao .estado.ruim { color: #ffada8; }
 .plantao .estado.ruim::before { background: #ff6b61; }
 
+/* Só em tela larga, onde os cinco sinais cabem em uma linha: a divisória
+   separa um sinal do outro. Abaixo disso a faixa quebra em duas linhas e a
+   divisória apareceria no começo da segunda, que é onde ela atrapalha. */
+@media (min-width: 981px) {
+  .plantao { gap: 0; padding: 8px 24px; }
+  .plantao > div { padding: 0 18px; }
+  .plantao > div:first-child { padding-left: 0; }
+  .plantao > div + div { border-left: 1px solid rgba(220, 232, 250, 0.16); }
+}
+
 /* ---------- Menu lateral ---------- */
 
 .lateral {
@@ -221,6 +248,15 @@ h1, h2, h3 { line-height: 1.25; }
 .marca { display: flex; gap: 9px; align-items: center; margin: 0 0 6px; padding: 0 6px; }
 .marca b { display: block; font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
 .marca small { display: block; color: var(--apoio); font-size: 10.5px; }
+.marca-icone svg { width: 19px; height: 19px; }
+/* A logomarca da clinica no lugar do simbolo desenhado (12/09/2026). */
+img.marca-icone {
+  background: none;
+  border-radius: 8px;
+  object-fit: contain;
+  display: block;
+}
+.agente-icone svg { width: 24px; height: 24px; }
 .marca-icone, .agente-icone {
   display: grid;
   place-items: center;
@@ -228,7 +264,7 @@ h1, h2, h3 { line-height: 1.25; }
   border-radius: 10px;
   color: #fff;
   font-size: 22px;
-  background: linear-gradient(135deg, var(--ciano), var(--roxo));
+  background: linear-gradient(135deg, var(--ciano), var(--azul-marca));
   flex: none;
 }
 /* Relógio: agora vive na barra do topo, em uma linha, como contexto de plantão
@@ -246,20 +282,42 @@ h1, h2, h3 { line-height: 1.25; }
 /* O menu ocupa a altura livre: o que vem depois dele (controles da Serena e
    rodapé) se ancora no pé sem `margin: auto` espalhado por cada botão. */
 .lateral nav { margin-bottom: auto; min-width: 0; }
-nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+
+/* Em tela larga a lateral acompanha a rolagem e o menu rola por dentro: com
+   14 itens, a parada de emergência ficava abaixo da dobra — um botão de
+   urgência que exigia rolar não é um botão de urgência. */
+@media (min-width: 981px) {
+  .lateral {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+  }
+  .lateral nav {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #cfd8e6 transparent;
+    /* Desvanece a última linha quando ainda há item abaixo: um rótulo cortado
+       ao meio parece defeito; desvanecido, diz "continua". */
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  }
+}
+
+nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 nav button {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   border: 0;
   background: transparent;
   text-align: left;
   color: #45506a;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 8px;
   font: inherit;
   font-size: 13.5px;
+  line-height: 1.35;
   cursor: pointer;
 }
 nav button:hover { background: #f1f6fb; color: #0a6f7e; }
@@ -271,7 +329,21 @@ nav button[aria-current="page"] {
   font-weight: 700;
   box-shadow: inset 3px 0 0 var(--ciano);
 }
-.icone-menu { width: 20px; text-align: center; font-size: 14px; opacity: 0.9; }
+.icone-menu {
+  width: 18px; height: 18px;
+  flex: none;
+  opacity: 0.7;
+  /* O <use> clona o símbolo para dentro deste svg, e o clone herda daqui —
+     não do sprite. Sem estas quatro linhas cada forma fechada apareceria
+     preenchida de preto, que é o padrão do SVG. */
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+nav button:hover .icone-menu { opacity: 0.95; }
+nav button[aria-current="page"] .icone-menu { opacity: 1; }
 /* Contador do menu é informação, não alarme: neutro. O do sino é alerta. */
 .contador {
   margin-left: auto;
@@ -304,8 +376,9 @@ nav button[aria-current="page"] {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
-  margin: 14px 0 4px;
-  padding: 0 10px;
+  margin: 12px 0 5px;
+  padding: 11px 10px 0;
+  border-top: 1px solid var(--linha);
 }
 
 /* Parada de emergência: continua sempre à mão, no pé do menu, mas em contorno
@@ -400,8 +473,16 @@ nav button[aria-current="page"] {
 }
 .topo small { color: var(--apoio); font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; }
 .topo h1 { margin: 2px 0 0; font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
-.acoes { display: flex; align-items: center; gap: 12px; color: var(--apoio); }
-.nome-equipe { font-size: 13px; }
+.acoes { display: flex; align-items: center; gap: 10px; color: var(--apoio); }
+/* Uma linha separa o contexto (hora, local) do que é da pessoa (avatar, nome,
+   sair): sem ela os cinco elementos liam como uma fileira só. */
+.acoes .sino { margin-left: 2px; padding-left: 12px; border-left: 1px solid var(--linha); }
+.acoes .avatar { margin-left: 2px; }
+.nome-equipe { font-size: 13px; color: var(--texto); font-weight: 600; }
+
+/* Botão de ícone: quadrado, sem o padding de texto do .acao. */
+#sino-botao { display: grid; place-items: center; padding: 7px; }
+#sino-botao .icone-menu { width: 17px; height: 17px; opacity: 0.85; }
 
 .avatar {
   display: inline-grid;
@@ -461,7 +542,7 @@ nav button[aria-current="page"] {
 .primario {
   border: 0;
   padding: 10px 16px;
-  background: linear-gradient(135deg, var(--ciano), var(--roxo));
+  background: linear-gradient(135deg, var(--ciano), var(--azul-marca));
   color: #fff;
   white-space: nowrap;
 }
@@ -1480,7 +1561,7 @@ button.perigo:hover { background: #fecaca; }
   margin: 0 0 10px;
 }
 
-.lista-versoes, .lista-regras, .lista-contatos {
+.lista-versoes, .lista-regras, .lista-cartoes {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1489,7 +1570,7 @@ button.perigo:hover { background: #fecaca; }
   gap: 8px;
 }
 
-.lista-versoes li, .lista-regras li, .lista-contatos li {
+.lista-versoes li, .lista-regras li, .lista-cartoes li {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1500,7 +1581,7 @@ button.perigo:hover { background: #fecaca; }
   background: var(--superficie);
 }
 
-.lista-versoes li small, .lista-regras li small, .lista-contatos li small {
+.lista-versoes li small, .lista-regras li small, .lista-cartoes li small {
   display: block;
   color: var(--apoio);
   font-size: 12.5px;
@@ -1513,7 +1594,7 @@ button.perigo:hover { background: #fecaca; }
 /* Nome sem espaço (um token longo) alargava a linha e criava rolagem lateral
    na tela: quebra dentro da palavra em vez de estourar. */
 .lista-regras strong { overflow-wrap: anywhere; }
-.lista-regras li.desligada, .lista-contatos li.desligada { opacity: 0.55; }
+.lista-regras li.desligada { opacity: 0.55; }
 
 .form-regra, #form-prompt, #form-contato { display: block; margin-bottom: 14px; }
 .form-regra label, #form-prompt label, #form-contato label {
@@ -1538,6 +1619,133 @@ button.perigo:hover { background: #fecaca; }
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
 }
+
+/* ---------- Tabela de dados (12/09/2026) ----------
+
+   Lista longa se lê por coluna, não por frase. Em Contatos as informações
+   vinham em texto corrido separado por "·": nada alinhava com a linha de
+   cima, e comparar dois contatos exigia ler palavra por palavra.
+
+   O cabeçalho gruda no topo enquanto a lista rola — com 247 linhas, saber
+   qual coluna é qual não pode depender de voltar ao começo. */
+
+/* A rolagem lateral e so para tela estreita. Em tela larga ela precisa NAO
+   existir: `overflow-x: auto` faz este bloco virar o contexto de rolagem do
+   cabecalho grudento, e como a altura e automatica nunca ha rolagem aqui
+   dentro — o cabecalho simplesmente nao grudaria em lugar nenhum. */
+.tabela-rolagem { margin-top: 12px; }
+@media (max-width: 980px) { .tabela-rolagem { overflow-x: auto; } }
+.tabela-dados {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.tabela-dados th {
+  position: sticky;
+  /* Abaixo da barra do topo, que tambem e sticky (z-index 4): por isso o
+     deslocamento e o z-index menor — o cabecalho passa por baixo dela. */
+  top: var(--altura-topo);
+  z-index: 1;
+  background: var(--superficie);
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--apoio);
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--linha);
+  white-space: nowrap;
+}
+.tabela-dados td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--linha);
+  vertical-align: middle;
+}
+.tabela-dados tr:last-child td { border-bottom: 0; }
+.tabela-dados tbody tr:hover { background: #f7fafd; }
+.tabela-dados strong { font-weight: 650; overflow-wrap: anywhere; }
+/* Observação da linha (não recebe lembretes, excluído em…): abaixo do nome,
+   em voz baixa — é ressalva, não coluna. */
+.tabela-dados td small { display: block; color: var(--apoio); font-size: 11.5px; margin-top: 2px; }
+/* Números e telefone com dígito de largura fixa: é isso que faz a coluna
+   descer reta. */
+.tabela-dados .numero { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tabela-dados .telefone { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--apoio); }
+.tabela-dados .celula-acoes { width: 1%; white-space: nowrap; text-align: right; }
+/* Botão de lista é menor que botão de formulário — e o `margin-top: 14px`
+   que .secundario carrega (pensado para ficar abaixo de um campo) empurrava
+   "Histórico" e "Editar" para baixo de "Excluir" na mesma linha. */
+.tabela-dados .celula-acoes button { margin: 0 0 0 6px; padding: 6px 11px; font-size: 12.5px; }
+.tabela-dados .celula-acoes button:first-child { margin-left: 0; }
+.tabela-dados .vazio { padding: 18px 10px; }
+/* Contato excluído continua visível — sai da operação, não da tela. */
+.tabela-dados tr.desligada { opacity: 0.55; }
+
+/* No telefone a tabela deixa de ser tabela.
+
+   Cinco colunas em 390px nao cabem: o nome quebra no meio da palavra e as
+   ultimas colunas (agendamentos, acoes) ficam fora da tela, atras de uma
+   rolagem lateral que ninguem ve. Cada linha vira um cartao, e cada valor
+   passa a dizer o que e — o rotulo vem do `data-rotulo` da celula, ja que o
+   cabecalho some. */
+@media (max-width: 720px) {
+  .tabela-rolagem { overflow-x: visible; }
+  .tabela-dados thead {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .tabela-dados, .tabela-dados tbody, .tabela-dados tr, .tabela-dados td { display: block; }
+  .tabela-dados tr {
+    border: 1px solid var(--linha);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .tabela-dados td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 14px;
+    padding: 3px 0;
+    border-bottom: 0;
+  }
+  .tabela-dados td::before {
+    content: attr(data-rotulo);
+    color: var(--apoio);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  /* O nome ocupa a linha toda, como titulo do cartao: nao tem rotulo porque
+     nao precisa de um. */
+  .tabela-dados td:first-child { display: block; margin-bottom: 6px; }
+  .tabela-dados td:first-child::before { content: none; }
+  .tabela-dados .numero, .tabela-dados .telefone { text-align: right; }
+  .tabela-dados .celula-acoes {
+    width: auto;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--linha);
+  }
+  .tabela-dados .celula-acoes::before { content: none; }
+  .tabela-dados .celula-acoes button { margin: 0; }
+  .tabela-dados .vazio { padding: 14px 0; }
+  /* Quebra dentro da palavra so quando a palavra nao cabe mesmo. */
+  .tabela-dados strong { overflow-wrap: break-word; }
+}
+
+/* Barra de filtros: a busca fica com a sobra, porque é ela que se usa. */
+.filtros { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.filtros input[type="search"] { flex: 1 1 220px; min-width: 180px; }
 
 .marcador { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--apoio); }
 .marcador input { width: auto; }
@@ -1920,3 +2128,114 @@ button.perigo:hover { background: #fecaca; }
 .linha-canal small { display: block; color: var(--apoio); font-size: 12px; }
 .linha-canal input:disabled + span { opacity: 0.6; }
 .canais-automacao[data-inerte="true"] .linha-canal { opacity: 0.55; }
+
+/* ---------- Seções da Serena e dos agentes (12/09/2026) ----------
+
+   Eram oito cartões abertos ao mesmo tempo. Agora é um por vez, e a barra
+   abaixo é a única coisa que compete por atenção no topo da tela.
+
+   O ponto à esquerda de cada botão diz o estado sem precisar abrir: verde no
+   ar, vermelho parado, cinza quando aquela seção não tem o que ligar. Cor
+   sozinha não basta — o `title` de cada botão repete em palavra. */
+
+.secoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 18px 0 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--linha);
+}
+
+/* `nav button` (o menu lateral) vale para qualquer botao dentro de um <nav>,
+   inclusive esta barra: a largura de 100% dali empilhava as pilulas uma por
+   linha. Reafirmar aqui e mais claro do que trocar a semantica do <nav>. */
+.secoes .secao {
+  width: auto;
+  flex: 0 0 auto;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  border: 1px solid var(--linha);
+  border-radius: 999px;
+  background: var(--superficie);
+  color: #45506a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+
+.secoes .secao:hover { border-color: #b9c6d8; background: #f7fafd; }
+
+/* O item aberto: fundo cheio, e não só borda — com sete pílulas na mesma
+   linha, uma borda mais grossa some no meio das outras. */
+.secoes .secao[aria-current="page"] {
+  background: var(--navy, #16233c);
+  border-color: var(--navy, #16233c);
+  color: #fff;
+}
+
+/* Ponto de estado. 7px é pequeno o bastante para não virar decoração e grande
+   o bastante para ler de relance. */
+.secoes .luz {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #c3ccd9;
+}
+.secoes .luz[data-estado="ok"] { background: #12a150; }
+.secoes .luz[data-estado="parado"] { background: #d4342a; }
+.secoes .luz[data-estado="neutro"] { background: #c3ccd9; }
+
+/* No botão aberto (fundo escuro) o cinza sumiria. */
+.secoes .secao[aria-current="page"] .luz[data-estado="neutro"] { background: #7d8ba3; }
+
+@media (max-width: 720px) {
+  /* Vira faixa que rola de lado: sete pílulas empilhadas comeriam a tela
+     inteira antes do conteúdo aparecer. */
+  .secoes {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+  }
+  .secoes .secao { white-space: nowrap; }
+}
+
+@media (forced-colors: active) {
+  /* Alto contraste descarta background: sem isto, o item aberto e o ponto de
+     estado ficariam indistinguíveis. */
+  .secoes .secao[aria-current="page"] { outline: 2px solid; outline-offset: -2px; }
+  .secoes .luz { border: 1px solid; }
+}
+
+/* ---------- Gráficos das Métricas (12/09/2026) ----------
+
+   SVG à mão: a CSP do projeto não deixa entrar biblioteca de fora, e três
+   formas não justificariam uma dependência. */
+
+.grafico { width: 100%; height: auto; display: block; margin: 6px 0 2px; }
+.grafico .grade { stroke: var(--linha); stroke-width: 1; }
+.grafico .eixo { fill: var(--apoio); font-size: 10.5px; font-family: inherit; }
+.grafico .area { fill: rgba(14, 143, 161, 0.12); stroke: none; }
+.grafico .linha { fill: none; stroke: var(--ciano, #0e8fa1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+/* O último ponto é onde o olho procura "como estamos agora". */
+.grafico .ponto { fill: var(--ciano, #0e8fa1); stroke: var(--superficie); stroke-width: 2; }
+
+/* Funil: a queda de uma etapa para a outra é a informação; por isso cada
+   faixa carrega quantos por cento passaram da anterior. */
+.funil { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 12px; counter-reset: etapa; }
+.funil-topo { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
+.funil-topo b { font-variant-numeric: tabular-nums; font-size: 15px; }
+.funil-trilho { height: 22px; background: #eef2f7; border-radius: 6px; overflow: hidden; }
+.funil-barra { height: 100%; background: linear-gradient(90deg, #0e8fa1, #1aa7bb); border-radius: 6px; }
+.funil-queda { display: block; margin-top: 4px; color: var(--apoio); font-size: 11.5px; }
+
+@media (forced-colors: active) {
+  .grafico .linha, .grafico .ponto { forced-color-adjust: none; }
+  .funil-barra { border: 1px solid; }
+}

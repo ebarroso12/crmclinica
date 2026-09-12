@@ -103,20 +103,27 @@ test('nome de agente malicioso no selo de origem não vira tag (migration 047)',
 
 test('colaborador (sem agendamentos nem opt-out na resposta) não vê "agendamento(s)" nem "não recebe lembretes" inventados (auditoria de acesso M1)', () => {
   // Lista branca da API: quem não vê a clínica recebe só id, nome, telefone,
-  // selos e conversas. A tela não pode preencher o vazio com "0 agendamento(s)".
+  // selos e conversas. A tela não pode preencher o vazio com "nenhum".
+  //
+  // A lista virou tabela (12/09/2026): a garantia passou a ser mais forte que
+  // "não escreve 0 agendamento(s)" — a CÉLULA não existe na linha, então não
+  // há sequer um espaço em branco sugerindo "nenhum agendamento".
   const doColaborador = renderizarContatos([{
     id: 1, nome: 'Cliente', telefone: '5511999999999', conversas: 2, selos: { clinica: false, agentes: [] },
   }]);
-  assert.ok(!doColaborador.includes('agendamento(s)'), `html:\n${doColaborador}`);
+  assert.ok(!doColaborador.includes('data-agendamentos'), `html:\n${doColaborador}`);
+  assert.ok(!doColaborador.includes('agendamento'), `html:\n${doColaborador}`);
   assert.ok(!doColaborador.includes('não recebe lembretes'), `html:\n${doColaborador}`);
 
   const daClinica = renderizarContatos([{
     id: 1, nome: 'Paciente', telefone: '5511999999999', conversas: 1, agendamentos: 3, recebe_lembretes: false,
   }]);
-  assert.match(daClinica, /3 agendamento\(s\)/);
+  assert.match(daClinica, /data-agendamentos>3</);
   assert.match(daClinica, /não recebe lembretes/);
+  // Zero de verdade aparece como zero: "não tem agendamento" é informação, e
+  // é diferente de "você não vê esse dado".
   const semOptOut = renderizarContatos([{ id: 1, nome: 'Paciente', telefone: '5511999999999', agendamentos: 0, recebe_lembretes: true }]);
-  assert.match(semOptOut, /0 agendamento\(s\)/);
+  assert.match(semOptOut, /data-agendamentos>0</);
   assert.ok(!semOptOut.includes('não recebe lembretes'));
 });
 

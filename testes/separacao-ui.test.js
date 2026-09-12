@@ -67,7 +67,10 @@ test('conversa aberta: temperatura e agenda do paciente só para quem vê a clí
 });
 
 test('aba Equipe do agente: lista, adicionar (admin) e tirar com confirmação; resposta de outro agente é descartada', () => {
-  assert.match(HTML, /data-aba-agente="equipe"[^>]*>Equipe<\/button>/);
+  // A aba pode trazer a luz de estado (<span class="luz">) antes do texto, por
+  // isso o intervalo em vez de `[^>]*` — o que importa é que a aba "equipe"
+  // exista e seja rotulada "Equipe".
+  assert.match(HTML, /data-aba-agente="equipe"[\s\S]{0,160}>Equipe<\/button>/);
   assert.match(HTML, /<div class="agente-aba" data-painel-agente="equipe" hidden>/);
   assert.match(HTML, /<form id="agente-equipe-form" class="form-regra" hidden>/);
   // Produção 11/09: todas as contas eram admin e a lista de candidatos vinha vazia —
