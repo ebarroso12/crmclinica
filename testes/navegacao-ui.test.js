@@ -74,3 +74,60 @@ test('a lateral acompanha a rolagem e o menu rola por dentro, para a parada não
   assert.match(trecho, /\.lateral \{[\s\S]{0,200}position: sticky;/);
   assert.match(trecho, /\.lateral nav \{[\s\S]{0,200}overflow-y: auto;/);
 });
+
+// ---------------------------------------------------------------------------
+// Achados da revisão independente de 12/09/2026, depois dos commits das seções
+// da Serena e da tabela de Contatos. Os dois eram furos reais; ficam trancados
+// aqui porque nenhum teste anterior olhava para eles.
+
+test('as seções restritas da Serena não abrem para quem não gerencia', () => {
+  // Antes da navegação por botões, esses três cartões nasciam `hidden` e a tela
+  // não tinha como revelá-los. Com um botão para cada um, abrir virou um
+  // clique — e abrir é mostrar.
+  assert.match(APP_JS, /const SECOES_SO_DE_QUEM_GERENCIA = new Set\(\[([^\]]*)\]\)/);
+  const restritas = APP_JS.match(/const SECOES_SO_DE_QUEM_GERENCIA = new Set\(\[([^\]]*)\]\)/)[1];
+  for (const secao of ['diagnostico-card', 'serena-teste-card', 'serena-horario-card']) {
+    assert.ok(restritas.includes(secao), `${secao} precisa continuar restrita a quem gerencia`);
+  }
+
+  const inicio = APP_JS.indexOf('function abrirSecaoDaSerena(');
+  const abrir = APP_JS.slice(inicio, APP_JS.indexOf('\nfunction ', inicio + 1));
+  assert.match(abrir, /SECOES_SO_DE_QUEM_GERENCIA\.has/, 'abrir uma seção precisa checar a permissão');
+  assert.match(abrir, /podeGerenciarSerena/);
+
+  // E a permissão entra antes de escolher a seção — senão a guardada no
+  // localStorage abriria antes de alguém dizer que ela não pode.
+  const permissao = APP_JS.indexOf('aplicarPermissaoNasSecoesDaSerena(dados.pode_gerenciar)');
+  const escolha = APP_JS.indexOf('abrirSecaoDaSerena(guardada');
+  assert.ok(permissao >= 0 && escolha > permissao, 'a permissão precisa ser aplicada antes de abrir a seção guardada');
+});
+
+test('a coluna Agendamentos da tabela de Contatos sai dos dados, não de veClinica()', () => {
+  // As duas concordam no caminho normal, mas divergem quando /api/conversas/escopo
+  // falha: o fallback assume clínica, e aí o cabeçalho teria uma coluna a mais
+  // que as linhas — a tabela inteira torceria.
+  const inicio = APP_JS.indexOf('async function carregarContatos(');
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\nfunction ', inicio + 1));
+
+  assert.match(funcao, /const temAgendamentos = dados\.contatos\.some\(/);
+  assert.match(funcao, /colunaAgendamentos\.hidden = !temAgendamentos/);
+  assert.match(funcao, /const colunas = temAgendamentos \? 5 : 4/);
+  assert.doesNotMatch(funcao, /veClinica\(\) \? 5 : 4/, 'o número de colunas não pode vir da permissão da sessão');
+});
+
+test('a célula de ações da tabela não usa a classe .acoes da barra do topo', () => {
+  // `.acoes` é global e traz `display: flex`, que tira a <td> do fluxo da
+  // tabela: a coluna deixa de encolher e o alinhamento vertical se perde.
+  assert.ok(!/<td class="acoes"/.test(APP_JS), 'a célula precisa de classe própria (celula-acoes)');
+  assert.match(APP_JS, /<td class="celula-acoes">/);
+  assert.match(MARCACAO, /<th scope="col" class="celula-acoes">/);
+});
+
+test('as listas em cartão de Auditoria e Bloqueios continuam com estilo', () => {
+  // Elas usavam a classe da lista de Contatos, que virou tabela: sem renomear,
+  // as duas perderiam o cartão e voltariam a ter marcador de bullet.
+  assert.ok(!MARCACAO.includes('class="lista-contatos"'), 'a classe antiga não sobrou no HTML');
+  assert.match(MARCACAO, /<ul class="lista-cartoes" id="lista-auditoria">/);
+  assert.match(MARCACAO, /<ul class="lista-cartoes" id="lista-bloqueios">/);
+  assert.match(CSS, /\.lista-versoes, \.lista-regras, \.lista-cartoes \{/);
+});

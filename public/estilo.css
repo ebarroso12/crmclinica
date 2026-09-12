@@ -16,6 +16,9 @@
   --ambar: #8a5b00;
   --sombra: 0 12px 30px rgba(16, 35, 68, 0.06);
   --raio: 12px;
+  /* Altura da barra do topo (sticky). Quem gruda abaixo dela se desloca por
+     esta medida em vez de repetir o numero. */
+  --altura-topo: 66px;
 }
 
 * { box-sizing: border-box; }
@@ -1541,7 +1544,7 @@ button.perigo:hover { background: #fecaca; }
   margin: 0 0 10px;
 }
 
-.lista-versoes, .lista-regras {
+.lista-versoes, .lista-regras, .lista-cartoes {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1550,7 +1553,7 @@ button.perigo:hover { background: #fecaca; }
   gap: 8px;
 }
 
-.lista-versoes li, .lista-regras li {
+.lista-versoes li, .lista-regras li, .lista-cartoes li {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1561,7 +1564,7 @@ button.perigo:hover { background: #fecaca; }
   background: var(--superficie);
 }
 
-.lista-versoes li small, .lista-regras li small {
+.lista-versoes li small, .lista-regras li small, .lista-cartoes li small {
   display: block;
   color: var(--apoio);
   font-size: 12.5px;
@@ -1609,7 +1612,12 @@ button.perigo:hover { background: #fecaca; }
    O cabeçalho gruda no topo enquanto a lista rola — com 247 linhas, saber
    qual coluna é qual não pode depender de voltar ao começo. */
 
-.tabela-rolagem { margin-top: 12px; overflow-x: auto; }
+/* A rolagem lateral e so para tela estreita. Em tela larga ela precisa NAO
+   existir: `overflow-x: auto` faz este bloco virar o contexto de rolagem do
+   cabecalho grudento, e como a altura e automatica nunca ha rolagem aqui
+   dentro — o cabecalho simplesmente nao grudaria em lugar nenhum. */
+.tabela-rolagem { margin-top: 12px; }
+@media (max-width: 980px) { .tabela-rolagem { overflow-x: auto; } }
 .tabela-dados {
   width: 100%;
   border-collapse: collapse;
@@ -1617,7 +1625,9 @@ button.perigo:hover { background: #fecaca; }
 }
 .tabela-dados th {
   position: sticky;
-  top: 0;
+  /* Abaixo da barra do topo, que tambem e sticky (z-index 4): por isso o
+     deslocamento e o z-index menor — o cabecalho passa por baixo dela. */
+  top: var(--altura-topo);
   z-index: 1;
   background: var(--superficie);
   text-align: left;
@@ -1645,12 +1655,12 @@ button.perigo:hover { background: #fecaca; }
    descer reta. */
 .tabela-dados .numero { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tabela-dados .telefone { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--apoio); }
-.tabela-dados .acoes { width: 1%; white-space: nowrap; text-align: right; }
+.tabela-dados .celula-acoes { width: 1%; white-space: nowrap; text-align: right; }
 /* Botão de lista é menor que botão de formulário — e o `margin-top: 14px`
    que .secundario carrega (pensado para ficar abaixo de um campo) empurrava
    "Histórico" e "Editar" para baixo de "Excluir" na mesma linha. */
-.tabela-dados .acoes button { margin: 0 0 0 6px; padding: 6px 11px; font-size: 12.5px; }
-.tabela-dados .acoes button:first-child { margin-left: 0; }
+.tabela-dados .celula-acoes button { margin: 0 0 0 6px; padding: 6px 11px; font-size: 12.5px; }
+.tabela-dados .celula-acoes button:first-child { margin-left: 0; }
 .tabela-dados .vazio { padding: 18px 10px; }
 /* Contato excluído continua visível — sai da operação, não da tela. */
 .tabela-dados tr.desligada { opacity: 0.55; }

@@ -4028,12 +4028,36 @@ function escapar(texto) {
 const SECAO_SERENA_PADRAO = 'canal-card';
 const CHAVE_SECAO_SERENA = 'crmclinica:serena:secao';
 
+// Seções que só existem para quem gerencia a Serena. Antes da navegação por
+// botões elas nasciam `hidden` e a tela não tinha como revelá-las; com um botão
+// para cada uma, abrir passou a ser um clique — e abrir É mostrar. Sem esta
+// lista, quem atende paciente veria o Centro operacional (nome do usuário do
+// banco, serviços parados) e o Horário já preenchido.
+//
+// A permissão continua sendo do servidor: as ações batem em 403 de qualquer
+// jeito. Isto é a tela voltando a esconder o que escondia.
+const SECOES_SO_DE_QUEM_GERENCIA = new Set(['diagnostico-card', 'serena-teste-card', 'serena-horario-card']);
+let podeGerenciarSerena = false;
+
+/** Guarda a permissão e tira da barra os botões que não são dessa pessoa. */
+function aplicarPermissaoNasSecoesDaSerena(pode) {
+  podeGerenciarSerena = pode === true;
+  for (const botao of document.querySelectorAll('[data-secao-serena]')) {
+    const restrita = SECOES_SO_DE_QUEM_GERENCIA.has(botao.dataset.secaoSerena);
+    botao.hidden = restrita && !podeGerenciarSerena;
+  }
+}
+
 function abrirSecaoDaSerena(id, { lembrar = true } = {}) {
   const paineis = [...document.querySelectorAll('[data-painel-serena]')];
   if (paineis.length === 0) return;
 
+  // Um id restrito (digitado, ou guardado no localStorage de quando a pessoa
+  // tinha outra permissão) cai no padrão em vez de abrir — ou de deixar a tela
+  // sem nenhum painel, que era o outro final possível.
+  const permitido = (painel) => !SECOES_SO_DE_QUEM_GERENCIA.has(painel) || podeGerenciarSerena;
   const existe = paineis.some((painel) => painel.id === id);
-  const alvo = existe ? id : SECAO_SERENA_PADRAO;
+  const alvo = existe && permitido(id) ? id : SECAO_SERENA_PADRAO;
 
   for (const painel of paineis) painel.hidden = painel.id !== alvo;
 
@@ -4105,6 +4129,10 @@ async function carregarSerena() {
 
     const controle = seletor('#serena-controle');
     if (controle) controle.hidden = !dados.pode_gerenciar;
+
+    // A permissão vem ANTES de escolher a seção: é ela que diz quais botões
+    // existem para esta pessoa e qual seção pode abrir.
+    aplicarPermissaoNasSecoesDaSerena(dados.pode_gerenciar);
 
     // A seção guardada vale entre visitas; sem ela, quem trabalha no Centro
     // operacional voltaria ao WhatsApp a cada carga.
@@ -5909,9 +5937,15 @@ async function carregarContatos() {
     // A coluna de agendamentos só existe para quem vê a clínica: a API não
     // manda o campo para os demais (lista branca, achado M1), e uma coluna
     // vazia diria "nenhum agendamento" onde o certo é "você não vê isso".
+    //
+    // Quem decide é a RESPOSTA, não `veClinica()`. As duas concordam no caminho
+    // normal, mas podem divergir: se /api/conversas/escopo falha, o fallback
+    // assume clínica (app.js, prepararEscopoDaSessao) — aí a coluna apareceria
+    // e as linhas viriam com uma célula a menos, torcendo a tabela inteira.
+    const temAgendamentos = dados.contatos.some((contato) => contato.agendamentos !== undefined);
     const colunaAgendamentos = seletor('#coluna-agendamentos');
-    if (colunaAgendamentos) colunaAgendamentos.hidden = !veClinica();
-    const colunas = veClinica() ? 5 : 4;
+    if (colunaAgendamentos) colunaAgendamentos.hidden = !temAgendamentos;
+    const colunas = temAgendamentos ? 5 : 4;
 
     if (dados.contatos.length === 0) {
       lista.innerHTML = `<tr><td colspan="${colunas}" class="vazio">Nenhum contato encontrado.</td></tr>`;
@@ -5928,7 +5962,7 @@ async function carregarContatos() {
         <td class="telefone">${escapar(contato.telefone)}</td>
         <td class="numero">${contato.conversas ?? 0}</td>
         ${contato.agendamentos !== undefined ? `<td class="numero" data-agendamentos>${Number(contato.agendamentos) || 0}</td>` : ''}
-        <td class="acoes">
+        <td class="celula-acoes">
           ${contato.excluido
             ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`
             : `<button type="button" class="secundario" data-ver-contato="${contato.id}">Histórico</button>
