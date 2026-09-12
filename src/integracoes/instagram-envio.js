@@ -276,6 +276,14 @@ function criarRoteadorDeInstagram(configuracao = {}, dependencias = {}) {
     daClinica,
     /** Quantos perfis atendem de verdade (com token e id). */
     get total() { return porConta.size; },
+    /**
+     * Há perfil além do da clínica?
+     *
+     * É o que decide se vale a pena olhar `entry[].id`: com um perfil só não
+     * há o que rotear, e confiar num identificador que pode não bater tiraria
+     * a resposta de quem já é respondido hoje.
+     */
+    get temPerfisExtras() { return porApelido.size > 0; },
     /** Pelo id que veio no webhook (entry[].id). */
     paraConta(contaComercialId) {
       if (!contaComercialId) return null;

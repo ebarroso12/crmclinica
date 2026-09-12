@@ -808,12 +808,20 @@ function criarAplicacao(dependencias = {}) {
           const agenteDoPerfil = apelido
             ? await repositorio.obterAgentePorCanal?.('instagram', comentario.conta_comercial_id)
             : null;
-          const envio = roteadorDeInstagram.paraConta(comentario.conta_comercial_id)
-            ?? (comentario.conta_comercial_id ? null : clienteInstagramEnvio);
+
+          // Com um perfil só, `entry[].id` é ignorado e tudo segue pelo
+          // cliente da clínica — exatamente como antes desta mudança. O
+          // roteamento (e o risco de "conta desconhecida") só entra em cena
+          // depois que alguém configura um segundo perfil, que é quando os
+          // ids passam a ser conferidos de propósito.
+          const envio = roteadorDeInstagram.temPerfisExtras
+            ? roteadorDeInstagram.paraConta(comentario.conta_comercial_id)
+            : clienteInstagramEnvio;
 
           if (!envio) {
             // Perfil que a Meta entregou mas este CRM não conhece: não dá para
-            // responder por conta nenhuma. Fica o rastro, sem resposta errada.
+            // responder por conta nenhuma sem arriscar publicar a resposta de
+            // um perfil no post do outro. Fica o rastro, sem resposta errada.
             console.error("[instagram] comentario de conta desconhecida: " + comentario.conta_comercial_id);
             resultados.push({ erro: 'conta_desconhecida', conta: comentario.conta_comercial_id });
             continue;

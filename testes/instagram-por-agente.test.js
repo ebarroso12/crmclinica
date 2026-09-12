@@ -207,3 +207,39 @@ test('o perfil da clínica segue assinando como Serena', async () => {
   const conversa = repositorio.mensagens.find((m) => m.tipo === 'conversa');
   assert.equal(conversa.agenteId, null, 'a conversa da clínica não ganha dono de agente');
 });
+
+// ---------------------------------------------------------------- sem perfil extra, nada muda
+
+test('com um perfil só, o id que a Meta manda é ignorado', () => {
+  // `entry[].id` e o INSTAGRAM_BUSINESS_ACCOUNT_ID configurado NÃO são
+  // comprovadamente o mesmo identificador na API da Meta (o payload bruto não
+  // fica guardado, então não dá para conferir no histórico). Rotear por ele
+  // com um perfil só faria o comentário da clínica — que HOJE é respondido —
+  // cair em "conta desconhecida" e ficar mudo. Por isso o roteamento só entra
+  // quando alguém configura um segundo perfil.
+  const soClinica = criarRoteadorDeInstagram({ accessToken: 't', contaComercialId: CLINICA }, {});
+  assert.equal(soClinica.temPerfisExtras, false, 'sem contas extras, não há o que rotear');
+
+  const comLoja = criarRoteadorDeInstagram(CONFIG, {});
+  assert.equal(comLoja.temPerfisExtras, true, 'com a loja configurada, o roteamento passa a valer');
+});
+
+test('o filtro de auto-comentário sem perfis extras é o de antes', () => {
+  // Mesmo evento, com e sem `contas`: o comportamento tem de ser idêntico.
+  const eventoProprio = {
+    object: 'instagram',
+    entry: [{
+      id: 'algum-id-que-a-meta-manda',
+      time: 1757000000,
+      changes: [{
+        field: 'comments',
+        value: { id: 'c7', text: 'resposta automática', from: { id: CLINICA }, media: { id: 'post1' } },
+      }],
+    }],
+  };
+
+  const antes = normalizarComentariosInstagram(eventoProprio, { contaComercialId: CLINICA });
+  const depois = normalizarComentariosInstagram(eventoProprio, { contaComercialId: CLINICA, contas: [] });
+  assert.equal(antes.length, 0, 'o comentário da própria clínica continua sendo ignorado');
+  assert.equal(depois.length, antes.length, 'passar `contas: []` não muda nada');
+});
