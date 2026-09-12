@@ -147,3 +147,22 @@ test('no telefone a tabela vira cartão, e cada valor leva o rótulo da coluna',
   assert.match(estreito, /\.tabela-dados td::before \{[\s\S]{0,120}content: attr\(data-rotulo\)/);
   assert.match(estreito, /\.tabela-rolagem \{ overflow-x: visible; \}/);
 });
+
+test('carregarSerena não revela os cartões restritos depois de escolher a seção', () => {
+  // Este foi o pior achado da revisão: os três gates faziam
+  // `cartao.hidden = !pode_gerenciar` DEPOIS de abrirSecaoDaSerena. Para o
+  // admin isso é `hidden = false` — e a tela voltava a mostrar WhatsApp +
+  // Horário + Testar + Centro operacional ao mesmo tempo, que é exatamente a
+  // pilha de cartões que a navegação veio substituir.
+  const inicio = APP_JS.indexOf('async function carregarSerena(');
+  assert.ok(inicio >= 0);
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\nasync function ', inicio + 1));
+
+  for (const id of ['serena-horario-card', 'serena-teste-card', 'diagnostico-card']) {
+    const revela = new RegExp(`${id}[\s\S]{0,200}?\.hidden = `);
+    assert.doesNotMatch(funcao, revela, `${id} não pode ter a visibilidade mexida aqui — quem decide é a navegação`);
+  }
+
+  // E a permissão continua sendo aplicada: some da barra para quem não pode.
+  assert.match(funcao, /aplicarPermissaoNasSecoesDaSerena\(dados\.pode_gerenciar\)/);
+});

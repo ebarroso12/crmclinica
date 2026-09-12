@@ -1272,7 +1272,7 @@ async function carregarMetricas() {
     esquerda.innerHTML = '';
     esquerda.append(
       // Primeiro a tendência: "está crescendo?" vem antes de "de onde vem?".
-      blocoDeMetricas('Leads por dia', graficoDeLinha(resumo.leads.por_dia, { rotuloValor: 'total' })),
+      blocoDeMetricas('Leads por dia', graficoDeLinha(totalPorDia(resumo.leads.por_dia), { rotuloValor: 'total' })),
       blocoDeMetricas('Leads por origem', tabelaDeBarras(resumo.leads.por_origem, {
         rotulo: 'origem', valor: 'total', denominador: 'denominador',
       })),
@@ -4090,17 +4090,25 @@ function abrirSecaoDaSerena(id, { lembrar = true } = {}) {
  * O par verde/vermelho é a convenção que todo mundo lê sem pensar; num painel
  * de operação, inverter custaria mais do que economiza.
  */
+// Os nomes abaixo são os da resposta de GET /api/serena (src/servidor/rotas-serena.js).
+// A primeira versão inventou `dados.canal`, `prompt_publicado` e
+// `horario.atendendo_agora` — nenhum existe, então as três luzes ficavam
+// vermelhas com tudo funcionando. testes/luzes-serena.test.js roda esta função
+// contra a resposta REAL da rota, que é o que pega esse tipo de erro.
 function desenharLuzesDaSerena(dados = {}) {
+  const horario = dados?.horario ?? {};
   const estado = {
-    whatsapp: dados?.canal?.estado === 'conectado' ? 'ok' : 'parado',
+    whatsapp: dados?.whatsapp?.estado === 'conectado' ? 'ok' : 'parado',
     // Centro operacional e Testar não têm liga/desliga: são ferramentas.
     diagnostico: 'neutro',
     teste: 'neutro',
-    voz: dados?.voz_disponivel === false ? 'parado' : 'neutro',
-    horario: dados?.horario?.atendendo_agora === true ? 'ok'
-      : (dados?.horario?.agenda?.ativa ? 'parado' : 'neutro'),
-    prompt: dados?.prompt_publicado ? 'ok' : 'parado',
-    regras: (dados?.regras_ativas ?? 0) > 0 ? 'ok' : 'neutro',
+    voz: 'neutro',
+    // `atendendo` já combina interruptor, pausa, plantão e grade — o servidor
+    // resolve essa precedência e a tela não a reimplementa.
+    horario: horario.atendendo === true ? 'ok'
+      : (horario.agenda?.ativa ? 'parado' : 'neutro'),
+    prompt: dados?.prompt_ativo ? 'ok' : 'parado',
+    regras: (dados?.regras ?? []).filter((regra) => regra.ativa).length > 0 ? 'ok' : 'neutro',
   };
 
   for (const [nome, valor] of Object.entries(estado)) {
@@ -4140,33 +4148,23 @@ async function carregarSerena() {
     try { guardada = localStorage.getItem(CHAVE_SECAO_SERENA); } catch { }
     abrirSecaoDaSerena(guardada || SECAO_SERENA_PADRAO, { lembrar: false });
 
-    desenharLuzesDaSerena({
-      canal: dados.canal,
-      horario: dados.horario,
-      prompt_publicado: Boolean(dados.prompt?.publicado ?? dados.prompt_publicado),
-      regras_ativas: dados.regras_ativas ?? (dados.regras ?? []).filter((r) => r.ativa).length,
-      voz_disponivel: dados.voz_disponivel,
-    });
+    desenharLuzesDaSerena(dados);
+
     // Mesmo gate do cartão: escolher canal é mexer no atendimento.
     const canais = seletor('#serena-canais');
     if (canais) canais.hidden = !dados.pode_gerenciar;
-    const cartaoDeHorario = seletor('#serena-horario-card');
-    if (cartaoDeHorario) cartaoDeHorario.hidden = !dados.pode_gerenciar;
-    // Testar o prompt é mexer no que a clínica diz ao paciente: mesma permissão
-    // de quem publica a versão.
-    const cartaoDeTeste = seletor('#serena-teste-card');
-    if (cartaoDeTeste) {
-      cartaoDeTeste.hidden = !dados.pode_gerenciar;
-      // A lista de modelos precisa existir antes da primeira mensagem: quem vai
-      // testar escolhe o modelo primeiro, não depois de já ter conversado.
-      if (dados.pode_gerenciar) carregarModelosDoTeste().catch(() => {});
-    }
-    // A varredura mostra o estado interno da infraestrutura — nome do usuário do
-    // banco, serviços parados. Quem atende paciente não precisa disso.
-    const cartaoDeDiagnostico = seletor('#diagnostico-card');
-    if (cartaoDeDiagnostico) {
-      cartaoDeDiagnostico.hidden = !dados.pode_gerenciar;
-      if (dados.pode_gerenciar) carregarSeletorDeIaDoDiagnostico().catch(() => {});
+
+    // Os cartões restritos (Horário, Testar, Centro operacional) NÃO são
+    // revelados aqui. Quem decide qual painel está aberto é a navegação
+    // (abrirSecaoDaSerena, logo acima); `hidden = !pode_gerenciar` punha os
+    // três de volta na tela para o admin — e a tela voltava a ser a pilha de
+    // cartões abertos que a navegação veio substituir. Esconder quem não pode
+    // já é feito por SECOES_SO_DE_QUEM_GERENCIA + abrirSecaoDaSerena.
+    if (dados.pode_gerenciar) {
+      // As duas listas precisam existir antes do primeiro uso da seção: quem
+      // vai testar escolhe o modelo primeiro, não depois de já ter conversado.
+      carregarModelosDoTeste().catch(() => {});
+      carregarSeletorDeIaDoDiagnostico().catch(() => {});
     }
     desenharHorario(dados.horario ?? null);
     for (const alvo of ['#serena-prompt-acoes', '#serena-regras-acoes']) {
@@ -4399,6 +4397,51 @@ async function carregarInstagram() {
 // Gráficos (12/09/2026) — SVG à mão, porque a CSP do projeto não deixa entrar
 // biblioteca de fora e três formas não justificam uma dependência.
 
+/**
+ * Soma as linhas do mesmo dia.
+ *
+ * `leads.por_dia` vem com uma linha por dia E POR ORIGEM (vw_leads_por_dia,
+ * ORDER BY dia, origem). Plotar linha a linha desenhava 30 dias × 3 origens =
+ * 90 pontos serrilhados, com o mesmo dia repetido três vezes e nenhum deles
+ * mostrando o total daquele dia.
+ */
+function totalPorDia(linhas) {
+  const soma = new Map();
+  for (const linha of linhas ?? []) {
+    if (!linha?.dia) continue;
+    const dia = String(linha.dia).slice(0, 10);
+    soma.set(dia, (soma.get(dia) ?? 0) + (Number(linha.total) || 0));
+  }
+  return [...soma.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([dia, total]) => ({ dia, total }));
+}
+
+/**
+ * Põe as etapas na ordem do funil e separa as que não fazem parte da descida.
+ *
+ * A consulta devolve `ORDER BY estagio` — ordem alfabética: agendado,
+ * convertido, novo, perdido, qualificando. Desenhar o funil nessa ordem faz o
+ * gráfico anunciar conversões inventadas ("Novos: 900% de quem estava em
+ * convertido") e põe "perdido" no meio da descida. A ordem verdadeira é a de
+ * src/dominio/leads.js; "perdido" é terminal e sai do cálculo de queda.
+ */
+const ORDEM_DO_FUNIL = ['novo', 'qualificando', 'agendado', 'convertido'];
+const ESTAGIOS_TERMINAIS = ['perdido'];
+
+function ordenarFunil(etapas, { rotulo = 'estagio' } = {}) {
+  const porEstagio = new Map((etapas ?? []).filter(Boolean).map((etapa) => [String(etapa[rotulo]), etapa]));
+  // Etapa sem nenhum lead não vem na consulta; entra como zero para o funil
+  // não pular degrau.
+  const descida = ORDEM_DO_FUNIL.map((estagio) => porEstagio.get(estagio) ?? { [rotulo]: estagio, total: 0 });
+  const terminais = ESTAGIOS_TERMINAIS.map((estagio) => porEstagio.get(estagio)).filter(Boolean);
+  // Qualquer estágio que apareça no banco e não esteja em nenhuma das listas
+  // continua sendo mostrado — no fim, sem queda calculada.
+  const conhecidos = new Set([...ORDEM_DO_FUNIL, ...ESTAGIOS_TERMINAIS]);
+  const sobras = [...porEstagio.values()].filter((etapa) => !conhecidos.has(String(etapa[rotulo])));
+  return { descida, fora: [...terminais, ...sobras] };
+}
+
 /** Um nó SVG com atributos, sem innerHTML — a CSP não aceita HTML solto. */
 function svgEl(nome, atributos = {}) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', nome);
@@ -4481,8 +4524,12 @@ function graficoDeLinha(pontos, { rotuloValor = 'total' } = {}) {
  * mostra o que se quer saber: quantos sobraram de uma etapa para a outra.
  */
 function graficoDeFunil(etapas, { rotulo = 'estagio', valor = 'total' } = {}) {
-  const dados = (etapas ?? []).filter(Boolean);
-  if (dados.length === 0) {
+  const { descida, fora } = ordenarFunil(etapas, { rotulo });
+  // Só a descida calcula queda; "perdido" entra depois, sem porcentagem, para
+  // não parecer um degrau do caminho.
+  const dados = [...descida, ...fora];
+  const quantasDaDescida = descida.length;
+  if ((etapas ?? []).length === 0) {
     const vazio = document.createElement('p');
     vazio.className = 'vazio';
     vazio.textContent = 'Sem leads no funil.';
@@ -4516,8 +4563,9 @@ function graficoDeFunil(etapas, { rotulo = 'estagio', valor = 'total' } = {}) {
 
     item.append(cabecalho, trilho);
 
-    // A queda para a etapa seguinte é a informação que o funil existe para dar.
-    const anterior = i > 0 ? Number(dados[i - 1][valor]) || 0 : null;
+    // A queda para a etapa seguinte é a informação que o funil existe para dar
+    // — e só faz sentido dentro da descida.
+    const anterior = i > 0 && i < quantasDaDescida ? Number(dados[i - 1][valor]) || 0 : null;
     if (anterior !== null && anterior > 0) {
       const queda = document.createElement('small');
       queda.className = 'funil-queda';
@@ -4831,40 +4879,44 @@ async function abrirAgente(id) {
  * não há o que ligar. Aqui "parado" quase sempre quer dizer "falta
  * configurar" — é o que a pessoa precisa ver antes de ligar um agente.
  */
+/** Pinta uma luz da barra de abas do agente e explica o estado no title. */
+function acenderLuzDoAgente(nome, valor) {
+  const luz = seletor(`[data-luz-agente="${nome}"]`);
+  if (!luz) return;
+  luz.dataset.estado = valor;
+  const aba = luz.closest('[data-aba-agente]');
+  if (!aba) return;
+  const rotulo = (aba.textContent || '').trim();
+  const legenda = valor === 'ok' ? 'configurado' : valor === 'parado' ? 'falta configurar' : '';
+  aba.title = legenda ? `${rotulo}: ${legenda}` : rotulo;
+}
+
 function desenharLuzesDoAgente(dados = {}) {
   const agente = dados.agente ?? {};
   const canais = dados.canais ?? agente.canais ?? [];
   const treinamentos = dados.treinamentos ?? [];
-  const equipe = dados.equipe ?? [];
+  const configuracoes = agente.configuracoes ?? {};
 
   const estado = {
     // Ferramenta: não tem liga/desliga.
     teste: 'neutro',
-    horario: agente.horario?.ativa ? 'ok' : 'neutro',
-    // O comportamento publicado é o que o agente diz ao paciente: sem ele, o
-    // agente não tem identidade e não deveria atender.
-    perfil: agente.comportamento_publicado || agente.prompt ? 'ok' : 'parado',
+    horario: configuracoes.horario?.ativa ? 'ok' : 'neutro',
+    // O comportamento é o que o agente diz ao cliente: sem ele, o agente não
+    // tem identidade e não deveria atender.
+    perfil: String(agente.comportamento ?? '').trim() ? 'ok' : 'parado',
     treinamentos: treinamentos.length > 0 ? 'ok' : 'neutro',
     trabalho: 'neutro',
     configuracoes: 'neutro',
-    inatividade: agente.inatividade?.ativa ? 'ok' : 'neutro',
+    inatividade: (agente.acoes_inatividade ?? []).some((acao) => acao.ativa !== false) ? 'ok' : 'neutro',
     // Sem canal o agente não recebe nem responde nada.
     canais: canais.length > 0 ? 'ok' : 'parado',
-    // Sem equipe, ninguém recebe o resumo nem vê as conversas dele.
-    equipe: equipe.length > 0 ? 'ok' : 'parado',
   };
 
-  for (const [nome, valor] of Object.entries(estado)) {
-    const luz = seletor(`[data-luz-agente="${nome}"]`);
-    if (!luz) continue;
-    luz.dataset.estado = valor;
-    const aba = luz.closest('[data-aba-agente]');
-    if (aba) {
-      const rotulo = (aba.textContent || '').trim();
-      const legenda = valor === 'ok' ? 'configurado' : valor === 'parado' ? 'falta configurar' : '';
-      aba.title = legenda ? `${rotulo}: ${legenda}` : rotulo;
-    }
-  }
+  for (const [nome, valor] of Object.entries(estado)) acenderLuzDoAgente(nome, valor);
+
+  // Enquanto a equipe não chega, a luz dela fica neutra em vez de mentir que
+  // falta configurar.
+  acenderLuzDoAgente('equipe', 'neutro');
 }
 
 function selecionarAbaDoAgente(nome) {
@@ -5741,6 +5793,11 @@ async function carregarEquipeDoAgente() {
 function desenharEquipeDoAgente({ membros = [], pode_gerenciar: pode = false } = {}) {
   const lista = seletor('#agente-equipe-lista');
   if (!lista) return;
+
+  // A luz da aba Equipe é acesa aqui, e não junto das outras: a equipe vem de
+  // /api/agentes/:id/equipe, que é uma requisição separada da do agente. Sem
+  // equipe ninguém recebe o resumo nem vê as conversas dele.
+  acenderLuzDoAgente('equipe', membros.length > 0 ? 'ok' : 'parado');
   if (membros.length === 0) {
     lista.innerHTML = '<li class="vazio">Ninguém na equipe ainda: só o administrador vê as conversas deste agente, e ninguém recebe o resumo dele.</li>';
     return;
