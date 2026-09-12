@@ -394,6 +394,16 @@ test('o ponto âmbar do menu só aparece quando o agente não está atendendo, e
     'quem diz "Pausado" é o texto, não a cor: title não é lido por leitor de tela nem por teclado');
 });
 
+test('redesenhar o menu não tira o foco de quem navega por teclado', () => {
+  const funcao = funcaoDoApp('desenharMenuDeAgentes');
+  assert.ok(funcao.includes('const focado = document.activeElement?.dataset?.abrirAgenteMenu'), 'guarda quem estava focado');
+  const guarda = funcao.indexOf('const focado');
+  const remove = funcao.indexOf('antigo.remove()');
+  const devolve = funcao.indexOf('.focus()');
+  assert.ok(guarda >= 0 && guarda < remove && devolve > remove,
+    'guarda quem estava focado ANTES de remover os itens e devolve o foco depois de recriar');
+});
+
 test('item de agente nasce escondido para quem não vê a clínica', () => {
   assert.match(
     funcaoDoApp('desenharMenuDeAgentes'),
@@ -424,7 +434,9 @@ test('clicar no agente pelo menu não deixa o agente anterior em voo', () => {
 
 test('a lista da tela Agentes começa pela Serena, com o mesmo estado do botão de parada', () => {
   const lista = funcaoDoApp('desenharListaDeAgentes');
-  assert.match(lista, /linhaDaSerena\(\)/, 'a Serena entra na lista junto com os demais agentes');
+  assert.ok(lista.includes('lista.innerHTML = linhaDaSerena() + agentes.map'),
+    'a Serena abre a lista também quando há outros agentes, não só no caso vazio');
+  assert.ok(lista.includes('${linhaDaSerena()}<li class="vazio">'), 'e continua na lista sem nenhum outro agente');
   assert.match(lista, /desenharMenuDeAgentes\(agentes\)/, 'a mesma carga alimenta o menu');
   const linha = funcaoDoApp('linhaDaSerena');
   assert.match(linha, /data-abrir-serena="1"/, '"Abrir" leva para a tela da Serena');

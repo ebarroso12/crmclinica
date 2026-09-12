@@ -948,6 +948,10 @@ nav button[aria-current="page"] {
        preencher a altura que a lateral herda da grade, abrindo ~38px de vazio
        entre elas e empurrando o conteúdo para baixo da dobra no telefone. */
     align-content: flex-start;
+    /* Cinto e suspensorio junto com o grid-template-rows acima: se um dia a
+       faixa de saude sumir da grade, a lateral continua com a altura do
+       proprio conteudo em vez de esticar. */
+    align-self: start;
     gap: 6px 8px;
     padding: 8px 10px;
   }

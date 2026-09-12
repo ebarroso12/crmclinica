@@ -4295,6 +4295,9 @@ function desenharMenuDeAgentes(agentes) {
   const ancora = seletor('#item-agentes');
   if (!grupo || !ancora) return;
 
+  // Quem está com o foco num item que vai ser recriado volta a tê-lo depois.
+  const focado = document.activeElement?.dataset?.abrirAgenteMenu ?? null;
+
   for (const antigo of grupo.querySelectorAll('[data-agente-menu]')) antigo.remove();
 
   for (const agente of agentes) {
@@ -4331,6 +4334,7 @@ function desenharMenuDeAgentes(agentes) {
   }
 
   destacarAgenteNoMenu(agenteAberto?.agente?.id ?? null);
+  if (focado) seletor(`[data-abrir-agente-menu="${CSS.escape(focado)}"]`)?.focus();
 }
 
 function desenharListaDeAgentes(agentes) {
