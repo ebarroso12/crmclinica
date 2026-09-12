@@ -73,3 +73,24 @@ test('a tela registra o worker, guarda o convite e trata iPhone e app já instal
   assert.match(APP_JS, /display-mode: standalone/, 'quem já está no app instalado não vê o convite');
   assert.match(APP_JS, /iPad\|iPhone\|iPod/, 'no iPhone o caminho é o menu Compartilhar');
 });
+
+test('"Esqueci minha senha" aparece sempre, e sem SMTP mostra o caminho que funciona', () => {
+  // Antes o link sumia quando o servidor estava sem SMTP (é o caso de produção
+  // hoje): quem esquecia a senha ficava sem nenhuma pista do que fazer.
+  assert.ok(
+    !/recuperar.*\.hidden = !opcoes\.recuperacao_por_email/.test(APP_JS),
+    'o link não pode mais ser escondido pela falta de e-mail',
+  );
+  assert.match(APP_JS, /const semEmail = !opcoes\.recuperacao_por_email;/);
+
+  // Sem envio, o formulário some e entra a instrução — a tela não pode oferecer
+  // um "Enviar link" cujo e-mail nunca chegaria.
+  assert.match(APP_JS, /campos\.hidden = semEmail/);
+  assert.match(APP_JS, /aviso\.hidden = !semEmail/);
+  // Campo escondido e `required` trava o envio do formulário no navegador.
+  assert.match(APP_JS, /campoEmail\.required = !semEmail/);
+
+  assert.match(HTML, /id="recuperar-sem-email"[^>]*hidden/);
+  assert.match(HTML, /id="recuperar-campos"/);
+  assert.match(HTML, /senha temporária/i, 'a instrução precisa dizer o caminho que existe hoje');
+});

@@ -2412,8 +2412,21 @@ async function carregarOpcoesDeEntrada() {
     const botaoGoogle = seletor('#entrar-google');
     if (botaoGoogle) botaoGoogle.hidden = !opcoes.google;
 
-    const recuperar = document.querySelector('[data-portao="recuperar"]');
-    if (recuperar) recuperar.hidden = !opcoes.recuperacao_por_email;
+    // "Esqueci minha senha" aparece SEMPRE. Antes ele sumia quando o servidor
+    // estava sem SMTP — e quem esquecia a senha ficava sem nenhuma pista do que
+    // fazer. Sem envio configurado, o painel explica o caminho que funciona
+    // (senha temporária pelo administrador) em vez de oferecer um formulário
+    // cujo e-mail nunca chegaria.
+    const semEmail = !opcoes.recuperacao_por_email;
+    const aviso = seletor('#recuperar-sem-email');
+    if (aviso) aviso.hidden = !semEmail;
+    const campos = seletor('#recuperar-campos');
+    if (campos) campos.hidden = semEmail;
+    const nota = seletor('#recuperar-nota');
+    if (nota) nota.hidden = semEmail;
+    const campoEmail = seletor('#recuperar-email');
+    // Campo escondido e obrigatório trava o envio do formulário no navegador.
+    if (campoEmail) campoEmail.required = !semEmail;
   } catch {
     // Sem as opções, a entrada por e-mail e senha continua funcionando.
   }
