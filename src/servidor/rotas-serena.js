@@ -184,6 +184,9 @@ function criarRotasDaSerena({
         alterado_por: config.alterado_por_nome ?? null,
         motivo: config.motivo ?? null,
         desejado_vs_efetivo: desejadoVsEfetivo,
+        // Quais canais estão calados com ela ligada (048). Vazio = todos
+        // respondem, que é como era antes de existir este controle.
+        canais_desligados: config.canais_desligados ?? [],
       },
       // Separado de `serena.estado` porque responde outra pergunta: aquele diz
       // se o interruptor está ligado, este diz se ela está atendendo agora.
@@ -387,6 +390,31 @@ function criarRotasDaSerena({
         ativa: configuracaoAtual?.ativa !== false,
         motivo: configuracaoAtual?.motivo ?? null,
         pausada_ate: configuracaoAtual?.pausada_ate ?? null,
+        // A tela mostra "no ar" por canal, e o botão de emergência continua
+        // valendo para todos: um canal calado não muda o que PARAR faz.
+        canais_desligados: configuracaoAtual?.canais_desligados ?? [],
+      };
+    },
+
+    /**
+     * PUT /api/serena/canais — quais canais ficam calados com a automação ligada.
+     * `{ "canais_desligados": ["whatsapp"] }`
+     *
+     * Lista inteira, não "ligue este": ver `definirCanaisDesligados`.
+     */
+    async definirCanais(usuario, corpo) {
+      exigirPermissao(usuario, 'serena:gerenciar');
+
+      if (!Array.isArray(corpo?.canais_desligados)) {
+        throw new ErroDeContrato('campo "canais_desligados" deve ser uma lista', 'canais_desligados');
+      }
+
+      const configuracaoNova = await serena.definirCanaisDesligados(corpo.canais_desligados, {
+        usuarioId: usuario.id,
+      });
+      return {
+        ativa: configuracaoNova?.ativa !== false,
+        canais_desligados: configuracaoNova?.canais_desligados ?? [],
       };
     },
 

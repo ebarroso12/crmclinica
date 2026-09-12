@@ -1910,3 +1910,13 @@ button.perigo:hover { background: #fecaca; }
   nav button[aria-current="page"] { outline: 2px solid; outline-offset: -2px; }
 }
 
+
+/* Canais da automacao (048): a segunda camada do Controle da automacao. */
+.canais-automacao { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--linha); display: grid; gap: 8px; }
+.rotulo-bloco { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--apoio); }
+.linha-canal { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.linha-canal input { margin-top: 3px; flex: 0 0 auto; }
+.linha-canal b { display: block; font-weight: 600; font-size: 13.5px; }
+.linha-canal small { display: block; color: var(--apoio); font-size: 12px; }
+.linha-canal input:disabled + span { opacity: 0.6; }
+.canais-automacao[data-inerte="true"] .linha-canal { opacity: 0.55; }

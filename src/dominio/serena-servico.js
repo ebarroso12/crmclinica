@@ -2,7 +2,7 @@
 
 const {
   decidirResposta, montarPromptEfetivo, validarPrompt, validarRegra, validarAgenda,
-  ErroDaSerena, CATEGORIAS,
+  ErroDaSerena, CATEGORIAS, CANAIS_SILENCIAVEIS,
 } = require('./serena');
 
 // Serviço da Serena: o interruptor global, o prompt versionado e as regras.
@@ -64,6 +64,43 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
 
     await auditar(ativa ? 'serena_ligada' : 'serena_desligada', 1, {
       de: anterior.ativa, para: ativa, motivo: motivoLimpo,
+    }, usuarioId);
+
+    return configuracao;
+  }
+
+  /**
+   * Cala (ou devolve a voz a) um canal, sem mexer no interruptor geral.
+   *
+   * Pedido de 12/09/2026: responder no Instagram com o WhatsApp da clínica
+   * calado. O desligamento GERAL continua soberano — este controle só regula o
+   * ligado, como a ativação gradual.
+   *
+   * Recebe a lista inteira, não "ligue este": duas abas abertas terminam num
+   * estado que alguém escolheu, em vez de na soma de dois cliques parciais.
+   */
+  async function definirCanaisDesligados(canais, { usuarioId = null } = {}) {
+    if (!Array.isArray(canais)) {
+      throw new ErroDaSerena('informe a lista de canais desligados', 'canais_invalidos');
+    }
+
+    const limpos = [];
+    for (const bruto of canais) {
+      const canal = String(bruto ?? '').trim().toLowerCase();
+      if (!CANAIS_SILENCIAVEIS.includes(canal)) {
+        throw new ErroDaSerena(
+          `canal "${canal}" não pode ser desligado separadamente (use: ${CANAIS_SILENCIAVEIS.join(', ')})`,
+          'canal_nao_silenciavel',
+        );
+      }
+      if (!limpos.includes(canal)) limpos.push(canal);
+    }
+
+    const anterior = await obterConfiguracao();
+    const configuracao = await repositorio.definirCanaisDesligadosDaSerena({ canais: limpos, usuarioId });
+
+    await auditar('serena_canais_desligados', 1, {
+      de: anterior.canais_desligados ?? [], para: limpos,
     }, usuarioId);
 
     return configuracao;
@@ -336,6 +373,7 @@ function criarServicoDaSerena({ repositorio, agora = () => new Date() } = {}) {
     CATEGORIAS,
     obterConfiguracao,
     definirAtiva,
+    definirCanaisDesligados,
     definirAgenda,
     pausar,
     despausar,

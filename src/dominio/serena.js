@@ -199,6 +199,26 @@ function contatoNaAtivacao(contatoId, configuracao = {}) {
   return true;
 }
 
+/** Canais em que a Serena pode ser calada sem desligar a automação inteira. */
+const CANAIS_SILENCIAVEIS = ['whatsapp', 'instagram'];
+
+/**
+ * O canal desta conversa está calado?
+ *
+ * Só os canais de `CANAIS_SILENCIAVEIS` podem ser calados: o que veio de
+ * `site`, `formulario` ou `interno` não tem interruptor próprio, e um valor
+ * estranho na lista não pode virar silêncio para um canal que ninguém quis
+ * desligar. Lista ausente (banco sem a 048) é lista vazia — antes da migration
+ * ninguém consegue gravar nada aqui, então "vazio" é o estado verdadeiro, e
+ * não um palpite otimista.
+ */
+function canalDesligado(canal, canaisDesligados) {
+  if (!Array.isArray(canaisDesligados) || canaisDesligados.length === 0) return false;
+  const alvo = String(canal ?? '').trim().toLowerCase();
+  if (!CANAIS_SILENCIAVEIS.includes(alvo)) return false;
+  return canaisDesligados.some((item) => String(item ?? '').trim().toLowerCase() === alvo);
+}
+
 /**
  * A Serena pode responder?
  *
@@ -211,10 +231,15 @@ function contatoNaAtivacao(contatoId, configuracao = {}) {
  *      desligada é exatamente o caso que o desligamento existe para impedir.
  *   2. `pausada_ate` no futuro — a intervenção. Alguém está no meio de resolver
  *      algo à mão e não quer a Serena falando por cima.
- *   3. `ligada_ate` no futuro — o plantão esporádico. Vence **só o horário**,
+ *   3. `canais_desligados` — o canal daquela conversa está calado. É
+ *      desligamento, não horário: por isso vem ANTES do plantão esporádico,
+ *      que existe para furar o horário e não o desligamento. Pedido de
+ *      12/09/2026: atender no Instagram com o WhatsApp da clínica calado.
+ *      Canal ausente da lista responde, como sempre respondeu.
+ *   4. `ligada_ate` no futuro — o plantão esporádico. Vence **só o horário**,
  *      nunca o desligamento nem a pausa. Quem desligou ou pausou fez isso
  *      depois, e a máquina não passa por cima de decisão humana recente.
- *   4. o horário programado, se houver.
+ *   5. o horário programado, se houver.
  *
  * Estados contraditórios não existem porque o serviço nunca os grava: pausar
  * limpa `ligada_ate`, e ligar por tempo limpa `pausada_ate`. Resolver o conflito
@@ -231,6 +256,10 @@ function decidirResposta(conversa = {}, configuracao = { ativa: true }, agora = 
 
   if (noFuturo(configuracao?.pausada_ate, agora)) {
     return { responder: false, motivo: 'serena_pausada', escopo: 'global' };
+  }
+
+  if (canalDesligado(conversa.canal, configuracao?.canais_desligados)) {
+    return { responder: false, motivo: 'canal_desligado', escopo: 'canal' };
   }
 
   // Plantão esporádico: liga fora do horário, por um tempo, sem mexer na agenda.
@@ -409,6 +438,8 @@ function validarAgenda(bruto) {
 
 module.exports = {
   FUSO_PADRAO,
+  CANAIS_SILENCIAVEIS,
+  canalDesligado,
   dentroDoHorario,
   validarAgenda,
   CATEGORIAS,

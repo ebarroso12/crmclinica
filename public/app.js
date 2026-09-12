@@ -3813,6 +3813,63 @@ function desenharEstadoDaSerena(dados) {
     motivo.hidden = Boolean(serena.ativa) || !serena.motivo;
     motivo.textContent = serena.motivo ? `Motivo do desligamento: ${serena.motivo}` : '';
   }
+
+  desenharCanaisDaSerena(serena.canais_desligados ?? [], serena.ativa);
+}
+
+/**
+ * As caixas de canal (048). Marcado = responde.
+ *
+ * Desenhar a partir do servidor a cada carga, e não do que o usuário clicou,
+ * é o que impede a tela de afirmar "Instagram ligado" quando a gravação falhou
+ * — o mesmo cuidado do botão de parada de emergência.
+ */
+function desenharCanaisDaSerena(canaisDesligados, ativa = true) {
+  const desligados = new Set((canaisDesligados ?? []).map((canal) => String(canal).toLowerCase()));
+  for (const [canal, id] of [['whatsapp', '#serena-canal-whatsapp'], ['instagram', '#serena-canal-instagram']]) {
+    const caixa = seletor(id);
+    if (caixa) caixa.checked = !desligados.has(canal);
+  }
+  // Com a automação desligada nenhum canal responde: o bloco inteiro fica
+  // esmaecido para não afirmar "responde nos dois" enquanto ela está muda.
+  const bloco = seletor('#serena-canais');
+  if (bloco) bloco.dataset.inerte = String(ativa === false);
+  const aviso = seletor('#serena-canais-aviso');
+  if (aviso) aviso.hidden = ativa !== false;
+}
+
+/** Lê as caixas e manda a lista inteira — o servidor substitui, não soma. */
+async function salvarCanaisDaSerena(caixaQueMudou) {
+  const canaisDesligados = [];
+  for (const [canal, id] of [['whatsapp', '#serena-canal-whatsapp'], ['instagram', '#serena-canal-instagram']]) {
+    const caixa = seletor(id);
+    if (caixa && !caixa.checked) canaisDesligados.push(canal);
+  }
+
+  const caixas = ['#serena-canal-whatsapp', '#serena-canal-instagram'].map((id) => seletor(id)).filter(Boolean);
+  for (const caixa of caixas) caixa.disabled = true;
+  try {
+    const resposta = await pedirJson('/api/serena/canais', {
+      metodo: 'PUT', corpo: { canais_desligados: canaisDesligados },
+    });
+    desenharCanaisDaSerena(resposta.canais_desligados ?? []);
+    informar(canaisDesligados.length === 0
+      ? 'A Serena responde em todos os canais.'
+      : `A Serena parou de responder em: ${canaisDesligados.join(', ')}.`);
+  } catch (erro) {
+    // A tela não adivinha o que aconteceu: relê do servidor. Desfazer o clique
+    // mentiria quando a gravação passou e só a resposta se perdeu.
+    carregarSerena().catch(() => {
+      if (caixaQueMudou) caixaQueMudou.checked = !caixaQueMudou.checked;
+    });
+    informar(`Não consegui mudar o canal: ${erro.detalhe || erro.message}`);
+  } finally {
+    for (const caixa of caixas) caixa.disabled = false;
+  }
+}
+
+for (const id of ['#serena-canal-whatsapp', '#serena-canal-instagram']) {
+  seletor(id)?.addEventListener('change', (evento) => salvarCanaisDaSerena(evento.target));
 }
 
 function formatarTelefone(valor) {
@@ -3892,6 +3949,9 @@ async function carregarSerena() {
 
     const controle = seletor('#serena-controle');
     if (controle) controle.hidden = !dados.pode_gerenciar;
+    // Mesmo gate do cartão: escolher canal é mexer no atendimento.
+    const canais = seletor('#serena-canais');
+    if (canais) canais.hidden = !dados.pode_gerenciar;
     const cartaoDeHorario = seletor('#serena-horario-card');
     if (cartaoDeHorario) cartaoDeHorario.hidden = !dados.pode_gerenciar;
     // Testar o prompt é mexer no que a clínica diz ao paciente: mesma permissão

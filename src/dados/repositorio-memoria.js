@@ -134,6 +134,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     agenda: null, pausada_ate: null, ligada_ate: null,
     // Ativação gradual (migration 028): nasce atendendo todos.
     modo_ativacao: 'todos', ativacao_percentual: 100,
+    // Canal calado (migration 048): nasce respondendo em todos.
+    canais_desligados: [],
   };
 
   /** Espelha o que o PostgreSQL devolve nas junções da agenda. */
@@ -2850,6 +2852,16 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       serenaConfiguracao.motivo = motivo;
       serenaConfiguracao.alterado_por = usuarioId;
       serenaConfiguracao.alterado_em = agora().toISOString();
+      return { ...serenaConfiguracao };
+    },
+
+    /**
+     * Espelha o PostgreSQL: substitui a lista inteira e NÃO mexe em
+     * `alterado_por`/`alterado_em`, que pertencem ao interruptor geral — quem
+     * mudou o canal fica na auditoria (`serena_canais_desligados`).
+     */
+    async definirCanaisDesligadosDaSerena({ canais }) {
+      serenaConfiguracao.canais_desligados = Array.isArray(canais) ? [...canais] : [];
       return { ...serenaConfiguracao };
     },
 
