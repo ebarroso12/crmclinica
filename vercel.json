@@ -6,17 +6,62 @@
     }
   },
   "rewrites": [
-    { "source": "/health", "destination": "/api/index" },
-    { "source": "/api/:caminho*", "destination": "/api/index" }
+    {
+      "source": "/health",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/:caminho*",
+      "destination": "/api/index"
+    }
   ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "x-content-type-options", "value": "nosniff" },
-        { "key": "x-frame-options", "value": "DENY" },
-        { "key": "referrer-policy", "value": "no-referrer" },
-        { "key": "strict-transport-security", "value": "max-age=63072000; includeSubDomains; preload" }
+        {
+          "key": "x-content-type-options",
+          "value": "nosniff"
+        },
+        {
+          "key": "x-frame-options",
+          "value": "DENY"
+        },
+        {
+          "key": "referrer-policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "strict-transport-security",
+          "value": "max-age=63072000; includeSubDomains; preload"
+        }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "cache-control",
+          "value": "no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "cache-control",
+          "value": "no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/(.*).(js|css)",
+      "headers": [
+        {
+          "key": "cache-control",
+          "value": "no-cache, must-revalidate"
+        }
       ]
     }
   ]
