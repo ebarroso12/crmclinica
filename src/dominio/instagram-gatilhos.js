@@ -112,13 +112,18 @@ function criarServicoDeGatilhos({
 
   async function criarRegra({
     nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp = true, usuarioId = null,
+    agenteId = null,
   }) {
     const validada = validarRegraDeGatilho({
       nome, palavraGatilho, mensagemDm, mensagemPublica, ctaWhatsapp,
     });
 
+    // Dono da regra (049): null = clínica. Um id que não existe viraria regra
+    // órfã, que nunca dispara em perfil nenhum — recusa antes de gravar.
+    const dono = await donoValido(agenteId);
+
     try {
-      return await repositorio.criarRegraDeGatilho({ ...validada, criadoPor: usuarioId });
+      return await repositorio.criarRegraDeGatilho({ ...validada, criadoPor: usuarioId, agenteId: dono });
     } catch (erro) {
       // Nome repetido é conflito, não erro interno — `nome` é UNIQUE
       // (db/045_instagram_gatilhos.sql).
@@ -149,6 +154,24 @@ function criarServicoDeGatilhos({
       }
       throw erro;
     }
+  }
+
+  /**
+   * O agente existe? (049)
+   *
+   * `null`/ausente = clínica, que é sempre válido. Qualquer outro valor é
+   * conferido: regra apontando para agente que não existe não dispararia em
+   * lugar nenhum, e o erro só apareceria como "a loja não responde".
+   */
+  async function donoValido(agenteId) {
+    if (agenteId === null || agenteId === undefined || agenteId === '') return null;
+    const numero = Number(agenteId);
+    if (!Number.isInteger(numero) || numero <= 0) {
+      throw new ErroDoInstagram('agente inválido para a regra', 'agente_invalido');
+    }
+    const agente = await repositorio.obterAgente?.(numero);
+    if (!agente) throw new ErroDoInstagram('agente não encontrado', 'agente_nao_encontrado', 404);
+    return numero;
   }
 
   /** Liga ou desliga uma regra — ação separada da edição (mesmo raciocínio de `serena.definirRegraAtiva`). */
@@ -197,11 +220,19 @@ function criarServicoDeGatilhos({
    */
   async function processarComentario({
     comentarioIdExterno, postId = null, autorIgId, autorUsername = null, texto,
+    // Perfil que RECEBEU (12/09/2026): `agenteId` null = clínica. O envio sai
+    // pelo cliente daquele perfil — responder pelo da clínica publicaria a
+    // resposta errada no post da loja.
+    agenteId = null, contaComercialId = null, envio = null,
   }) {
     const jaProcessado = await repositorio.obterComentarioProcessado(comentarioIdExterno);
     if (jaProcessado) return { ja_processado: true };
 
-    const regrasAtivas = await repositorio.listarRegrasDeGatilho({ apenasAtivas: true });
+    // Sem cliente do perfil certo, nada sai: o comentário fica sem resposta e
+    // com rastro, em vez de ser respondido pela conta errada.
+    const canal = envio ?? instagramEnvio;
+
+    const regrasAtivas = await repositorio.listarRegrasDeGatilho({ apenasAtivas: true, agenteId });
     // A regra que responde a QUALQUER comentário vai por último: ela existe
     // para o que sobrou, e consultá-la antes faria ela roubar comentários que
     // têm gatilho próprio — o paciente que escreveu "quero agendar" receberia
@@ -215,6 +246,7 @@ function criarServicoDeGatilhos({
     if (!regra) {
       await repositorio.registrarComentarioProcessado({
         comentarioIdExterno, postId, autorIgId, regraId: null, respostaPublicaEnviada: false, dmEnviada: false,
+        agenteId, contaComercialId,
       });
       return { regra: null };
     }
@@ -228,9 +260,9 @@ function criarServicoDeGatilhos({
     // (`resposta_publica_enviada`) fica `false` e o fluxo segue para a DM,
     // sem quebrar.
     let respostaPublicaEnviada = false;
-    if (instagramEnvio && typeof instagramEnvio.responderComentarioPublicamente === 'function') {
+    if (canal && typeof canal.responderComentarioPublicamente === 'function') {
       try {
-        await instagramEnvio.responderComentarioPublicamente({
+        await canal.responderComentarioPublicamente({
           comentarioIdExterno, texto: regra.mensagem_publica,
         });
         respostaPublicaEnviada = true;
@@ -255,12 +287,15 @@ function criarServicoDeGatilhos({
     // gatilho: tirar a pessoa do comentário e levá-la ao canal onde a Serena
     // atende de verdade. Sem número configurado, a DM sai como está — link
     // quebrado seria pior que link nenhum.
+    const nomeDoAgente = agenteId
+      ? (await repositorio.obterAgente?.(agenteId))?.nome ?? null
+      : null;
     const textoDaDm = montarTextoDaDm(regra);
 
     let dmEnviada = false;
-    if (instagramEnvio && typeof instagramEnvio.responderComentarioPrivadamente === 'function') {
+    if (canal && typeof canal.responderComentarioPrivadamente === 'function') {
       try {
-        await instagramEnvio.responderComentarioPrivadamente({
+        await canal.responderComentarioPrivadamente({
           comentarioIdExterno, texto: textoDaDm,
         });
         dmEnviada = true;
@@ -278,9 +313,12 @@ function criarServicoDeGatilhos({
     const contato = await repositorio.encontrarOuCriarContato({
       telefone: null, identificador: autorIgId, nome: autorUsername ?? null, canal: 'instagram',
     });
-    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'instagram');
+    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'instagram', { agenteId });
     await repositorio.registrarMensagem(conversa.id, {
-      direcao: 'saida', conteudo: textoDaDm, autor_tipo: 'automacao', autor_nome: 'Serena',
+      direcao: 'saida', conteudo: textoDaDm, autor_tipo: 'automacao',
+      // Quem assina é o dono do perfil: "Serena" numa DM da loja confundiria
+      // o cliente e a equipe que lê a conversa depois.
+      autor_nome: nomeDoAgente ?? 'Serena',
     });
     // origemDetalhe marca que este lead nasceu de um comentário-gatilho (e
     // qual regra bateu) — é o que diferencia, na tela de Leads, um lead que
@@ -294,6 +332,7 @@ function criarServicoDeGatilhos({
 
     await repositorio.registrarComentarioProcessado({
       comentarioIdExterno, postId, autorIgId, regraId: regra.id, respostaPublicaEnviada, dmEnviada,
+      agenteId, contaComercialId,
     });
 
     return { regra, resposta_publica_enviada: respostaPublicaEnviada, dm_enviada: dmEnviada };

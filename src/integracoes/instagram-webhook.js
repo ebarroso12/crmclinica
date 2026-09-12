@@ -240,7 +240,7 @@ function normalizarValorDeComentario(valor, tempoDaEntrada, contaComercialId) {
  * porque é o contrato que os testes e o caminho antigo usam; quem processa em
  * produção deve usar este.
  */
-function normalizarComentariosInstagram(payload = {}, { contaComercialId = null } = {}) {
+function normalizarComentariosInstagram(payload = {}, { contaComercialId = null, contas = [] } = {}) {
   if (!payload || typeof payload !== 'object') return [];
 
   const entradas = Array.isArray(payload.entry) ? payload.entry : [];
@@ -248,12 +248,23 @@ function normalizarComentariosInstagram(payload = {}, { contaComercialId = null 
 
   for (const entrada of entradas) {
     if (!entrada || typeof entrada !== 'object' || Array.isArray(entrada)) continue;
+
+    // Quem RECEBEU. A Meta entrega os dois perfis na mesma URL, e sem isto o
+    // comentário na loja seria respondido pela conta da clínica.
+    const destino = texto(entrada.id) || null;
+    // O corte de auto-comentário passa a valer para a conta que recebeu — com
+    // vários perfis, comparar sempre com o da clínica deixaria a automação
+    // reagir ao próprio comentário da loja.
+    const idParaFiltrar = destino && contas.some((conta) => conta.contaComercialId === destino)
+      ? destino
+      : contaComercialId;
+
     const mudancas = Array.isArray(entrada.changes) ? entrada.changes : [];
     for (const mudanca of mudancas) {
       if (!mudanca || typeof mudanca !== 'object' || Array.isArray(mudanca)) continue;
       if (mudanca.field !== 'comments') continue;
-      const comentario = normalizarValorDeComentario(mudanca.value, entrada.time, contaComercialId);
-      if (comentario) comentarios.push(comentario);
+      const comentario = normalizarValorDeComentario(mudanca.value, entrada.time, idParaFiltrar);
+      if (comentario) comentarios.push({ ...comentario, conta_comercial_id: destino });
     }
   }
 

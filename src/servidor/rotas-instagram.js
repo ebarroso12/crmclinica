@@ -41,6 +41,8 @@ function criarRotasDeInstagram({ servico }) {
         mensagemPublica: corpo?.mensagem_publica,
         ctaWhatsapp: corpo?.cta_whatsapp,
         usuarioId: usuario.id,
+        // De qual perfil é a regra (049): ausente = clínica.
+        agenteId: corpo?.agente_id ?? null,
       });
       return { regra };
     },

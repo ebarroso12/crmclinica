@@ -216,6 +216,16 @@ const ESPERADO = {
       ['serena_configuracao', 'canais_desligados'],
     ],
   },
+  // Sem ela, a regra de gatilho de um perfil do Instagram dispara no outro:
+  // a palavra da loja responderia nos posts da clinica.
+  '049_instagram_por_agente': {
+    tabelas: [],
+    colunas: [
+      ['instagram_regras_gatilho', 'agente_id'],
+      ['instagram_comentarios_processados', 'agente_id'],
+      ['instagram_comentarios_processados', 'conta_comercial_id'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice

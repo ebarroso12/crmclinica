@@ -4246,6 +4246,28 @@ function desenharGatilhos(regras, podeGerenciar) {
     </li>`).join('');
 }
 
+/**
+ * Perfis do Instagram no seletor da regra (049).
+ *
+ * A lista sai dos agentes que TÊM canal de Instagram cadastrado — é esse
+ * cadastro que liga o perfil ao agente. Sem nenhum, o campo nem aparece: o
+ * único perfil é o da clínica, e escolher entre um só confundiria.
+ */
+function desenharPerfisDoGatilho(agenteIdAtual) {
+  const campo = seletor('#gatilho-perfil-campo');
+  const seletorPerfil = seletor('#gatilho-perfil');
+  if (!campo || !seletorPerfil) return;
+
+  const comInstagram = (agentesPainel?.agentes ?? [])
+    .filter((agente) => (agente.canais ?? []).some((canal) => canal.canal === 'instagram'));
+
+  campo.hidden = comInstagram.length === 0;
+  seletorPerfil.innerHTML = '<option value="">Clínica (Serena)</option>'
+    + comInstagram.map((agente) =>
+      `<option value="${Number(agente.id)}">${escapar(agente.nome)}</option>`).join('');
+  seletorPerfil.value = agenteIdAtual === null || agenteIdAtual === undefined ? '' : String(agenteIdAtual);
+}
+
 function abrirEditorDeGatilho(gatilho = null) {
   gatilhoEmEdicao = gatilho;
   const form = seletor('#form-gatilho');
@@ -4257,6 +4279,7 @@ function abrirEditorDeGatilho(gatilho = null) {
   seletor('#gatilho-mensagem-publica').value = gatilho?.mensagem_publica ?? '';
   seletor('#gatilho-mensagem-dm').value = gatilho?.mensagem_dm ?? '';
   seletor('#gatilho-cta-whatsapp').checked = gatilho ? gatilho.cta_whatsapp === true : true;
+  desenharPerfisDoGatilho(gatilho?.agente_id ?? null);
   form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -4656,7 +4679,7 @@ function desenharLinhasDeCanais(canais, pode = agenteAberto?.pode_gerenciar) {
     <li class="linha-canal">
       <select data-campo="canal" aria-label="Canal">
         <option value="whatsapp"${canal.canal === 'whatsapp' ? ' selected' : ''}>WhatsApp</option>
-        <option value="instagram"${canal.canal === 'instagram' ? ' selected' : ''}>Instagram (ainda sem atendimento)</option>
+        <option value="instagram"${canal.canal === 'instagram' ? ' selected' : ''}>Instagram</option>
       </select>
       <input type="text" data-campo="instancia" maxlength="100" aria-label="Nome da instância" placeholder="nome da instância (ex.: alpins)" value="${escaparAtributo(canal.instancia ?? '')}">
       <label class="marcador"><input type="checkbox" data-campo="ativo"${canal.ativo === false ? '' : ' checked'}> ativo</label>
@@ -5796,6 +5819,8 @@ document.addEventListener('submit', async (evento) => {
       mensagem_publica: seletor('#gatilho-mensagem-publica').value,
       mensagem_dm: seletor('#gatilho-mensagem-dm').value,
       cta_whatsapp: seletor('#gatilho-cta-whatsapp').checked,
+      // Vazio = clínica. O campo só existe quando há mais de um perfil.
+      agente_id: seletor('#gatilho-perfil')?.value ? Number(seletor('#gatilho-perfil').value) : null,
     };
     try {
       if (gatilhoEmEdicao) {

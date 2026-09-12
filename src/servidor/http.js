@@ -14,7 +14,7 @@ const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('..
 const { normalizarEventosInstagram, normalizarComentariosInstagram } = require('../integracoes/instagram-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarClienteEvolucaoInstancia } = require('../integracoes/evolution-instancia');
-const { criarClienteInstagramEnvio } = require('../integracoes/instagram-envio');
+const { criarClienteInstagramEnvio, criarRoteadorDeInstagram } = require('../integracoes/instagram-envio');
 const { criarServicoDeGatilhos } = require('../dominio/instagram-gatilhos');
 const { criarClienteStorage } = require('../integracoes/supabase-storage');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
@@ -174,6 +174,13 @@ function criarAplicacao(dependencias = {}) {
 
   const clienteInstagramEnvio = dependencias.clienteInstagramEnvio
     || criarClienteInstagramEnvio(configuracao.instagram);
+
+  // Um cliente por perfil do Instagram (12/09/2026): a clínica e a loja Alpins
+  // chegam na MESMA URL de webhook, e é `entry[].id` que diz de quem é cada
+  // comentário. Com um perfil só, `paraConta` devolve o mesmo cliente de
+  // sempre — nada muda para quem não configurou o segundo.
+  const roteadorDeInstagram = dependencias.roteadorDeInstagram
+    || criarRoteadorDeInstagram(configuracao.instagram, { fetchImpl: dependencias.instagramFetchImpl });
 
   // Storage de anexos (foto/documento/áudio do chat) — independente do canal
   // de envio: existe mesmo se só a Evolution estiver configurada, porque é
@@ -765,9 +772,20 @@ function criarAplicacao(dependencias = {}) {
     const corpoBruto = await lerCorpoBruto(req, configuracao.limiteCorpoBytes);
 
     const segredo = configuracao.instagram.appSecret;
-    if (segredo) {
+    // Perfil em OUTRO app da Meta tem segredo próprio (INSTAGRAM_<X>_APP_SECRET).
+    // Aceitar qualquer um dos segredos configurados é o mesmo que confiar em
+    // mais de um emissor: cada um é um app nosso, e a mensagem só passa se
+    // ALGUM deles assinar. Sem isto, o segundo app levaria 401 em todo evento
+    // e a Meta acabaria desativando a inscrição.
+    const segredos = [segredo, ...(configuracao.instagram.contas ?? []).map((conta) => conta.appSecret)]
+      .filter(Boolean);
+
+    if (segredos.length > 0) {
       const recebida = req.headers['x-hub-signature-256'];
-      if (!assinaturaValida({ corpoBruto, assinaturaRecebida: recebida, segredo })) {
+      const alguemAssinou = segredos.some((candidato) => assinaturaValida({
+        corpoBruto, assinaturaRecebida: recebida, segredo: candidato,
+      }));
+      if (!alguemAssinou) {
         responderJson(res, 401, { erro: 'assinatura inválida' });
         return;
       }
@@ -784,6 +802,7 @@ function criarAplicacao(dependencias = {}) {
       // resto sumia com HTTP 200 — a Meta nao reentrega o que ja foi aceito.
       const comentarios = normalizarComentariosInstagram(corpoInterpretado, {
         contaComercialId: configuracao.instagram.contaComercialId,
+        contas: configuracao.instagram.contas ?? [],
       });
       if (comentarios.length === 0) {
         responderJson(res, 200, { aceito: true, ignorado: true });
@@ -793,12 +812,56 @@ function criarAplicacao(dependencias = {}) {
       const resultados = [];
       for (const comentario of comentarios) {
         try {
+          // De quem é este perfil? (12/09/2026) O apelido da conta é o slug do
+          // agente dono; sem apelido, é o perfil da clínica. Responder pelo
+          // cliente errado publicaria a resposta da clínica no post da loja.
+          const apelido = roteadorDeInstagram.apelidoDaConta(comentario.conta_comercial_id);
+          // `incluirInativos`: o canal desligado ainda diz de QUEM é o perfil.
+          // Sem isto, um canal inativo faria o comentário da loja ser tratado
+          // como da clínica — mesmo cuidado de fluxo.js, que usa true para não
+          // "responder pelo número da clínica".
+          const agenteDoPerfil = apelido
+            ? await repositorio.obterAgentePorCanal?.('instagram', comentario.conta_comercial_id, { incluirInativos: true })
+            : null;
+
+          // Perfil que o ambiente conhece (tem token) mas que ninguém ligou a
+          // um agente no CRM. Cair para `agenteId: null` aqui publicaria as
+          // regras da CLÍNICA no post da loja, assinadas pela loja — é a
+          // janela entre configurar as variáveis e cadastrar o canal.
+          if (apelido && !agenteDoPerfil) {
+            console.error("[instagram] perfil sem agente cadastrado: " + comentario.conta_comercial_id
+              + " (Agentes > canal instagram). Comentario nao respondido.");
+            resultados.push({ erro: 'perfil_sem_agente', conta: comentario.conta_comercial_id });
+            continue;
+          }
+
+          // Com um perfil só, `entry[].id` é ignorado e tudo segue pelo
+          // cliente da clínica — exatamente como antes desta mudança. O
+          // roteamento (e o risco de "conta desconhecida") só entra em cena
+          // depois que alguém configura um segundo perfil, que é quando os
+          // ids passam a ser conferidos de propósito.
+          const envio = roteadorDeInstagram.temPerfisExtras
+            ? roteadorDeInstagram.paraConta(comentario.conta_comercial_id)
+            : clienteInstagramEnvio;
+
+          if (!envio) {
+            // Perfil que a Meta entregou mas este CRM não conhece: não dá para
+            // responder por conta nenhuma sem arriscar publicar a resposta de
+            // um perfil no post do outro. Fica o rastro, sem resposta errada.
+            console.error("[instagram] comentario de conta desconhecida: " + comentario.conta_comercial_id);
+            resultados.push({ erro: 'conta_desconhecida', conta: comentario.conta_comercial_id });
+            continue;
+          }
+
           resultados.push(await servicoDeGatilhos.processarComentario({
             comentarioIdExterno: comentario.comentario_id_externo,
             postId: comentario.post_id,
             autorIgId: comentario.autor_ig_id,
             autorUsername: comentario.autor_username,
             texto: comentario.texto,
+            agenteId: agenteDoPerfil?.id ?? null,
+            contaComercialId: comentario.conta_comercial_id,
+            envio,
           }));
         } catch (erro) {
           // Um comentario que estoura nao pode levar os outros do lote junto:
