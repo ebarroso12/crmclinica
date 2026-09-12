@@ -4707,10 +4707,14 @@ function desenharMenuDeAgentes(agentes) {
     botao.type = 'button';
     botao.dataset.tela = 'agentes';
     botao.dataset.abrirAgenteMenu = String(Number(agente.id));
-    const icone = document.createElement('span');
-    icone.className = 'icone-menu';
+    // Mesmo sprite dos itens fixos: um agente criado pela tela não pode
+    // parecer de outra família que a Serena.
+    const icone = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icone.setAttribute('class', 'icone-menu');
     icone.setAttribute('aria-hidden', 'true');
-    icone.textContent = '◈';
+    const uso = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    uso.setAttribute('href', '#i-agente');
+    icone.append(uso);
     const nome = String(agente.nome ?? '');
     botao.title = nome;
     botao.append(icone, ` ${nome.length > 24 ? `${nome.slice(0, 23)}…` : nome}`);

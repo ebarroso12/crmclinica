@@ -20,6 +20,10 @@
 
 * { box-sizing: border-box; }
 
+/* O sprite guarda os símbolos do menu; quem desenha são os <use>. Fora da
+   tela, mas dentro do DOM — é assim que <use href="#..."> os encontra. */
+.sprite-icones { display: none; }
+
 /* Regras com `display` explícito vencem o `display: none` que o navegador dá a
    [hidden] — sem isto, um painel marcado como oculto continua aparecendo. */
 [hidden] { display: none !important; }
@@ -208,6 +212,16 @@ h1, h2, h3 { line-height: 1.25; }
 .plantao .estado.ruim { color: #ffada8; }
 .plantao .estado.ruim::before { background: #ff6b61; }
 
+/* Só em tela larga, onde os cinco sinais cabem em uma linha: a divisória
+   separa um sinal do outro. Abaixo disso a faixa quebra em duas linhas e a
+   divisória apareceria no começo da segunda, que é onde ela atrapalha. */
+@media (min-width: 981px) {
+  .plantao { gap: 0; padding: 8px 24px; }
+  .plantao > div { padding: 0 18px; }
+  .plantao > div:first-child { padding-left: 0; }
+  .plantao > div + div { border-left: 1px solid rgba(220, 232, 250, 0.16); }
+}
+
 /* ---------- Menu lateral ---------- */
 
 .lateral {
@@ -221,6 +235,8 @@ h1, h2, h3 { line-height: 1.25; }
 .marca { display: flex; gap: 9px; align-items: center; margin: 0 0 6px; padding: 0 6px; }
 .marca b { display: block; font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
 .marca small { display: block; color: var(--apoio); font-size: 10.5px; }
+.marca-icone svg { width: 19px; height: 19px; }
+.agente-icone svg { width: 24px; height: 24px; }
 .marca-icone, .agente-icone {
   display: grid;
   place-items: center;
@@ -246,20 +262,42 @@ h1, h2, h3 { line-height: 1.25; }
 /* O menu ocupa a altura livre: o que vem depois dele (controles da Serena e
    rodapé) se ancora no pé sem `margin: auto` espalhado por cada botão. */
 .lateral nav { margin-bottom: auto; min-width: 0; }
-nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+
+/* Em tela larga a lateral acompanha a rolagem e o menu rola por dentro: com
+   14 itens, a parada de emergência ficava abaixo da dobra — um botão de
+   urgência que exigia rolar não é um botão de urgência. */
+@media (min-width: 981px) {
+  .lateral {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+  }
+  .lateral nav {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #cfd8e6 transparent;
+    /* Desvanece a última linha quando ainda há item abaixo: um rótulo cortado
+       ao meio parece defeito; desvanecido, diz "continua". */
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  }
+}
+
+nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 nav button {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   border: 0;
   background: transparent;
   text-align: left;
   color: #45506a;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 8px;
   font: inherit;
   font-size: 13.5px;
+  line-height: 1.35;
   cursor: pointer;
 }
 nav button:hover { background: #f1f6fb; color: #0a6f7e; }
@@ -271,7 +309,21 @@ nav button[aria-current="page"] {
   font-weight: 700;
   box-shadow: inset 3px 0 0 var(--ciano);
 }
-.icone-menu { width: 20px; text-align: center; font-size: 14px; opacity: 0.9; }
+.icone-menu {
+  width: 18px; height: 18px;
+  flex: none;
+  opacity: 0.7;
+  /* O <use> clona o símbolo para dentro deste svg, e o clone herda daqui —
+     não do sprite. Sem estas quatro linhas cada forma fechada apareceria
+     preenchida de preto, que é o padrão do SVG. */
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+nav button:hover .icone-menu { opacity: 0.95; }
+nav button[aria-current="page"] .icone-menu { opacity: 1; }
 /* Contador do menu é informação, não alarme: neutro. O do sino é alerta. */
 .contador {
   margin-left: auto;
@@ -304,8 +356,9 @@ nav button[aria-current="page"] {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
-  margin: 14px 0 4px;
-  padding: 0 10px;
+  margin: 12px 0 5px;
+  padding: 11px 10px 0;
+  border-top: 1px solid var(--linha);
 }
 
 /* Parada de emergência: continua sempre à mão, no pé do menu, mas em contorno
@@ -400,8 +453,16 @@ nav button[aria-current="page"] {
 }
 .topo small { color: var(--apoio); font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; }
 .topo h1 { margin: 2px 0 0; font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
-.acoes { display: flex; align-items: center; gap: 12px; color: var(--apoio); }
-.nome-equipe { font-size: 13px; }
+.acoes { display: flex; align-items: center; gap: 10px; color: var(--apoio); }
+/* Uma linha separa o contexto (hora, local) do que é da pessoa (avatar, nome,
+   sair): sem ela os cinco elementos liam como uma fileira só. */
+.acoes .sino { margin-left: 2px; padding-left: 12px; border-left: 1px solid var(--linha); }
+.acoes .avatar { margin-left: 2px; }
+.nome-equipe { font-size: 13px; color: var(--texto); font-weight: 600; }
+
+/* Botão de ícone: quadrado, sem o padding de texto do .acao. */
+#sino-botao { display: grid; place-items: center; padding: 7px; }
+#sino-botao .icone-menu { width: 17px; height: 17px; opacity: 0.85; }
 
 .avatar {
   display: inline-grid;
