@@ -6,7 +6,13 @@
   <meta name="color-scheme" content="light dark">
   <meta name="description" content="CRM de atendimento da Clínica Dr. Edson Barroso.">
   <title>crmclinica — Clínica Dr. Edson Barroso</title>
+  <!-- Logomarca da clínica (12/09/2026). O PNG vem primeiro porque é a marca
+       de verdade; o SVG antigo fica como reserva para quem não carregar PNG. -->
+  <link rel="icon" href="/favicon.png" type="image/png" sizes="64x64">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0d1930">
   <link rel="stylesheet" href="/estilo.css">
 </head>
 <body>
@@ -38,9 +44,9 @@
   <!-- Entrada da equipe. Sem sessão válida, o inbox nem é montado. -->
   <div class="portao" id="portao" hidden>
     <div class="cartao-login">
-      <span class="marca-icone" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 4.5v15M4.5 12h15"/></svg></span>
-      <h1>crmclinica</h1>
-      <p class="subtitulo">Atendimento da Clínica Dr. Edson Barroso</p>
+      <img class="logo-entrada" src="/logo-crmclinica.png" width="230" height="210"
+           alt="CRM Clínica — Dr. Edson Barroso">
+      <h1 class="oculto-visual">CRM Clínica — Dr. Edson Barroso</h1>
 
       <!-- Entrar -->
       <form id="form-login" class="painel-portao">
@@ -166,8 +172,8 @@
     <!-- Menu lateral -->
     <header class="lateral">
       <p class="marca">
-        <span class="marca-icone" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 4.5v15M4.5 12h15"/></svg></span>
-        <span><b>crmclinica</b><small>Clínica Dr. Edson Barroso</small></span>
+        <img class="marca-icone" src="/marca-crmclinica.png" width="36" height="36" alt="">
+        <span><b>CRM Clínica</b><small>Dr. Edson Barroso</small></span>
       </p>
 
       <nav aria-label="Seções do CRM">

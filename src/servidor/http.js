@@ -90,6 +90,14 @@ const ARQUIVOS_PUBLICOS = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/serena-voz.js', ['serena-voz.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
+  // Logomarca da clínica (12/09/2026). Entram na lista fechada um a um, pelo
+  // mesmo motivo dos demais: nenhum caminho vem da requisição.
+  ['/favicon.png', ['favicon.png', 'image/png']],
+  ['/marca-crmclinica.png', ['marca-crmclinica.png', 'image/png']],
+  ['/logo-crmclinica.png', ['logo-crmclinica.png', 'image/png']],
+  ['/apple-touch-icon.png', ['apple-touch-icon.png', 'image/png']],
+  ['/icone-512.png', ['icone-512.png', 'image/png']],
+  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
 ]);
 
 const CABECALHOS_SEGURANCA = Object.freeze({

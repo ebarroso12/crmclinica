@@ -12,6 +12,9 @@
   --linha: #e2e8f1;
   --ciano: #0e8fa1;
   --roxo: #5b4bd6;
+  /* Azul da logomarca (12/09/2026) — o gradiente da marca e dos botoes sai
+     dela, nao mais do roxo, que vinha de antes e brigava na mesma tela. */
+  --azul-marca: #1f6fb2;
   --verde: #0f7a58;
   --ambar: #8a5b00;
   --sombra: 0 12px 30px rgba(16, 35, 68, 0.06);
@@ -88,6 +91,13 @@ h1, h2, h3 { line-height: 1.25; }
   box-shadow: 0 20px 50px rgba(6, 14, 30, 0.35);
 }
 .cartao-login .marca-icone { margin-bottom: 10px; }
+.logo-entrada {
+  display: block;
+  width: 100%;
+  max-width: 230px;
+  height: auto;
+  margin: 0 auto 6px;
+}
 .cartao-login h1 { margin: 0; font-size: 22px; }
 .cartao-login > p { margin: 0 0 16px; color: var(--apoio); font-size: 13px; }
 .cartao-login label { font-size: 12px; color: var(--apoio); margin-top: 8px; }
@@ -239,6 +249,13 @@ h1, h2, h3 { line-height: 1.25; }
 .marca b { display: block; font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
 .marca small { display: block; color: var(--apoio); font-size: 10.5px; }
 .marca-icone svg { width: 19px; height: 19px; }
+/* A logomarca da clinica no lugar do simbolo desenhado (12/09/2026). */
+img.marca-icone {
+  background: none;
+  border-radius: 8px;
+  object-fit: contain;
+  display: block;
+}
 .agente-icone svg { width: 24px; height: 24px; }
 .marca-icone, .agente-icone {
   display: grid;
@@ -247,7 +264,7 @@ h1, h2, h3 { line-height: 1.25; }
   border-radius: 10px;
   color: #fff;
   font-size: 22px;
-  background: linear-gradient(135deg, var(--ciano), var(--roxo));
+  background: linear-gradient(135deg, var(--ciano), var(--azul-marca));
   flex: none;
 }
 /* Relógio: agora vive na barra do topo, em uma linha, como contexto de plantão
@@ -525,7 +542,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .primario {
   border: 0;
   padding: 10px 16px;
-  background: linear-gradient(135deg, var(--ciano), var(--roxo));
+  background: linear-gradient(135deg, var(--ciano), var(--azul-marca));
   color: #fff;
   white-space: nowrap;
 }
