@@ -272,6 +272,8 @@ test('quem não gerencia a Serena não mexe em horário, pausa nem plantão', as
   for (const [caminho, metodo] of [
     ['/api/serena/horario', 'PUT'], ['/api/serena/pausa', 'POST'],
     ['/api/serena/pausa', 'DELETE'], ['/api/serena/plantao', 'POST'],
+    // Calar o WhatsApp da clinica e decisao de admin, igual a desligar a Serena.
+    ['/api/serena/canais', 'PUT'],
   ]) {
     const resposta = await comAtendente(caminho, {
       method: metodo, headers: JSON_H, body: JSON.stringify({ minutos: 10 }),

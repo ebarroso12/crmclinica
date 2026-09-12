@@ -14,7 +14,18 @@
 -- teria de ser interpretado toda vez, e "não sei" não é um estado que a
 -- decisão de responder possa ter.
 --
+-- ORDEM DE ATIVAÇÃO (importa): a coluna nasce '[]', ou seja, TODOS os canais
+-- respondem. Quem vai atender só no Instagram tem de seguir nesta ordem:
+--   1. aplicar esta migration;
+--   2. PUT /api/serena/canais {"canais_desligados": ["whatsapp"]} (ou desmarcar
+--      a caixa na tela da Serena);
+--   3. só então ligar a automação (POST /api/serena/estado {"ativa": true}).
+-- Invertendo 2 e 3, o WhatsApp da clínica volta a responder pacientes na janela
+-- entre os dois cliques.
+--
 -- Idempotente: pode rodar duas vezes.
+
+BEGIN;
 
 ALTER TABLE serena_configuracao
   ADD COLUMN IF NOT EXISTS canais_desligados jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -37,3 +48,5 @@ END $$;
 COMMENT ON COLUMN serena_configuracao.canais_desligados IS
   'Canais que a Serena nao atende enquanto a automacao esta ligada (ex.: ["whatsapp"]). '
   'Lista vazia = atende todos. O interruptor geral (ativa) continua valendo acima disto.';
+
+COMMIT;

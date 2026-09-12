@@ -179,3 +179,43 @@ test('a decisão do serviço usa o canal da conversa, ponta a ponta', async () =
   assert.equal(calado.responder, false);
   assert.equal(calado.motivo, 'canal_desligado');
 });
+
+// ---------------------------------------------------------------- tela
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+
+test('o bloco de canais nasce escondido e só aparece para quem gerencia', () => {
+  assert.match(HTML, /<div class="canais-automacao" id="serena-canais" hidden>/);
+  assert.match(APP_JS, /const canais = seletor\('#serena-canais'\);\s*\n\s*if \(canais\) canais\.hidden = !dados\.pode_gerenciar;/,
+    'mesmo gate do cartão de controle: escolher canal é mexer no atendimento');
+  for (const id of ['serena-canal-whatsapp', 'serena-canal-instagram']) {
+    assert.ok(HTML.includes(`id="${id}"`), `#${id} precisa existir no HTML`);
+  }
+});
+
+test('a tela desenha a partir do servidor, não do clique', () => {
+  assert.match(APP_JS, /caixa\.checked = !desligados\.has\(canal\)/,
+    'as caixas refletem a lista que veio do servidor');
+  const salvar = APP_JS.slice(APP_JS.indexOf('async function salvarCanaisDaSerena'));
+  assert.match(salvar, /carregarSerena\(\)/,
+    'na falha a tela relê o servidor: desfazer o clique mentiria se a gravação tivesse passado');
+  assert.match(salvar, /erro\.detalhe \|\| erro\.message/,
+    'a frase do servidor (ex.: migration 048 pendente) precisa chegar a quem clicou');
+});
+
+test('com a automação desligada o bloco avisa em vez de dizer "responde nos dois"', () => {
+  assert.match(APP_JS, /bloco\.dataset\.inerte = String\(ativa === false\)/);
+  assert.ok(HTML.includes('id="serena-canais-aviso"'), 'o aviso precisa existir no HTML');
+  assert.match(APP_JS, /aviso\.hidden = ativa !== false/);
+});
+
+test('o rótulo do Instagram não promete governar o gatilho de comentário', () => {
+  // O gatilho (resposta pública + DM) não passa por este interruptor nem pelo
+  // geral: dizer o contrário faria alguém desmarcar a caixa e achar que parou.
+  const bloco = HTML.slice(HTML.indexOf('id="serena-canais"'), HTML.indexOf('id="serena-canais"') + 1800);
+  assert.match(bloco, /o gatilho de comentário .*dispara mesmo com isto desmarcado/);
+});

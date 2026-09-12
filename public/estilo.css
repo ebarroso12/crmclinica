@@ -1919,3 +1919,4 @@ button.perigo:hover { background: #fecaca; }
 .linha-canal b { display: block; font-weight: 600; font-size: 13.5px; }
 .linha-canal small { display: block; color: var(--apoio); font-size: 12px; }
 .linha-canal input:disabled + span { opacity: 0.6; }
+.canais-automacao[data-inerte="true"] .linha-canal { opacity: 0.55; }

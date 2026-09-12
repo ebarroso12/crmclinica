@@ -11,8 +11,12 @@
 -- {"ativa": false}) ou confirme que responder em todos os canais é o que se
 -- quer agora.
 
+BEGIN;
+
 ALTER TABLE serena_configuracao
   DROP CONSTRAINT IF EXISTS serena_configuracao_canais_desligados_array;
 
 ALTER TABLE serena_configuracao
   DROP COLUMN IF EXISTS canais_desligados;
+
+COMMIT;

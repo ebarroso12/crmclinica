@@ -3814,7 +3814,7 @@ function desenharEstadoDaSerena(dados) {
     motivo.textContent = serena.motivo ? `Motivo do desligamento: ${serena.motivo}` : '';
   }
 
-  desenharCanaisDaSerena(serena.canais_desligados ?? []);
+  desenharCanaisDaSerena(serena.canais_desligados ?? [], serena.ativa);
 }
 
 /**
@@ -3824,12 +3824,18 @@ function desenharEstadoDaSerena(dados) {
  * é o que impede a tela de afirmar "Instagram ligado" quando a gravação falhou
  * — o mesmo cuidado do botão de parada de emergência.
  */
-function desenharCanaisDaSerena(canaisDesligados) {
+function desenharCanaisDaSerena(canaisDesligados, ativa = true) {
   const desligados = new Set((canaisDesligados ?? []).map((canal) => String(canal).toLowerCase()));
   for (const [canal, id] of [['whatsapp', '#serena-canal-whatsapp'], ['instagram', '#serena-canal-instagram']]) {
     const caixa = seletor(id);
     if (caixa) caixa.checked = !desligados.has(canal);
   }
+  // Com a automação desligada nenhum canal responde: o bloco inteiro fica
+  // esmaecido para não afirmar "responde nos dois" enquanto ela está muda.
+  const bloco = seletor('#serena-canais');
+  if (bloco) bloco.dataset.inerte = String(ativa === false);
+  const aviso = seletor('#serena-canais-aviso');
+  if (aviso) aviso.hidden = ativa !== false;
 }
 
 /** Lê as caixas e manda a lista inteira — o servidor substitui, não soma. */
@@ -3851,10 +3857,12 @@ async function salvarCanaisDaSerena(caixaQueMudou) {
       ? 'A Serena responde em todos os canais.'
       : `A Serena parou de responder em: ${canaisDesligados.join(', ')}.`);
   } catch (erro) {
-    // Devolve a caixa ao estado real: deixá-la como o clique a pôs faria a
-    // tela mentir sobre um canal que continua respondendo pacientes.
-    if (caixaQueMudou) caixaQueMudou.checked = !caixaQueMudou.checked;
-    informar(`Não consegui mudar o canal: ${erro.message}`);
+    // A tela não adivinha o que aconteceu: relê do servidor. Desfazer o clique
+    // mentiria quando a gravação passou e só a resposta se perdeu.
+    carregarSerena().catch(() => {
+      if (caixaQueMudou) caixaQueMudou.checked = !caixaQueMudou.checked;
+    });
+    informar(`Não consegui mudar o canal: ${erro.detalhe || erro.message}`);
   } finally {
     for (const caixa of caixas) caixa.disabled = false;
   }

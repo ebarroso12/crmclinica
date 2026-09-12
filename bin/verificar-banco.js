@@ -208,6 +208,14 @@ const ESPERADO = {
       ['resumo_envios', 'tentativas'],
     ],
   },
+  // Sem ela, escolher canal devolve 503 e a clínica não consegue atender só no
+  // Instagram — o código sobe e o recurso fica inerte, sem nada avisando.
+  '048_serena_canais_desligados': {
+    tabelas: [],
+    colunas: [
+      ['serena_configuracao', 'canais_desligados'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
@@ -223,6 +231,8 @@ const CONSTRAINTS = [
   ['ia_avaliacoes', 'ia_avaliacoes_unicas', 'reavaliar não duplica avaliação'],
   ['notificacoes', 'notificacoes_chave_unica', 'reprocessar não duplica aviso no sino'],
   ['agentes', 'agentes_slug_uk', 'dois agentes não dividem o mesmo identificador'],
+  ['serena_configuracao', 'serena_configuracao_canais_desligados_array',
+    'canal calado só entra como lista: objeto ou texto viraria adivinhação na hora de responder'],
 ];
 
 // Funções nossas que precisam de `search_path` fixo. Sem ele, um schema no
