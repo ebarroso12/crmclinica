@@ -1849,6 +1849,9 @@ function mostrarAplicacao() {
   // Selo do menu: cliente de agente que pediu a equipe não entra na fila de
   // escalonadas da clínica — o número no menu é por onde alguém fica sabendo.
   iniciarSeloDeAgentes();
+  // Sem isto o grupo AGENTES do menu só listaria a Serena até alguém abrir a
+  // tela de agentes uma vez.
+  if (podeFazer('agentes:ler')) carregarAgentes();
 
   // O inbox começa a carregar de qualquer forma: a faixa de saúde não pode ficar
   // em "verificando…" só porque a pessoa foi levada ao perfil. Mas só DEPOIS do
@@ -1872,6 +1875,9 @@ function mostrarAplicacao() {
   sincronizarLiberarEmMassa();
 }
 
+/** Último estado conhecido do interruptor da Serena (null = ainda não lido). */
+let serenaNoAr = null;
+
 // --- Parada de emergência da Serena ---
 //
 // O interruptor completo mora na tela Serena; este botão existe para o
@@ -1879,6 +1885,10 @@ function mostrarAplicacao() {
 // paciente na linha. Um clique + uma confirmação, de qualquer tela.
 
 function desenharParadaDeEmergencia(ativa) {
+  // Guardado para a linha da Serena na tela Agentes: ela mostra o mesmo estado
+  // deste botão, sem uma segunda chamada ao interruptor.
+  serenaNoAr = ativa;
+  desenharEstadoDaSerenaNaLista();
   const botao = seletor('#parada-emergencia');
   if (!botao) return;
   botao.dataset.estado = ativa ? 'armada' : 'parada';
@@ -4238,16 +4248,80 @@ async function carregarAgentes() {
   }
 }
 
+/** Linha da Serena na lista: ela não está na tabela `agentes` (é o motor da
+ *  clínica), mas quem opera precisa ver os dois no mesmo lugar. */
+function linhaDaSerena() {
+  const pilula = serenaNoAr === null
+    ? ''
+    : ` <span class="pilula pequena" data-pilula-serena data-tom="${serenaNoAr ? 'ok' : 'alerta'}">${serenaNoAr ? 'Atendendo' : 'Parada'}</span>`;
+  return `
+    <li class="${serenaNoAr === false ? 'desligada' : ''}">
+      <div>
+        <strong>Serena${pilula}</strong>
+        <small>Agente da clínica · WhatsApp e Instagram da Clínica Dr. Edson Barroso</small>
+      </div>
+      <div class="linha-acoes">
+        <button type="button" class="secundario" data-abrir-serena="1">Abrir</button>
+      </div>
+    </li>`;
+}
+
+/** Mantém a pílula da Serena igual ao botão de parada, sem redesenhar a lista. */
+function desenharEstadoDaSerenaNaLista() {
+  const pilula = seletor('[data-pilula-serena]');
+  if (!pilula || serenaNoAr === null) return;
+  pilula.dataset.tom = serenaNoAr ? 'ok' : 'alerta';
+  pilula.textContent = serenaNoAr ? 'Atendendo' : 'Parada';
+}
+
+/** Um item de menu por agente cadastrado, ao lado da Serena. Clicar abre a tela
+ *  Agentes já com aquele agente aberto — era o caminho de quatro cliques que
+ *  fazia parecer que o Alpins "não estava no CRM". */
+function desenharMenuDeAgentes(agentes) {
+  const grupo = seletor('#menu-agentes');
+  const ancora = seletor('#item-agentes');
+  if (!grupo || !ancora) return;
+
+  for (const antigo of grupo.querySelectorAll('[data-agente-menu]')) antigo.remove();
+
+  for (const agente of agentes) {
+    const item = document.createElement('li');
+    item.dataset.agenteMenu = String(Number(agente.id));
+    const botao = document.createElement('button');
+    botao.type = 'button';
+    botao.dataset.tela = 'agentes';
+    botao.dataset.abrirAgenteMenu = String(Number(agente.id));
+    const icone = document.createElement('span');
+    icone.className = 'icone-menu';
+    icone.setAttribute('aria-hidden', 'true');
+    icone.textContent = '◈';
+    botao.append(icone, ` ${agente.nome}`);
+    // Cor só quando há o que avisar: agente que não está atendendo ganha ponto
+    // âmbar; o que está no ar fica igual aos demais itens do menu.
+    if (agente.status !== 'ativo') {
+      const aviso = document.createElement('b');
+      aviso.className = 'aviso-menu';
+      aviso.title = ROTULO_STATUS_AGENTE[agente.status] ?? agente.status;
+      aviso.textContent = '•';
+      botao.append(aviso);
+    }
+    item.append(botao);
+    grupo.insertBefore(item, ancora);
+  }
+}
+
 function desenharListaDeAgentes(agentes) {
   const lista = seletor('#lista-agentes');
   if (!lista) return;
 
+  desenharMenuDeAgentes(agentes);
+
   if (agentes.length === 0) {
-    lista.innerHTML = '<li class="vazio">Nenhum agente cadastrado.</li>';
+    lista.innerHTML = `${linhaDaSerena()}<li class="vazio">Nenhum outro agente cadastrado.</li>`;
     return;
   }
 
-  lista.innerHTML = agentes.map((agente) => {
+  lista.innerHTML = linhaDaSerena() + agentes.map((agente) => {
     const canais = (agente.canais ?? []).map((canal) => `${canal.canal}: ${canal.instancia}`).join(', ') || 'sem canal';
     return `
     <li class="${agente.status === 'ativo' ? '' : 'desligada'}">
@@ -4569,8 +4643,21 @@ seletor('#form-agente-novo')?.addEventListener('submit', async (evento) => {
 });
 
 seletor('#lista-agentes')?.addEventListener('click', (evento) => {
+  if (evento.target.closest('[data-abrir-serena]')) {
+    abrirTela('serena');
+    return;
+  }
   const botao = evento.target.closest('[data-abrir-agente]');
   if (botao) abrirAgente(botao.dataset.abrirAgente);
+});
+
+// Delegação: os itens por agente do menu nascem depois do carregamento da
+// página, então não podem depender do laço que registra os itens fixos.
+seletor('#menu-agentes')?.addEventListener('click', (evento) => {
+  const botao = evento.target.closest('[data-abrir-agente-menu]');
+  if (!botao) return;
+  abrirTela('agentes');
+  abrirAgente(botao.dataset.abrirAgenteMenu);
 });
 
 seletor('#agente-fechar')?.addEventListener('click', () => {

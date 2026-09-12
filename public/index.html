@@ -156,13 +156,21 @@
           <li><button type="button" data-tela="metricas"><span class="icone-menu" aria-hidden="true">∿</span> Métricas</button></li>
           <li><button type="button" data-tela="contatos"><span class="icone-menu" aria-hidden="true">☏</span> Contatos</button></li>
         </ul>
+        <!-- Um grupo so para quem atende no automatico. A Serena e o agente da
+             clinica e os demais (Alpins...) sao criados na tela Agentes: te-los
+             em cantos diferentes do menu era o que mais confundia quem opera os
+             dois no mesmo dia. Os itens por agente sao inseridos por app.js
+             (desenharMenuDeAgentes) antes de "Todos os agentes". -->
+        <p class="divisor" id="grupo-agentes">AGENTES</p>
+        <ul aria-labelledby="grupo-agentes" id="menu-agentes">
+          <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena <small class="rotulo-menu">clínica</small></button></li>
+          <li id="item-agentes" hidden>
+            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Todos os agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b></button>
+          </li>
+        </ul>
         <p class="divisor" id="grupo-controle">CONTROLE</p>
         <ul aria-labelledby="grupo-controle">
-          <li><button type="button" data-tela="serena"><span class="icone-menu" aria-hidden="true">✦</span> Serena</button></li>
           <li><button type="button" data-tela="instagram"><span class="icone-menu" aria-hidden="true">◘</span> Instagram</button></li>
-          <li id="item-agentes" hidden>
-            <button type="button" data-tela="agentes"><span class="icone-menu" aria-hidden="true">◈</span> Agentes <b class="contador" id="contador-agentes" title="Clientes de agentes aguardando a equipe" hidden>0</b></button>
-          </li>
           <li><button type="button" data-tela="auditoria"><span class="icone-menu" aria-hidden="true">◉</span> Auditoria</button></li>
           <li id="item-bloqueios" hidden>
             <button type="button" data-tela="bloqueios"><span class="icone-menu" aria-hidden="true">⊘</span> Bloqueio de Contato</button>
@@ -1044,7 +1052,7 @@
         <div class="cabecalho">
           <div>
             <h2 id="titulo-agentes">Agentes</h2>
-            <p>Assistentes de atendimento montados aqui: perfil, trabalho, treinamentos, configurações e canais. Agente novo nasce desligado.</p>
+            <p>Quem atende no automático. A Serena é a agente da clínica e se configura na tela dela; os demais são montados aqui — perfil, trabalho, treinamentos, configurações e canais. Agente novo nasce desligado.</p>
           </div>
           <div class="linha-acoes" id="agentes-acoes" hidden>
             <button type="button" class="primario" id="agente-novo">Novo agente</button>

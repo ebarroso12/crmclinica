@@ -283,6 +283,22 @@ nav button[aria-current="page"] {
   font-variant-numeric: tabular-nums;
 }
 .sino .contador { background: #c0182c; color: #fff; font-weight: 700; }
+
+/* Grupo AGENTES: "clínica" diz de quem é a Serena sem virar outro item de menu. */
+.rotulo-menu {
+  margin-left: 7px;
+  color: var(--apoio);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* Ponto âmbar só quando o agente NÃO está atendendo: no menu, cor é aviso. */
+.aviso-menu {
+  margin-left: auto;
+  color: #b57d0a;
+  font-size: 15px;
+  line-height: 1;
+}
 .divisor {
   color: #8f9bb1;
   font-size: 10px;
@@ -323,14 +339,15 @@ nav button[aria-current="page"] {
    existir conversa travada (app.js controla o `hidden`). */
 .liberar-em-massa {
   margin: 0;
-  padding: 8px 10px;
+  padding: 9px 10px;
   width: 100%;
   border: 1px solid var(--linha);
   border-radius: 8px;
   background: var(--superficie);
   color: #14704a;
   font-weight: 600;
-  font-size: 11.5px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
   line-height: 1.2;
   cursor: pointer;
 }
@@ -914,17 +931,38 @@ nav button[aria-current="page"] {
 /* ---------- Telas estreitas ---------- */
 
 @media (max-width: 980px) {
-  .app { grid-template-columns: minmax(0, 1fr); }
-  .lateral { border-right: 0; border-bottom: 1px solid var(--linha); gap: 6px; padding: 10px; }
+  /* Em uma coluna a lateral caia na linha elastica (1fr) da grade e esticava
+     ~54px alem do conteudo, empurrando a tela para baixo. Aqui a linha
+     elastica passa a ser a do conteudo, que e quem deve crescer. */
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; }
+  /* A lateral vira um cabeçalho de duas linhas: marca e controles da Serena em
+     cima, menu rolando embaixo. Sem isto os dois botões ocupavam a largura
+     inteira e empurravam o conteúdo para baixo da dobra. */
+  .lateral {
+    border-right: 0;
+    border-bottom: 1px solid var(--linha);
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    /* Sem isto as tres linhas (marca, controles, menu) se espalhavam para
+       preencher a altura que a lateral herda da grade, abrindo ~38px de vazio
+       entre elas e empurrando o conteudo para baixo da dobra no telefone. */
+    align-content: flex-start;
+    gap: 6px 8px;
+    padding: 8px 10px;
+  }
   .rodape-lateral, .marca small, .divisor { display: none; }
-  .marca { margin-bottom: 4px; }
-  /* O menu vira uma faixa que rola dentro de si mesma, sem empurrar a página. */
-  .lateral nav { margin-bottom: 0; overflow-x: auto; }
+  .marca { margin: 0; padding: 0; flex: 0 0 auto; }
+  .liberar-em-massa { order: 2; width: auto; margin-left: auto; padding: 6px 9px; }
+  .parada-emergencia { order: 2; width: auto; padding: 6px 9px; }
+  .liberar-em-massa + .parada-emergencia { margin-left: 0; }
+  /* O menu vira uma faixa que rola dentro de si mesma, sem empurrar a página.
+     Os tres grupos (principal, AGENTES, CONTROLE) entram na MESMA faixa: um ul
+     por linha custava duas linhas de altura antes do conteudo no telefone. */
+  .lateral nav { order: 3; flex: 1 1 100%; margin-bottom: 0; overflow-x: auto; display: flex; gap: 4px; }
   nav ul { grid-auto-flow: column; grid-auto-columns: max-content; gap: 4px; }
   nav button { white-space: nowrap; }
   nav button[aria-current="page"] { box-shadow: inset 0 -3px 0 var(--ciano); }
-  /* Os dois controles da Serena ficam lado a lado, não empilhados. */
-  .parada-emergencia, .liberar-em-massa { width: auto; }
   .plantao { gap: 4px 14px; padding: 8px 14px; }
   .topo, .tela { padding-left: 18px; padding-right: 18px; }
   .aviso { margin-left: 18px; margin-right: 18px; }
@@ -935,7 +973,18 @@ nav button[aria-current="page"] {
 }
 
 @media (max-width: 560px) {
-  .plantao strong { font-size: 13px; }
+  /* O rótulo (ORQUESTRADOR, INBOX…) repete o nome ao lado: em tela estreita
+     ele só fazia a faixa virar três linhas. Fica o nome, o ponto e o estado. */
+  .plantao small { display: none; }
+  .plantao { gap: 2px 12px; padding: 7px 12px; }
+  .plantao strong { font-size: 11.5px; }
+  /* Marca em uma linha, os dois controles da Serena dividindo a seguinte:
+     no telefone eles não cabem ao lado da marca e ficavam cortados na direita. */
+  .marca { flex: 1 1 100%; }
+  .liberar-em-massa, .parada-emergencia { flex: 1 1 45%; margin-left: 0; min-width: 0; }
+  .topo { flex-wrap: wrap; padding: 10px 14px; }
+  .acoes { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .relogio span { display: none; }
   .nome-equipe { display: none; }
   .cabecalho { flex-direction: column; }
   .cabecalho h2 { font-size: 21px; }
