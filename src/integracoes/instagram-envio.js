@@ -243,4 +243,59 @@ function criarClienteInstagramEnvio(configuracao = {}, dependencias = {}) {
   };
 }
 
-module.exports = { criarClienteInstagramEnvio };
+/**
+ * Um cliente por perfil do Instagram (pedido de 12/09/2026: a loja Alpins tem
+ * conta própria).
+ *
+ * O cliente já era parametrizado por credencial, então cada perfil é só mais
+ * uma instância — nada do envio precisou mudar. O que este roteador acrescenta
+ * é a pergunta que passou a existir com dois perfis: "de quem é este
+ * comentário, e por qual conta eu respondo?".
+ *
+ * Perfil desconhecido devolve `null`, NUNCA o cliente da clínica: responder
+ * pela conta errada publicaria a resposta da clínica no post da loja.
+ */
+function criarRoteadorDeInstagram(configuracao = {}, dependencias = {}) {
+  const daClinica = criarClienteInstagramEnvio(configuracao, dependencias);
+
+  const porConta = new Map();
+  const porApelido = new Map();
+  if (configuracao.contaComercialId) porConta.set(String(configuracao.contaComercialId), daClinica);
+
+  for (const conta of configuracao.contas ?? []) {
+    const cliente = criarClienteInstagramEnvio({
+      ...configuracao,
+      accessToken: conta.accessToken,
+      contaComercialId: conta.contaComercialId,
+    }, dependencias);
+    porConta.set(String(conta.contaComercialId), cliente);
+    porApelido.set(String(conta.apelido).toLowerCase(), cliente);
+  }
+
+  return {
+    daClinica,
+    /** Quantos perfis atendem de verdade (com token e id). */
+    get total() { return porConta.size; },
+    /** Pelo id que veio no webhook (entry[].id). */
+    paraConta(contaComercialId) {
+      if (!contaComercialId) return null;
+      return porConta.get(String(contaComercialId)) ?? null;
+    },
+    /** Pelo apelido, que é o slug do agente dono do perfil. */
+    paraApelido(apelido) {
+      if (!apelido) return null;
+      return porApelido.get(String(apelido).toLowerCase()) ?? null;
+    },
+    /** O apelido dono de um id de conta — `null` para o perfil da clínica. */
+    apelidoDaConta(contaComercialId) {
+      if (!contaComercialId) return null;
+      const alvo = String(contaComercialId);
+      for (const conta of configuracao.contas ?? []) {
+        if (String(conta.contaComercialId) === alvo) return conta.apelido;
+      }
+      return null;
+    },
+  };
+}
+
+module.exports = { criarClienteInstagramEnvio, criarRoteadorDeInstagram };

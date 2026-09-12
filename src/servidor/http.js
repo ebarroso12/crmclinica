@@ -14,7 +14,7 @@ const { normalizarEventoEvolution, normalizarEcoDeEnvioEvolution } = require('..
 const { normalizarEventosInstagram, normalizarComentariosInstagram } = require('../integracoes/instagram-webhook');
 const { criarClienteEvolucaoEnvio } = require('../integracoes/evolution-envio');
 const { criarClienteEvolucaoInstancia } = require('../integracoes/evolution-instancia');
-const { criarClienteInstagramEnvio } = require('../integracoes/instagram-envio');
+const { criarClienteInstagramEnvio, criarRoteadorDeInstagram } = require('../integracoes/instagram-envio');
 const { criarServicoDeGatilhos } = require('../dominio/instagram-gatilhos');
 const { criarClienteStorage } = require('../integracoes/supabase-storage');
 const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
@@ -174,6 +174,13 @@ function criarAplicacao(dependencias = {}) {
 
   const clienteInstagramEnvio = dependencias.clienteInstagramEnvio
     || criarClienteInstagramEnvio(configuracao.instagram);
+
+  // Um cliente por perfil do Instagram (12/09/2026): a clínica e a loja Alpins
+  // chegam na MESMA URL de webhook, e é `entry[].id` que diz de quem é cada
+  // comentário. Com um perfil só, `paraConta` devolve o mesmo cliente de
+  // sempre — nada muda para quem não configurou o segundo.
+  const roteadorDeInstagram = dependencias.roteadorDeInstagram
+    || criarRoteadorDeInstagram(configuracao.instagram, { fetchImpl: dependencias.instagramFetchImpl });
 
   // Storage de anexos (foto/documento/áudio do chat) — independente do canal
   // de envio: existe mesmo se só a Evolution estiver configurada, porque é
@@ -784,6 +791,7 @@ function criarAplicacao(dependencias = {}) {
       // resto sumia com HTTP 200 — a Meta nao reentrega o que ja foi aceito.
       const comentarios = normalizarComentariosInstagram(corpoInterpretado, {
         contaComercialId: configuracao.instagram.contaComercialId,
+        contas: configuracao.instagram.contas ?? [],
       });
       if (comentarios.length === 0) {
         responderJson(res, 200, { aceito: true, ignorado: true });
@@ -793,12 +801,33 @@ function criarAplicacao(dependencias = {}) {
       const resultados = [];
       for (const comentario of comentarios) {
         try {
+          // De quem é este perfil? (12/09/2026) O apelido da conta é o slug do
+          // agente dono; sem apelido, é o perfil da clínica. Responder pelo
+          // cliente errado publicaria a resposta da clínica no post da loja.
+          const apelido = roteadorDeInstagram.apelidoDaConta(comentario.conta_comercial_id);
+          const agenteDoPerfil = apelido
+            ? await repositorio.obterAgentePorCanal?.('instagram', comentario.conta_comercial_id)
+            : null;
+          const envio = roteadorDeInstagram.paraConta(comentario.conta_comercial_id)
+            ?? (comentario.conta_comercial_id ? null : clienteInstagramEnvio);
+
+          if (!envio) {
+            // Perfil que a Meta entregou mas este CRM não conhece: não dá para
+            // responder por conta nenhuma. Fica o rastro, sem resposta errada.
+            console.error("[instagram] comentario de conta desconhecida: " + comentario.conta_comercial_id);
+            resultados.push({ erro: 'conta_desconhecida', conta: comentario.conta_comercial_id });
+            continue;
+          }
+
           resultados.push(await servicoDeGatilhos.processarComentario({
             comentarioIdExterno: comentario.comentario_id_externo,
             postId: comentario.post_id,
             autorIgId: comentario.autor_ig_id,
             autorUsername: comentario.autor_username,
             texto: comentario.texto,
+            agenteId: agenteDoPerfil?.id ?? null,
+            contaComercialId: comentario.conta_comercial_id,
+            envio,
           }));
         } catch (erro) {
           // Um comentario que estoura nao pode levar os outros do lote junto:

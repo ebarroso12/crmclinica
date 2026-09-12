@@ -23,6 +23,51 @@ function inteiro(valor, padrao) {
   return Number.isInteger(numero) && numero > 0 ? numero : padrao;
 }
 
+/**
+ * Perfis de Instagram além do da clínica, lidos do ambiente.
+ *
+ * `INSTAGRAM_CONTAS=alpins` → procura INSTAGRAM_ALPINS_ACCESS_TOKEN e
+ * INSTAGRAM_ALPINS_BUSINESS_ACCOUNT_ID. O apelido é o `slug` do agente dono do
+ * perfil: é o que liga a credencial (ambiente) ao dono (banco), sem guardar
+ * segredo em tabela.
+ *
+ * Conta pela metade é DESCARTADA com aviso, nunca aceita: sem token não dá
+ * para responder, e sem o id da conta não dá para saber de quem é o comentário
+ * que chegou — nos dois casos o perfil ficaria recebendo sem atender, que é
+ * pior que não estar configurado.
+ */
+function contasDeInstagram(ambiente) {
+  const apelidos = texto(ambiente.INSTAGRAM_CONTAS)
+    .split(',')
+    .map((parte) => parte.trim().toLowerCase())
+    .filter(Boolean);
+
+  const contas = [];
+  for (const apelido of apelidos) {
+    const prefixo = `INSTAGRAM_${apelido.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+    const accessToken = texto(ambiente[`${prefixo}_ACCESS_TOKEN`]);
+    const contaComercialId = texto(ambiente[`${prefixo}_BUSINESS_ACCOUNT_ID`]);
+
+    if (!accessToken || !contaComercialId) {
+      console.warn(`[instagram] perfil "${apelido}" ignorado: falta ${prefixo}_ACCESS_TOKEN ou ${prefixo}_BUSINESS_ACCOUNT_ID`);
+      continue;
+    }
+    if (contas.some((conta) => conta.contaComercialId === contaComercialId)) {
+      console.warn(`[instagram] perfil "${apelido}" ignorado: o id ${contaComercialId} já pertence a outro apelido`);
+      continue;
+    }
+
+    contas.push({
+      apelido,
+      accessToken,
+      contaComercialId,
+      // Só quando o perfil vive em outro app da Meta; vazio = usa o da clínica.
+      appSecret: texto(ambiente[`${prefixo}_APP_SECRET`]),
+    });
+  }
+  return contas;
+}
+
 /** Igual a `inteiro`, mas aceita 0 explicitamente (ex.: kill switch de releitura). */
 function inteiroOuZero(valor, padrao) {
   const numero = Number.parseInt(texto(valor), 10);
@@ -231,6 +276,15 @@ function carregarConfiguracao(ambiente = process.env) {
       verifyToken: texto(ambiente.INSTAGRAM_WEBHOOK_VERIFY_TOKEN),
       apiVersion: texto(ambiente.INSTAGRAM_API_VERSION) || 'v23.0',
       timeoutMs: inteiro(ambiente.INSTAGRAM_API_TIMEOUT_MS, 15000),
+      // Perfis ALÉM do da clínica (pedido de 12/09/2026: a loja Alpins tem
+      // Instagram próprio). `INSTAGRAM_CONTAS=alpins,outra` lista os apelidos;
+      // cada um lê INSTAGRAM_<APELIDO>_ACCESS_TOKEN e
+      // INSTAGRAM_<APELIDO>_BUSINESS_ACCOUNT_ID. O apelido é o `slug` do
+      // agente dono do perfil — é ele que liga a credencial ao agente.
+      //
+      // `appSecret` próprio é opcional: só precisa quando o perfil está em
+      // OUTRO app da Meta. No mesmo app, a assinatura é a mesma da clínica.
+      contas: contasDeInstagram(ambiente),
     },
     // Storage para anexo de arquivo no chat (foto, documento, áudio). Usa a
     // API REST do Supabase Storage diretamente — sem SDK, mesmo padrão sem

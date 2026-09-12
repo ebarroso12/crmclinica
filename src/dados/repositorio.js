@@ -3883,14 +3883,32 @@ function criarRepositorio(pool) {
 
     // ------------------------------------------- Instagram — regras de gatilho
 
-    async listarRegrasDeGatilho({ apenasAtivas = false } = {}) {
-      const { rows } = await consultar(`
-        SELECT r.*, u.nome AS criado_por_nome
-          FROM instagram_regras_gatilho r
-          LEFT JOIN usuarios u ON u.id = r.criado_por
-         ${apenasAtivas ? 'WHERE r.ativa' : ''}
-         ORDER BY r.nome
-      `);
+    async listarRegrasDeGatilho({ apenasAtivas = false, agenteId } = {}) {
+      // `agenteId` undefined = todas (o que a tela lista); null = só as da
+      // clínica; número = só as daquele agente (049).
+      const consulta = (comDono) => {
+        const condicoes = [];
+        if (apenasAtivas) condicoes.push('r.ativa');
+        if (comDono) condicoes.push('r.agente_id IS NOT DISTINCT FROM $1::bigint');
+        return consultar(`
+          SELECT r.*, u.nome AS criado_por_nome
+            FROM instagram_regras_gatilho r
+            LEFT JOIN usuarios u ON u.id = r.criado_por
+           ${condicoes.length ? `WHERE ${condicoes.join(' AND ')}` : ''}
+           ORDER BY r.nome
+        `, comDono ? [agenteId === null ? null : Number(agenteId)] : []);
+      };
+
+      // Sem a 049 a coluna não existe. Cair para "todas as regras" é o
+      // comportamento de antes desta migration — e o único perfil que existia
+      // então era o da clínica, então nada muda de dono por acidente.
+      let rows;
+      try {
+        ({ rows } = await consulta(agenteId !== undefined));
+      } catch (erro) {
+        if (erro.code !== '42703') throw erro;
+        ({ rows } = await consulta(false));
+      }
       return rows.map((linha) => ({
         ...linha, id: Number(linha.id), ativa: linha.ativa === true, cta_whatsapp: linha.cta_whatsapp === true,
       }));
@@ -3959,14 +3977,27 @@ function criarRepositorio(pool) {
     async registrarComentarioProcessado({
       comentarioIdExterno, postId = null, autorIgId, regraId = null,
       respostaPublicaEnviada = false, dmEnviada = false,
+      agenteId = null, contaComercialId = null,
     }) {
-      const { rows } = await consultar(`
+      // De qual perfil veio (049). Sem as colunas, grava como antes: a marca
+      // de idempotência importa mais que a atribuição de dono — perdê-la faria
+      // o comentário ser respondido DE NOVO na reentrega do webhook.
+      const base = [comentarioIdExterno, postId, autorIgId, regraId, respostaPublicaEnviada, dmEnviada];
+      const consulta = (comDono) => consultar(`
         INSERT INTO instagram_comentarios_processados
-          (comentario_id_externo, post_id, autor_ig_id, regra_id, resposta_publica_enviada, dm_enviada)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (comentario_id_externo, post_id, autor_ig_id, regra_id, resposta_publica_enviada, dm_enviada${comDono ? ', agente_id, conta_comercial_id' : ''})
+        VALUES ($1, $2, $3, $4, $5, $6${comDono ? ', $7, $8' : ''})
         ON CONFLICT (comentario_id_externo) DO NOTHING
         RETURNING *
-      `, [comentarioIdExterno, postId, autorIgId, regraId, respostaPublicaEnviada, dmEnviada]);
+      `, comDono ? [...base, agenteId === null ? null : Number(agenteId), contaComercialId] : base);
+
+      let rows;
+      try {
+        ({ rows } = await consulta(true));
+      } catch (erro) {
+        if (erro.code !== '42703') throw erro;
+        ({ rows } = await consulta(false));
+      }
       return rows[0]
         ? { ...rows[0], id: Number(rows[0].id), regra_id: rows[0].regra_id ? Number(rows[0].regra_id) : null }
         : null;

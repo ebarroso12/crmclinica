@@ -197,11 +197,19 @@ function criarServicoDeGatilhos({
    */
   async function processarComentario({
     comentarioIdExterno, postId = null, autorIgId, autorUsername = null, texto,
+    // Perfil que RECEBEU (12/09/2026): `agenteId` null = clínica. O envio sai
+    // pelo cliente daquele perfil — responder pelo da clínica publicaria a
+    // resposta errada no post da loja.
+    agenteId = null, contaComercialId = null, envio = null,
   }) {
     const jaProcessado = await repositorio.obterComentarioProcessado(comentarioIdExterno);
     if (jaProcessado) return { ja_processado: true };
 
-    const regrasAtivas = await repositorio.listarRegrasDeGatilho({ apenasAtivas: true });
+    // Sem cliente do perfil certo, nada sai: o comentário fica sem resposta e
+    // com rastro, em vez de ser respondido pela conta errada.
+    const canal = envio ?? instagramEnvio;
+
+    const regrasAtivas = await repositorio.listarRegrasDeGatilho({ apenasAtivas: true, agenteId });
     // A regra que responde a QUALQUER comentário vai por último: ela existe
     // para o que sobrou, e consultá-la antes faria ela roubar comentários que
     // têm gatilho próprio — o paciente que escreveu "quero agendar" receberia
@@ -215,6 +223,7 @@ function criarServicoDeGatilhos({
     if (!regra) {
       await repositorio.registrarComentarioProcessado({
         comentarioIdExterno, postId, autorIgId, regraId: null, respostaPublicaEnviada: false, dmEnviada: false,
+        agenteId, contaComercialId,
       });
       return { regra: null };
     }
@@ -228,9 +237,9 @@ function criarServicoDeGatilhos({
     // (`resposta_publica_enviada`) fica `false` e o fluxo segue para a DM,
     // sem quebrar.
     let respostaPublicaEnviada = false;
-    if (instagramEnvio && typeof instagramEnvio.responderComentarioPublicamente === 'function') {
+    if (canal && typeof canal.responderComentarioPublicamente === 'function') {
       try {
-        await instagramEnvio.responderComentarioPublicamente({
+        await canal.responderComentarioPublicamente({
           comentarioIdExterno, texto: regra.mensagem_publica,
         });
         respostaPublicaEnviada = true;
@@ -255,12 +264,15 @@ function criarServicoDeGatilhos({
     // gatilho: tirar a pessoa do comentário e levá-la ao canal onde a Serena
     // atende de verdade. Sem número configurado, a DM sai como está — link
     // quebrado seria pior que link nenhum.
+    const nomeDoAgente = agenteId
+      ? (await repositorio.obterAgente?.(agenteId))?.nome ?? null
+      : null;
     const textoDaDm = montarTextoDaDm(regra);
 
     let dmEnviada = false;
-    if (instagramEnvio && typeof instagramEnvio.responderComentarioPrivadamente === 'function') {
+    if (canal && typeof canal.responderComentarioPrivadamente === 'function') {
       try {
-        await instagramEnvio.responderComentarioPrivadamente({
+        await canal.responderComentarioPrivadamente({
           comentarioIdExterno, texto: textoDaDm,
         });
         dmEnviada = true;
@@ -278,9 +290,12 @@ function criarServicoDeGatilhos({
     const contato = await repositorio.encontrarOuCriarContato({
       telefone: null, identificador: autorIgId, nome: autorUsername ?? null, canal: 'instagram',
     });
-    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'instagram');
+    const conversa = await repositorio.encontrarOuCriarConversaAberta(contato.id, 'instagram', { agenteId });
     await repositorio.registrarMensagem(conversa.id, {
-      direcao: 'saida', conteudo: textoDaDm, autor_tipo: 'automacao', autor_nome: 'Serena',
+      direcao: 'saida', conteudo: textoDaDm, autor_tipo: 'automacao',
+      // Quem assina é o dono do perfil: "Serena" numa DM da loja confundiria
+      // o cliente e a equipe que lê a conversa depois.
+      autor_nome: nomeDoAgente ?? 'Serena',
     });
     // origemDetalhe marca que este lead nasceu de um comentário-gatilho (e
     // qual regra bateu) — é o que diferencia, na tela de Leads, um lead que
@@ -294,6 +309,7 @@ function criarServicoDeGatilhos({
 
     await repositorio.registrarComentarioProcessado({
       comentarioIdExterno, postId, autorIgId, regraId: regra.id, respostaPublicaEnviada, dmEnviada,
+      agenteId, contaComercialId,
     });
 
     return { regra, resposta_publica_enviada: respostaPublicaEnviada, dm_enviada: dmEnviada };
