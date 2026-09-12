@@ -2190,6 +2190,15 @@ async function conectarEventosDeConversas() {
 // — `versao` (package.json) só muda quando alguém lembra de dar bump.
 let commitCarregadoNestaAba = null;
 
+// Tira o `?v=` da barra depois que ele ja obrigou a recarga — deixar na URL
+// faria a pessoa compartilhar um link com lixo, e o proximo F5 repetiria.
+(function limparMarcaDeRecarga() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('v')) return;
+  url.searchParams.delete('v');
+  window.history.replaceState({}, '', url.toString());
+})();
+
 async function verificarNovaVersao() {
   let saude;
   try {
@@ -2219,7 +2228,20 @@ async function verificarNovaVersao() {
   }
 }
 
-seletor('#banner-atualizar')?.addEventListener('click', () => window.location.reload());
+seletor('#banner-atualizar')?.addEventListener('click', () => {
+  // `reload()` puro pode reaproveitar o cache. Um parametro novo na URL
+  // obriga o navegador a buscar tudo de novo — e some da barra depois, porque
+  // o proprio carregamento seguinte reescreve o endereco.
+  const url = new URL(window.location.href);
+  url.searchParams.set('v', Date.now().toString(36));
+  window.location.replace(url.toString());
+});
+
+// Voltar para a aba e o momento em que a pessoa REALMENTE vai usar a tela —
+// checar aqui avisa na hora certa, sem esperar o proximo ciclo de 5 minutos.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && inboxIniciado) verificarNovaVersao();
+});
 
 let inboxIniciado = false;
 function iniciarInbox() {
