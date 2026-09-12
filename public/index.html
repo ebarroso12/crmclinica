@@ -9,7 +9,6 @@
   <!-- Logomarca da clínica (12/09/2026). O PNG vem primeiro porque é a marca
        de verdade; o SVG antigo fica como reserva para quem não carregar PNG. -->
   <link rel="icon" href="/favicon.png" type="image/png" sizes="64x64">
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0d1930">
@@ -39,6 +38,7 @@
     <symbol id="i-usuarios" viewBox="0 0 24 24"><path d="M15.5 20v-1.6a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.2" cy="7.5" r="3.5"/><path d="M16.5 4.3a3.5 3.5 0 0 1 0 6.8M21 20v-1.6a4 4 0 0 0-3-3.9"/></symbol>
     <symbol id="i-perfil" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M5 20.2a7 7 0 0 1 14 0"/></symbol>
     <symbol id="i-sino" viewBox="0 0 24 24"><path d="M18 15.5V11a6 6 0 1 0-12 0v4.5L4.5 18h15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
+    <symbol id="i-instalar" viewBox="0 0 24 24"><path d="M12 3.5v11M8 11l4 4 4-4"/><path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/></symbol>
     <symbol id="i-marca" viewBox="0 0 24 24"><path d="M12 4.5v15M4.5 12h15" stroke-width="2.6"/></symbol>
   </svg>
   <!-- Entrada da equipe. Sem sessão válida, o inbox nem é montado. -->
@@ -133,6 +133,15 @@
           <button type="button" class="link" data-portao="login">Voltar para a entrada</button>
         </div>
       </form>
+
+      <!-- Instalar como app (12/09/2026). Aparece só quando o navegador diz
+           que dá para instalar — no iPhone não existe esse aviso, então lá
+           entra a instrução de como fazer pelo menu Compartilhar. -->
+      <button type="button" class="instalar" data-instalar-app hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-instalar"></use></svg>
+        Instalar o app no aparelho
+      </button>
+      <p class="instalar-ajuda" data-instalar-ajuda hidden></p>
 
       <p class="erro-login" id="erro-login" role="alert" hidden></p>
       <p class="aviso-portao" id="aviso-portao" role="status" hidden></p>
@@ -235,6 +244,11 @@
            era texto fixo — nunca mudava, e desde a correção do Single Writer
            também ficou errado (o CRM decide o envio, não o OpenClaw).
            `id="rodape-versao"` é preenchido por app.js a partir de /health. -->
+      <button type="button" class="instalar instalar-menu" data-instalar-app hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-instalar"></use></svg>
+        Instalar o app
+      </button>
+
       <p class="rodape-lateral" id="rodape-versao">crmclinica</p>
 
       <!-- Mesmo achado: sem isto, quem está com a aba aberta de um deploy

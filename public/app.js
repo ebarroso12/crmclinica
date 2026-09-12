@@ -7288,3 +7288,97 @@ async function moverLead(leadId, estagio, extras = {}) {
     await carregarLeads();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Instalar o CRM como app no aparelho (12/09/2026)
+//
+// Pedido do Dr. Edson: "quem entrar tem esta possibilidade de baixar, já com o
+// ícone novo". No Android o navegador avisa quando o site pode ser instalado
+// (`beforeinstallprompt`) e esse aviso pode ser guardado para disparar no
+// clique de um botão nosso. No iPhone esse evento não existe: lá a instalação é
+// manual, pelo menu Compartilhar — então o que dá para fazer é ensinar o
+// caminho, em vez de mostrar um botão que não faria nada.
+//
+// O ícone do app instalado sai do manifest.webmanifest, e o registro do service
+// worker (public/sw.js, que não guarda cache nenhum) é o que falta para o
+// navegador considerar o site instalável.
+
+let conviteDeInstalacao = null;
+
+function rodandoComoApp() {
+  return window.matchMedia?.('(display-mode: standalone)')?.matches === true
+    || window.navigator.standalone === true;
+}
+
+function ehIPhoneOuIPad() {
+  const agente = navigator.userAgent || '';
+  // iPad recente se anuncia como Mac: o toque é o que o separa de um desktop.
+  return /iPad|iPhone|iPod/.test(agente)
+    || (/Macintosh/.test(agente) && navigator.maxTouchPoints > 1);
+}
+
+function mostrarConviteDeInstalacao({ ajuda = '' } = {}) {
+  for (const botao of document.querySelectorAll('[data-instalar-app]')) botao.hidden = Boolean(ajuda);
+  for (const texto of document.querySelectorAll('[data-instalar-ajuda]')) {
+    texto.hidden = !ajuda;
+    if (ajuda) texto.textContent = ajuda;
+  }
+}
+
+function esconderConviteDeInstalacao() {
+  for (const botao of document.querySelectorAll('[data-instalar-app]')) botao.hidden = true;
+  for (const texto of document.querySelectorAll('[data-instalar-ajuda]')) texto.hidden = true;
+}
+
+// O navegador dispara isto quando o site atende aos requisitos de instalação.
+// Guardamos o convite e mostramos o botão; `preventDefault` tira o aviso
+// automático do navegador, que aparece em lugar que ninguém procura.
+window.addEventListener('beforeinstallprompt', (evento) => {
+  evento.preventDefault();
+  conviteDeInstalacao = evento;
+  mostrarConviteDeInstalacao();
+});
+
+window.addEventListener('appinstalled', () => {
+  conviteDeInstalacao = null;
+  esconderConviteDeInstalacao();
+});
+
+for (const botao of document.querySelectorAll('[data-instalar-app]')) {
+  botao.addEventListener('click', async () => {
+    if (!conviteDeInstalacao) return;
+    const convite = conviteDeInstalacao;
+    // O convite é de uso único: guardá-lo depois de usado faria o segundo
+    // clique falhar em silêncio.
+    conviteDeInstalacao = null;
+    esconderConviteDeInstalacao();
+    try {
+      convite.prompt();
+      const { outcome } = await convite.userChoice;
+      // Recusar não é erro: o botão volta, para quem mudar de ideia.
+      if (outcome !== 'accepted') mostrarConviteDeInstalacao();
+    } catch {
+      mostrarConviteDeInstalacao();
+    }
+  });
+}
+
+(function prepararInstalacao() {
+  if (rodandoComoApp()) return esconderConviteDeInstalacao();
+
+  // iPhone e iPad não têm o evento: a instalação é pelo menu Compartilhar.
+  if (ehIPhoneOuIPad()) {
+    mostrarConviteDeInstalacao({
+      ajuda: 'Para instalar no iPhone: toque em Compartilhar (o quadrado com a seta) e depois em "Adicionar à Tela de Início".',
+    });
+  }
+
+  if (!('serviceWorker' in navigator)) return undefined;
+  // Depois do load: registrar cedo demais disputa banda com a primeira tela.
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Sem service worker o CRM funciona igual — só não dá para instalar.
+    });
+  });
+  return undefined;
+}());
