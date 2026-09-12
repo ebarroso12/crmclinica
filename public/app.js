@@ -5906,28 +5906,36 @@ async function carregarContatos() {
     if (total) total.textContent = `${dados.total} contato(s)`;
     if (!lista) return;
 
+    // A coluna de agendamentos só existe para quem vê a clínica: a API não
+    // manda o campo para os demais (lista branca, achado M1), e uma coluna
+    // vazia diria "nenhum agendamento" onde o certo é "você não vê isso".
+    const colunaAgendamentos = seletor('#coluna-agendamentos');
+    if (colunaAgendamentos) colunaAgendamentos.hidden = !veClinica();
+    const colunas = veClinica() ? 5 : 4;
+
     if (dados.contatos.length === 0) {
-      lista.innerHTML = '<li class="vazio">Nenhum contato encontrado.</li>';
+      lista.innerHTML = `<tr><td colspan="${colunas}" class="vazio">Nenhum contato encontrado.</td></tr>`;
       return;
     }
 
     lista.innerHTML = dados.contatos.map((contato) => `
-      <li class="${contato.excluido ? 'desligada' : ''}">
-        <div>
+      <tr class="${contato.excluido ? 'desligada' : ''}">
+        <td>
           <strong>${escapar(contato.nome ?? 'sem nome')}</strong> ${selosDoContatoEmHtml(contato.selos)}
-          <small>${escapar(contato.telefone)} · ${contato.conversas ?? 0} conversa(s)
-            ${contato.agendamentos !== undefined ? ` · ${Number(contato.agendamentos) || 0} agendamento(s)` : ''}
-            ${contato.recebe_lembretes === false ? ' · não recebe lembretes' : ''}
-            ${contato.excluido ? ` · excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}` : ''}</small>
-        </div>
-        <div class="linha-acoes">
+          ${contato.recebe_lembretes === false ? '<small>não recebe lembretes</small>' : ''}
+          ${contato.excluido ? `<small>excluído em ${new Date(contato.excluido_em).toLocaleDateString('pt-BR')}</small>` : ''}
+        </td>
+        <td class="telefone">${escapar(contato.telefone)}</td>
+        <td class="numero">${contato.conversas ?? 0}</td>
+        ${contato.agendamentos !== undefined ? `<td class="numero" data-agendamentos>${Number(contato.agendamentos) || 0}</td>` : ''}
+        <td class="acoes">
           ${contato.excluido
             ? `<button type="button" class="secundario" data-restaurar-contato="${contato.id}">Restaurar</button>`
             : `<button type="button" class="secundario" data-ver-contato="${contato.id}">Histórico</button>
                ${veClinica() ? `<button type="button" class="secundario" data-editar-contato="${contato.id}">Editar</button>
                <button type="button" class="perigo" data-excluir-contato="${contato.id}">Excluir</button>` : ''}`}
-        </div>
-      </li>`).join('');
+        </td>
+      </tr>`).join('');
   } catch (erro) {
     informar(`Não foi possível carregar os contatos: ${erro.message}`);
   }

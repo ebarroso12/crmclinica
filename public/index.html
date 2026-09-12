@@ -1564,7 +1564,7 @@
               <h3>Base</h3>
               <p id="contatos-total">—</p>
             </div>
-            <div class="linha-acoes">
+            <div class="filtros">
               <input id="contatos-busca" type="search" placeholder="Buscar por nome ou telefone">
               <!-- Origem (selos automáticos, calculados das conversas): Clínica ou agente. -->
               <label class="oculto-visual" for="contatos-origem">Origem do contato</label>
@@ -1574,9 +1574,26 @@
               <label class="marcador"><input type="checkbox" id="contatos-excluidos"> mostrar excluídos</label>
             </div>
           </div>
-          <ul class="lista-contatos" id="lista-contatos">
-            <li class="vazio">carregando…</li>
-          </ul>
+          <!-- Tabela, não lista: o que estava solto era o alinhamento. Cada
+               coluna diz o que é, e os números descem na mesma vertical.
+               "Agendamentos" nasce escondido e só aparece para quem vê a
+               clínica — a API não manda esse campo para os demais. -->
+          <div class="tabela-rolagem">
+            <table class="tabela-dados" id="tabela-contatos">
+              <thead>
+                <tr>
+                  <th scope="col">Contato</th>
+                  <th scope="col">Telefone</th>
+                  <th scope="col" class="numero">Conversas</th>
+                  <th scope="col" class="numero" id="coluna-agendamentos" hidden>Agendamentos</th>
+                  <th scope="col" class="acoes"><span class="oculto-visual">Ações</span></th>
+                </tr>
+              </thead>
+              <tbody id="lista-contatos">
+                <tr><td colspan="5" class="vazio">carregando…</td></tr>
+              </tbody>
+            </table>
+          </div>
         </article>
       </section>
 

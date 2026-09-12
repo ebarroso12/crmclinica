@@ -1541,7 +1541,7 @@ button.perigo:hover { background: #fecaca; }
   margin: 0 0 10px;
 }
 
-.lista-versoes, .lista-regras, .lista-contatos {
+.lista-versoes, .lista-regras {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1550,7 +1550,7 @@ button.perigo:hover { background: #fecaca; }
   gap: 8px;
 }
 
-.lista-versoes li, .lista-regras li, .lista-contatos li {
+.lista-versoes li, .lista-regras li {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1561,7 +1561,7 @@ button.perigo:hover { background: #fecaca; }
   background: var(--superficie);
 }
 
-.lista-versoes li small, .lista-regras li small, .lista-contatos li small {
+.lista-versoes li small, .lista-regras li small {
   display: block;
   color: var(--apoio);
   font-size: 12.5px;
@@ -1574,7 +1574,7 @@ button.perigo:hover { background: #fecaca; }
 /* Nome sem espaço (um token longo) alargava a linha e criava rolagem lateral
    na tela: quebra dentro da palavra em vez de estourar. */
 .lista-regras strong { overflow-wrap: anywhere; }
-.lista-regras li.desligada, .lista-contatos li.desligada { opacity: 0.55; }
+.lista-regras li.desligada { opacity: 0.55; }
 
 .form-regra, #form-prompt, #form-contato { display: block; margin-bottom: 14px; }
 .form-regra label, #form-prompt label, #form-contato label {
@@ -1599,6 +1599,65 @@ button.perigo:hover { background: #fecaca; }
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
 }
+
+/* ---------- Tabela de dados (12/09/2026) ----------
+
+   Lista longa se lê por coluna, não por frase. Em Contatos as informações
+   vinham em texto corrido separado por "·": nada alinhava com a linha de
+   cima, e comparar dois contatos exigia ler palavra por palavra.
+
+   O cabeçalho gruda no topo enquanto a lista rola — com 247 linhas, saber
+   qual coluna é qual não pode depender de voltar ao começo. */
+
+.tabela-rolagem { margin-top: 12px; overflow-x: auto; }
+.tabela-dados {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.tabela-dados th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--superficie);
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--apoio);
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--linha);
+  white-space: nowrap;
+}
+.tabela-dados td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--linha);
+  vertical-align: middle;
+}
+.tabela-dados tr:last-child td { border-bottom: 0; }
+.tabela-dados tbody tr:hover { background: #f7fafd; }
+.tabela-dados strong { font-weight: 650; overflow-wrap: anywhere; }
+/* Observação da linha (não recebe lembretes, excluído em…): abaixo do nome,
+   em voz baixa — é ressalva, não coluna. */
+.tabela-dados td small { display: block; color: var(--apoio); font-size: 11.5px; margin-top: 2px; }
+/* Números e telefone com dígito de largura fixa: é isso que faz a coluna
+   descer reta. */
+.tabela-dados .numero { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tabela-dados .telefone { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--apoio); }
+.tabela-dados .acoes { width: 1%; white-space: nowrap; text-align: right; }
+/* Botão de lista é menor que botão de formulário — e o `margin-top: 14px`
+   que .secundario carrega (pensado para ficar abaixo de um campo) empurrava
+   "Histórico" e "Editar" para baixo de "Excluir" na mesma linha. */
+.tabela-dados .acoes button { margin: 0 0 0 6px; padding: 6px 11px; font-size: 12.5px; }
+.tabela-dados .acoes button:first-child { margin-left: 0; }
+.tabela-dados .vazio { padding: 18px 10px; }
+/* Contato excluído continua visível — sai da operação, não da tela. */
+.tabela-dados tr.desligada { opacity: 0.55; }
+
+/* Barra de filtros: a busca fica com a sobra, porque é ela que se usa. */
+.filtros { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.filtros input[type="search"] { flex: 1 1 220px; min-width: 180px; }
 
 .marcador { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--apoio); }
 .marcador input { width: auto; }
