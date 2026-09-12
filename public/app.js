@@ -1900,20 +1900,21 @@ async function sincronizarParadaDeEmergencia() {
   if (!botao) return;
 
   // Quem não pode desligar não vê o botão: um clique que devolve 403 no meio
-  // de uma urgência é pior que botão nenhum.
-  if (!podeFazer('serena:gerenciar')) {
-    botao.hidden = true;
-    return;
-  }
+  // de uma urgência é pior que botão nenhum. Mas continua vendo o ESTADO — ele
+  // alimenta a linha da Serena na tela Agentes, e ler é de todos (serena:ler).
+  const podeGerenciar = podeFazer('serena:gerenciar');
+  botao.hidden = !podeGerenciar;
+  if (!podeGerenciar && !podeFazer('serena:ler')) return;
 
-  botao.hidden = false;
   try {
     const estado = await pedirJson('/api/serena/interruptor');
     desenharParadaDeEmergencia(estado.ativa);
   } catch {
     // Sem estado, o botão fica armado: no pior caso, parar uma Serena já
     // parada é inofensivo — o contrário (achar que parou e não parou) não é.
-    desenharParadaDeEmergencia(true);
+    // Para quem só lê não há botão a armar, e afirmar "Atendendo" sem saber
+    // seria pior que não dizer nada: a pílula fica de fora.
+    if (podeGerenciar) desenharParadaDeEmergencia(true);
   }
 }
 
@@ -4237,12 +4238,13 @@ function mensagemDeErroDoAgente(erro) {
 
 async function carregarAgentes() {
   if (!podeFazer('agentes:ler')) return;
+  const abertoAoEntrar = agenteAberto?.agente?.id ?? null;
   try {
     agentesPainel = await pedirJson('/api/agentes');
     const acoes = seletor('#agentes-acoes');
     if (acoes) acoes.hidden = !agentesPainel.pode_gerenciar;
     desenharListaDeAgentes(agentesPainel.agentes ?? []);
-    if (agenteAberto) await abrirAgente(agenteAberto.agente.id);
+    if (abertoAoEntrar && agenteAberto?.agente?.id === abertoAoEntrar) await abrirAgente(abertoAoEntrar);
   } catch (erro) {
     informar(`Não foi possível carregar os agentes: ${mensagemDeErroDoAgente(erro)}`);
   }
@@ -4687,6 +4689,16 @@ seletor('#menu-agentes')?.addEventListener('click', (evento) => {
   agenteAberto = null;
   abrirTela('agentes');
   abrirAgente(botao.dataset.abrirAgenteMenu);
+});
+
+// "Todos os agentes" é destino de navegação, não só o rótulo do grupo: com um
+// agente aberto, ele fecha o editor e devolve a lista.
+seletor('#item-agentes button')?.addEventListener('click', () => {
+  agenteAberto = null;
+  conversaDeTesteDoAgente = [];
+  const editor = seletor('#agente-editor');
+  if (editor) editor.hidden = true;
+  destacarAgenteNoMenu(null);
 });
 
 seletor('#agente-fechar')?.addEventListener('click', () => {
@@ -5198,7 +5210,12 @@ async function atualizarSeloDeAgentes() {
     selo.hidden = total === 0;
     // O numero sozinho nao diz nada a quem ouve a tela: o rotulo invisivel vai junto.
     const rotulo = seletor('#contador-agentes-rotulo');
-    if (rotulo) rotulo.hidden = total === 0;
+    if (rotulo) {
+      rotulo.textContent = total === 1
+        ? ' cliente de agente aguardando a equipe'
+        : ' clientes de agentes aguardando a equipe';
+      rotulo.hidden = total === 0;
+    }
   } catch {
     selo.hidden = true;
     const rotulo = seletor('#contador-agentes-rotulo');

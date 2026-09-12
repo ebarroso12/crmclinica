@@ -381,7 +381,8 @@ test('desenharMenuDeAgentes recria os itens sem duplicar e sem HTML de texto do 
   assert.match(funcao, /botao\.append\(icone, /, 'o nome vai como nó de texto (append), nunca como innerHTML');
   assert.doesNotMatch(funcao, /innerHTML/, 'nada de innerHTML com dado de agente no menu');
   assert.match(funcao, /botao\.title = nome/, 'o nome inteiro fica no title: o visível é truncado em 24');
-  assert.match(funcao, /nome\.length > 24/, 'nome longo não pode transbordar a lateral de 232px');
+  assert.match(funcao, /nome\.length > \d+\s*\?\s*`\$\{nome\.slice\(/,
+    'nome longo é encurtado no menu para não transbordar a lateral de 232px');
 });
 
 test('o ponto âmbar do menu só aparece quando o agente não está atendendo, e o estado vai em texto junto', () => {
@@ -396,7 +397,7 @@ test('o ponto âmbar do menu só aparece quando o agente não está atendendo, e
 
 test('redesenhar o menu não tira o foco de quem navega por teclado', () => {
   const funcao = funcaoDoApp('desenharMenuDeAgentes');
-  assert.ok(funcao.includes('const focado = document.activeElement?.dataset?.abrirAgenteMenu'), 'guarda quem estava focado');
+  assert.match(funcao, /document\.activeElement\?\.dataset\?\.abrirAgenteMenu/, 'guarda quem estava focado');
   const guarda = funcao.indexOf('const focado');
   const remove = funcao.indexOf('antigo.remove()');
   const devolve = funcao.indexOf('.focus()');
@@ -434,7 +435,7 @@ test('clicar no agente pelo menu não deixa o agente anterior em voo', () => {
 
 test('a lista da tela Agentes começa pela Serena, com o mesmo estado do botão de parada', () => {
   const lista = funcaoDoApp('desenharListaDeAgentes');
-  assert.ok(lista.includes('lista.innerHTML = linhaDaSerena() + agentes.map'),
+  assert.match(lista, /innerHTML = linhaDaSerena\(\) \+ agentes/,
     'a Serena abre a lista também quando há outros agentes, não só no caso vazio');
   assert.ok(lista.includes('${linhaDaSerena()}<li class="vazio">'), 'e continua na lista sem nenhum outro agente');
   assert.match(lista, /desenharMenuDeAgentes\(agentes\)/, 'a mesma carga alimenta o menu');
@@ -451,5 +452,48 @@ test('a lista da tela Agentes começa pela Serena, com o mesmo estado do botão 
 });
 
 test('o menu nasce com os agentes: carregarAgentes roda na abertura da sessão, só com permissão', () => {
-  assert.match(APP_JS, /if \(podeFazer\('agentes:ler'\)\) carregarAgentes\(\);/);
+  assert.match(funcaoDoApp('mostrarAplicacao'), /if \(podeFazer\('agentes:ler'\)\) carregarAgentes\(\);/,
+    'dentro de mostrarAplicacao, não solto em qualquer canto do arquivo');
+});
+
+test('quem só lê a Serena também vê o estado dela na lista', () => {
+  const sincronizar = funcaoDoApp('sincronizarParadaDeEmergencia');
+  assert.match(sincronizar, /const podeGerenciar = podeFazer\('serena:gerenciar'\);/);
+  assert.match(sincronizar, /botao\.hidden = !podeGerenciar;/, 'sem permissão some o botão, não a leitura');
+  assert.match(sincronizar, /if \(!podeGerenciar && !podeFazer\('serena:ler'\)\) return;/,
+    'gestor e atendente têm serena:ler (rbac.js) e precisam do estado: era o que deixava a linha da Serena sem pílula');
+  assert.match(sincronizar, /if \(podeGerenciar\) desenharParadaDeEmergencia\(true\);/,
+    'na falha, "armado" vale para o botão; para quem só lê, nada é afirmado');
+});
+
+test('"Todos os agentes" volta para a lista em vez de piscar', () => {
+  const handler = APP_JS.match(/seletor\('#item-agentes button'\)\?\.addEventListener\([\s\S]*?\}\);/)?.[0];
+  assert.ok(handler, 'o item da lista precisa de comportamento próprio: abrirTela sozinho não fecha o editor');
+  assert.match(handler, /agenteAberto = null;/);
+  assert.match(handler, /editor\.hidden = true;/);
+  assert.match(handler, /destacarAgenteNoMenu\(null\)/);
+  const fechar = APP_JS.match(/seletor\('#agente-fechar'\)\?\.addEventListener\([\s\S]*?\}\);/)?.[0];
+  assert.match(fechar, /destacarAgenteNoMenu\(null\)/, 'fechar o editor também devolve o destaque à lista');
+});
+
+test('"Todos os agentes" fica marcado quando é ele o destino, e só então', () => {
+  const destacar = funcaoDoApp('destacarAgenteNoMenu');
+  assert.match(destacar, /if \(alvo\) lista\.removeAttribute\('aria-current'\);/,
+    'com um agente aberto, quem está marcado é o agente');
+  assert.match(destacar, /else if \(seletor\('#agentes'\)\?\.hidden === false\) lista\.setAttribute\('aria-current', 'page'\);/,
+    'sem agente aberto, só marca se a tela de agentes for a que está aberta');
+});
+
+test('recarregar a lista não abre o mesmo agente duas vezes', () => {
+  const carregar = funcaoDoApp('carregarAgentes');
+  assert.match(carregar, /const abertoAoEntrar = agenteAberto\?\.agente\?\.id \?\? null;/);
+  assert.match(carregar, /if \(abertoAoEntrar && agenteAberto\?\.agente\?\.id === abertoAoEntrar\) await abrirAgente\(abertoAoEntrar\);/,
+    'só reabre quem já estava aberto quando a carga começou: senão o clique no menu pedia o mesmo agente duas vezes');
+});
+
+test('o rótulo invisível do contador concorda em número', () => {
+  const funcao = funcaoDoApp('atualizarSeloDeAgentes');
+  assert.match(funcao, /total === 1/, '"1 clientes" não pode chegar ao leitor de tela');
+  assert.match(funcao, /cliente de agente aguardando a equipe/);
+  assert.match(funcao, /clientes de agentes aguardando a equipe/);
 });

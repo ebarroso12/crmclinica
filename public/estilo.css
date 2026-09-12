@@ -959,7 +959,7 @@ nav button[aria-current="page"] {
   .marca { margin: 0; padding: 0; flex: 0 0 auto; }
   .banner-atualizar { order: 4; flex: 1 1 100%; width: auto; margin: 0; }
   .liberar-em-massa { order: 2; width: auto; margin-left: auto; padding: 6px 9px; }
-  .parada-emergencia { order: 2; width: auto; padding: 6px 9px; }
+  .parada-emergencia { order: 2; width: auto; margin-left: auto; padding: 6px 9px; }
   .liberar-em-massa:not([hidden]) + .parada-emergencia { margin-left: 0; }
   /* O menu vira uma faixa que rola dentro de si mesma, sem empurrar a página.
      Os três grupos (principal, AGENTES, CONTROLE) entram na MESMA faixa: um ul
@@ -1510,6 +1510,8 @@ button.perigo:hover { background: #fecaca; }
 .lista-versoes li.publicada { border-color: #99f6e4; background: #f0fdfa; }
 
 /* Regra ou contato desligado continua visível — some da operação, não da tela. */
+/* Nome sem espaço (um token longo) alargava a linha e criava rolagem lateral
+   na tela: quebra dentro da palavra em vez de estourar. */
 .lista-regras strong { overflow-wrap: anywhere; }
 .lista-regras li.desligada, .lista-contatos li.desligada { opacity: 0.55; }
 
@@ -1907,3 +1909,4 @@ button.perigo:hover { background: #fecaca; }
 @media (forced-colors: active) {
   nav button[aria-current="page"] { outline: 2px solid; outline-offset: -2px; }
 }
+
