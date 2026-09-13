@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { carregarConfiguracao } = require('../config');
+const { carregarConfiguracao, validarConfiguracao } = require('../config');
 const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
 const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
@@ -2077,6 +2077,18 @@ function criarAplicacao(dependencias = {}) {
           commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
           instante: new Date().toISOString(),
           banco,
+          // Quantos problemas de segurança a configuração deste processo tem.
+          //
+          // Só a CONTAGEM, nunca as mensagens: elas descrevem a forma da
+          // configuração ("o gateway do WhatsApp da clínica está faltando") e
+          // isto aqui responde sem autenticação nenhuma. O detalhe vive no log
+          // do deploy, onde só quem tem acesso lê.
+          //
+          // Existe para tornar verificável, de fora, se é seguro ligar o modo
+          // estrito (`CRMCLINICA_CONFIG_ESTRITA`) — ligar um portão que
+          // derruba a subida sem antes saber se a configuração passa é trocar
+          // um risco silencioso por uma queda certa.
+          configuracao: { problemas: validarConfiguracao(configuracao).length },
         });
         return;
       }

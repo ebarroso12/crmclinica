@@ -151,6 +151,15 @@ function carregarConfiguracao(ambiente = process.env) {
   return {
     nodeEnv,
     producao,
+    // Configuração insegura impede a subida em vez de só avisar.
+    //
+    // Nasce DESLIGADA de propósito: a validação cobre seis condições e
+    // ninguém conferiu se a produção de hoje passa em todas. Ligar junto com
+    // o código que criou o portão trocaria um risco silencioso por uma queda
+    // certa. O caminho é: subir, ler `configuracao.problemas` em `/health`,
+    // corrigir o que aparecer, e só então definir
+    // `CRMCLINICA_CONFIG_ESTRITA=sim`.
+    configEstrita: texto(ambiente.CRMCLINICA_CONFIG_ESTRITA).toLowerCase() === 'sim',
     porta: inteiro(ambiente.PORT, 4100),
     // Em produção o processo pode ficar atrás de um proxy; localmente ficamos presos ao loopback.
     endereco: texto(ambiente.HOST) || (producao ? '0.0.0.0' : '127.0.0.1'),

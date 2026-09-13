@@ -1,5 +1,7 @@
 'use strict';
 
+const { respostaPodeSair } = require('../seguranca/barreira-ia');
+
 // Gateway multi-IA do crmclinica.
 //
 // Regras que este arquivo existe para garantir:
@@ -166,6 +168,16 @@ function criarGatewayDeIA({ configuracao, repositorio, adaptadores = null, agora
   const provedores = adaptadores ?? criarAdaptadores(configuracao ?? {});
   const timeoutMs = configuracao?.ia?.timeoutMs ?? 30000;
 
+  /**
+   * Os contatos da própria clínica podem sair numa resposta — é atendimento,
+   * não vazamento. Sem esta lista a barreira barraria "nosso telefone é
+   * (16) …", que é o que a assistente existe para dizer.
+   */
+  const contatosDaClinica = () => [
+    ...(configuracao?.numerosInternos ?? []),
+    configuracao?.openclaw?.numeroWhatsapp,
+  ].filter(Boolean);
+
   /** O que o menu da interface mostra: provedores e, por provedor, os modelos. */
   async function catalogo() {
     const modelos = await repositorio.listarModelosDeIA({ apenasAtivos: true });
@@ -264,6 +276,37 @@ function criarGatewayDeIA({ configuracao, repositorio, adaptadores = null, agora
           fallbackDe,
         };
         await repositorio.registrarChamadaDeIA(registro);
+
+        // A BARREIRA DE SAÍDA, no único lugar por onde toda chamada de LLM
+        // deste sistema passa.
+        //
+        // Ficar aqui, e não em cada chamador, é o ponto: chamador novo nasce
+        // protegido, e não existe caminho "esquecido" — foi assim que o fluxo
+        // de orientação subiu com a barreira só dele. Se o texto não pode
+        // sair, a telemetria JÁ FOI gravada logo acima (o custo aconteceu e
+        // precisa aparecer) e o erro sobe para quem chamou decidir: os
+        // chamadores que falam com paciente entregam para a equipe.
+        const conferencia = respostaPodeSair(resultado.texto, {
+          finalidade,
+          contatosDaClinica: contatosDaClinica(),
+        });
+        if (!conferencia.pode) {
+          // Nunca o texto barrado no log — ele é justamente o que se suspeita
+          // conter dado que não pode circular. Só o motivo técnico e a chave.
+          console.error(JSON.stringify({
+            level: 'error',
+            evento: 'ia_resposta_barrada',
+            finalidade,
+            destino: conferencia.destino,
+            motivo: conferencia.motivo,
+            chave_idempotencia: chaveIdempotencia,
+          }));
+          throw new ErroDeIA(
+            `a resposta da IA foi barrada antes de sair: ${conferencia.motivo}`,
+            'ia_resposta_barrada',
+            { status: 502, tecnico: false },
+          );
+        }
 
         return {
           resposta: resultado.texto,
