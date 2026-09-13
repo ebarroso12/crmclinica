@@ -921,7 +921,32 @@ function criarRepositorio(pool) {
         return { mensagem: montarMensagem(rows[0]), duplicada: false };
       };
 
-      return executarNaTransacao(gravar);
+      // Aviso escrito pela APLICAÇÃO, não pela pessoa: "Conversa assumida pela
+      // equipe", "Conversa encaminhada para a equipe (motivo)", o resumo de
+      // encerramento, a nota interna. A policy de INSERT em `mensagens`
+      // (`crm008_m_i`) só aceita, do papel do usuário, mensagem de `equipe`, de
+      // saída e NÃO privada — que é a regra certa para o que a pessoa digita.
+      // Estes registros são `autor_tipo = 'sistema'` e quase sempre privados,
+      // então batiam na policy: `POST /api/conversas/:id/assumir` respondia 500
+      // com "new row violates row-level security policy for table mensagens", e
+      // como o PostgreSQL aborta a transação inteira, a tomada de posse ia
+      // junto no rollback — a equipe clicava em "assumir" e nada acontecia
+      // (achado em produção em 13/09/2026; `audit_log` tinha UM
+      // `assumida_por_humano` desde 13/08).
+      //
+      // Mesma elevação da auditoria (ver `comoSistema`), e pelo mesmo motivo: a
+      // aplicação escreve dentro da transação do usuário, que declarou o papel
+      // dele. `autor_tipo` nunca vem do corpo da requisição — quem o define é
+      // sempre o domínio —, então a elevação não é alcançável de fora.
+      //
+      // A guarda de acesso à conversa continua de pé onde sempre esteve: quem
+      // não pode mexer na conversa não passa pelo UPDATE em `conversas`
+      // (`assumirConversaSeNecessario`), que roda antes e com o papel da pessoa
+      // — sem transição, nenhum aviso é gravado.
+      const escritaDoSistema = (mensagem.autor_tipo || 'contato') === 'sistema';
+      return executarNaTransacao((cliente) => (
+        escritaDoSistema ? comoSistema(() => gravar(cliente)) : gravar(cliente)
+      ));
     },
 
     /**
