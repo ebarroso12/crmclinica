@@ -2511,6 +2511,22 @@ function criarRepositorio(pool) {
       return { registrado: rows.length > 0 };
     },
 
+    /**
+     * Quanto já se gastou com IA desde um instante, em dólares.
+     *
+     * Lê a telemetria que já existe em vez de manter um contador próprio: o
+     * número é o gasto REAL registrado por chamada, não uma estimativa
+     * paralela que poderia divergir. `COALESCE` porque um dia sem chamada
+     * nenhuma devolve NULL, e NULL comparado com o teto nunca dispara.
+     */
+    async somarCustoDeIADesde(desdeIso) {
+      const { rows } = await consultar(
+        'SELECT COALESCE(SUM(custo_estimado_usd), 0)::float8 AS gasto FROM ia_chamadas WHERE criado_em >= $1',
+        [desdeIso],
+      );
+      return Number(rows[0]?.gasto ?? 0);
+    },
+
     async listarChamadasDeIA({ limite = 100 } = {}) {
       const { rows } = await consultar(`
         SELECT id, chave_idempotencia, finalidade, provedor, modelo, prompt_version,
