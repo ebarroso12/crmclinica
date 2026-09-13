@@ -8,19 +8,106 @@ const crypto = require('node:crypto');
 // POST para esse endpoint, assinado com VAPID — um JWT ES256 que prova que quem
 // empurra é o dono da chave pública que o navegador recebeu na inscrição.
 //
-// UMA DECISÃO IMPORTANTE: este módulo empurra SEM CONTEÚDO.
+// O empurrão pode ir COM ou SEM conteúdo, e a diferença é importante.
 //
-// O Web Push permite mandar um texto cifrado junto (RFC 8291). Aqui isso é
-// deliberadamente evitado — não por preguiça de implementar a criptografia, mas
-// porque a notificação aparece na tela de bloqueio do aparelho, à vista de quem
-// estiver por perto. "Maria Silva: preciso remarcar minha consulta de
-// psiquiatria" na tela travada é um vazamento de dado clínico que o CRM inteiro
-// existe para evitar. Sem conteúdo, o aviso diz só que há novidade; o nome do
-// paciente aparece quando a pessoa abre o CRM e se identifica.
+// Sem conteúdo, o aviso diz só que há novidade. Com conteúdo, ele diz quem
+// falou e o começo da mensagem — como a notificação do Gmail, que foi o pedido
+// do Dr. Edson em 12/09/2026 depois de ver a primeira versão muda.
 //
-// Efeito colateral bom: sem payload não há ECDH nem AES-GCM para errar.
+// O que isso custa, dito com todas as letras: a notificação aparece na tela de
+// bloqueio, à vista de quem estiver por perto do aparelho. "Maria Silva:
+// preciso remarcar minha consulta" na tela travada é informação clínica exposta
+// a quem passar pelo balcão. Quem decidiu assumir esse risco foi o dono da
+// clínica, sabendo dele; o CRM continua sem mandar diagnóstico, CID ou
+// resultado de exame na notificação — só quem falou e o começo do que disse.
+//
+// O conteúdo atravessa o serviço de push (Google, Mozilla, Apple) CIFRADO: o
+// intermediário entrega, não lê. Ver cifrarParaAparelho abaixo.
 
 const VALIDADE_DO_JWT_SEGUNDOS = 12 * 60 * 60; // 12h — o teto da especificação é 24h.
+
+// ---------------------------------------------------------------------------
+// Conteúdo cifrado (RFC 8291 sobre RFC 8188)
+//
+// O serviço de push (Google, Mozilla, Apple) entrega o empurrão mas NÃO pode
+// ler o que vai dentro: quem cifra é este servidor, quem decifra é o navegador
+// do aparelho, e a chave sai de um acordo entre os dois (ECDH) usando as duas
+// chaves que o navegador entregou na inscrição — `p256dh` e `auth`.
+//
+// Isso importa aqui mais do que no site comum: o texto que vai na notificação
+// tem nome de paciente. Ele atravessa a Google, e atravessa ilegível.
+//
+// A implementação segue o RFC à risca e é conferida contra o vetor oficial do
+// Apêndice A em testes/webpush.test.js — se um byte sair fora de ordem, o
+// navegador descarta a mensagem em silêncio e ninguém descobre por quê.
+
+const TAMANHO_DO_REGISTRO = 4096;
+
+// Cada rótulo da derivação termina em byte ZERO (não espaço, não nada): trocar
+// isso daria outra chave, a mensagem chegaria ao aparelho e o navegador a
+// descartaria sem dizer nada a ninguém.
+const FIM_DO_ROTULO = Buffer.from([0]);
+
+/** base64url de volta para bytes. */
+function deBase64url(texto) {
+  const normal = String(texto).replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(normal + '='.repeat((4 - (normal.length % 4)) % 4), 'base64');
+}
+
+/**
+ * Cifra o texto para UM aparelho.
+ *
+ * `chaveEfemera` e `sal` são injetáveis só para o teste poder reproduzir o
+ * vetor do RFC; em produção nascem aleatórios a cada envio — repetir o par
+ * (chave, sal) quebraria a garantia do AES-GCM.
+ */
+function cifrarParaAparelho(texto, { p256dh, auth, chaveEfemera = null, sal = null }) {
+  const chaveDoAparelho = deBase64url(p256dh);
+  const segredoDoAparelho = deBase64url(auth);
+
+  const efemera = chaveEfemera ?? crypto.createECDH('prime256v1');
+  if (!chaveEfemera) efemera.generateKeys();
+  const publicaDoServidor = efemera.getPublicKey();
+
+  // O segredo que só os dois lados conseguem calcular.
+  const segredoCompartilhado = efemera.computeSecret(chaveDoAparelho);
+
+  // RFC 8291: o "auth" da inscrição entra como sal desta primeira derivação, e
+  // as DUAS chaves públicas entram no info — é isso que amarra a mensagem a
+  // este aparelho e a este envio.
+  const infoDaChave = Buffer.concat([
+    Buffer.concat([Buffer.from('WebPush: info', 'utf8'), FIM_DO_ROTULO]),
+    chaveDoAparelho,
+    publicaDoServidor,
+  ]);
+  const ikm = crypto.hkdfSync('sha256', segredoCompartilhado, segredoDoAparelho, infoDaChave, 32);
+
+  const salDoRegistro = sal ?? crypto.randomBytes(16);
+  const chaveDeConteudo = crypto.hkdfSync('sha256', ikm, salDoRegistro, Buffer.concat([Buffer.from('Content-Encoding: aes128gcm', 'utf8'), FIM_DO_ROTULO]), 16);
+  const nonce = crypto.hkdfSync('sha256', ikm, salDoRegistro, Buffer.concat([Buffer.from('Content-Encoding: nonce', 'utf8'), FIM_DO_ROTULO]), 12);
+
+  // 0x02 marca "este é o último registro" (RFC 8188). Sem ele, o navegador
+  // espera um próximo pedaço que nunca vem.
+  const conteudo = Buffer.concat([Buffer.from(texto, 'utf8'), Buffer.from([0x02])]);
+
+  const cifrador = crypto.createCipheriv('aes-128-gcm', Buffer.from(chaveDeConteudo), Buffer.from(nonce));
+  const cifrado = Buffer.concat([cifrador.update(conteudo), cifrador.final(), cifrador.getAuthTag()]);
+
+  const tamanho = Buffer.alloc(4);
+  tamanho.writeUInt32BE(TAMANHO_DO_REGISTRO, 0);
+
+  // O cabeçalho vai junto do corpo: sal, tamanho do registro, e a chave pública
+  // efêmera que o navegador precisa para refazer o acordo.
+  return Buffer.concat([
+    salDoRegistro,
+    tamanho,
+    Buffer.from([publicaDoServidor.length]),
+    publicaDoServidor,
+    cifrado,
+  ]);
+}
+
+
 
 /** base64url sem padding, que é o alfabeto do JWT e das chaves VAPID. */
 function base64url(dados) {
@@ -101,7 +188,17 @@ function criarWebPush({ chavePublica, chavePrivada, assunto, buscar = fetch, ago
   const podeInscrever = Boolean(chavePublica);
   const configurado = Boolean(chavePublica && chavePrivada && assunto);
 
-  async function empurrar(endpoint, { urgencia = 'normal', validadeSegundos = 6 * 60 * 60 } = {}) {
+  /**
+   * @param {object} [opcoes.conteudo] O que mostrar na notificação
+   *   (`{ titulo, corpo, url }`). Sem isto, o empurrão vai vazio e o aparelho
+   *   mostra um texto genérico.
+   * @param {object} [opcoes.aparelho] `{ p256dh, auth }` da inscrição —
+   *   obrigatório quando há conteúdo: são as chaves que cifram para ESTE
+   *   aparelho.
+   */
+  async function empurrar(endpoint, {
+    urgencia = 'normal', validadeSegundos = 6 * 60 * 60, conteudo = null, aparelho = null,
+  } = {}) {
     if (!configurado) return { entregue: false, motivo: 'vapid_nao_configurado', remover: false };
 
     let audiencia;
@@ -114,17 +211,38 @@ function criarWebPush({ chavePublica, chavePrivada, assunto, buscar = fetch, ago
 
     const jwt = montarJwtVapid({ audiencia, assunto, chavePrivada, agora });
 
+    // Conteúdo exige as chaves DAQUELE aparelho: é para ele, e só ele, que a
+    // mensagem é cifrada.
+    let corpo = null;
+    if (conteudo && aparelho?.p256dh && aparelho?.auth) {
+      try {
+        corpo = cifrarParaAparelho(JSON.stringify(conteudo), aparelho);
+      } catch (erro) {
+        // Chave malformada na inscrição: não dá para cifrar para este aparelho,
+        // e mandar em claro não é opção. A inscrição não presta mais.
+        return { entregue: false, motivo: `nao cifrei: ${erro.message}`, remover: true };
+      }
+    }
+
+    const cabecalhos = {
+      ttl: String(validadeSegundos),
+      urgency: urgencia,
+      authorization: `vapid t=${jwt}, k=${chavePublica}`,
+    };
+    if (corpo) {
+      cabecalhos['content-encoding'] = 'aes128gcm';
+      cabecalhos['content-type'] = 'application/octet-stream';
+      cabecalhos['content-length'] = String(corpo.length);
+    } else {
+      cabecalhos['content-length'] = '0';
+    }
+
     let resposta;
     try {
       resposta = await buscar(endpoint, {
         method: 'POST',
-        headers: {
-          // Sem corpo: o aviso não carrega dado do paciente (ver o topo).
-          'content-length': '0',
-          ttl: String(validadeSegundos),
-          urgency: urgencia,
-          authorization: `vapid t=${jwt}, k=${chavePublica}`,
-        },
+        headers: cabecalhos,
+        ...(corpo ? { body: corpo } : {}),
       });
     } catch (erro) {
       // Rede fora agora não quer dizer inscrição morta: tenta de novo depois.
@@ -150,4 +268,4 @@ function criarWebPush({ chavePublica, chavePrivada, assunto, buscar = fetch, ago
   };
 }
 
-module.exports = { criarWebPush, gerarChavesVapid, montarJwtVapid, base64url };
+module.exports = { criarWebPush, gerarChavesVapid, montarJwtVapid, base64url, cifrarParaAparelho };

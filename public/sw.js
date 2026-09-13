@@ -58,18 +58,40 @@ const TEXTO_DO_AVISO = {
   corpo: 'Alguém está esperando resposta no atendimento.',
 };
 
+/**
+ * O que o empurrão trouxe.
+ *
+ * O conteúdo vem cifrado e o navegador o entrega já aberto. Empurrão sem
+ * conteúdo continua possível (e cai no texto genérico) — é o que acontece se um
+ * envio antigo chegar atrasado, ou se o servidor não conseguir cifrar.
+ */
+function lerAviso(evento) {
+  try {
+    const dados = evento.data?.json();
+    if (!dados) return TEXTO_DO_AVISO;
+    return {
+      titulo: String(dados.titulo || TEXTO_DO_AVISO.titulo).slice(0, 80),
+      corpo: String(dados.corpo || TEXTO_DO_AVISO.corpo).slice(0, 200),
+      url: typeof dados.url === 'string' && dados.url.startsWith('/') ? dados.url : '/',
+    };
+  } catch {
+    return TEXTO_DO_AVISO;
+  }
+}
+
 self.addEventListener('push', (evento) => {
+  const aviso = lerAviso(evento);
   // `userVisibleOnly` é obrigatório no Chrome: receber um push e NÃO mostrar
   // notificação faz o navegador revogar a permissão depois de algumas vezes.
-  evento.waitUntil(self.registration.showNotification(TEXTO_DO_AVISO.titulo, {
-    body: TEXTO_DO_AVISO.corpo,
+  evento.waitUntil(self.registration.showNotification(aviso.titulo, {
+    body: aviso.corpo,
     icon: '/marca-crmclinica.png',
     badge: '/favicon.png',
     // Mesma tag: três mensagens seguidas empilham em um aviso só, em vez de
     // encher a barra de notificações.
     tag: 'crmclinica-atendimento',
     renotify: true,
-    data: { url: '/' },
+    data: { url: aviso.url ?? '/' },
   }));
 });
 
