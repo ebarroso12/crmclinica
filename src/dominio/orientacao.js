@@ -78,7 +78,15 @@ const MARCAS_DE_BASTIDOR = [
  * inofensivo; se um paciente tentar forjá-lo na mensagem dele, o efeito é a
  * conversa ir para a equipe — que é seguro por construção.
  */
-const MARCADOR = /\[\[\s*ORIENTAR\s*:?\s*([^\]]*)\]\]/i;
+// `[\s\S]*?` até o `]]`, e não `[^\]]*`: a dúvida costuma citar a pergunta do
+// paciente, e citação com colchete acontece ("qual o valor do [promo] do
+// post?"). Com a versão antiga o marcador simplesmente não casava — o paciente
+// recebia `[[ORIENTAR: …]]` no meio da mensagem E ninguém era avisado.
+//
+// `g` porque a assistente pode emitir dois marcadores na mesma resposta.
+// `replace` sem a flag troca só o primeiro, e o segundo ia inteiro para o
+// paciente.
+const MARCADOR = /\[\[\s*ORIENTAR\s*:?\s*([\s\S]*?)\]\]/gi;
 
 /**
  * Separa o que vai para o paciente do pedido de orientação.
@@ -88,17 +96,59 @@ const MARCADOR = /\[\[\s*ORIENTAR\s*:?\s*([^\]]*)\]\]/i;
  */
 function separarPedidoDeOrientacao(resposta) {
   const bruto = String(resposta ?? '');
-  const achado = bruto.match(MARCADOR);
-  if (!achado) return { texto: bruto.trim(), duvida: null };
+  // `matchAll` em vez de `match`: com a flag `g`, `match` devolveria os textos
+  // casados inteiros e perderia o grupo — a dúvida. E `matchAll` não mexe no
+  // `lastIndex` do regex compartilhado, então duas chamadas seguidas veem o
+  // mesmo resultado (`test`/`exec` com `g` não veriam).
+  const achados = [...bruto.matchAll(MARCADOR)];
+  if (achados.length === 0) return { texto: bruto.trim(), duvida: null };
 
-  const limpo = bruto.replace(MARCADOR, '').replace(/\s{2,}/g, ' ').trim();
-  const duvida = (achado[1] ?? '').trim();
+  // Espaço no lugar do marcador, não vazio: "o valor[[ORIENTAR: x]]é" viraria
+  // "o valoré". O aperto de espaços logo em seguida desfaz o excesso.
+  const limpo = bruto.replace(MARCADOR, ' ').replace(/\s{2,}/g, ' ').trim();
+  const duvida = achados.map((achado) => (achado[1] ?? '').trim()).filter(Boolean).join(' | ');
   return { texto: limpo, duvida: duvida || 'A assistente não soube responder e pediu orientação.' };
 }
 
 function texto(valor, limite) {
   const bruto = typeof valor === 'string' ? valor.trim() : '';
   return bruto.slice(0, limite);
+}
+
+/**
+ * Impressão curta e estável do texto, para compor a chave de idempotência da
+ * compilação. Não é segredo nem identidade — é só "este texto ou outro".
+ */
+function impressao(valor) {
+  return require('node:crypto').createHash('sha256')
+    .update(String(valor ?? ''), 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * Liga a compilação ao gateway multi-IA do projeto (`src/ia/gateway.js`).
+ *
+ * Existe aqui, e não em cada ponto de montagem, porque são três: o servidor
+ * HTTP e dois workers. Quando isto morava só na cabeça de quem montava, o
+ * recurso subiu para produção sem `orientacoes` em nenhum dos três — a
+ * assistente prometia "vou confirmar com um profissional" e nada era
+ * registrado (achado em revisão independente, 13/09/2026).
+ *
+ * Sem gateway devolve `null`, e `compilar` já trata isso: a orientação fica
+ * registrada e quem responde ao paciente é uma pessoa.
+ */
+function compiladorPeloGateway(gateway) {
+  if (!gateway?.gerar) return null;
+  return {
+    async gerar({ instrucao, chave }) {
+      const resultado = await gateway.gerar({
+        finalidade: 'orientacao_compilada',
+        prompt: instrucao,
+        chaveIdempotencia: chave,
+        promptVersion: 'orientacao-v1',
+      });
+      return resultado?.resposta ?? '';
+    },
+  };
 }
 
 /**
@@ -147,6 +197,18 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
       // O índice único barra a segunda pendência na mesma conversa: isso é o
       // comportamento desejado, não uma falha.
       if (String(erro.code) === '23505') return { pedida: false, motivo: 'ja_existe_pendente' };
+
+      // Qualquer outra falha é grave e invisível: a assistente JÁ prometeu ao
+      // lead que ia confirmar com um profissional, e sem este registro ninguém
+      // é chamado e não fica rastro nenhum. Engolir sem auditar deixava esse
+      // caso indistinguível de "correu tudo bem".
+      await repositorio.registrarAuditoria?.({
+        entidade: 'conversa',
+        entidadeId: conversaId,
+        acao: 'orientacao_nao_registrada',
+        // O texto da dúvida não entra: pode carregar relato do paciente.
+        detalhe: { codigo: erro.code ?? null, erro: String(erro.message ?? '').slice(0, 200) },
+      }).catch(() => {});
       return { pedida: false, motivo: erro.message };
     }
   }
@@ -172,14 +234,25 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
       throw erro;
     }
 
-    const compilada = await compilar({ duvida: pendente.duvida, orientacao: textoDaOrientacao });
+    const compilada = await compilar({
+      orientacaoId, duvida: pendente.duvida, orientacao: textoDaOrientacao,
+    });
     const permitido = respostaPodeSair(compilada, { orientacao: textoDaOrientacao });
 
-    await repositorio.responderOrientacao(orientacaoId, {
+    // A compilação leva segundos, e nesse intervalo o outro atendente que
+    // abriu a mesma conversa pode ter respondido. Quem marcou é quem envia:
+    // sem isto os dois passavam pela leitura lá em cima, os dois compilavam e
+    // o paciente recebia duas mensagens sobre a mesma dúvida.
+    const marcou = await repositorio.responderOrientacao(orientacaoId, {
       orientacao: textoDaOrientacao,
       usuarioId,
       respondidaEm: agora().toISOString(),
     });
+    if (marcou === false) {
+      const erro = new Error('esta orientação já foi respondida');
+      erro.status = 409;
+      throw erro;
+    }
 
     if (!permitido.pode) {
       // A orientação fica registrada e a conversa continua com a equipe: quem
@@ -198,7 +271,7 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
    * paciente, sem acrescentar nada. Sem IA configurada, não há compilação — e
    * responder à mão é melhor que repassar bastidor.
    */
-  async function compilar({ duvida, orientacao }) {
+  async function compilar({ orientacaoId, duvida, orientacao }) {
     if (!ia?.gerar) return null;
 
     const instrucao = [
@@ -218,7 +291,11 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
     ].join('\n');
 
     try {
-      const saida = await ia.gerar({ instrucao });
+      // A chave amarra a compilação à orientação E ao texto exato escrito: um
+      // retry (rede caiu, atendente clicou duas vezes) reaproveita a resposta
+      // já paga; corrigir a orientação e reenviar gera compilação nova.
+      const chave = `orientacao-${orientacaoId}-${impressao(orientacao)}`;
+      const saida = await ia.gerar({ instrucao, chave });
       return typeof saida === 'string' ? saida.trim() : (saida?.texto ?? '').trim();
     } catch {
       return null;
@@ -266,6 +343,7 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
 
 module.exports = {
   criarOrientacoes,
+  compiladorPeloGateway,
   separarPedidoDeOrientacao,
   MARCADOR,
   respostaPodeSair,

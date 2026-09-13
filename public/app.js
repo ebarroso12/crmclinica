@@ -836,6 +836,7 @@ async function abrirConversa(conversaId) {
 
     desenharThread(mensagens);
     desenharFicha(conversa, ficha, detalhe.temperatura);
+    desenharOrientacao(detalhe.orientacao_pendente);
 
     seletor('#seletor-prioridade').value = conversa.prioridade || '';
     seletor('#seletor-temperatura').value = detalhe.temperatura || '';
@@ -850,6 +851,7 @@ async function abrirConversa(conversaId) {
     if (veClinica()) carregarAgendaDaConversa(conversaId);
     else definirTexto('#agenda-da-conversa', '');
   } catch (erro) {
+    desenharOrientacao(null);
     seletor('#thread-mensagens').innerHTML = '';
     definirTexto('#thread-nome', 'Não foi possível abrir');
     definirTexto('#thread-detalhe', erro.status === 404 ? 'Conversa não encontrada.' : 'Tente novamente.');
@@ -1662,6 +1664,61 @@ async function prepararEEnviarAnexo(arquivo, conversaId) {
 
   return { caminho: preparo.caminho, tipo: preparo.tipo, nome: preparo.nome };
 }
+
+/**
+ * O bloco da dúvida que a assistente deixou para a clínica.
+ *
+ * Some quando não há pendência — inclusive ao trocar de conversa, senão a
+ * dúvida de uma apareceria na thread da outra.
+ */
+function desenharOrientacao(pendente) {
+  const bloco = seletor('#bloco-orientacao');
+  if (!bloco) return;
+
+  bloco.hidden = !pendente;
+  definirTexto('#orientacao-estado', '');
+  const campo = seletor('#orientacao-texto');
+  if (campo) campo.value = '';
+  if (!pendente) return;
+
+  // `textContent`: a dúvida é texto que veio de um modelo de linguagem sobre a
+  // mensagem de um paciente — nunca entra como HTML.
+  definirTexto('#orientacao-duvida', pendente.duvida || 'A assistente não soube responder.');
+}
+
+seletor('#form-orientacao')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  const campo = seletor('#orientacao-texto');
+  const orientacao = campo.value.trim();
+  if (!orientacao || !conversaAberta) return;
+
+  const botao = evento.target.querySelector('button[type="submit"]');
+  botao.disabled = true;
+  definirTexto('#orientacao-estado', 'Enviando…');
+
+  try {
+    const resultado = await pedirJson(`/api/conversas/${conversaAberta}/orientacao`, {
+      metodo: 'POST',
+      corpo: { orientacao },
+    });
+    // A barreira pode ter barrado a resposta compilada: a orientação fica
+    // registrada, mas quem fala com o paciente é uma pessoa. Dizer isso é o
+    // que evita a equipe achar que a mensagem saiu.
+    if (resultado?.enviada === false) {
+      definirTexto('#orientacao-estado', 'Registrado, mas a resposta automática não saiu — responda por aqui.');
+      seletor('#bloco-orientacao').hidden = true;
+    } else {
+      await abrirConversa(conversaAberta);
+    }
+  } catch (erro) {
+    definirTexto(
+      '#orientacao-estado',
+      erro.status === 409 ? 'Alguém já respondeu esta dúvida.' : 'Não foi possível enviar. Tente de novo.',
+    );
+  } finally {
+    botao.disabled = false;
+  }
+});
 
 seletor('#form-resposta')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();

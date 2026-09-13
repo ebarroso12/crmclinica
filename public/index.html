@@ -492,6 +492,30 @@
 
             <ol class="mensagens" id="thread-mensagens" aria-live="polite"></ol>
 
+            <!--
+              A assistente não soube responder e pediu orientação. Fica colado
+              no composer, e não numa tela à parte, porque é aqui que a pessoa
+              está quando pode responder — e ela precisa da conversa à vista
+              para saber o que dizer.
+            -->
+            <section class="orientacao" id="bloco-orientacao" hidden aria-label="Dúvida da assistente">
+              <p class="orientacao-titulo">A assistente não soube responder e pediu orientação</p>
+              <blockquote id="orientacao-duvida"></blockquote>
+              <form id="form-orientacao">
+                <label class="oculto-visual" for="orientacao-texto">Orientação para a assistente</label>
+                <textarea id="orientacao-texto" rows="2"
+                          placeholder="Escreva do jeito que falaria com um colega. Ela reescreve para o paciente."></textarea>
+                <div class="linha-acoes">
+                  <button type="submit" class="primario">Enviar orientação</button>
+                  <small id="orientacao-estado" role="status"></small>
+                </div>
+              </form>
+              <small class="orientacao-nota">
+                O texto acima não vai como está: a assistente reescreve no tom dela, e
+                recado interno, valor de negociação ou opinião não saem daqui.
+              </small>
+            </section>
+
             <p class="preview-anexo" id="preview-anexo" hidden>
               📎 <span id="preview-anexo-nome"></span>
               <button type="button" class="link" id="preview-anexo-cancelar">remover</button>

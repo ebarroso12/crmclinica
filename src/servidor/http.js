@@ -21,6 +21,7 @@ const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
 const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
+const { criarOrientacoes, compiladorPeloGateway } = require('../dominio/orientacao');
 const { criarServicoDeMetricas } = require('../dominio/metricas');
 const { criarGatewayDeIA } = require('../ia/gateway');
 const { criarMotorDeAgentes } = require('../dominio/agentes/motor');
@@ -233,10 +234,20 @@ function criarAplicacao(dependencias = {}) {
   // conversa do agente (escalonada para a equipe), nunca como silêncio.
   const motorDeAgentes = dependencias.motorDeAgentes || criarMotorDeAgentes({ gateway: gatewayDeIA });
 
+  // Quando a assistente não sabe e pergunta para a clínica (db/052).
+  //
+  // Isto precisa existir nos TRÊS pontos de montagem (aqui e os dois workers):
+  // é `criarAtendimento` que decide se a dúvida vira registro. Faltando, a
+  // assistente ainda promete ao lead "vou confirmar com um profissional" — o
+  // marcador é limpo do texto de qualquer jeito — e ninguém é chamado.
+  const orientacoes = dependencias.orientacoes
+    || criarOrientacoes({ repositorio, ia: compiladorPeloGateway(gatewayDeIA) });
+
   const atendimento = dependencias.atendimento
     || criarAtendimento({
       repositorio,
       orquestrador,
+      orientacoes,
       // Quem opera a clinica nao entra no funil como paciente.
       numerosInternos: configuracao.numerosInternos,
       leads: servicoDeLeads,
@@ -290,6 +301,7 @@ function criarAplicacao(dependencias = {}) {
 
   const conversas = criarRotasDeConversas({
     repositorio, atendimento, emissorDeConversas, storage: clienteStorage, limiteAnexoBytes: configuracao.anexos.tamanhoMaximoBytes,
+    orientacoes,
   });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
@@ -464,6 +476,9 @@ function criarAplicacao(dependencias = {}) {
     temperatura: 'conversas:etiquetar',
     prioridade: 'conversas:priorizar',
     notas: 'conversas:responder',
+    // Orientar é falar com o paciente por intermédio da assistente: mesma
+    // permissão de responder.
+    orientacao: 'conversas:responder',
     ficha: 'contatos:editar',
     // Encerrar é resolver com resumo interno: mesma permissão de resolver.
     encerrar: 'conversas:resolver',
@@ -1946,6 +1961,7 @@ function criarAplicacao(dependencias = {}) {
       estado: (corpo) => conversas.definirEstado(conversaId, corpo),
       temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
       notas: async (corpo) => conversas.criarNota(conversaId, corpo, { escopo: usuario ? await escopoDoUsuario() : null }),
+      orientacao: (corpo) => conversas.responderOrientacao(conversaId, corpo),
       encerrar: (corpo) => servicoDeFluxo.encerrarConversa(conversaId, { usuarioId: corpo.usuario_id ?? null }),
     };
 

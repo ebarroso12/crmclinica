@@ -691,10 +691,7 @@ function criarAtendimento({
         if (duvidaParaAClinica && orientacoes) {
           const pedida = await orientacoes.pedir({ conversaId, duvida: duvidaParaAClinica });
           if (pedida.pedida) {
-            // Vai para a equipe: a automação não deve seguir respondendo sobre
-            // um assunto que ela mesma disse não conhecer. O escalonamento é o
-            // que faz o celular de quem pode orientar tocar.
-            await escalonar(conversaId, 'orientacao_pedida');
+            await entregarParaAClinica(conversaId);
             return {
               acao: 'respondida_e_pediu_orientacao',
               conversa_id: conversaId,
@@ -709,6 +706,21 @@ function criarAtendimento({
           conversa_id: conversaId,
           duplicada,
           entregue: entrega.enviada,
+        };
+      }
+
+      // Resposta que é SÓ o marcador: depois de limpá-lo não sobra nada para
+      // enviar, mas a dúvida existe e não pode sumir. Sem este bloco, o caminho
+      // caía em `automacao_sem_resposta` lá embaixo — a conversa ia para a
+      // equipe, o que é certo, só que sem ninguém saber DO QUE se trata.
+      if (duvidaParaAClinica && orientacoes) {
+        const pedida = await orientacoes.pedir({ conversaId, duvida: duvidaParaAClinica });
+        await entregarParaAClinica(conversaId);
+        return {
+          acao: 'pediu_orientacao_sem_resposta',
+          conversa_id: conversaId,
+          orientacao_id: pedida.id ?? null,
+          entregue: false,
         };
       }
 
@@ -901,6 +913,64 @@ function criarAtendimento({
     }
 
     return mensagem;
+  }
+
+  /**
+   * A resposta compilada a partir da orientação da clínica.
+   *
+   * Vai assinada pela assistente, e não pela pessoa, porque é a voz dela que o
+   * lead conhece — quem orientou fica registrado na orientação e na auditoria,
+   * onde a equipe precisa ver. A entrega usa `origem: 'equipe'` de propósito: a
+   * barreira final existe para o caso da automação, em que passam dezenas de
+   * segundos entre decidir e enviar; aqui a pessoa acabou de clicar, e a
+   * conversa está DELIBERADAMENTE calada (`entregarParaAClinica`) — a barreira
+   * recusaria exatamente a mensagem que essa pausa estava esperando.
+   *
+   * Devolver a conversa à automação é o último passo, e só depois do envio: se
+   * a entrega falhar, ela continua com a equipe, que é onde precisa estar.
+   */
+  async function responderComoAssistente(conversaId, texto, {
+    usuarioId = null, orientacaoId = null, devolverAAutomacao = true,
+  } = {}) {
+    const conversa = await repositorio.obterConversa(conversaId);
+    const { mensagem } = await repositorio.registrarMensagem(conversaId, {
+      direcao: 'saida',
+      conteudo: texto,
+      autor_tipo: 'automacao',
+      autor_nome: conversa?.agente_id ? (await nomeDoAgente(conversa.agente_id)) : 'Serena',
+    });
+    emissor?.publicarMensagem(conversaId, mensagem);
+
+    const entrega = await entregarAoPaciente(conversa, texto, mensagem.id, { origem: 'equipe' });
+
+    await repositorio.registrarAuditoria({
+      entidade: 'conversa',
+      entidadeId: conversaId,
+      acao: 'orientacao_respondida',
+      // Nunca o texto: nem a orientação interna, nem o que saiu ao paciente.
+      detalhe: { mensagem_id: mensagem.id, orientacao_id: orientacaoId, entregue: entrega.enviada },
+      usuarioId,
+    }).catch(() => {});
+
+    // O aviso dos vinte minutos passa `devolverAAutomacao: false` porque lá
+    // quem manda na ordem é `avisarQuemEspera`: ele marca "avisado" ANTES de
+    // liberar, para que uma falha na liberação não faça o lead receber a mesma
+    // mensagem de novo no ciclo seguinte.
+    if (devolverAAutomacao && (entrega.enviada || entrega.motivo === 'canal_nao_configurado')) {
+      await liberar(conversaId);
+    }
+
+    return { ...mensagem, enviada: entrega.enviada, motivo_falha: entrega.enviada ? null : entrega.motivo };
+  }
+
+  /** Nome do agente para assinar a mensagem; na falha, a assinatura padrão. */
+  async function nomeDoAgente(agenteId) {
+    try {
+      const agente = await repositorio.obterAgente?.(agenteId);
+      return agente?.nome || 'Serena';
+    } catch {
+      return 'Serena';
+    }
   }
 
   /**
@@ -1165,6 +1235,26 @@ function criarAtendimento({
     }
   }
 
+  /**
+   * A dúvida foi registrada: a conversa passa para a clínica e a assistente
+   * cala até alguém orientar (ou até os vinte minutos).
+   *
+   * `escalonar` sozinho não basta, e isso é de propósito da parte dele: ele
+   * atende sobretudo FALHA TÉCNICA, onde a próxima mensagem do paciente deve
+   * poder ser respondida se a causa já passou — o comentário dele diz isso com
+   * todas as letras. Aqui é o caso oposto: ela mesma declarou não saber do
+   * assunto. Sem calar, a próxima mensagem do lead recebia OUTRA promessa de
+   * retorno, e o índice único de uma pendente por conversa impedia até que a
+   * dúvida nova fosse registrada — promessa repetida, ninguém avisado.
+   *
+   * O contrário disto é `liberar()`, que é o que o aviso de vinte minutos usa
+   * para devolver a conversa à automação.
+   */
+  async function entregarParaAClinica(conversaId) {
+    await escalonar(conversaId, 'orientacao_pedida');
+    await repositorio.assumirConversaSeNecessario?.(conversaId, { usuarioId: null, pausaAte: null });
+  }
+
   /** Define a temperatura manualmente, preservando as demais etiquetas. */
   async function definirTemperatura(conversaId, temperatura) {
     const atuais = await repositorio.listarEtiquetasDaConversa(conversaId);
@@ -1272,6 +1362,7 @@ function criarAtendimento({
     liberar,
     liberarEmMassa,
     responderComoEquipe,
+    responderComoAssistente,
     registrarEnvioExternoDoWhatsapp,
     escalonar,
     processarInatividadeDeAgentes: (opcoes) => fluxoDeAgentes.processarInatividade(opcoes),

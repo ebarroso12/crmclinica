@@ -36,6 +36,10 @@
   /* Faixa de convite (avisos no celular): informativa, não alarme. */
   --convite-fundo: #eef7f9;
   --convite-borda: #bfe3ea;
+  /* A assistente pediu orientação: pede atenção de quem está na conversa,
+     mas não é falha — âmbar, não vermelho. */
+  --orientacao-fundo: #fdf6e6;
+  --orientacao-borda: #e8d5a3;
   --navy: #0d1930;
   --texto: #19243a;
   /* Tons de apoio escurecidos até passarem em contraste sobre superfície clara. */
@@ -78,6 +82,8 @@
     --menu-ativo-texto: #7fdcea;
     --convite-fundo: #16293a;
     --convite-borda: #24506a;
+    --orientacao-fundo: #2b2515;
+    --orientacao-borda: #5c4a1e;
     --fundo: #0f1523;
     --superficie: #161d2e;
     --realce: #1d2740;
@@ -104,6 +110,8 @@
   --menu-ativo-texto: #7fdcea;
   --convite-fundo: #16293a;
   --convite-borda: #24506a;
+  --orientacao-fundo: #2b2515;
+  --orientacao-borda: #5c4a1e;
   --fundo: #0f1523;
   --superficie: #161d2e;
   --realce: #1d2740;
@@ -1131,6 +1139,38 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .composer { display: flex; gap: 8px; margin-top: 14px; }
 .composer textarea { flex: 1; border: 1px solid var(--linha); border-radius: 8px; padding: 10px; font: inherit; resize: none; max-height: 120px; }
 #botao-anexar { font-size: 17px; line-height: 1; padding: 0 12px; }
+
+/* A assistente pediu orientação. Fica entre a thread e o composer: é o
+   próximo passo de quem está lendo a conversa, não um cartão à parte. */
+.orientacao {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--orientacao-fundo);
+  border: 1px solid var(--orientacao-borda);
+  border-left: 4px solid var(--ambar);
+  border-radius: 10px;
+  color: var(--texto);
+}
+.orientacao-titulo { margin: 0 0 8px; font-weight: 700; font-size: 13px; }
+.orientacao blockquote {
+  margin: 0 0 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--orientacao-borda);
+  color: var(--apoio);
+  font-size: 13px;
+}
+.orientacao textarea {
+  width: 100%;
+  border: 1px solid var(--linha);
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+  background: var(--superficie);
+  color: var(--texto);
+  resize: vertical;
+}
+.orientacao .linha-acoes { margin-top: 8px; }
+.orientacao-nota { display: block; margin-top: 8px; color: var(--apoio); font-size: 11.5px; }
 
 .ficha small { color: var(--apoio); font-size: 11px; letter-spacing: 0.07em; }
 .ficha h3 { margin: 10px 0 2px; }

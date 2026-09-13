@@ -1278,13 +1278,24 @@ function criarRepositorio(pool) {
       return { ...rows[0], id: Number(rows[0].id), conversa_id: Number(rows[0].conversa_id) };
     },
 
+    /**
+     * Marca a orientação como respondida — e diz se FOI ESTA chamada que a
+     * marcou.
+     *
+     * O `AND estado = 'pendente'` já impedia a segunda gravação, mas em
+     * silêncio: dois atendentes respondendo ao mesmo tempo passavam os dois
+     * pela leitura inicial, os dois compilavam e os dois mandavam mensagem ao
+     * paciente. Quem devolve `false` aqui é quem perdeu a corrida e não deve
+     * enviar nada.
+     */
     async responderOrientacao(id, { orientacao, usuarioId, respondidaEm }) {
-      await consultar(`
+      const { rowCount } = await consultar(`
         UPDATE orientacoes
            SET estado = 'respondida', orientacao = $2, respondida_por = $3,
                respondida_em = $4, atualizado_em = now()
          WHERE id = $1 AND estado = 'pendente'
       `, [id, orientacao, usuarioId, respondidaEm]);
+      return rowCount === 1;
     },
 
     /** Pendentes de antes do limite que ainda não receberam o aviso de espera. */
