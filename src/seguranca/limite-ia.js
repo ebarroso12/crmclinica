@@ -70,11 +70,15 @@ const LIMITES_DE_IA = Object.freeze({
 const TETO_DIARIO_USD_PADRAO = 25;
 
 class ErroDeOrcamentoDeIA extends Error {
-  constructor(gastoUsd, tetoUsd) {
+  constructor(gastoUsd, tetoUsd, segundosAteVirar) {
     super('o teto diário de uso de IA foi atingido');
     this.name = 'ErroDeOrcamentoDeIA';
     this.status = 429;
     this.codigo = 'ia_orcamento_diario';
+    // O tratamento de 429 do servidor monta o cabeçalho `retry-after` com
+    // isto. Sem o campo, o cabeçalho sairia como a string "undefined" — e um
+    // `retry-after` inválido faz cliente educado repetir na hora.
+    this.retryAfter = Math.max(1, segundosAteVirar);
     this.gastoUsd = gastoUsd;
     this.tetoUsd = tetoUsd;
   }
@@ -114,7 +118,13 @@ function criarLimiteDeIA({
     inicioDoDia.setUTCHours(0, 0, 0, 0);
 
     const gasto = await repositorio.somarCustoDeIADesde(inicioDoDia.toISOString());
-    if (gasto >= tetoDiarioUsd) throw new ErroDeOrcamentoDeIA(gasto, tetoDiarioUsd);
+    if (gasto >= tetoDiarioUsd) {
+      // A cota volta na virada do dia em UTC — é a mesma fronteira usada para
+      // somar o gasto, então o número que a resposta promete é o verdadeiro.
+      const viradaDoDia = inicioDoDia.getTime() + 24 * 60 * 60 * 1000;
+      const segundos = Math.ceil((viradaDoDia - agora().getTime()) / 1000);
+      throw new ErroDeOrcamentoDeIA(gasto, tetoDiarioUsd, segundos);
+    }
   }
 
   /**
