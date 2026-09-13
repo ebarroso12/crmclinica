@@ -199,9 +199,26 @@ test('pedido pendurado é cortado pelo prazo, sem esperar a Evolution', async ()
     '/instance/fetchInstances': pendurado,
   });
   const inicio = Date.now();
-  await rejeita(
-    criarClienteEvolucaoInstancia({ ...CONFIG, timeoutMs: 50 }, { fetchImpl }).estado('alpins'),
-    { status: 503, codigo: 'evolution_sem_resposta' },
-  );
+
+  // O relógio que corta o pedido é um `AbortSignal.timeout()`, e ele NÃO
+  // segura o laço de eventos. Em produção isso não importa: há socket de
+  // verdade esperando a Evolution. Aqui o `fetchImpl` é falso e não existe I/O
+  // nenhum — então o laço esvazia antes dos 50 ms, o sinal nunca dispara, a
+  // promessa fica pendente para sempre e o runner cancela o arquivo com
+  // "Promise resolution is still pending but the event loop has already
+  // resolved". Passava no Node 24 e travava no Node 22, que é o da CI.
+  //
+  // Mesmo caso de `testes/agentes-seguranca.test.js`; ver o comentário de
+  // `comLacoVivo` lá para a investigação inteira.
+  const manterLacoVivo = setInterval(() => {}, 10);
+  try {
+    await rejeita(
+      criarClienteEvolucaoInstancia({ ...CONFIG, timeoutMs: 50 }, { fetchImpl }).estado('alpins'),
+      { status: 503, codigo: 'evolution_sem_resposta' },
+    );
+  } finally {
+    clearInterval(manterLacoVivo);
+  }
+
   assert.ok(Date.now() - inicio < 1000, 'o corte vem do prazo configurado');
 });

@@ -26,6 +26,34 @@ async function rejeitaCom(promessa, { status, codigo }) {
   });
 }
 
+/**
+ * Mantém o laço de eventos vivo enquanto a promessa não resolve.
+ *
+ * `AbortSignal.timeout()` cria um relógio que NÃO segura o laço — comprovado
+ * neste Node: um sinal de 400 ms simplesmente nunca dispara se não houver mais
+ * nada pendente. Em produção isso não aparece porque existe socket de verdade
+ * esperando resposta; aqui o `fetchImpl` é falso e não há I/O nenhum.
+ *
+ * O resultado era o pior tipo de falha: no Node 22 (o que a CI usa) o laço
+ * esvaziava antes do tempo limite, a leitura do corpo ficava pendente para
+ * sempre, e o runner acusava "Promise resolution is still pending but the
+ * event loop has already resolved" — CANCELANDO o arquivo inteiro, com
+ * `fail 0` e `cancelled 10`. No Node 24 passava. A CI ficou vermelha assim,
+ * e enquanto ficou vermelha ninguém enxergava regressão nenhuma.
+ *
+ * Segurar o laço explicitamente tira o teste da dependência de um detalhe que
+ * muda entre versões: agora ele mede o que quer medir — que o tempo limite
+ * vira 422 — nos dois.
+ */
+async function comLacoVivo(executar) {
+  const manter = setInterval(() => {}, 20);
+  try {
+    return await executar();
+  } finally {
+    clearInterval(manter);
+  }
+}
+
 // ------------------------------------------------------------ ReDoS (MÉDIO)
 
 test('HTML hostil de ~300 KB vira texto em tempo linear, sem travar o processo', () => {
@@ -75,7 +103,9 @@ test('site que goteja o corpo até estourar o tempo vira 422 site_inacessivel, n
       return new Response(corpo, { status: 200, headers: { 'content-type': 'text/html' } });
     },
   });
-  await rejeitaCom(buscar('https://exemplo.com.br/'), { status: 422, codigo: 'site_inacessivel' });
+  await comLacoVivo(() => rejeitaCom(buscar('https://exemplo.com.br/'), {
+    status: 422, codigo: 'site_inacessivel',
+  }));
 });
 
 // ------------------------------------------------- DNS sem resposta (BAIXO)
