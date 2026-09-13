@@ -11,13 +11,28 @@
 // candidatos (lead novo, resumo pronto, Serena desligada) ficam de fora até
 // alguém pedir — acrescentar é uma linha em MOTIVOS.
 //
-// O empurrão não leva texto (ver src/seguranca/webpush.js): a notificação
-// aparece na tela de bloqueio, e nome de paciente ali é vazamento. O aparelho
-// mostra um texto fixo e, ao ser tocado, abre o CRM.
+// O aviso leva QUEM falou e o começo do que disse — pedido do Dr. Edson em
+// 12/09/2026: "notificação normal, igual à do Gmail". O texto atravessa o
+// serviço de push cifrado (RFC 8291): o intermediário entrega, não lê.
+//
+// O que NÃO vai: só o começo da mensagem, cortado, e nunca mais que isso. Nada
+// de histórico, diagnóstico ou dado de agenda — a notificação é um chamado para
+// abrir o CRM, não um resumo do prontuário na tela de bloqueio.
 
 const MOTIVOS = Object.freeze({
   aguardando_equipe: 'aguardando_equipe',
 });
+
+// Quanto do texto do paciente aparece. Curto de propósito: o suficiente para
+// reconhecer o assunto, longe de ser a conversa inteira na tela de bloqueio.
+const LIMITE_DA_PREVIA = 120;
+
+/** Uma linha só, sem quebra: notificação não tem parágrafo. */
+function umaLinha(texto, limite) {
+  const limpo = String(texto ?? '').replace(/\s+/g, ' ').trim();
+  if (limpo.length <= limite) return limpo;
+  return `${limpo.slice(0, limite - 1).trimEnd()}…`;
+}
 
 // Um aviso por conversa a cada janela: sem isso, três mensagens seguidas do
 // mesmo paciente fazem o celular tocar três vezes em dez segundos.
@@ -38,6 +53,42 @@ function criarAvisos({ repositorio, webpush, registrador = null, agora = () => n
   }
 
   /**
+   * Monta o que a notificação mostra. Sem conversa (ou sem conseguir ler), cai
+   * no texto genérico — melhor um aviso vago que nenhum aviso.
+   */
+  async function conteudoDoAviso(conversaId) {
+    const generico = { titulo: 'CRM Clínica', corpo: 'Alguém está esperando resposta no atendimento.', url: '/' };
+    if (!conversaId || !repositorio.obterConversa) return generico;
+
+    try {
+      const conversa = await repositorio.obterConversa(conversaId);
+      if (!conversa) return generico;
+
+      const contato = conversa.contato_id && repositorio.obterContato
+        ? await repositorio.obterContato(conversa.contato_id)
+        : null;
+
+      const mensagens = repositorio.listarMensagens
+        ? await repositorio.listarMensagens(conversaId, { limite: 5 })
+        : [];
+      const ultimaDoContato = [...(mensagens ?? [])].reverse()
+        .find((mensagem) => mensagem.direcao === 'entrada' && mensagem.conteudo);
+
+      const quem = umaLinha(contato?.nome || contato?.telefone || 'Paciente', 60);
+      const disse = umaLinha(ultimaDoContato?.conteudo, LIMITE_DA_PREVIA);
+
+      return {
+        titulo: quem,
+        corpo: disse || 'Está esperando resposta.',
+        url: `/?conversa=${Number(conversaId)}`,
+      };
+    } catch {
+      // Falha ao montar o texto não pode cancelar o aviso.
+      return generico;
+    }
+  }
+
+  /**
    * Avisa quem pode ver aquela conversa. Nunca lança: um aviso que falha não
    * pode derrubar o atendimento que o gerou — o paciente já foi atendido (ou
    * escalonado) quando isto roda.
@@ -50,10 +101,20 @@ function criarAvisos({ repositorio, webpush, registrador = null, agora = () => n
       }
 
       const inscricoes = await repositorio.listarInscricoesParaAviso({ agenteId });
+      if (inscricoes.length === 0) return { enviados: 0, motivo: 'ninguem_inscrito' };
+
+      // Uma vez só por aviso, não uma por aparelho: ler a conversa é ida ao
+      // banco, e o texto é o mesmo para todo mundo que pode ver.
+      const conteudo = await conteudoDoAviso(conversaId);
       let enviados = 0;
 
       for (const inscricao of inscricoes) {
-        const resultado = await webpush.empurrar(inscricao.endpoint, { urgencia: 'high' });
+        const resultado = await webpush.empurrar(inscricao.endpoint, {
+          urgencia: 'high',
+          conteudo,
+          // As chaves são deste aparelho: a mensagem é cifrada para ele.
+          aparelho: { p256dh: inscricao.p256dh, auth: inscricao.auth },
+        });
 
         if (resultado.entregue) {
           enviados += 1;

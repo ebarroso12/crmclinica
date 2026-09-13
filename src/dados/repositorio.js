@@ -1274,7 +1274,7 @@ function criarRepositorio(pool) {
      */
     async listarInscricoesParaAviso({ agenteId = null } = {}) {
       const { rows } = await consultar(`
-        SELECT i.id, i.endpoint, i.usuario_id
+        SELECT i.id, i.endpoint, i.usuario_id, i.p256dh, i.auth
           FROM notificacoes_inscricoes i
           JOIN usuarios u ON u.id = i.usuario_id
          WHERE u.situacao = 'ativo'
