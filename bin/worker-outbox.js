@@ -46,6 +46,8 @@ const { criarClienteInstagramEnvio } = require('../src/integracoes/instagram-env
 const { criarAdaptadorDeLembretes } = require('../src/integracoes/openclaw-lembretes');
 const { criarClienteOpenClaw } = require('../src/integracoes/openclaw');
 const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas');
+const { criarAvisos } = require('../src/dominio/avisos');
+const { criarWebPush } = require('../src/seguranca/webpush');
 const { criarGatewayDeIA } = require('../src/ia/gateway');
 const { criarMotorDeAgentes } = require('../src/dominio/agentes/motor');
 
@@ -149,8 +151,22 @@ async function main() {
   // de IA precisam existir no .env DESTE processo (o do VPS), não só na Vercel.
   const motorDeAgentes = criarMotorDeAgentes({ gateway: criarGatewayDeIA({ configuracao, repositorio }) });
 
+  // Aviso no celular: sem VAPID configurado no .env deste processo, o
+  // `criarWebPush` nasce desligado e nenhum empurrão sai — o atendimento roda
+  // igual.
+  const avisos = criarAvisos({
+    repositorio,
+    webpush: criarWebPush({
+      chavePublica: configuracao.avisos?.vapidPublica,
+      chavePrivada: configuracao.avisos?.vapidPrivada,
+      assunto: configuracao.avisos?.assunto,
+    }),
+    registrador: { aviso: (dados) => console.warn('[outbox] aviso no celular', JSON.stringify(dados)) },
+  });
+
   const atendimento = criarAtendimento({
     repositorio,
+    avisos,
     orquestrador: criarClienteOpenClaw(configuracao.openclaw),
     // Quem opera a clinica nao entra no funil como paciente.
     numerosInternos: configuracao.numerosInternos,

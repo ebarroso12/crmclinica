@@ -2,9 +2,37 @@
    Prioridades: leitura confortável em plantão, contraste suficiente para texto pequeno,
    foco sempre visível e layout que sobrevive a telas estreitas do balcão. */
 
+/* ---------- Tema (12/09/2026) ----------
+
+   Três estados, como no sistema operacional: claro, escuro, ou o que o
+   aparelho estiver usando. O terceiro é o padrão — respeita quem deixou o
+   celular no escuro à noite sem precisar configurar nada aqui.
+
+   Como está montado: o `:root` puro carrega o tema CLARO inteiro. O bloco de
+   `prefers-color-scheme: dark` redefine SÓ os tokens, guardado por
+   `:root:not([data-tema="claro"])` — assim quem escolheu claro à mão continua
+   no claro mesmo com o sistema no escuro. O `[data-tema="escuro"]` redefine de
+   novo, para a escolha manual ganhar nos dois sentidos.
+
+   A regra que mantém isso funcionando: NENHUMA cor pode ter sua única
+   definição dentro do bloco escuro. Quem define é o :root; lá embaixo só se
+   troca o valor. */
+
 :root {
+  color-scheme: light;
   --fundo: #f4f7fb;
   --superficie: #ffffff;
+  /* Fundo de segundo nível: item do menu sob o cursor, linha da tabela sob o
+     cursor, faixa de filtro. Quase branco no claro, quase preto no escuro. */
+  --realce: #f1f6fb;
+  /* O texto do menu é um pouco mais claro que o do conteúdo. */
+  --texto-menu: #45506a;
+  /* Item selecionado (seções da Serena, abas do agente, tema). */
+  --selecao-fundo: #0d1930;
+  --selecao-texto: #ffffff;
+  /* Item aberto no menu lateral. */
+  --menu-ativo-fundo: #e6f4f7;
+  --menu-ativo-texto: #0a6473;
   --navy: #0d1930;
   --texto: #19243a;
   /* Tons de apoio escurecidos até passarem em contraste sobre superfície clara. */
@@ -22,6 +50,66 @@
   /* Altura da barra do topo (sticky). Quem gruda abaixo dela se desloca por
      esta medida em vez de repetir o numero. */
   --altura-topo: 66px;
+}
+
+/* Tema escuro. Os dois seletores existem de propósito:
+
+   1. `prefers-color-scheme: dark` vale para quem está em "seguir o sistema"
+      (o padrão), e só se a pessoa não tiver escolhido claro à mão;
+   2. `[data-tema="escuro"]` vale para quem escolheu escuro à mão, inclusive
+      com o sistema no claro.
+
+   O fundo não é preto: um CRM de plantão fica horas aberto, e preto puro com
+   texto branco cansa a vista mais que um azul-acinzentado profundo. O texto
+   também não é branco puro, pela mesma razão. Ciano e verde ganham luz —
+   sobre fundo escuro, o tom do tema claro some. */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-tema="claro"]) {
+    color-scheme: dark;
+    /* No escuro o item selecionado inverte: ciano cheio com texto quase
+       preto. Manter navy aqui daria escuro sobre escuro. */
+    --selecao-fundo: #3fc3d6;
+    --selecao-texto: #07131a;
+    --menu-ativo-fundo: #17304a;
+    --menu-ativo-texto: #7fdcea;
+    --fundo: #0f1523;
+    --superficie: #161d2e;
+    --realce: #1d2740;
+    --navy: #0a0f1c;
+    --texto: #e6ecf7;
+    --texto-menu: #b9c5db;
+    --apoio: #97a6c0;
+    --linha: #2a3550;
+    --ciano: #3fc3d6;
+    --verde: #34d39f;
+    --ambar: #f0b429;
+    --azul-marca: #4d9fe0;
+    --sombra: 0 12px 30px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-tema="escuro"] {
+  color-scheme: dark;
+  /* No escuro o item selecionado inverte: ciano cheio com texto quase
+     preto. Manter navy aqui daria escuro sobre escuro. */
+  --selecao-fundo: #3fc3d6;
+  --selecao-texto: #07131a;
+  --menu-ativo-fundo: #17304a;
+  --menu-ativo-texto: #7fdcea;
+  --fundo: #0f1523;
+  --superficie: #161d2e;
+  --realce: #1d2740;
+  --navy: #0a0f1c;
+  --texto: #e6ecf7;
+  --texto-menu: #b9c5db;
+  --apoio: #97a6c0;
+  --linha: #2a3550;
+  --ciano: #3fc3d6;
+  --verde: #34d39f;
+  --ambar: #f0b429;
+  --azul-marca: #4d9fe0;
+  --sombra: 0 12px 30px rgba(0, 0, 0, 0.45);
 }
 
 * { box-sizing: border-box; }
@@ -57,7 +145,7 @@ h1, h2, h3 { line-height: 1.25; }
   top: 0;
   z-index: 10;
   background: var(--navy);
-  color: #fff;
+  color: var(--superficie);
   padding: 12px 18px;
   border-radius: 0 0 8px 0;
 }
@@ -184,7 +272,7 @@ h1, h2, h3 { line-height: 1.25; }
   border-radius: 6px;
   opacity: 0.65;
 }
-.olho:hover, .olho[aria-pressed="true"] { opacity: 1; background: #eef1f7; }
+.olho:hover, .olho[aria-pressed="true"] { opacity: 1; background: var(--realce); }
 
 .google {
   display: flex;
@@ -200,7 +288,7 @@ h1, h2, h3 { line-height: 1.25; }
   font-weight: 600;
   cursor: pointer;
 }
-.google:hover { background: #f3f6fb; }
+.google:hover { background: var(--realce); }
 .google span { font-weight: 700; color: var(--ciano); }
 
 /* `minmax(0, 1fr)` em vez de `1fr` em toda coluna flexível: `1fr` equivale a
@@ -295,7 +383,7 @@ img.marca-icone {
   place-items: center;
   width: 36px; height: 36px;
   border-radius: 10px;
-  color: #fff;
+  color: var(--superficie);
   font-size: 22px;
   background: linear-gradient(135deg, var(--ciano), var(--azul-marca));
   flex: none;
@@ -345,7 +433,7 @@ nav button {
   border: 0;
   background: transparent;
   text-align: left;
-  color: #45506a;
+  color: var(--texto-menu);
   padding: 7px 10px;
   border-radius: 8px;
   font: inherit;
@@ -353,12 +441,12 @@ nav button {
   line-height: 1.35;
   cursor: pointer;
 }
-nav button:hover { background: #f1f6fb; color: #0a6f7e; }
+nav button:hover { background: var(--realce); color: #0a6f7e; }
 /* Ativo: barra de acento + fundo suave. A barra marca a posição na lista mesmo
    para quem enxerga mal a diferença de fundo. */
 nav button[aria-current="page"] {
-  background: #e6f4f7;
-  color: #0a6473;
+  background: var(--menu-ativo-fundo);
+  color: var(--menu-ativo-texto);
   font-weight: 700;
   box-shadow: inset 3px 0 0 var(--ciano);
 }
@@ -380,14 +468,14 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 /* Contador do menu é informação, não alarme: neutro. O do sino é alerta. */
 .contador {
   margin-left: auto;
-  background: #eef2f8;
-  color: #46506a;
+  background: var(--realce);
+  color: var(--texto-menu);
   border-radius: 999px;
   padding: 1px 7px;
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
-.sino .contador { background: #c0182c; color: #fff; font-weight: 700; }
+.sino .contador { background: #c0182c; color: var(--superficie); font-weight: 700; }
 
 /* Grupo AGENTES: "clínica" diz de quem é a Serena sem virar outro item de menu. */
 .rotulo-menu {
@@ -425,17 +513,17 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
   width: 100%;
   border: 1px solid #d99aa5;
   border-radius: 8px;
-  background: #fff5f6;
+  background: var(--superficie)5f6;
   color: #a3182b;
   font-weight: 700;
   font-size: 12px;
   letter-spacing: 0.02em;
   cursor: pointer;
 }
-.parada-emergencia:hover { background: #c0182c; border-color: #c0182c; color: #fff; }
+.parada-emergencia:hover { background: #c0182c; border-color: #c0182c; color: var(--superficie); }
 /* Serena já parada: âmbar, e o texto do botão vira "religar" (app.js troca). */
 .parada-emergencia[data-estado="parada"] {
-  background: #fff8e6;
+  background: var(--superficie)8e6;
   border-color: #e8cf94;
   color: #6b4e05;
 }
@@ -535,7 +623,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .aviso {
   margin: 22px 36px 0;
   padding: 12px 16px;
-  background: #fff6e2;
+  background: var(--superficie)6e2;
   border: 1px solid #f0dcb0;
   border-left: 4px solid var(--ambar);
   border-radius: 8px;
@@ -576,13 +664,13 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
   border: 0;
   padding: 10px 16px;
   background: linear-gradient(135deg, var(--ciano), var(--azul-marca));
-  color: #fff;
+  color: var(--superficie);
   white-space: nowrap;
 }
 .secundario {
   border: 1px solid var(--linha);
   padding: 9px 14px;
-  background: #eef1f7;
+  background: var(--realce);
   color: var(--texto);
   margin-top: 14px;
 }
@@ -787,7 +875,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .aviso-ia {
   margin: 10px 0 0;
   padding: 9px 12px;
-  background: #fff6e2;
+  background: var(--superficie)6e2;
   border-left: 3px solid var(--ambar);
   border-radius: 6px;
   color: #6b4700;
@@ -812,7 +900,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .historico {
   margin-top: 12px;
   padding: 12px;
-  background: #f3f6fb;
+  background: var(--realce);
   border-radius: 8px;
 }
 .historico-topo { display: flex; justify-content: space-between; align-items: center; }
@@ -854,7 +942,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  background: #f1f5f9;
+  background: var(--realce);
   border-radius: 12px;
   padding: 3px 9px;
   cursor: pointer;
@@ -890,7 +978,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
   background: transparent;
   padding: 4px 0;
 }
-.mensagens .privada { background: #fff6e2; border: 1px dashed #e0c98a; }
+.mensagens .privada { background: var(--superficie)6e2; border: 1px dashed #e0c98a; }
 .mensagens li small { display: block; margin-top: 5px; font-size: 11px; color: var(--apoio); }
 
 .fila li.ativa { background: #e4f5f8; }
@@ -935,7 +1023,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .segredo-2fa code {
   display: inline-block;
   padding: 9px 12px;
-  background: #f3f6fb;
+  background: var(--realce);
   border-radius: 8px;
   font-size: 15px;
   letter-spacing: 0.12em;
@@ -966,7 +1054,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .sit-pendente { background: #fdf0d2; color: #7a5100; }
 .sit-ativo { background: #ddf5ec; color: #0d6349; }
 .sit-recusado, .sit-desativado { background: #fdeaea; color: #8a1f1f; }
-.situacao-pendente { background: #fffdf6; }
+.situacao-pendente { background: var(--superficie)df6; }
 
 @media (max-width: 720px) {
   .usuario { grid-template-columns: minmax(0, 1fr); }
@@ -980,12 +1068,12 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
    com só a lista de mensagens rolando. */
 .thread { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .fila li[role="button"] { cursor: pointer; border-radius: 8px; padding-left: 6px; padding-right: 6px; }
-.fila li[role="button"]:hover { background: #f3f8fa; }
+.fila li[role="button"]:hover { background: var(--realce); }
 .thread-topo { display: grid; gap: 3px; padding-bottom: 14px; border-bottom: 1px solid var(--linha); }
 .thread-topo small { color: var(--apoio); font-size: 12px; }
 .mensagens { list-style: none; flex: 1; margin: 0; padding: 22px 0 0; display: grid; gap: 10px; align-content: start; overflow-y: auto; min-height: 0; }
 .mensagens li { max-width: 78%; padding: 11px 14px; border-radius: 12px; }
-.recebida { background: #f0f3f8; }
+.recebida { background: var(--realce); }
 .enviada { margin-left: auto; background: #ddf3f5; }
 /* Comando 7, achado A-3: a automação gerou isto, mas a barreira final não
    deixou sair — precisa ficar visualmente diferente de uma entrega normal,
@@ -1002,7 +1090,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .anexo-video { display: block; max-width: 100%; max-height: 260px; border-radius: 8px; margin-bottom: 6px; }
 .mensagens audio { display: block; max-width: 100%; margin-bottom: 6px; }
 .anexo-documento { display: inline-block; margin-bottom: 6px; color: inherit; text-decoration: underline; }
-.preview-anexo { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 8px 12px; background: #f3f8fa; border-radius: 8px; font-size: 13px; }
+.preview-anexo { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 8px 12px; background: var(--realce); border-radius: 8px; font-size: 13px; }
 .preview-anexo-nome, #preview-anexo-nome { font-weight: 600; overflow-wrap: anywhere; }
 .composer { display: flex; gap: 8px; margin-top: 14px; }
 .composer textarea { flex: 1; border: 1px solid var(--linha); border-radius: 8px; padding: 10px; font: inherit; resize: none; max-height: 120px; }
@@ -1018,7 +1106,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 
 /* O número de colunas vem do pipeline, então o grid se adapta em vez de fixar a contagem. */
 .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
-.kanban > section { background: #edf1f7; border-radius: 10px; padding: 14px; min-height: 240px; }
+.kanban > section { background: var(--realce); border-radius: 10px; padding: 14px; min-height: 240px; }
 .kanban h3 { font-size: 12px; color: var(--apoio); letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 10px; }
 .kanban h3 b { float: right; color: var(--texto); }
 .kanban ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
@@ -1469,7 +1557,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
 .painel-agenda .primario {
   border: 1px solid var(--navy);
   background: var(--navy);
-  color: #fff;
+  color: var(--superficie);
 }
 .painel-agenda button[disabled] { opacity: .55; cursor: progress; }
 
@@ -1696,7 +1784,7 @@ button.perigo:hover { background: #fecaca; }
   vertical-align: middle;
 }
 .tabela-dados tr:last-child td { border-bottom: 0; }
-.tabela-dados tbody tr:hover { background: #f7fafd; }
+.tabela-dados tbody tr:hover { background: var(--realce); }
 .tabela-dados strong { font-weight: 650; overflow-wrap: anywhere; }
 /* Observação da linha (não recebe lembretes, excluído em…): abaixo do nome,
    em voz baixa — é ressalva, não coluna. */
@@ -1816,7 +1904,7 @@ button.perigo:hover { background: #fecaca; }
 }
 .agente-teste-log li { max-width: 80%; padding: 8px 10px; border-radius: 10px; white-space: pre-wrap; font-size: 13px; }
 .agente-teste-log li[data-autor='cliente'] { justify-self: end; background: #e0f2fe; }
-.agente-teste-log li[data-autor='agente'] { justify-self: start; background: #f1f5f9; }
+.agente-teste-log li[data-autor='agente'] { justify-self: start; background: var(--realce); }
 .agente-teste-log li[data-autor='aviso'] { justify-self: center; background: #fef3c7; color: #92400e; }
 
 /* ------------------------------------------------ laboratório de voz */
@@ -1824,7 +1912,7 @@ button.perigo:hover { background: #fecaca; }
 .aviso-voz {
   padding: 10px 12px;
   border-radius: 8px;
-  background: #fff7df;
+  background: var(--superficie)7df;
   color: #6f4a00;
   line-height: 1.5;
 }
@@ -1877,7 +1965,7 @@ button.perigo:hover { background: #fecaca; }
   align-items: center;
   justify-content: center;
   min-height: 264px;
-  background: #fff;
+  background: var(--superficie);
   border: 1px solid var(--borda);
   border-radius: 10px;
   margin-bottom: 10px;
@@ -1915,7 +2003,7 @@ button.perigo:hover { background: #fecaca; }
   padding: 9px 16px;
   border-radius: 8px;
   background: var(--primaria, #2563eb);
-  color: #fff;
+  color: var(--superficie);
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
@@ -1991,7 +2079,7 @@ button.perigo:hover { background: #fecaca; }
   font-size: 0.9rem;
 }
 
-.aviso-risco.moderado { background: #fffbeb; border-color: #d97706; color: #713f12; }
+.aviso-risco.moderado { background: var(--superficie)beb; border-color: #d97706; color: #713f12; }
 .aviso-risco.grave    { background: #fef2f2; border-color: #dc2626; color: #7f1d1d; }
 
 .aviso-risco .titulo-risco { margin: 0 0 0.5rem; }
@@ -2037,7 +2125,7 @@ button.perigo:hover { background: #fecaca; }
 
 .balao.de-serena {
   align-self: flex-start;
-  background: #fff;
+  background: var(--superficie);
   color: #111b21;
   border: 1px solid #e3e8ee;
 }
@@ -2069,7 +2157,7 @@ button.perigo:hover { background: #fecaca; }
   padding: 0.35rem 0.5rem;
   border-radius: 8px;
   border: 1px solid #d3dbe3;
-  background: #fff;
+  background: var(--superficie);
   max-width: 280px;
 }
 
@@ -2098,11 +2186,11 @@ button.perigo:hover { background: #fecaca; }
 .aging { font-weight: 600; padding: 0 4px; border-radius: 6px; }
 .aging-recente    { color: #059669; }
 .aging-atencao    { color: #d97706; }
-.aging-esfriando  { color: #ea580c; background: #fff7ed; }
+.aging-esfriando  { color: #ea580c; background: var(--superficie)7ed; }
 .aging-abandonado { color: #dc2626; background: #fef2f2; }
 
 /* O próximo passo combinado, direto no card. */
-.card-lead .proximo-passo { display: block; color: #475569; font-style: italic; }
+.card-lead .proximo-passo { display: block; color: var(--apoio); font-style: italic; }
 
 /* Espera acima do SLA: a fila de hoje grita só quando deve. */
 .sla-estourado { color: #dc2626; font-weight: 600; }
@@ -2110,19 +2198,19 @@ button.perigo:hover { background: #fecaca; }
 /* Dashboard de métricas: tabelas com barra proporcional. Sem biblioteca de
    gráfico — a CSP não deixa CDN entrar, e barra de CSS conta a mesma história. */
 .filtro-periodo { display: flex; gap: 8px; align-items: end; }
-.filtro-periodo label { display: flex; flex-direction: column; font-size: 0.8rem; color: #475569; }
+.filtro-periodo label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--apoio); }
 .tabela-metricas { width: 100%; border-collapse: collapse; margin: 4px 0 12px; }
 .tabela-metricas td { padding: 3px 6px; font-size: 0.85rem; }
 .tabela-metricas td:first-child { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .barra-celula { width: 40%; }
 .barra { display: inline-block; height: 10px; background: #2f6feb; border-radius: 5px; min-width: 2px; }
-.tabela-metricas .numero { text-align: right; color: #475569; white-space: nowrap; }
+.tabela-metricas .numero { text-align: right; color: var(--apoio); white-space: nowrap; }
 .bloco-metrica h4 { margin: 10px 0 2px; font-size: 0.9rem; }
-.nota-metrica { color: #475569; font-size: 0.85rem; margin: 8px 0; }
+.nota-metrica { color: var(--apoio); font-size: 0.85rem; margin: 8px 0; }
 
 /* IA: relatório e assistente. Pre com quebra, porque relatório tem parágrafo. */
 .linha-ia { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
-.linha-ia label { display: flex; flex-direction: column; font-size: 0.8rem; color: #475569; }
+.linha-ia label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--apoio); }
 .linha-ia input[type="text"] { flex: 1; min-width: 200px; }
 .relatorio-ia {
   white-space: pre-wrap; background: #f8fafc; border: 1px solid #e2e8f0;
@@ -2136,13 +2224,13 @@ button.perigo:hover { background: #fecaca; }
 .sino-lista {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
   min-width: 280px; max-width: 360px; max-height: 320px; overflow-y: auto;
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  background: var(--superficie); border: 1px solid #e2e8f0; border-radius: 10px;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 8px; font-size: 0.85rem;
 }
-.sino-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 4px; border-bottom: 1px solid #f1f5f9; }
+.sino-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--realce); }
 .sino-item:last-child { border-bottom: none; }
 .sino-item b { display: block; }
-.sino-item small { color: #64748b; }
+.sino-item small { color: var(--apoio); }
 
 /* Alto contraste do Windows: fundo e box-shadow são descartados por forced-colors,
    e o item aberto ficava marcado só pelo negrito, que os títulos de grupo também
@@ -2194,21 +2282,21 @@ button.perigo:hover { background: #fecaca; }
   border: 1px solid var(--linha);
   border-radius: 999px;
   background: var(--superficie);
-  color: #45506a;
+  color: var(--texto-menu);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: border-color .12s, background .12s;
 }
 
-.secoes .secao:hover { border-color: #b9c6d8; background: #f7fafd; }
+.secoes .secao:hover { border-color: #b9c6d8; background: var(--realce); }
 
 /* O item aberto: fundo cheio, e não só borda — com sete pílulas na mesma
    linha, uma borda mais grossa some no meio das outras. */
 .secoes .secao[aria-current="page"] {
-  background: var(--navy, #16233c);
-  border-color: var(--navy, #16233c);
-  color: #fff;
+  background: var(--selecao-fundo);
+  border-color: var(--selecao-fundo);
+  color: var(--selecao-texto);
 }
 
 /* Ponto de estado. 7px é pequeno o bastante para não virar decoração e grande

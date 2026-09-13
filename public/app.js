@@ -47,7 +47,12 @@ function abrirTela(tela) {
   if (tela === 'auditoria') carregarAuditoria();
   if (tela === 'bloqueios') carregarBloqueios();
   if (tela === 'usuarios') carregarUsuarios();
-  if (tela === 'perfil') desenharPerfil();
+  if (tela === 'perfil') {
+    desenharPerfil();
+    // O cartão de avisos no celular vive aqui: é ajuste de conta, e o aparelho
+    // avisado é aquele onde a pessoa apertar o botão.
+    carregarAvisosDoCelular().catch(() => {});
+  }
 }
 
 for (const gatilho of document.querySelectorAll('nav [data-tela]')) {
@@ -126,6 +131,59 @@ async function carregarAuditoria(mais = false) {
 }
 
 seletor('#auditoria-mais')?.addEventListener('click', () => carregarAuditoria(true));
+
+// ---------------------------------------------------------------------------
+// Tema da tela (12/09/2026)
+//
+// Três estados, como no sistema operacional: "sistema" (padrão), "claro" e
+// "escuro". Quem decide as cores é o CSS; aqui só se carimba `data-tema` no
+// <html> e se guarda a escolha.
+//
+// A escolha é por APARELHO (localStorage), não por conta: a mesma pessoa pode
+// querer claro no computador do consultório e escuro no celular à noite.
+//
+// Isto roda cedo de propósito — antes de qualquer pedido à API. Aplicar o tema
+// depois faria a tela piscar branca antes de escurecer, que é justamente o que
+// incomoda quem abre o CRM no escuro.
+
+const CHAVE_TEMA = 'crmclinica:tema';
+const TEMAS = ['sistema', 'claro', 'escuro'];
+
+function lerTemaEscolhido() {
+  try {
+    const guardado = localStorage.getItem(CHAVE_TEMA);
+    return TEMAS.includes(guardado) ? guardado : 'sistema';
+  } catch {
+    return 'sistema';
+  }
+}
+
+function aplicarTema(tema) {
+  const escolha = TEMAS.includes(tema) ? tema : 'sistema';
+  // "sistema" não carimba nada: sem o atributo, quem manda é o
+  // `prefers-color-scheme` do aparelho.
+  if (escolha === 'sistema') document.documentElement.removeAttribute('data-tema');
+  else document.documentElement.setAttribute('data-tema', escolha);
+
+  for (const botao of document.querySelectorAll('[data-tema-escolha]')) {
+    const ativo = botao.dataset.temaEscolha === escolha;
+    botao.setAttribute('aria-checked', String(ativo));
+    if (ativo) botao.setAttribute('aria-current', 'page');
+    else botao.removeAttribute('aria-current');
+  }
+  return escolha;
+}
+
+function escolherTema(tema) {
+  const escolha = aplicarTema(tema);
+  try { localStorage.setItem(CHAVE_TEMA, escolha); } catch { /* armazenamento bloqueado */ }
+}
+
+aplicarTema(lerTemaEscolhido());
+
+for (const botao of document.querySelectorAll('[data-tema-escolha]')) {
+  botao.addEventListener('click', () => escolherTema(botao.dataset.temaEscolha));
+}
 
 // ---------------------------------------------------------------------------
 // Sessão da equipe.
@@ -7416,3 +7474,162 @@ for (const botao of document.querySelectorAll('[data-instalar-app]')) {
   });
   return undefined;
 }());
+
+// ---------------------------------------------------------------------------
+// Avisos no celular (12/09/2026)
+//
+// Pedido do Dr. Edson: "quando acontecer algo na conta que me pertence, o
+// usuário ser notificado, via popup do celular".
+//
+// Como funciona: o navegador cria uma inscrição no serviço de push DELE
+// (Google, Mozilla, Apple), assinada com a chave pública do nosso servidor, e
+// nós guardamos o endereço dessa inscrição. Quando alguém fica esperando
+// resposta, o servidor empurra — sem conteúdo, porque o aviso aparece na tela
+// de bloqueio (ver src/seguranca/webpush.js).
+//
+// O aparelho avisado é AQUELE onde a pessoa apertou o botão. Quem usa celular e
+// computador aperta nos dois.
+
+/** A chave pública vem em base64url e o navegador exige bytes. */
+function bytesDaChave(base64url) {
+  const preenchido = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  const cru = atob(preenchido + '='.repeat((4 - (preenchido.length % 4)) % 4));
+  return Uint8Array.from(cru, (letra) => letra.charCodeAt(0));
+}
+
+let avisosDisponiveis = null;
+
+function mostrarRecadoDeAviso(texto) {
+  const recado = seletor('#avisos-recado');
+  if (!recado) return;
+  recado.hidden = !texto;
+  if (texto) recado.textContent = texto;
+}
+
+function desenharBotoesDeAviso(inscrito) {
+  const ligar = seletor('#avisos-ligar');
+  const desligar = seletor('#avisos-desligar');
+  if (ligar) ligar.hidden = inscrito;
+  if (desligar) desligar.hidden = !inscrito;
+  definirTexto('#avisos-estado', inscrito
+    ? 'Este aparelho recebe avisos quando alguém está esperando resposta.'
+    : 'Receba um toque quando alguém estiver esperando resposta.');
+}
+
+async function inscricaoDesteAparelho() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  const registro = await navigator.serviceWorker.getRegistration();
+  if (!registro) return null;
+  return registro.pushManager.getSubscription();
+}
+
+/** Carrega o estado ao abrir Meu perfil. */
+async function carregarAvisosDoCelular() {
+  const card = seletor('#avisos-card');
+  if (!card) return;
+
+  try {
+    avisosDisponiveis = await pedirJson('/api/aparelhos');
+  } catch {
+    // Servidor sem a rota (versão antiga) ou fora do ar: o cartão não aparece.
+    card.hidden = true;
+    return;
+  }
+
+  // Sem VAPID no servidor não há empurrão possível: um botão que não faz nada
+  // é pior que botão nenhum.
+  if (!avisosDisponiveis?.disponivel) {
+    card.hidden = true;
+    return;
+  }
+  // Navegador sem suporte (iPhone com o site aberto no Safari, por exemplo, só
+  // aceita push quando o app está instalado na tela de início).
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    card.hidden = false;
+    desenharBotoesDeAviso(false);
+    seletor('#avisos-ligar').disabled = true;
+    mostrarRecadoDeAviso(ehIPhoneOuIPad()
+      ? 'No iPhone, os avisos só funcionam depois de instalar o app na tela de início (Compartilhar → Adicionar à Tela de Início).'
+      : 'Este navegador não recebe avisos.');
+    return;
+  }
+
+  card.hidden = false;
+  mostrarRecadoDeAviso('');
+  desenharBotoesDeAviso(Boolean(await inscricaoDesteAparelho()));
+}
+
+async function ligarAvisosDoCelular() {
+  const botao = seletor('#avisos-ligar');
+  if (botao) botao.disabled = true;
+  mostrarRecadoDeAviso('');
+
+  try {
+    const permissao = await Notification.requestPermission();
+    if (permissao !== 'granted') {
+      // Negada no navegador, só o dono do aparelho reverte — a página não pode
+      // pedir de novo, e insistir não adianta.
+      mostrarRecadoDeAviso(permissao === 'denied'
+        ? 'Os avisos estão bloqueados para este site no seu aparelho. Libere nas configurações do navegador e tente de novo.'
+        : 'Sem a permissão do aparelho, não dá para avisar.');
+      return;
+    }
+
+    const registro = await navigator.serviceWorker.ready;
+    const inscricao = await registro.pushManager.subscribe({
+      // Obrigatório no Chrome: todo push tem de virar notificação visível.
+      userVisibleOnly: true,
+      applicationServerKey: bytesDaChave(avisosDisponiveis.chave_publica),
+    });
+
+    const dados = inscricao.toJSON();
+    await pedirJson('/api/aparelhos', {
+      metodo: 'POST',
+      corpo: {
+        endpoint: dados.endpoint,
+        chaves: dados.keys,
+        agente: navigator.userAgent,
+      },
+    });
+
+    desenharBotoesDeAviso(true);
+    informar('Pronto: este aparelho vai avisar quando alguém estiver esperando resposta.');
+  } catch (erro) {
+    mostrarRecadoDeAviso(`Não consegui ligar os avisos: ${erro.message}`);
+  } finally {
+    if (botao) botao.disabled = false;
+  }
+}
+
+async function desligarAvisosDoCelular() {
+  const botao = seletor('#avisos-desligar');
+  if (botao) botao.disabled = true;
+
+  try {
+    const inscricao = await inscricaoDesteAparelho();
+    if (inscricao) {
+      // Primeiro o servidor, depois o navegador: se cair no meio, sobra uma
+      // inscrição viva no aparelho e nenhuma no banco — o inverso deixaria o
+      // servidor empurrando para um endereço que já morreu.
+      await pedirJson('/api/aparelhos', {
+        metodo: 'DELETE',
+        corpo: { endpoint: inscricao.endpoint },
+      }).catch(() => {});
+      await inscricao.unsubscribe();
+    }
+    desenharBotoesDeAviso(false);
+  } catch (erro) {
+    mostrarRecadoDeAviso(`Não consegui desligar: ${erro.message}`);
+  } finally {
+    if (botao) botao.disabled = false;
+  }
+}
+
+seletor('#avisos-ligar')?.addEventListener('click', ligarAvisosDoCelular);
+seletor('#avisos-desligar')?.addEventListener('click', desligarAvisosDoCelular);
+
+// O aparelho troca o endereço de entrega de tempos em tempos; o service worker
+// não tem a sessão para regravar sozinho, então avisa a página.
+navigator.serviceWorker?.addEventListener?.('message', (evento) => {
+  if (evento.data?.tipo === 'reinscrever-avisos') ligarAvisosDoCelular().catch(() => {});
+});

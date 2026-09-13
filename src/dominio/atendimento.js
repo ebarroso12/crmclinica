@@ -83,6 +83,9 @@ function criarAtendimento({
   agentes = null,
   // Instâncias da Evolution que são da clínica (EVOLUTION_INSTANCIAS_CLINICA).
   instanciasDaClinica = [],
+  // Aviso no celular (src/dominio/avisos.js), opcional. Sem ele o atendimento
+  // roda igual — só ninguém é avisado.
+  avisos = null,
 }) {
   // Quem opera a clínica não é atendido por ela. A lista sai de
   // `CRMCLINICA_NUMEROS_INTERNOS` + `CRMCLINICA_RESUMO_DESTINATARIOS` +
@@ -1115,6 +1118,19 @@ function criarAtendimento({
       acao: acaoDeAuditoria,
       detalhe: { motivo },
     });
+
+    // O celular de quem pode ver esta conversa toca aqui: é exatamente o
+    // momento em que a automação sai de cena e alguém precisa olhar. Nunca
+    // lança (ver criarAvisos) — um aviso que falha não pode derrubar o
+    // atendimento que o gerou.
+    if (avisos) {
+      const conversa = await repositorio.obterConversa(conversaId);
+      await avisos.avisar({
+        motivo: 'aguardando_equipe',
+        conversaId,
+        agenteId: conversa?.agente_id ?? null,
+      });
+    }
   }
 
   /** Define a temperatura manualmente, preservando as demais etiquetas. */

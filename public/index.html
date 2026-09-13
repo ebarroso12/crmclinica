@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <!-- A cor da barra do sistema acompanha o tema: navy no claro, quase preto
+       no escuro. Sem isto, o app instalado fica com a barra de cima clara
+       sobre uma tela escura. -->
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#0d1930">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0f1c">
   <meta name="description" content="CRM de atendimento da Clínica Dr. Edson Barroso.">
   <title>crmclinica — Clínica Dr. Edson Barroso</title>
   <!-- Logomarca da clínica (12/09/2026). O PNG vem primeiro porque é a marca
@@ -11,7 +16,6 @@
   <link rel="icon" href="/favicon.png" type="image/png" sizes="64x64">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
-  <meta name="theme-color" content="#0d1930">
   <link rel="stylesheet" href="/estilo.css">
 </head>
 <body>
@@ -1809,6 +1813,51 @@
         </p>
 
         <div class="grade">
+          <!-- Aviso no celular (12/09/2026). O cartão inteiro fica escondido
+               quando o servidor não tem VAPID configurado: sem chave não há
+               empurrão, e um botão que não faz nada é pior que botão nenhum. -->
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Aparência</h3>
+                <p>Como o CRM aparece neste aparelho.</p>
+              </div>
+            </div>
+            <!-- Três estados, como no sistema. "Seguir o sistema" é o padrão:
+                 respeita quem deixou o celular no escuro à noite. A escolha
+                 vale por aparelho, não por conta — a mesma pessoa pode querer
+                 claro no computador do consultório e escuro no celular. -->
+            <div class="secoes" role="radiogroup" aria-label="Tema da tela">
+              <button type="button" class="secao" data-tema-escolha="sistema" aria-checked="true" role="radio">
+                Seguir o sistema
+              </button>
+              <button type="button" class="secao" data-tema-escolha="claro" aria-checked="false" role="radio">
+                Clara
+              </button>
+              <button type="button" class="secao" data-tema-escolha="escuro" aria-checked="false" role="radio">
+                Escura
+              </button>
+            </div>
+          </article>
+
+          <article class="card" id="avisos-card" hidden>
+            <div class="card-titulo">
+              <div>
+                <h3>Avisos no celular</h3>
+                <p id="avisos-estado">Receba um toque quando alguém estiver esperando resposta.</p>
+              </div>
+            </div>
+            <p class="nota">
+              O aviso não mostra nome nem o que foi dito — ele aparece na tela de bloqueio,
+              à vista de quem estiver por perto. Para saber quem é, abra o CRM.
+            </p>
+            <div class="linha-acoes">
+              <button type="button" class="primario" id="avisos-ligar">Receber avisos neste aparelho</button>
+              <button type="button" class="secundario" id="avisos-desligar" hidden>Parar de receber aqui</button>
+            </div>
+            <p class="instalar-ajuda" id="avisos-recado" hidden></p>
+          </article>
+
           <article class="card">
             <h3>Dados</h3>
             <form id="form-perfil" class="formulario">

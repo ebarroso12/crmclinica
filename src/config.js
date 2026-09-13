@@ -445,6 +445,14 @@ function carregarConfiguracao(ambiente = process.env) {
       clienteSegredo: texto(ambiente.GOOGLE_CLIENT_SECRET),
       redirecionamento: urlValida(ambiente.GOOGLE_REDIRECT_URI),
     },
+    // Aviso no celular (Web Push). Sem as chaves, o CRM funciona igual — só
+    // não oferece a inscrição, e nenhum empurrão sai.
+    avisos: {
+      vapidPublica: texto(ambiente.VAPID_PUBLIC_KEY),
+      vapidPrivada: texto(ambiente.VAPID_PRIVATE_KEY),
+      // A especificação pede um contato de quem empurra: mailto: ou https:.
+      assunto: texto(ambiente.VAPID_SUBJECT) || 'mailto:edson.barroso@gmail.com',
+    },
     email: {
       host: texto(ambiente.SMTP_HOST),
       porta: inteiro(ambiente.SMTP_PORT, 587),
