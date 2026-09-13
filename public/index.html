@@ -309,6 +309,20 @@
       <!-- Só aparece quando a Serena está desligada. -->
       <p class="aviso aviso-alerta" id="aviso-serena" role="alert" hidden></p>
 
+      <!-- Versão nova disponível. Fica AQUI, no topo do conteúdo, e não mais
+           só no menu lateral: no celular o menu vira uma faixa que rola de
+           lado, e um botão lá dentro nunca é encontrado — foi exatamente o que
+           aconteceu (13/09/2026: "não estou vendo o botão de atualizar"). -->
+      <div class="aviso aviso-convite" id="aviso-versao-nova" role="status" hidden>
+        <div>
+          <b>Tem uma versão nova do CRM</b>
+          <span>Atualize para receber as últimas correções.</span>
+        </div>
+        <div class="linha-acoes">
+          <button type="button" class="primario" id="aviso-versao-atualizar">Atualizar agora</button>
+        </div>
+      </div>
+
       <!-- Convite para ligar os avisos, para QUEM ENTRAR — não só para quem
            for procurar em Meu perfil. Aparece uma vez por pessoa/aparelho, e
            some quando ela decide (ligando ou dispensando). O botão é
@@ -1853,6 +1867,21 @@
               <button type="button" class="secao" data-tema-escolha="escuro" aria-checked="false" role="radio">
                 Escura
               </button>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-titulo">
+              <div>
+                <h3>Versão do sistema</h3>
+                <p id="perfil-versao">—</p>
+              </div>
+            </div>
+            <!-- No celular o rodapé do menu (onde a versão morava) não é
+                 exibido: sem isto, não havia como saber a versão em uso. -->
+            <p class="nota" id="perfil-versao-estado">Conferindo se há versão nova…</p>
+            <div class="linha-acoes">
+              <button type="button" class="secundario" id="perfil-procurar-versao">Procurar atualização</button>
             </div>
           </article>
 

@@ -2293,33 +2293,66 @@ async function verificarNovaVersao() {
     return;
   }
 
+  const versaoLegivel = `v${saude.versao}${saude.commit ? ` · ${saude.commit.slice(0, 7)}` : ''}`;
+
   const rodape = seletor('#rodape-versao');
-  if (rodape) {
-    rodape.textContent = `crmclinica v${saude.versao}${saude.commit ? ` · ${saude.commit.slice(0, 7)}` : ''}`;
-  }
+  if (rodape) rodape.textContent = `crmclinica ${versaoLegivel}`;
+
+  // O rodapé do menu não é exibido no celular (o CSS o esconde em tela
+  // estreita). Sem este segundo lugar, não havia como saber a versão em uso
+  // pelo aparelho — foi o relato de 13/09/2026.
+  definirTexto('#perfil-versao', `crmclinica ${versaoLegivel}`);
 
   if (commitCarregadoNestaAba === null) {
     // Primeira leitura desta aba: só registra a baseline, não compara ainda
     // — senão toda aba recém-aberta "descobriria" uma versão nova na hora.
     commitCarregadoNestaAba = saude.commit;
+    // Mas o texto do perfil precisa sair de "Conferindo…": esta é a única
+    // verificação que acontece antes de a pessoa abrir a tela, e deixá-lo
+    // pendurado faz parecer que o CRM travou na checagem.
+    definirTexto('#perfil-versao-estado', 'Esta é a versão carregada agora neste aparelho.');
     return;
   }
 
   // Sem `commit` (rodando fora da Vercel — VPS, local) não há como comparar
   // com segurança: o botão simplesmente nunca aparece, o que é seguro.
-  if (saude.commit && saude.commit !== commitCarregadoNestaAba) {
-    const botao = seletor('#banner-atualizar');
-    if (botao) botao.hidden = false;
-  }
+  const temVersaoNova = Boolean(saude.commit) && saude.commit !== commitCarregadoNestaAba;
+
+  // Dois lugares, de propósito: o do menu (computador) e o do topo do conteúdo
+  // (que é o único visível no celular, onde o menu vira faixa rolável).
+  const botao = seletor('#banner-atualizar');
+  if (botao) botao.hidden = !temVersaoNova;
+  const aviso = seletor('#aviso-versao-nova');
+  if (aviso) aviso.hidden = !temVersaoNova;
+
+  definirTexto('#perfil-versao-estado', temVersaoNova
+    ? 'Tem uma versão nova disponível. Toque em "Procurar atualização" para carregá-la.'
+    : 'Você está com a versão mais recente.');
 }
 
-seletor('#banner-atualizar')?.addEventListener('click', () => {
-  // `reload()` puro pode reaproveitar o cache. Um parametro novo na URL
-  // obriga o navegador a buscar tudo de novo — e some da barra depois, porque
-  // o proprio carregamento seguinte reescreve o endereco.
+/**
+ * Recarrega buscando tudo de novo.
+ *
+ * `reload()` puro pode reaproveitar o cache do navegador; um parâmetro novo na
+ * URL obriga a buscar — e ele some da barra no carregamento seguinte, porque a
+ * própria página reescreve o endereço.
+ */
+function atualizarAgora() {
   const url = new URL(window.location.href);
   url.searchParams.set('v', Date.now().toString(36));
   window.location.replace(url.toString());
+}
+
+seletor('#banner-atualizar')?.addEventListener('click', atualizarAgora);
+seletor('#aviso-versao-atualizar')?.addEventListener('click', atualizarAgora);
+
+// Em Meu perfil: confere na hora e, se houver versão nova, carrega. Sem versão
+// nova, recarregar mesmo assim é o que a pessoa espera de um botão chamado
+// "Procurar atualização" — e é inofensivo.
+seletor('#perfil-procurar-versao')?.addEventListener('click', async () => {
+  definirTexto('#perfil-versao-estado', 'Conferindo…');
+  await verificarNovaVersao().catch(() => {});
+  atualizarAgora();
 });
 
 // Voltar para a aba e o momento em que a pessoa REALMENTE vai usar a tela —
