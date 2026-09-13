@@ -131,15 +131,50 @@ async function enviarPorSmtp(configuracao, mensagem) {
  * Sem SMTP configurado, registra em log — o que mantém o fluxo utilizável em
  * desenvolvimento sem simular sucesso de entrega.
  */
+/**
+ * O remetente. Tem dois caminhos, e a escolha não é de estilo:
+ *
+ *   • SMTP DIRETO, quando este processo tem a configuração. É o caso do worker
+ *     no VPS, que tem IP fixo e vive o tempo que precisar.
+ *
+ *   • FILA NO BANCO, quando não tem. É o caso do servidor HTTP na Vercel: lá
+ *     não há como guardar a senha do e-mail sem passar pelo painel, e mesmo
+ *     que houvesse, abrir conexão SMTP dentro de uma função serverless é ruim
+ *     por natureza — o processo morre em segundos, o IP muda a cada execução
+ *     (e IP novo cai em spam), e uma entrega lenta viraria timeout na cara de
+ *     quem clicou.
+ *
+ * Com a fila, quem clica em "Esqueci minha senha" recebe a resposta na hora e o
+ * e-mail sai logo depois, do servidor que tem endereço fixo. Se o envio falhar,
+ * o worker tenta de novo — coisa que o caminho direto nunca pôde fazer.
+ */
 function criarRemetente(configuracao = {}, dependencias = {}) {
   const registrar = dependencias.registrar || console.log;
   const enviar = dependencias.enviarPorSmtp || enviarPorSmtp;
+  const repositorio = dependencias.repositorio || null;
   const disponivel = Boolean(configuracao.host && configuracao.remetente);
+  // Enfileirar também é "disponível" para quem pergunta: o e-mail vai sair.
+  const podeEnfileirar = Boolean(repositorio?.enfileirarEmail);
 
   return {
-    disponivel,
+    disponivel: disponivel || podeEnfileirar,
+    enviaDireto: disponivel,
 
     async enviar(mensagem) {
+      if (!disponivel && podeEnfileirar) {
+        try {
+          await repositorio.enfileirarEmail({
+            para: mensagem.para,
+            assunto: mensagem.assunto,
+            texto: mensagem.texto,
+          });
+          return { enviado: true, via: 'fila' };
+        } catch (erro) {
+          registrar(`[crmclinica] não consegui enfileirar o e-mail: ${erro.message}`);
+          return { enviado: false, via: 'fila', motivo: 'falha_ao_enfileirar' };
+        }
+      }
+
       if (!disponivel) {
         registrar(
           `[crmclinica] SMTP não configurado — e-mail para ${mensagem.para} não foi enviado: ${mensagem.assunto}`,

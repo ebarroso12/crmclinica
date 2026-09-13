@@ -1213,6 +1213,75 @@ function criarRepositorio(pool) {
     },
 
 
+
+    // ------------------------------------------------------- fila de e-mail
+
+    /** A rota grava e responde na hora; quem entrega é o worker. */
+    async enfileirarEmail({ para, assunto, texto }) {
+      const { rows } = await consultar(`
+        INSERT INTO email_outbox (para, assunto, texto)
+        VALUES ($1, $2, $3)
+        RETURNING id
+      `, [para, assunto, texto]);
+      return { id: Number(rows[0].id) };
+    },
+
+    /**
+     * Reivindica um lote para ESTE worker.
+     *
+     * `FOR UPDATE SKIP LOCKED` é o que permite duas cópias do worker rodando
+     * sem mandar o mesmo e-mail duas vezes — o mesmo padrão da outbox do
+     * atendimento (db/031).
+     */
+    async reivindicarEmails({ limite = 10 } = {}) {
+      const { rows } = await consultar(`
+        WITH alvo AS (
+          SELECT id FROM email_outbox
+           WHERE estado = 'pendente' AND disponivel_em <= now()
+           ORDER BY criado_em
+           FOR UPDATE SKIP LOCKED
+           LIMIT $1
+        )
+        UPDATE email_outbox e
+           SET estado = 'enviando', tentativas = e.tentativas + 1, atualizado_em = now()
+          FROM alvo
+         WHERE e.id = alvo.id
+        RETURNING e.id, e.para, e.assunto, e.texto, e.tentativas, e.max_tentativas
+      `, [limite]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    /**
+     * Entregue. O TEXTO É APAGADO: o corpo do e-mail de recuperação carrega o
+     * link que redefine a senha, e guardá-lo depois de entregue seria manter
+     * uma chave da conta em texto no banco, sem motivo.
+     */
+    async marcarEmailEnviado(id) {
+      await consultar(
+        "UPDATE email_outbox SET estado = 'enviado', enviado_em = now(), atualizado_em = now(), texto = NULL WHERE id = $1",
+        [id],
+      );
+    },
+
+    /** Falhou: volta para a fila com espera, ou desiste depois do teto. */
+    async marcarEmailFalhou(id, { erro, desistir = false, esperaSegundos = 60 }) {
+      if (desistir) {
+        await consultar(
+          "UPDATE email_outbox SET estado = 'falhou', ultimo_erro = $2, atualizado_em = now(), texto = NULL WHERE id = $1",
+          [id, String(erro).slice(0, 500)],
+        );
+        return;
+      }
+      await consultar(`
+        UPDATE email_outbox
+           SET estado = 'pendente',
+               ultimo_erro = $2,
+               disponivel_em = now() + make_interval(secs => $3),
+               atualizado_em = now()
+         WHERE id = $1
+      `, [id, String(erro).slice(0, 500), esperaSegundos]);
+    },
+
     // ------------------------------------------------- aviso no celular (push)
 
     /**
