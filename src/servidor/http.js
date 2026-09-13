@@ -108,6 +108,17 @@ const ARQUIVOS_PUBLICOS = new Map([
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
 ]);
 
+// `ws:` (sem TLS) só existe para desenvolvimento local.
+//
+// Em produção ele seria um canal de saída aberto para QUALQUER host, em texto
+// claro — e a interface abre WebSocket de verdade (o gateway de voz, em
+// `public/serena-voz.js`), então `wss:` precisa continuar. Tirar só o `ws:`
+// fecha a metade que nunca é usada lá e não mexe no que funciona.
+//
+// Lido de `process.env` na carga do módulo, como o `commit` do /health logo
+// abaixo: `responder()` é usada em todo lugar e não recebe a configuração.
+const CONEXOES_PERMITIDAS = process.env.NODE_ENV === 'production' ? "'self' wss:" : "'self' ws: wss:";
+
 const CABECALHOS_SEGURANCA = Object.freeze({
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
@@ -116,7 +127,8 @@ const CABECALHOS_SEGURANCA = Object.freeze({
   // A interface só carrega recursos do próprio domínio: sem CDN, sem script inline, sem iframe.
   'content-security-policy':
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self' ws: wss:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    `connect-src ${CONEXOES_PERMITIDAS}; form-action 'self'; frame-ancestors 'none'; `
+    + "base-uri 'none'; object-src 'none'",
 });
 
 /**

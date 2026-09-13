@@ -4182,11 +4182,15 @@ function desenharVersoes(versoes, podeGerenciar) {
     return;
   }
 
+  // `criado_por` é o NOME de um usuário — texto livre digitado por quem
+  // cadastra a conta —, então entra escapado como qualquer outro dado. Ficava
+  // cru aqui: a CSP estrita impediria o script de rodar, mas injeção de HTML
+  // continua sendo injeção.
   lista.innerHTML = versoes.map((versao) => `
     <li class="${versao.publicado ? 'publicada' : ''}">
       <div>
         <strong>v${versao.versao} — ${escapar(versao.titulo)}</strong>
-        <small>${versao.publicado ? 'no ar' : 'rascunho'} · ${versao.criado_por ?? 'sistema'} ·
+        <small>${versao.publicado ? 'no ar' : 'rascunho'} · ${escapar(versao.criado_por ?? 'sistema')} ·
           ${new Date(versao.criado_em).toLocaleDateString('pt-BR')}</small>
       </div>
       <div class="linha-acoes">
