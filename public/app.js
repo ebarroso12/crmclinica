@@ -838,6 +838,13 @@ async function abrirConversa(conversaId) {
     desenharFicha(conversa, ficha, detalhe.temperatura);
     desenharOrientacao(detalhe.orientacao_pendente);
 
+    // No celular as três partes ficam empilhadas: tocar numa conversa deixava
+    // a viewport na lista, e a conversa aberta ficava abaixo da dobra. No
+    // computador as três estão lado a lado e não há para onde rolar.
+    if (window.matchMedia('(max-width: 980px)').matches) {
+      seletor('.thread')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+
     seletor('#seletor-prioridade').value = conversa.prioridade || '';
     seletor('#seletor-temperatura').value = detalhe.temperatura || '';
     alternarAcoes(true);
@@ -2346,8 +2353,12 @@ async function verificarNovaVersao() {
   try {
     saude = await pedirJson('/health');
   } catch {
-    // /health falhar não pode quebrar a tela — só não avisamos desta vez.
-    return;
+    // /health falhar não pode quebrar a tela — só não avisamos desta vez. Mas
+    // o cartão não pode ficar pendurado em "Conferindo…" para sempre: sem esta
+    // linha, quem abre Meu perfil com o servidor fora do ar vê uma checagem
+    // que nunca termina, e conclui que o CRM travou.
+    definirTexto('#perfil-versao-estado', 'Não foi possível conferir agora. Tente de novo em instantes.');
+    return false;
   }
 
   const versaoLegivel = `v${saude.versao}${saude.commit ? ` · ${saude.commit.slice(0, 7)}` : ''}`;
@@ -2368,7 +2379,7 @@ async function verificarNovaVersao() {
     // verificação que acontece antes de a pessoa abrir a tela, e deixá-lo
     // pendurado faz parecer que o CRM travou na checagem.
     definirTexto('#perfil-versao-estado', 'Esta é a versão carregada agora neste aparelho.');
-    return;
+    return false;
   }
 
   // Sem `commit` (rodando fora da Vercel — VPS, local) não há como comparar
@@ -2382,9 +2393,16 @@ async function verificarNovaVersao() {
   const aviso = seletor('#aviso-versao-nova');
   if (aviso) aviso.hidden = !temVersaoNova;
 
-  definirTexto('#perfil-versao-estado', temVersaoNova
-    ? 'Tem uma versão nova disponível. Toque em "Procurar atualização" para carregá-la.'
-    : 'Você está com a versão mais recente.');
+  // Sem `commit` não dá para afirmar que está atualizado — só que não há como
+  // comparar. Dizer "você está com a versão mais recente" nesse caso seria uma
+  // afirmação sem base, e é exatamente onde a pessoa deixaria de procurar.
+  definirTexto('#perfil-versao-estado', (() => {
+    if (temVersaoNova) return 'Tem uma versão nova disponível. Toque em "Procurar atualização" para carregá-la.';
+    if (!saude.commit) return 'Esta é a versão carregada neste aparelho. Este servidor não informa qual é a versão no ar.';
+    return 'Você está com a versão mais recente.';
+  })());
+
+  return temVersaoNova;
 }
 
 /**
@@ -2403,13 +2421,16 @@ function atualizarAgora() {
 seletor('#banner-atualizar')?.addEventListener('click', atualizarAgora);
 seletor('#aviso-versao-atualizar')?.addEventListener('click', atualizarAgora);
 
-// Em Meu perfil: confere na hora e, se houver versão nova, carrega. Sem versão
-// nova, recarregar mesmo assim é o que a pessoa espera de um botão chamado
-// "Procurar atualização" — e é inofensivo.
+// Em Meu perfil: confere na hora e SÓ recarrega se houver versão nova.
+//
+// Recarregar sempre não era inofensivo como parecia: o CRM é uma página só,
+// com as seções escondidas, então um rascunho digitado no composer de uma
+// conversa sobrevive à troca de tela — e morria no `location.replace`. Quem
+// não tem versão nova recebe a resposta no próprio cartão.
 seletor('#perfil-procurar-versao')?.addEventListener('click', async () => {
   definirTexto('#perfil-versao-estado', 'Conferindo…');
-  await verificarNovaVersao().catch(() => {});
-  atualizarAgora();
+  const temVersaoNova = await verificarNovaVersao().catch(() => false);
+  if (temVersaoNova) atualizarAgora();
 });
 
 // Voltar para a aba e o momento em que a pessoa REALMENTE vai usar a tela —

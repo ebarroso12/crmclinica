@@ -178,7 +178,11 @@ h1, h2, h3 { line-height: 1.25; }
 /* ---------- Portão de entrada ---------- */
 
 .portao {
-  min-height: 100vh;
+  /* `dvh`, e não `vh`: no celular a barra do navegador entra e sai, e `100vh`
+     é sempre a altura MAIOR — a tela de entrada ficava com uma faixa
+     inalcançável embaixo. Mesma troca feita em `.inbox`; esta tinha ficado
+     para trás (achado em revisão independente, 13/09/2026). */
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -1278,6 +1282,15 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
     overflow: visible;
   }
   .mensagens { max-height: 46dvh; }
+  /* A lista de conversas precisa do próprio teto pelo mesmo motivo.
+
+     Ela só rolava por dentro porque `.inbox` tinha altura fixa; ao soltar a
+     altura acima, as 50 conversas da lista passaram a ser desenhadas de uma
+     vez, em altura total. Tocar numa delas deixava a viewport lá em cima, e
+     era preciso rolar cinquenta linhas para chegar à conversa e ao composer —
+     o mesmo defeito que a correção acima queria matar, um nível mais alto.
+     Achado em revisão independente (13/09/2026). */
+  .lista { max-height: 40dvh; overflow-y: auto; }
   /* A caixa de resposta é o motivo de a tela existir no celular: ela fica no
      fim da conversa e acompanha o polegar. */
   .composer { position: sticky; bottom: 0; background: var(--superficie); padding-top: 8px; }

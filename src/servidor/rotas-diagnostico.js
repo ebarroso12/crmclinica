@@ -37,6 +37,13 @@ const OBJETOS_ESPERADOS = Object.freeze([
   { tabela: 'contatos', coluna: 'excluido_em' },
   // Comando 7, achado A-3: migration 032, ainda não aplicada em produção.
   { tabela: 'mensagens', coluna: 'entrega_falhou' },
+  // As três tabelas de setembro/2026. Todas falham do mesmo jeito quando a
+  // migration não rodou: o código sobe, a rota responde, e o recurso não
+  // acontece — sem nada aceso em lugar nenhum. É exatamente o que esta sonda
+  // existe para pegar.
+  { tabela: 'notificacoes_inscricoes' },  // 050 — sem ela o celular nunca toca
+  { tabela: 'email_outbox' },             // 051 — sem ela o e-mail de senha não sai
+  { tabela: 'orientacoes' },              // 052 — sem ela a dúvida da assistente some
 ]);
 
 const ACOES_APLICAVEIS = Object.freeze([
