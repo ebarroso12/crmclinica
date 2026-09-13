@@ -65,9 +65,12 @@ test('o botão existe, nasce escondido e diz o que faz', () => {
 });
 
 test('o aviso aparece quando o commit no ar difere do que esta aba carregou', () => {
-  assert.match(APP_JS, /if \(saude\.commit && saude\.commit !== commitCarregadoNestaAba\)/,
+  assert.match(APP_JS, /const temVersaoNova = Boolean\(saude\.commit\) && saude\.commit !== commitCarregadoNestaAba;/,
     'o commit é o que muda a cada deploy; `versao` só muda quando alguém lembra');
-  assert.match(APP_JS, /botao\.hidden = false/);
+  // Dois lugares desde 13/09/2026: o do menu (computador) e o do topo do
+  // conteúdo — no celular o menu vira faixa rolável e ninguém acha o botão lá.
+  assert.match(APP_JS, /botao\.hidden = !temVersaoNova/);
+  assert.match(APP_JS, /aviso\.hidden = !temVersaoNova/);
 });
 
 test('voltar para a aba também verifica — é quando a pessoa vai usar a tela', () => {
@@ -77,10 +80,17 @@ test('voltar para a aba também verifica — é quando a pessoa vai usar a tela'
 });
 
 test('o clique recarrega de verdade, sem reaproveitar o cache', () => {
-  const clique = APP_JS.slice(APP_JS.indexOf("seletor('#banner-atualizar')?.addEventListener"));
-  assert.match(clique, /searchParams\.set\('v'/, 'endereço novo obriga o navegador a buscar');
-  assert.match(clique, /window\.location\.replace/,
+  // O recarregamento virou função nomeada (`atualizarAgora`) porque três botões
+  // usam o mesmo caminho: o do menu, o do topo e o de Meu perfil.
+  const inicio = APP_JS.indexOf('function atualizarAgora()');
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\n}', inicio));
+  assert.match(funcao, /searchParams\.set\('v'/, 'endereço novo obriga o navegador a buscar');
+  assert.match(funcao, /window\.location\.replace/,
     'replace em vez de reload: não empilha no histórico nem repete no voltar');
+  assert.ok(
+    APP_JS.includes("seletor('#banner-atualizar')?.addEventListener('click', atualizarAgora)"),
+    'o botão do menu continua ligado ao mesmo caminho',
+  );
 });
 
 test('o parâmetro de recarga é limpo da barra depois de cumprir o papel', () => {
@@ -90,9 +100,14 @@ test('o parâmetro de recarga é limpo da barra depois de cumprir o papel', () =
     'replaceState não cria entrada nova no histórico');
 });
 
-test('a versão no ar continua visível no rodapé', () => {
-  // É onde se confere, a olho, qual versão a tela está rodando.
-  assert.match(APP_JS, /crmclinica v\$\{saude\.versao\}/);
+test('a versão no ar aparece no rodapé E em Meu perfil', () => {
+  // O rodapé é onde se confere a olho no computador. Em Meu perfil porque o CSS
+  // esconde o rodapé do menu em tela estreita — pelo celular não havia como
+  // saber a versão em uso (relato de 13/09/2026).
+  assert.match(APP_JS, /const versaoLegivel = `v\$\{saude\.versao\}/);
+  assert.match(APP_JS, /rodape\.textContent = `crmclinica \$\{versaoLegivel\}`/);
+  assert.match(APP_JS, /definirTexto\('#perfil-versao', `crmclinica \$\{versaoLegivel\}`\)/);
   assert.match(APP_JS, /saude\.commit\.slice\(0, 7\)/, 'o commit curto identifica o deploy');
   assert.match(HTML, /id="rodape-versao"/);
+  assert.match(HTML, /id="perfil-versao"/);
 });
