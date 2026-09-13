@@ -4,13 +4,19 @@
       {
         "matcher": "Edit|Write|MultiEdit",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/bloquear-migration.js" }
+          {
+            "type": "command",
+            "command": "node .claude/hooks/bloquear-migration.js"
+          }
         ]
       },
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/bloquear-comando-destrutivo.js" }
+          {
+            "type": "command",
+            "command": "node .claude/hooks/bloquear-comando-destrutivo.js"
+          }
         ]
       }
     ],
@@ -18,16 +24,23 @@
       {
         "matcher": "Edit|Write|MultiEdit",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/checar-arquivo-editado.js" }
+          {
+            "type": "command",
+            "command": "node .claude/hooks/checar-arquivo-editado.js"
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/checar-antes-de-finalizar.js" }
+          {
+            "type": "command",
+            "command": "node .claude/hooks/checar-antes-de-finalizar.js"
+          }
         ]
       }
     ]
-  }
+  },
+  "language": "english"
 }
