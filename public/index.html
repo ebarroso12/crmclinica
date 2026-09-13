@@ -309,6 +309,22 @@
       <!-- Só aparece quando a Serena está desligada. -->
       <p class="aviso aviso-alerta" id="aviso-serena" role="alert" hidden></p>
 
+      <!-- Convite para ligar os avisos, para QUEM ENTRAR — não só para quem
+           for procurar em Meu perfil. Aparece uma vez por pessoa/aparelho, e
+           some quando ela decide (ligando ou dispensando). O botão é
+           obrigatório: navegador nenhum concede permissão de notificação sem um
+           gesto da própria pessoa. -->
+      <div class="aviso aviso-convite" id="convite-avisos" role="status" hidden>
+        <div>
+          <b>Receba os avisos neste aparelho</b>
+          <span>Quando alguém ficar esperando resposta, o celular toca — com o nome e o começo da mensagem.</span>
+        </div>
+        <div class="linha-acoes">
+          <button type="button" class="primario" id="convite-avisos-ligar">Ativar</button>
+          <button type="button" class="link" id="convite-avisos-depois">Agora não</button>
+        </div>
+      </div>
+
       <!-- Painel Hoje -->
       <section id="painel" class="tela" aria-labelledby="titulo-painel">
         <div class="cabecalho">

@@ -1916,6 +1916,10 @@ function mostrarAplicacao() {
   const editarFicha = seletor('#editar-ficha');
   if (editarFicha) editarFicha.dataset.permitido = String(podeFazer('contatos:editar'));
 
+  // Avisos no celular: o convite é para QUEM ENTRA, não só para quem for
+  // procurar em Meu perfil.
+  oferecerAvisosNoCelular().catch(() => {});
+
   // A aba de usuários é do administrador master.
   const itemUsuarios = seletor('#item-usuarios');
   if (itemUsuarios) itemUsuarios.hidden = !usuarioAtual?.master;
@@ -7559,13 +7563,17 @@ async function carregarAvisosDoCelular() {
   desenharBotoesDeAviso(Boolean(await inscricaoDesteAparelho()));
 }
 
-async function ligarAvisosDoCelular() {
+async function ligarAvisosDoCelular({ silencioso = false } = {}) {
   const botao = seletor('#avisos-ligar');
   if (botao) botao.disabled = true;
   mostrarRecadoDeAviso('');
 
   try {
-    const permissao = await Notification.requestPermission();
+    // No modo silencioso a permissão JÁ existe (quem chama conferiu): pedir de
+    // novo não abre caixa nenhuma, mas evita depender disso.
+    const permissao = silencioso && Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
     if (permissao !== 'granted') {
       // Negada no navegador, só o dono do aparelho reverte — a página não pode
       // pedir de novo, e insistir não adianta.
@@ -7593,7 +7601,7 @@ async function ligarAvisosDoCelular() {
     });
 
     desenharBotoesDeAviso(true);
-    informar('Pronto: este aparelho vai avisar quando alguém estiver esperando resposta.');
+    if (!silencioso) informar('Pronto: este aparelho vai avisar quando alguém estiver esperando resposta.');
   } catch (erro) {
     mostrarRecadoDeAviso(`Não consegui ligar os avisos: ${erro.message}`);
   } finally {
@@ -7633,3 +7641,86 @@ seletor('#avisos-desligar')?.addEventListener('click', desligarAvisosDoCelular);
 navigator.serviceWorker?.addEventListener?.('message', (evento) => {
   if (evento.data?.tipo === 'reinscrever-avisos') ligarAvisosDoCelular().catch(() => {});
 });
+
+// ---------------------------------------------------------------------------
+// O convite dos avisos, para quem entrar (13/09/2026)
+//
+// Pedido do Dr. Edson: "não é só no meu, são em todos os usuários que entrar".
+//
+// O limite que não dá para contornar: navegador nenhum concede permissão de
+// notificação sem um gesto da PRÓPRIA pessoa — ninguém inscreve o aparelho de
+// outro, nem o administrador. Então o que dá para fazer, e é o que está aqui:
+//
+//   • quem JÁ autorizou em algum momento é inscrito em silêncio, sem perguntar
+//     nada (trocou de navegador, reinstalou o app, limpou os dados);
+//   • quem ainda não decidiu vê um convite de um clique logo ao entrar, em vez
+//     de precisar achar o botão em Meu perfil;
+//   • quem dispensa fica três dias sem ser incomodado — insistir todo dia é o
+//     caminho mais curto para a pessoa bloquear o site de vez;
+//   • quem bloqueou no navegador não vê nada: só o dono do aparelho reverte
+//     isso, e um convite que não pode funcionar é só ruído.
+
+const CHAVE_CONVITE_AVISOS = 'crmclinica:avisos:dispensado-ate';
+const DIAS_DE_SOSSEGO = 3;
+
+function conviteFoiDispensado() {
+  try {
+    const ate = Number(localStorage.getItem(CHAVE_CONVITE_AVISOS) || 0);
+    return Number.isFinite(ate) && ate > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function dispensarConviteDeAvisos() {
+  try {
+    localStorage.setItem(CHAVE_CONVITE_AVISOS, String(Date.now() + DIAS_DE_SOSSEGO * 24 * 60 * 60 * 1000));
+  } catch { /* armazenamento bloqueado: o convite volta na próxima entrada */ }
+  const convite = seletor('#convite-avisos');
+  if (convite) convite.hidden = true;
+}
+
+/**
+ * Roda depois que a aplicação aparece, para todo mundo que entra.
+ *
+ * Nunca lança e nunca trava a tela: se algo aqui falhar, o CRM continua
+ * funcionando sem avisos — que é exatamente como ele funcionava antes.
+ */
+async function oferecerAvisosNoCelular() {
+  const convite = seletor('#convite-avisos');
+  if (!convite) return;
+
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+
+    const estado = await pedirJson('/api/aparelhos').catch(() => null);
+    if (!estado?.disponivel || !estado.chave_publica) return;
+    avisosDisponiveis = estado;
+
+    // Já inscrito neste aparelho: nada a oferecer.
+    if (await inscricaoDesteAparelho()) return;
+
+    // Já autorizou antes: inscreve em silêncio. É o caso de quem limpou os
+    // dados do navegador ou reinstalou o app — pedir de novo seria burocracia.
+    if (Notification.permission === 'granted') {
+      await ligarAvisosDoCelular({ silencioso: true });
+      return;
+    }
+
+    // Bloqueado no aparelho: só o dono reverte, e insistir não adianta.
+    if (Notification.permission === 'denied') return;
+
+    if (conviteFoiDispensado()) return;
+    convite.hidden = false;
+  } catch {
+    // Sem avisos o CRM funciona igual: nada aqui pode atrapalhar quem entrou.
+  }
+}
+
+seletor('#convite-avisos-ligar')?.addEventListener('click', async () => {
+  await ligarAvisosDoCelular();
+  const convite = seletor('#convite-avisos');
+  if (convite) convite.hidden = true;
+});
+
+seletor('#convite-avisos-depois')?.addEventListener('click', dispensarConviteDeAvisos);

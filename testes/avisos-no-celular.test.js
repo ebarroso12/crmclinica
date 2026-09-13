@@ -321,3 +321,46 @@ test('sem sessão, as rotas respondem 401 — não 500', async (t) => {
   });
   assert.equal(remocao.status, 401, 'desinscrever sem sessão é 401');
 });
+
+test('o convite dos avisos aparece para quem entra, não só em Meu perfil', () => {
+  // Pedido do Dr. Edson: "não é só no meu, são em todos os usuários que entrar".
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+
+  // O convite roda quando a aplicação aparece, para qualquer conta.
+  assert.match(APP_JS, /oferecerAvisosNoCelular\(\)\.catch/);
+  const inicio = APP_JS.indexOf('function mostrarAplicacao(');
+  const fim = APP_JS.indexOf('\nfunction ', inicio + 1);
+  assert.ok(
+    APP_JS.slice(inicio, fim).includes('oferecerAvisosNoCelular()'),
+    'o convite tem de sair junto com a aplicação, não escondido numa tela',
+  );
+
+  assert.match(HTML, /id="convite-avisos"[^>]*hidden/);
+  assert.match(HTML, /id="convite-avisos-ligar"/);
+  assert.match(HTML, /id="convite-avisos-depois"/);
+});
+
+test('quem já autorizou é inscrito em silêncio; quem bloqueou não é incomodado', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const inicio = APP_JS.indexOf('async function oferecerAvisosNoCelular(');
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\nseletor(', inicio));
+
+  // Trocou de navegador ou reinstalou o app: pedir de novo seria burocracia.
+  assert.match(funcao, /Notification\.permission === 'granted'[\s\S]{0,120}silencioso: true/);
+  // Bloqueado no aparelho: só o dono reverte, e insistir leva a pessoa a
+  // bloquear o site de vez.
+  assert.match(funcao, /Notification\.permission === 'denied'\) return;/);
+  // Já inscrito: nada a oferecer.
+  assert.match(funcao, /if \(await inscricaoDesteAparelho\(\)\) return;/);
+});
+
+test('dispensar o convite dá três dias de sossego, não some para sempre', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(APP_JS, /const DIAS_DE_SOSSEGO = 3;/);
+  assert.match(APP_JS, /CHAVE_CONVITE_AVISOS/);
+  // Some para sempre seria perder quem clicou em "agora não" sem pensar.
+  const inicio = APP_JS.indexOf('function dispensarConviteDeAvisos(');
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\n}', inicio));
+  assert.match(funcao, /Date\.now\(\) \+ DIAS_DE_SOSSEGO/);
+});

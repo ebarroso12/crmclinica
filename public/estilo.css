@@ -33,6 +33,9 @@
   /* Item aberto no menu lateral. */
   --menu-ativo-fundo: #e6f4f7;
   --menu-ativo-texto: #0a6473;
+  /* Faixa de convite (avisos no celular): informativa, não alarme. */
+  --convite-fundo: #eef7f9;
+  --convite-borda: #bfe3ea;
   --navy: #0d1930;
   --texto: #19243a;
   /* Tons de apoio escurecidos até passarem em contraste sobre superfície clara. */
@@ -73,6 +76,8 @@
     --selecao-texto: #07131a;
     --menu-ativo-fundo: #17304a;
     --menu-ativo-texto: #7fdcea;
+    --convite-fundo: #16293a;
+    --convite-borda: #24506a;
     --fundo: #0f1523;
     --superficie: #161d2e;
     --realce: #1d2740;
@@ -97,6 +102,8 @@
   --selecao-texto: #07131a;
   --menu-ativo-fundo: #17304a;
   --menu-ativo-texto: #7fdcea;
+  --convite-fundo: #16293a;
+  --convite-borda: #24506a;
   --fundo: #0f1523;
   --superficie: #161d2e;
   --realce: #1d2740;
@@ -630,6 +637,24 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
   color: #6b4700;
   font-size: 13px;
 }
+
+/* Convite para ligar os avisos no celular. Informativo, não alarme: ele pede
+   uma decisão, não conserta uma falha. */
+.aviso-convite {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--convite-fundo);
+  border: 1px solid var(--convite-borda);
+  border-left: 4px solid var(--ciano);
+  color: var(--texto);
+}
+.aviso-convite b { display: block; }
+.aviso-convite span { color: var(--apoio); font-size: 12.5px; }
+.aviso-convite .linha-acoes { margin: 0; flex: 0 0 auto; }
+.aviso-convite .primario { margin: 0; padding: 8px 16px; }
 
 /* Serena desligada: aviso mais urgente que o de ambiente, mas não tão grave
    quanto um erro de login. Aparece no topo do painel. */
