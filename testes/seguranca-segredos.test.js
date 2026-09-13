@@ -34,11 +34,13 @@ function varrerConteudo(arquivos) {
     fs.writeFileSync(destino, conteudo);
     nomes.push(nome);
   }
-  // `varrer` resolve os caminhos a partir da raiz do projeto; aqui passamos o
-  // caminho relativo da pasta temporária vista de lá.
-  const relativa = path.relative(path.join(__dirname, '..'), pasta);
+  // Caminhos ABSOLUTOS, de propósito. A versão anterior calculava o caminho
+  // relativo da pasta temporária vista da raiz do projeto — e no Windows da CI
+  // isso não existe: o repositório fica em `D:\` e o temporário em `C:\`, e
+  // entre drives diferentes não há caminho relativo. Passava no Ubuntu e
+  // falhava só no Windows.
   try {
-    return varrer(nomes.map((nome) => path.join(relativa, nome).split(path.sep).join('/')));
+    return varrer(nomes.map((nome) => path.join(pasta, nome)));
   } finally {
     fs.rmSync(pasta, { recursive: true, force: true });
   }

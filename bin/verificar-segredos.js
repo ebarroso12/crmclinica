@@ -113,7 +113,14 @@ function varrer(arquivos) {
   for (const arquivo of arquivos) {
     if (EXTENSOES_BINARIAS.test(arquivo)) continue;
 
-    const caminho = path.join(RAIZ, arquivo);
+    // `resolve`, não `join`: o normal é receber caminho relativo do
+    // `git ls-files`, e aí os dois se comportam igual. Mas `resolve` também
+    // aceita caminho ABSOLUTO, e `join` o concatenaria à raiz, produzindo lixo.
+    //
+    // No Windows isso não é hipótese: na CI o repositório fica em `D:\` e o
+    // diretório temporário em `C:\`, e entre drives diferentes não existe
+    // caminho relativo. Ubuntu passava; Windows não.
+    const caminho = path.resolve(RAIZ, arquivo);
     let conteudo;
     try {
       const info = fs.statSync(caminho);
