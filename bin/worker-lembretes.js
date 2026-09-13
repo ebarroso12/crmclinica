@@ -440,13 +440,33 @@ async function main() {
     canal: criarCanalDeConversas(configuracao.openclaw.canalClinica, viasDeEntrega),
   });
 
+  // A assistente pode falar nesta conversa agora? A conversa esta assumida de
+  // proposito (foi `entregarParaAClinica`), entao esses tres campos sao
+  // neutralizados na pergunta -- o que interessa aqui e o que vale para TODA
+  // conversa: interruptor, PARAR SERENA, grade de horario, canal desligado e
+  // ativacao gradual.
+  async function assistentePodeFalar(conversaId) {
+    const conversa = await repositorio.obterConversa(conversaId);
+    if (!conversa) return false;
+    const decisao = await servicoDaSerena.podeResponder({
+      ...conversa, assumida_por_humano: false, atribuido_a: null, ia_pausada_ate: null, status: 'aberta',
+    });
+    if (!decisao.responder) {
+      console.log(`[orientacao] aviso adiado na conversa ${conversaId}: ${decisao.motivo}`);
+    }
+    return decisao.responder === true;
+  }
+
   async function avisarQuemEsperaOrientacao() {
     if (!repositorio.listarOrientacoesSemAviso) return;
     try {
       const { avisados } = await orientacoesDoAviso.avisarQuemEspera({
-        enviarNaConversa: async (conversaId, texto) => {
+        assistentePodeFalar,
+        enviarNaConversa: async (conversaId, texto, { chave = null } = {}) => {
           const saida = await atendimentoDoAviso.responderComoAssistente(conversaId, texto, {
             devolverAAutomacao: false,
+            // Sem a chave, cada retentativa gravaria uma linha nova na thread.
+            chave,
           });
           if (saida.enviada === false) throw new Error(saida.motivo_falha || "entrega falhou");
         },

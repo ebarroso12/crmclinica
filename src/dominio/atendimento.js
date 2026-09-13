@@ -375,7 +375,7 @@ function criarAtendimento({
           conteudo: MENSAGEM_CONTATO_BLOQUEADO,
           autor_tipo: 'sistema',
           autor_nome: 'Sistema',
-        });
+        }, { comoSistema: true });
         emissor?.publicarMensagem(conversaId, mensagem);
 
         // Nunca o motivo do bloqueio (pode carregar relato sensível do
@@ -715,7 +715,12 @@ function criarAtendimento({
       // equipe, o que é certo, só que sem ninguém saber DO QUE se trata.
       if (duvidaParaAClinica && orientacoes) {
         const pedida = await orientacoes.pedir({ conversaId, duvida: duvidaParaAClinica });
-        await entregarParaAClinica(conversaId);
+        // Só cala a conversa se a dúvida ficou REGISTRADA. Calar sem registro
+        // deixaria a conversa parada sem nada para soltá-la: os vinte minutos
+        // só enxergam pendência gravada, e a única saída seria alguém notar à
+        // mão. Sem registro, o escalonamento comum já entrega para a equipe.
+        if (pedida.pedida) await entregarParaAClinica(conversaId);
+        else await escalonar(conversaId, 'orientacao_nao_registrada');
         return {
           acao: 'pediu_orientacao_sem_resposta',
           conversa_id: conversaId,
@@ -793,7 +798,7 @@ function criarAtendimento({
       conteudo: 'Conversa assumida pela equipe. A resposta automática está pausada.',
       autor_tipo: 'sistema',
       privada: true,
-    });
+    }, { comoSistema: true });
     emissor?.publicarMensagem(conversaId, avisoDeAssumir);
     // Evento distinto de "chegou mensagem": quem está com a tela de
     // Conversas aberta precisa reagir a "assumida" (ex.: mover a conversa de
@@ -825,8 +830,22 @@ function criarAtendimento({
    */
   async function liberarEmMassa() {
     const ids = await repositorio.listarConversasEscalonadasSemDono();
-    for (const id of ids) await liberar(id);
-    return { liberadas: ids.length };
+
+    // "Assumida sem dono" deixou de significar só "travada por falha": desde a
+    // orientação (db/052), `entregarParaAClinica` usa o mesmo estado para calar
+    // a assistente enquanto a clínica não responde. Soltar essas aqui devolvia
+    // à automação uma conversa com a pergunta em aberto — e, pior, o índice
+    // único de uma pendente por conversa faria o próximo `pedir()` devolver
+    // `ja_existe_pendente`: a Serena repetiria a promessa de retorno e ninguém
+    // seria chamado de novo. Quem solta essas é o prazo de vinte minutos.
+    const liberadas = [];
+    for (const id of ids) {
+      const pendente = await repositorio.obterOrientacaoPendente?.(id).catch(() => null);
+      if (pendente) continue;
+      await liberar(id);
+      liberadas.push(id);
+    }
+    return { liberadas: liberadas.length, aguardando_orientacao: ids.length - liberadas.length };
   }
 
   /** Devolve a conversa à automação. */
@@ -865,7 +884,13 @@ function criarAtendimento({
       autor_tipo: privada ? 'sistema' : 'equipe',
       autor_nome: autorNome,
       privada,
-    });
+      // Nota interna é `sistema` + `privada`, e a policy só deixa o papel do
+      // usuário gravar mensagem de `equipe`, visível. Sem elevar, TODA nota
+      // interna pela tela era recusada pelo banco (mesmo defeito do "assumir").
+      // Quem pode escrever nesta conversa já foi decidido antes, na aplicação
+      // (`exigirAcessoAConversa` em http.js) — é o que substitui a guarda que a
+      // policy fazia aqui.
+    }, { comoSistema: privada });
     // Publica assim que a mensagem existe, mesmo antes de tentar entregar ao
     // paciente: outra tela da equipe olhando a mesma conversa precisa ver a
     // resposta na hora, e não deve esperar pelo canal externo para isso.
@@ -930,15 +955,26 @@ function criarAtendimento({
    * a entrega falhar, ela continua com a equipe, que é onde precisa estar.
    */
   async function responderComoAssistente(conversaId, texto, {
-    usuarioId = null, orientacaoId = null, devolverAAutomacao = true,
+    usuarioId = null, orientacaoId = null, devolverAAutomacao = true, chave = null,
   } = {}) {
     const conversa = await repositorio.obterConversa(conversaId);
-    const { mensagem } = await repositorio.registrarMensagem(conversaId, {
+    const chaveDaMensagem = chave ?? null;
+    const { mensagem, duplicada } = await repositorio.registrarMensagem(conversaId, {
       direcao: 'saida',
       conteudo: texto,
       autor_tipo: 'automacao',
       autor_nome: conversa?.agente_id ? (await nomeDoAgente(conversa.agente_id)) : 'Serena',
-    });
+      // Chave determinística: é ela que impede o aviso dos vinte minutos de
+      // virar uma linha nova na thread a cada ciclo do worker quando a entrega
+      // falha (ver `avisarQuemEspera`). O índice único de `id_externo` absorve
+      // a repetição no banco, não na boa vontade de quem chama.
+      id_externo: chaveDaMensagem,
+      // `automacao` não é `equipe`: a policy de INSERT recusaria esta linha com
+      // o papel do usuário, e a transação inteira iria junto — incluindo o
+      // UPDATE que marcou a orientação como respondida. Quem pode escrever
+      // nesta conversa foi decidido antes, na aplicação.
+    }, { comoSistema: true });
+    if (duplicada) return { ...mensagem, enviada: true, duplicada: true };
     emissor?.publicarMensagem(conversaId, mensagem);
 
     const entrega = await entregarAoPaciente(conversa, texto, mensagem.id, { origem: 'equipe' });
@@ -1212,7 +1248,7 @@ function criarAtendimento({
       conteudo: `Conversa encaminhada para a equipe (${motivo}).`,
       autor_tipo: 'sistema',
       privada: true,
-    });
+    }, { comoSistema: true });
     emissor?.publicarMensagem(conversaId, avisoDeEscalonamento);
     await repositorio.registrarAuditoria({
       entidade: 'conversa',

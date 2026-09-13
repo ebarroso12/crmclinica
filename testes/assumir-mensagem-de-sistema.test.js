@@ -96,7 +96,7 @@ test('o aviso de "assumida pela equipe" é gravado como sistema, não como o usu
   const repositorio = criarRepositorio(pool);
 
   await repositorio.comUsuario({ id: 3, papel: 'admin' }, () => (
-    repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR)
+    repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR, { comoSistema: true })
   ));
 
   const insert = posicaoDoInsert(pool);
@@ -116,7 +116,7 @@ test('o papel do usuário volta assim que o aviso é gravado', async () => {
   const repositorio = criarRepositorio(pool);
 
   await repositorio.comUsuario({ id: 3, papel: 'atendente' }, () => (
-    repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR)
+    repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR, { comoSistema: true })
   ));
 
   // Uma transação que segue com privilégio de sistema depois da instrução que
@@ -166,7 +166,7 @@ test('fora de requisição (worker) nada muda: a conexão já é backend', async
   // Sem `comUsuario` em volta não há papel de usuário para elevar — e não pode
   // haver `set_config` de claims solto numa conexão do pool, que seria herdado
   // pela próxima requisição.
-  await repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR);
+  await repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR, { comoSistema: true });
 
   assert.deepEqual(claimsDeclaradas(pool), []);
   // E a atomicidade do worker continua: INSERT e o toque em `conversas` na
@@ -175,18 +175,107 @@ test('fora de requisição (worker) nada muda: a conexão já é backend', async
   assert.equal(pool.comandos.at(-1).texto, 'COMMIT');
 });
 
-test('a elevação não é alcançável pelo corpo da requisição', () => {
-  // `autor_tipo` é o gatilho da elevação, então ele nunca pode vir de fora.
-  // Quem o define é sempre o domínio (atendimento.js, crm-fluxo.js): as rotas
-  // passam texto, anexo e usuário — nunca o tipo de autor.
+test('a elevação é OPT-IN: sem pedir, a mensagem vai com o papel da pessoa', async () => {
+  // A primeira versão desta correção DEDUZIA a elevação de
+  // `autor_tipo === 'sistema'`, e o teste que ficava aqui varria
+  // `src/servidor/` atrás da string `autor_tipo` para "provar" que não era
+  // alcançável de fora. A varredura passava e mesmo assim estava errada:
+  // `privada` VEM do corpo da requisição e é ele que decide o `autor_tipo` em
+  // `responderComoEquipe`. Achado em revisão independente, 13/09/2026.
+  //
+  // Agora quem eleva diz isso na chamada. Passar a mesma mensagem sem a opção
+  // não eleva nada — é o que impede a dedução de voltar por acidente.
+  const pool = poolEspiao();
+  const repositorio = criarRepositorio(pool);
+
+  await repositorio.comUsuario({ id: 3, papel: 'atendente' }, () => (
+    repositorio.registrarMensagem(941, AVISO_DE_ASSUMIR)
+  ));
+
+  assert.deepEqual(
+    claimsDeclaradas(pool),
+    [JSON.stringify({ usuario_id: '3', app_role: 'atendente' })],
+    'o formato da mensagem não pode, sozinho, conceder privilégio de sistema',
+  );
+});
+
+test('quem eleva a partir de ação da pessoa confere o acesso antes, na aplicação', () => {
+  // Elevar tira `can_access_conversa` da jogada. Os dois caminhos que elevam a
+  // partir de um clique — nota interna (`privada`) e resposta de orientação —
+  // precisam aplicar a mesma regra na aplicação, senão um atendente passa a
+  // escrever na conversa de um colega.
   const fs = require('node:fs');
   const path = require('node:path');
-  const pasta = path.join(__dirname, '..', 'src', 'servidor');
-  for (const arquivo of fs.readdirSync(pasta).filter((n) => n.endsWith('.js'))) {
-    const fonte = fs.readFileSync(path.join(pasta, arquivo), 'utf8');
-    assert.ok(
-      !fonte.includes('autor_tipo'),
-      `${arquivo} menciona autor_tipo: a camada HTTP não pode escolher o autor da mensagem`,
+  const http = fs.readFileSync(path.join(__dirname, '..', 'src', 'servidor', 'http.js'), 'utf8');
+
+  assert.match(http, /const elevaAoGravar = partes\[3\] === 'orientacao' \|\| \(partes\[3\] === 'mensagens' && Boolean\(corpo\?\.privada\)\)/);
+  assert.match(http, /podeAcessarConversaAoVivo\(usuario\.papel, usuario\.id, alvo\.atribuido_a \?\? null\)/);
+  // Mesma resposta de "não existe": confirmar a conversa já contaria algo sobre
+  // o atendimento de outra pessoa.
+  assert.match(http, /if \(elevaAoGravar[\s\S]{0,400}404/);
+});
+
+test('a resposta compilada de uma orientação também é gravada como sistema', async () => {
+  // Bloqueador achado em revisão independente do PR #76: o primeiro commit
+  // consertou o "assumir", mas `responderComoAssistente` grava
+  // `autor_tipo: 'automacao'` — que a MESMA policy recusa, porque só aceita
+  // `'equipe'` do papel do usuário. A rota roda dentro de `comIdentidade` com
+  // papel admin/gestor/atendente, nunca `backend`.
+  //
+  // O efeito seria exatamente o de 13/08: 500, transação abortada, e o UPDATE
+  // que marcou a orientação como respondida voltando atrás junto — a atendente
+  // escreveria a orientação e ela continuaria pendente, para sempre.
+  //
+  // Nenhum teste com repositório em memória pega isto (não há RLS lá), e o de
+  // `assumir` só exercita `autor_tipo: 'sistema'`. Por isso este, no espião.
+  const pool = poolEspiao();
+  const repositorio = criarRepositorio(pool);
+
+  await repositorio.comUsuario({ id: 3, papel: 'admin' }, () => (
+    repositorio.registrarMensagem(941, {
+      direcao: 'saida',
+      conteudo: 'A promoção do post está R$ 300. Quer que eu reserve?',
+      autor_tipo: 'automacao',
+      autor_nome: 'Serena',
+      id_externo: 'orientacao-aviso-7',
+    }, { comoSistema: true })
+  ));
+
+  const insert = posicaoDoInsert(pool);
+  const antesDoInsert = pool.comandos
+    .slice(0, insert)
+    .filter((c) => c.valores?.[0] === 'request.jwt.claims');
+  assert.equal(antesDoInsert.at(-1).valores[1], CLAIMS_DE_SISTEMA);
+  assert.equal(claimsDeclaradas(pool).at(-1), JSON.stringify({ usuario_id: '3', app_role: 'admin' }));
+});
+
+test('o domínio pede a elevação nos caminhos que a policy recusaria', () => {
+  // Cinta de segurança contra a regressão mais fácil de cometer aqui: escrever
+  // um aviso novo de sistema e esquecer o `{ comoSistema: true }`. O sintoma
+  // seria 500 em produção e nada nos testes em memória.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const atendimento = fs.readFileSync(path.join(__dirname, '..', 'src', 'dominio', 'atendimento.js'), 'utf8');
+
+  // `autor_tipo: 'sistema'` NUNCA passa pela policy com o papel do usuário —
+  // nem como `equipe`, nem como não-privada. Toda escrita assim precisa da
+  // opção, sem exceção.
+  const chamadas = atendimento.split('registrarMensagem(').slice(1);
+  for (const chamada of chamadas) {
+    const corpo = chamada.slice(0, chamada.indexOf('});') + 3);
+    if (!/autor_tipo: 'sistema'/.test(corpo)) continue;
+    assert.match(
+      chamada.slice(0, corpo.length + 40), /comoSistema: (true|privada)/,
+      `escrita de sistema sem elevação: ${corpo.slice(0, 120)}`,
     );
   }
+
+  // `autor_tipo: 'automacao'` é outro caso, e a diferença é ONDE roda. A
+  // resposta normal da Serena nasce no webhook e na outbox, onde a conexão já é
+  // `backend` — elevar ali não muda nada. Já `responderComoAssistente` é
+  // chamada por uma rota, dentro da transação com o papel da pessoa: sem a
+  // opção, é o bloqueador que a revisão achou.
+  const compilada = atendimento.slice(atendimento.indexOf('async function responderComoAssistente'));
+  assert.match(compilada.slice(0, 1600), /comoSistema: true/,
+    'a resposta compilada roda sob o papel do usuário e a policy recusa `automacao`');
 });

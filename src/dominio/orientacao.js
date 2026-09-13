@@ -316,14 +316,45 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
    * atendimento) e é opcional: sem ele, o aviso sai e a conversa continua com a
    * equipe, que era o comportamento antes desta decisão.
    */
-  async function avisarQuemEspera({ enviarNaConversa, liberarConversa = null }) {
+  async function avisarQuemEspera({ enviarNaConversa, liberarConversa = null, assistentePodeFalar = null }) {
     const limite = new Date(agora().getTime() - ESPERA_ATE_AVISAR_MS).toISOString();
     const esperando = await repositorio.listarOrientacoesSemAviso(limite);
 
     let avisados = 0;
     for (const pendente of esperando) {
+      // A assistente pode falar nesta conversa agora?
+      //
+      // Este aviso sai assinado por ela, e o worker roda de minuto em minuto,
+      // 24h por dia. Sem perguntar, uma dúvida registrada às 23h50 fazia a
+      // Serena "falar" às 00h10, fora do horário — e PARAR SERENA, o
+      // interruptor e o canal desligado não valiam aqui, porque a entrega
+      // deste aviso não passa pela barreira final. E não pode passar: a
+      // conversa está deliberadamente assumida (foi `entregarParaAClinica` que
+      // a assumiu), e a barreira recusaria justamente o aviso que essa pausa
+      // estava esperando.
+      //
+      // Fail-closed: não saber se ela pode falar é não falar. A pendência fica
+      // e o próximo ciclo tenta de novo — dentro do horário, agora.
+      if (assistentePodeFalar) {
+        let liberada = false;
+        try {
+          liberada = await assistentePodeFalar(pendente.conversa_id);
+        } catch {
+          liberada = false;
+        }
+        if (!liberada) continue;
+      }
+
       try {
-        await enviarNaConversa(pendente.conversa_id, AVISO_DE_ESPERA);
+        // A chave é derivada da orientação, então uma retentativa grava a MESMA
+        // linha, não uma nova. Sem ela, entrega falhando (canal fora do ar,
+        // instalação sem canal, timeout) fazia o `catch` abaixo engolir o erro
+        // e o ciclo seguinte gravar outra mensagem — 1440 linhas por dia numa
+        // conversa parada, todas marcadas "não entregue", na thread que a
+        // equipe lê.
+        await enviarNaConversa(pendente.conversa_id, AVISO_DE_ESPERA, {
+          chave: `orientacao-aviso-${pendente.id}`,
+        });
         await repositorio.marcarOrientacaoAvisada(pendente.id, agora().toISOString());
         avisados += 1;
 
@@ -332,7 +363,8 @@ function criarOrientacoes({ repositorio, ia = null, agora = () => new Date() } =
         // conversa continuar mais um tempo com a equipe.
         if (liberarConversa) await liberarConversa(pendente.conversa_id);
       } catch {
-        // Canal fora do ar agora: tenta no próximo ciclo.
+        // Canal fora do ar agora: tenta no próximo ciclo. A chave determinística
+        // garante que a retentativa não duplique a mensagem.
       }
     }
     return { avisados };

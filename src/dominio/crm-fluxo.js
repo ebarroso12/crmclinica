@@ -145,7 +145,10 @@ function criarServicoDeFluxo({ repositorio, canal = null, agora = () => new Date
         conteudo: resumo,
         autor_tipo: 'sistema',
         privada: true,
-      });
+        // Resumo montado pela aplicação, não digitado: a policy de INSERT só
+        // aceita do papel do usuário mensagem de `equipe`, de saída e não
+        // privada. Ver o comentário em `registrarMensagem`.
+      }, { comoSistema: true });
       await repositorio.atualizarConversa(conversaId, { status: 'resolvida' });
       await repositorio.registrarAuditoria({
         entidade: 'conversa',
