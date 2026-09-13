@@ -2519,6 +2519,16 @@ seletor('#sair')?.addEventListener('click', async () => {
   // Renovação em andamento gira o refresh: sem esperar, o logout revogaria o
   // velho e o novo, gravado logo depois, manteria a pessoa logada após a recarga.
   if (renovacaoEmAndamento) await renovacaoEmAndamento.catch(() => {});
+
+  // Sair desliga os avisos DESTE aparelho.
+  //
+  // No computador do balcão, quem sai não pode continuar recebendo no aparelho
+  // que ficou — e, desde que o aviso leva nome do paciente e o começo da
+  // mensagem, isso seria mostrar a conversa de um atendimento para a próxima
+  // pessoa que sentar ali. Quem entrar depois inscreve o aparelho em nome
+  // próprio (oferecerAvisosNoCelular), sem precisar autorizar de novo.
+  await desligarAvisosDoCelular({ silencioso: true }).catch(() => {});
+
   const refresh = lerRefresh();
 
   if (refresh) {
@@ -7563,10 +7573,18 @@ async function carregarAvisosDoCelular() {
   desenharBotoesDeAviso(Boolean(await inscricaoDesteAparelho()));
 }
 
+/**
+ * @returns {Promise<{ligado: boolean, motivo?: string}>} para quem chamou saber
+ *   se a inscrição realmente aconteceu — a faixa do convite só pode sumir
+ *   quando aconteceu.
+ */
 async function ligarAvisosDoCelular({ silencioso = false } = {}) {
-  const botao = seletor('#avisos-ligar');
+  // No modo silencioso não se mexe no botão de Meu perfil: isto roda em todo
+  // login, e deixar o botão desabilitado por causa de um passo que travou
+  // atrás significa a pessoa não conseguir mais ligar os avisos na mão.
+  const botao = silencioso ? null : seletor('#avisos-ligar');
   if (botao) botao.disabled = true;
-  mostrarRecadoDeAviso('');
+  if (!silencioso) mostrarRecadoDeAviso('');
 
   try {
     // No modo silencioso a permissão JÁ existe (quem chama conferiu): pedir de
@@ -7577,13 +7595,22 @@ async function ligarAvisosDoCelular({ silencioso = false } = {}) {
     if (permissao !== 'granted') {
       // Negada no navegador, só o dono do aparelho reverte — a página não pode
       // pedir de novo, e insistir não adianta.
-      mostrarRecadoDeAviso(permissao === 'denied'
+      const recado = permissao === 'denied'
         ? 'Os avisos estão bloqueados para este site no seu aparelho. Libere nas configurações do navegador e tente de novo.'
-        : 'Sem a permissão do aparelho, não dá para avisar.');
-      return;
+        : 'Sem a permissão do aparelho, não dá para avisar.';
+      mostrarRecadoDeAviso(recado);
+      return { ligado: false, motivo: recado };
     }
 
-    const registro = await navigator.serviceWorker.ready;
+    // `serviceWorker.ready` NUNCA rejeita: se o registro falhar (sw.js fora do
+    // ar depois de um deploy ruim, worker bloqueado pelo navegador), a promessa
+    // fica pendente para sempre — e sem o teto abaixo o `finally` nunca roda.
+    const registro = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, rejeitar) => {
+        setTimeout(() => rejeitar(new Error('o service worker não ficou pronto')), 10000);
+      }),
+    ]);
     const inscricao = await registro.pushManager.subscribe({
       // Obrigatório no Chrome: todo push tem de virar notificação visível.
       userVisibleOnly: true,
@@ -7602,15 +7629,18 @@ async function ligarAvisosDoCelular({ silencioso = false } = {}) {
 
     desenharBotoesDeAviso(true);
     if (!silencioso) informar('Pronto: este aparelho vai avisar quando alguém estiver esperando resposta.');
+    return { ligado: true };
   } catch (erro) {
-    mostrarRecadoDeAviso(`Não consegui ligar os avisos: ${erro.message}`);
+    const recado = `Não consegui ligar os avisos: ${erro.message}`;
+    mostrarRecadoDeAviso(recado);
+    return { ligado: false, motivo: recado };
   } finally {
     if (botao) botao.disabled = false;
   }
 }
 
-async function desligarAvisosDoCelular() {
-  const botao = seletor('#avisos-desligar');
+async function desligarAvisosDoCelular({ silencioso = false } = {}) {
+  const botao = silencioso ? null : seletor('#avisos-desligar');
   if (botao) botao.disabled = true;
 
   try {
@@ -7625,9 +7655,9 @@ async function desligarAvisosDoCelular() {
       }).catch(() => {});
       await inscricao.unsubscribe();
     }
-    desenharBotoesDeAviso(false);
+    if (!silencioso) desenharBotoesDeAviso(false);
   } catch (erro) {
-    mostrarRecadoDeAviso(`Não consegui desligar: ${erro.message}`);
+    if (!silencioso) mostrarRecadoDeAviso(`Não consegui desligar: ${erro.message}`);
   } finally {
     if (botao) botao.disabled = false;
   }
@@ -7660,12 +7690,23 @@ navigator.serviceWorker?.addEventListener?.('message', (evento) => {
 //   • quem bloqueou no navegador não vê nada: só o dono do aparelho reverte
 //     isso, e um convite que não pode funcionar é só ruído.
 
-const CHAVE_CONVITE_AVISOS = 'crmclinica:avisos:dispensado-ate';
 const DIAS_DE_SOSSEGO = 3;
+
+/**
+ * A dispensa é POR PESSOA, não por navegador.
+ *
+ * Com uma chave global, bastava alguém clicar "Agora não" no computador do
+ * balcão para que ninguém mais que entrasse naquela máquina visse o convite
+ * por três dias — o contrário exato do pedido ("em todos os usuários que
+ * entrar").
+ */
+function chaveDoConvite() {
+  return `crmclinica:avisos:dispensado-ate:${usuarioAtual?.id ?? 'anonimo'}`;
+}
 
 function conviteFoiDispensado() {
   try {
-    const ate = Number(localStorage.getItem(CHAVE_CONVITE_AVISOS) || 0);
+    const ate = Number(localStorage.getItem(chaveDoConvite()) || 0);
     return Number.isFinite(ate) && ate > Date.now();
   } catch {
     return false;
@@ -7674,7 +7715,7 @@ function conviteFoiDispensado() {
 
 function dispensarConviteDeAvisos() {
   try {
-    localStorage.setItem(CHAVE_CONVITE_AVISOS, String(Date.now() + DIAS_DE_SOSSEGO * 24 * 60 * 60 * 1000));
+    localStorage.setItem(chaveDoConvite(), String(Date.now() + DIAS_DE_SOSSEGO * 24 * 60 * 60 * 1000));
   } catch { /* armazenamento bloqueado: o convite volta na próxima entrada */ }
   const convite = seletor('#convite-avisos');
   if (convite) convite.hidden = true;
@@ -7693,34 +7734,66 @@ async function oferecerAvisosNoCelular() {
   try {
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
 
+    // Bloqueado no aparelho: só o dono reverte, e insistir não adianta. Sai
+    // antes de perguntar qualquer coisa ao servidor — pedido que não pode
+    // mudar nada é pedido desperdiçado em todo login.
+    if (Notification.permission === 'denied') return;
+
+    const jaDispensou = conviteFoiDispensado();
+    if (Notification.permission !== 'granted' && jaDispensou) return;
+
     const estado = await pedirJson('/api/aparelhos').catch(() => null);
     if (!estado?.disponivel || !estado.chave_publica) return;
     avisosDisponiveis = estado;
 
-    // Já inscrito neste aparelho: nada a oferecer.
-    if (await inscricaoDesteAparelho()) return;
-
-    // Já autorizou antes: inscreve em silêncio. É o caso de quem limpou os
-    // dados do navegador ou reinstalou o app — pedir de novo seria burocracia.
+    // ATENÇÃO ao caso do balcão: a inscrição é do NAVEGADOR, não da pessoa.
+    // Se A ativou os avisos e depois B entra no mesmo computador, a inscrição
+    // que existe aqui é a de A — e, desde que o aviso passou a levar nome do
+    // paciente, deixá-la como está faria este aparelho mostrar a B as
+    // notificações de A. Por isso, com a permissão já concedida, a inscrição é
+    // sempre REENVIADA: o servidor passa a posse para quem está logado agora
+    // (ON CONFLICT (endpoint) DO UPDATE SET usuario_id).
     if (Notification.permission === 'granted') {
       await ligarAvisosDoCelular({ silencioso: true });
       return;
     }
 
-    // Bloqueado no aparelho: só o dono reverte, e insistir não adianta.
-    if (Notification.permission === 'denied') return;
-
-    if (conviteFoiDispensado()) return;
+    if (jaDispensou) return;
     convite.hidden = false;
   } catch {
     // Sem avisos o CRM funciona igual: nada aqui pode atrapalhar quem entrou.
   }
 }
 
-seletor('#convite-avisos-ligar')?.addEventListener('click', async () => {
-  await ligarAvisosDoCelular();
-  const convite = seletor('#convite-avisos');
-  if (convite) convite.hidden = true;
+seletor('#convite-avisos-ligar')?.addEventListener('click', async (evento) => {
+  const botao = evento.currentTarget;
+  // Dois cliques rápidos disparariam dois pedidos de permissão e duas
+  // inscrições concorrentes.
+  if (botao.disabled) return;
+  botao.disabled = true;
+
+  try {
+    const { ligado, motivo } = await ligarAvisosDoCelular();
+    const convite = seletor('#convite-avisos');
+
+    // A faixa só some quando a inscrição ACONTECEU. Antes ela sumia de
+    // qualquer jeito — inclusive quando a pessoa só fechava a caixa de
+    // permissão do navegador —, e o recado de erro ia para dentro de Meu
+    // perfil, que está escondido: a pessoa ficava convencida de que tinha
+    // ligado os avisos sem nenhuma inscrição existir.
+    if (ligado) {
+      if (convite) convite.hidden = true;
+      return;
+    }
+
+    const recado = seletor('#convite-avisos-erro');
+    if (recado) {
+      recado.hidden = false;
+      recado.textContent = motivo || 'Não consegui ligar os avisos neste aparelho.';
+    }
+  } finally {
+    botao.disabled = false;
+  }
 });
 
 seletor('#convite-avisos-depois')?.addEventListener('click', dispensarConviteDeAvisos);

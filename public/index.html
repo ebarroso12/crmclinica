@@ -323,6 +323,10 @@
           <button type="button" class="primario" id="convite-avisos-ligar">Ativar</button>
           <button type="button" class="link" id="convite-avisos-depois">Agora não</button>
         </div>
+        <!-- O que deu errado aparece AQUI, na própria faixa: o recado de Meu
+             perfil fica dentro de dois blocos escondidos, e a pessoa nunca o
+             veria. -->
+        <p class="convite-erro" id="convite-avisos-erro" role="alert" hidden></p>
       </div>
 
       <!-- Painel Hoje -->
@@ -1864,8 +1868,9 @@
               </div>
             </div>
             <p class="nota">
-              O aviso não mostra nome nem o que foi dito — ele aparece na tela de bloqueio,
-              à vista de quem estiver por perto. Para saber quem é, abra o CRM.
+              O aviso mostra quem falou e o começo da mensagem, e aparece na tela de bloqueio —
+              à vista de quem estiver por perto do aparelho. O texto viaja protegido: o serviço
+              de notificação do celular entrega, mas não consegue ler.
             </p>
             <div class="linha-acoes">
               <button type="button" class="primario" id="avisos-ligar">Receber avisos neste aparelho</button>
