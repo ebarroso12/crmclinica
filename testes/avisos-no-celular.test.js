@@ -218,17 +218,20 @@ test('endpoint que não é https é recusado', async (t) => {
   }
 });
 
-test('sem VAPID no servidor, a rota diz que não dá e a inscrição é recusada', async (t) => {
+test('sem a chave PRIVADA, a inscrição continua funcionando — é o papel da Vercel', async (t) => {
+  // Este processo (o HTTP) inscreve aparelhos e não empurra nada: quem empurra
+  // é o worker no VPS, que tem a privada. Exigir as duas aqui obrigaria a
+  // espalhar o segredo por mais um lugar, sem necessidade.
   const { ambiente } = await servidorComVapid(t, { comVapid: false });
 
   const estado = await (await ambiente.pedir('/api/aparelhos')).json();
-  assert.equal(estado.disponivel, false);
-  assert.equal(estado.chave_publica, null);
+  assert.equal(estado.disponivel, true, 'a chave pública tem padrão no código — ela não é segredo');
+  assert.ok(estado.chave_publica, 'a tela precisa da chave para inscrever');
 
-  const recusada = await ambiente.pedir('/api/aparelhos', {
+  const aceita = await ambiente.pedir('/api/aparelhos', {
     method: 'POST', headers: JSON_H, body: JSON.stringify(INSCRICAO),
   });
-  assert.equal(recusada.status, 503);
+  assert.equal(aceita.status, 201, 'inscrever não depende da chave privada');
 });
 
 test('desinscrever tira o aparelho, e o aparelho de outra pessoa não é alcançável', async (t) => {
@@ -274,6 +277,28 @@ test('o sino e o aviso no celular não se confundem de rota', () => {
   // O aviso no celular (aparelhos inscritos para push).
   assert.match(APP_JS, /pedirJson\('\/api\/aparelhos'\)/);
   assert.match(HTTP_JS, /if \(!rota\.startsWith\('\/api\/aparelhos'\)\) return false;/);
+});
+
+test('a chave pública tem padrão no código: a Vercel inscreve sem variável de ambiente', () => {
+  // Ela é entregue a todo navegador que se inscreve — não é segredo. É isso que
+  // permite a inscrição funcionar sem uma variável a mais no painel.
+  const { carregarConfiguracao } = require('../src/config');
+  const semNada = carregarConfiguracao({
+    NODE_ENV: 'test',
+    CRMCLINICA_JWT_SECRET: 'segredo-sintetico-de-teste-com-mais-de-32-caracteres',
+  });
+
+  assert.ok(semNada.avisos.vapidPublica, 'a pública precisa ter padrão');
+  assert.equal(semNada.avisos.vapidPrivada, '', 'a privada NÃO pode ter padrão: ela assina o empurrão');
+
+  // E a variável de ambiente continua ganhando, para trocar a chave sem mexer
+  // no código.
+  const comEnv = carregarConfiguracao({
+    NODE_ENV: 'test',
+    CRMCLINICA_JWT_SECRET: 'segredo-sintetico-de-teste-com-mais-de-32-caracteres',
+    VAPID_PUBLIC_KEY: 'outra-chave-qualquer',
+  });
+  assert.equal(comEnv.avisos.vapidPublica, 'outra-chave-qualquer');
 });
 
 test('sem sessão, as rotas respondem 401 — não 500', async (t) => {

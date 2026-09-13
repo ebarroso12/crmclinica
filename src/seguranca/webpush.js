@@ -89,6 +89,16 @@ function origemDe(endpoint) {
  * gastar requisição para sempre; quem chama deve apagá-la.
  */
 function criarWebPush({ chavePublica, chavePrivada, assunto, buscar = fetch, agora = () => new Date() } = {}) {
+  // Duas capacidades diferentes, e é importante não confundi-las:
+  //
+  //   • INSCREVER um aparelho precisa só da chave PÚBLICA — ela é entregue a
+  //     todo navegador que se inscreve, não é segredo;
+  //   • ENVIAR o empurrão precisa da PRIVADA, que assina o JWT.
+  //
+  // No crmclinica isso acontece em máquinas diferentes: a inscrição é servida
+  // pela Vercel, o envio sai do worker no VPS. Exigir a privada nos dois
+  // lugares seria espalhar segredo sem necessidade — a Vercel nunca empurra.
+  const podeInscrever = Boolean(chavePublica);
   const configurado = Boolean(chavePublica && chavePrivada && assunto);
 
   async function empurrar(endpoint, { urgencia = 'normal', validadeSegundos = 6 * 60 * 60 } = {}) {
@@ -132,7 +142,12 @@ function criarWebPush({ chavePublica, chavePrivada, assunto, buscar = fetch, ago
     return { entregue: false, status: resposta.status, motivo: `push respondeu ${resposta.status}`, remover: false };
   }
 
-  return { empurrar, configurado, chavePublica: configurado ? chavePublica : null };
+  return {
+    empurrar,
+    configurado,
+    podeInscrever,
+    chavePublica: podeInscrever ? chavePublica : null,
+  };
 }
 
 module.exports = { criarWebPush, gerarChavesVapid, montarJwtVapid, base64url };

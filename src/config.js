@@ -448,7 +448,17 @@ function carregarConfiguracao(ambiente = process.env) {
     // Aviso no celular (Web Push). Sem as chaves, o CRM funciona igual — só
     // não oferece a inscrição, e nenhum empurrão sai.
     avisos: {
-      vapidPublica: texto(ambiente.VAPID_PUBLIC_KEY),
+      // A chave PÚBLICA do aviso no celular fica aqui como padrão de propósito:
+      // ela é entregue a todo navegador que se inscreve (vai no JavaScript da
+      // página), então não é segredo — guardá-la no código é o que permite a
+      // Vercel oferecer a inscrição sem uma variável de ambiente a mais.
+      //
+      // A PRIVADA não tem padrão nenhum: ela assina o empurrão e vive só no
+      // .env do servidor que envia (o worker no VPS). Sem ela, este processo
+      // inscreve aparelhos e não empurra nada — que é exatamente o papel da
+      // Vercel neste desenho.
+      vapidPublica: texto(ambiente.VAPID_PUBLIC_KEY)
+        || 'BEWMseCFMm37kFD2JFoCXrF5v5Dx-TQ3mIEvnasjZEwanXRibPYQ6W_2E7FUn2J6jehZuaHkH_sjYvmme_w6ZxQ',
       vapidPrivada: texto(ambiente.VAPID_PRIVATE_KEY),
       // A especificação pede um contato de quem empurra: mailto: ou https:.
       assunto: texto(ambiente.VAPID_SUBJECT) || 'mailto:edson.barroso@gmail.com',
