@@ -52,7 +52,8 @@ function criarRotasDeAvisosNoCelular({ repositorio, webpush }) {
     async estado(usuario) {
       const inscricoes = await repositorio.listarInscricoesDeNotificacao(usuario.id);
       return {
-        disponivel: webpush.configurado === true,
+        // Inscrever precisa só da chave pública; quem empurra é o worker.
+        disponivel: webpush.podeInscrever === true,
         chave_publica: webpush.chavePublica ?? null,
         aparelhos: inscricoes.length,
       };
@@ -60,7 +61,7 @@ function criarRotasDeAvisosNoCelular({ repositorio, webpush }) {
 
     /** POST /api/aparelhos — este aparelho quer receber avisos. */
     async inscrever(usuario, corpo) {
-      if (!webpush.configurado) {
+      if (!webpush.podeInscrever) {
         const erro = new Error('aviso no celular não está configurado neste servidor');
         erro.status = 503;
         erro.codigo = 'vapid_nao_configurado';

@@ -163,3 +163,24 @@ test('base64url não devolve o alfabeto padrão', () => {
   const bytes = Buffer.from([251, 255, 190, 254, 0, 1, 2, 3]);
   assert.ok(!/[+/=]/.test(base64url(bytes)));
 });
+
+test('inscrever precisa só da chave pública; enviar precisa da privada', async () => {
+  // No crmclinica isso acontece em máquinas diferentes: a inscrição é servida
+  // pela Vercel, o empurrão sai do worker no VPS. Exigir a privada nos dois
+  // lugares seria espalhar segredo sem necessidade.
+  const { publica } = gerarChavesVapid();
+
+  const soPublica = criarWebPush({ chavePublica: publica });
+  assert.equal(soPublica.podeInscrever, true, 'com a pública, dá para inscrever aparelho');
+  assert.equal(soPublica.configurado, false, 'sem a privada, não dá para empurrar');
+  assert.equal(soPublica.chavePublica, publica, 'a tela precisa receber a chave para inscrever');
+
+  const naoEnvia = await soPublica.empurrar('https://push.exemplo/abc');
+  assert.equal(naoEnvia.entregue, false);
+  assert.equal(naoEnvia.motivo, 'vapid_nao_configurado');
+  assert.equal(naoEnvia.remover, false, 'falta de chave aqui não pode apagar a inscrição de ninguém');
+
+  const vazio = criarWebPush({});
+  assert.equal(vazio.podeInscrever, false);
+  assert.equal(vazio.chavePublica, null);
+});
