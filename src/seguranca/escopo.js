@@ -141,7 +141,11 @@ const ROTAS_SEM_CLINICA = Object.freeze([
   // saiu — o colaborador não escreve em dado de contato, que é da clínica.
   // Auditoria de acesso B3: "notas" também — a nota é da ficha do CONTATO; na
   // conversa do agente, anotação é mensagem privada (`mensagens`).
-  { padrao: /^\/api\/conversas\/\d+(\/(mensagens|anexos|assumir|etiquetas|prioridade|estado))?$/ },
+  // "orientacao" entra pela mesma razão de "mensagens": é falar com quem está
+  // do outro lado, só que por intermédio da assistente. O dono do agente
+  // responde a dúvida do agente DELE — a conversa continua passando pelo
+  // escopo (404 quando não é dele).
+  { padrao: /^\/api\/conversas\/\d+(\/(mensagens|anexos|assumir|etiquetas|prioridade|estado|orientacao))?$/ },
   { padrao: /^\/api\/contatos$/, metodos: ['GET'] },
   { padrao: /^\/api\/contatos\/gestao$/, metodos: ['GET'] },
   // Só leitura (auditoria de acesso A3): editar contato é da clínica.

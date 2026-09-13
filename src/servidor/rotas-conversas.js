@@ -153,6 +153,7 @@ function validarAnexoRecebido(anexoBruto, conversaId) {
 
 function criarRotasDeConversas({
   repositorio, atendimento, emissorDeConversas = null, storage = null, limiteAnexoBytes = 10 * 1024 * 1024,
+  orientacoes = null,
 }) {
   return {
     /** GET /api/conversas/filas — vocabulário do inbox, para a interface montar os controles. */
@@ -247,7 +248,7 @@ function criarRotasDeConversas({
       if (escopo && !veConversaDe(escopo, conversa.agente_id ?? null)) throw erroNaoEncontrado('conversa não encontrada');
       const semClinica = Boolean(escopo) && escopo.clinica !== true;
 
-      const [contatoBruto, notasBrutas, anteriores] = await Promise.all([
+      const [contatoBruto, notasBrutas, anteriores, orientacaoPendente] = await Promise.all([
         repositorio.obterContato(conversa.contato_id),
         semClinica ? [] : repositorio.listarNotas(conversa.contato_id),
         // As outras conversas do mesmo contato também passam pelo escopo: o
@@ -255,6 +256,13 @@ function criarRotasDeConversas({
         repositorio.listarConversas({
           contatoId: conversa.contato_id, limite: 20, escopo: escopo ? filtroDeEscopo(escopo) : null,
         }),
+        // A dúvida que a assistente deixou para a clínica. Vem no detalhe da
+        // conversa porque é aqui que a pessoa está quando pode responder — um
+        // painel separado significaria a equipe ler a dúvida sem o contexto da
+        // conversa que a gerou. Ausente enquanto a migration 052 não rodar.
+        repositorio.obterOrientacaoPendente
+          ? repositorio.obterOrientacaoPendente(id).catch(() => null)
+          : null,
       ]);
       const contato = semClinica ? fichaSemDadoClinico(contatoBruto) : contatoBruto;
       const notas = notasBrutas;
@@ -279,7 +287,49 @@ function criarRotasDeConversas({
             })),
         },
         temperatura: lerTemperatura(conversa.etiquetas),
+        orientacao_pendente: orientacaoPendente
+          ? {
+            id: orientacaoPendente.id,
+            duvida: orientacaoPendente.duvida,
+            criado_em: orientacaoPendente.criado_em,
+          }
+          : null,
       };
+    },
+
+    /**
+     * POST /api/conversas/:id/orientacao — a clínica responde à dúvida.
+     *
+     * O texto que chega aqui é BASTIDOR: escrito depressa, para um colega, e
+     * pode conter recado interno, margem de desconto ou opinião. Ele nunca vai
+     * ao paciente como veio — a assistente compila, e uma barreira confere
+     * antes de sair (ver `respostaPodeSair`). Quando a barreira barra, a
+     * orientação fica registrada e quem responde é uma pessoa.
+     */
+    async responderOrientacao(conversaId, corpo) {
+      const id = exigirIdentificador(conversaId, 'conversa_id');
+      await exigirConversa(repositorio, id);
+
+      if (!orientacoes) {
+        const erro = new Error('o fluxo de orientação não está configurado neste servidor');
+        erro.status = 503;
+        throw erro;
+      }
+
+      const pendente = await repositorio.obterOrientacaoPendente(id);
+      if (!pendente) throw erroNaoEncontrado('não há dúvida pendente nesta conversa');
+
+      const texto = exigirTexto(corpo?.orientacao, 'orientacao', 2000);
+
+      return orientacoes.responder({
+        orientacaoId: pendente.id,
+        orientacao: texto,
+        usuarioId: corpo?.usuario_id ?? null,
+        enviar: (compilada) => atendimento.responderComoAssistente(id, compilada, {
+          usuarioId: corpo?.usuario_id ?? null,
+          orientacaoId: pendente.id,
+        }),
+      });
     },
 
     /**

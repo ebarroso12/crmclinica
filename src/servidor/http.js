@@ -21,6 +21,7 @@ const { criarRepositorioEmMemoria } = require('../dados/repositorio-memoria');
 const { montarResumo } = require('../dominio/resumo');
 const { criarAtendimento } = require('../dominio/atendimento');
 const { criarServicoDeFluxo } = require('../dominio/crm-fluxo');
+const { criarOrientacoes, compiladorPeloGateway } = require('../dominio/orientacao');
 const { criarServicoDeMetricas } = require('../dominio/metricas');
 const { criarGatewayDeIA } = require('../ia/gateway');
 const { criarMotorDeAgentes } = require('../dominio/agentes/motor');
@@ -79,7 +80,7 @@ const { criarQualidadeCadastral } = require('../dominio/qualidade-cadastral');
 const { criarOnboarding } = require('../dominio/onboarding');
 const { criarRotasDeUsuarios } = require('./rotas-usuarios');
 const { criarRotasDeSincronia } = require('./rotas-sincronia');
-const { exigirPermissao, ErroDeAutorizacao } = require('../seguranca/rbac');
+const { exigirPermissao, ErroDeAutorizacao, podeAcessarConversaAoVivo } = require('../seguranca/rbac');
 const { lerCorpoBruto, interpretarJson, ErroCorpoExcedido } = require('./corpo');
 const { criarEmissorDeConversas, criarReleituraDeEventos } = require('./eventos-conversas');
 
@@ -233,10 +234,20 @@ function criarAplicacao(dependencias = {}) {
   // conversa do agente (escalonada para a equipe), nunca como silêncio.
   const motorDeAgentes = dependencias.motorDeAgentes || criarMotorDeAgentes({ gateway: gatewayDeIA });
 
+  // Quando a assistente não sabe e pergunta para a clínica (db/052).
+  //
+  // Isto precisa existir nos TRÊS pontos de montagem (aqui e os dois workers):
+  // é `criarAtendimento` que decide se a dúvida vira registro. Faltando, a
+  // assistente ainda promete ao lead "vou confirmar com um profissional" — o
+  // marcador é limpo do texto de qualquer jeito — e ninguém é chamado.
+  const orientacoes = dependencias.orientacoes
+    || criarOrientacoes({ repositorio, ia: compiladorPeloGateway(gatewayDeIA) });
+
   const atendimento = dependencias.atendimento
     || criarAtendimento({
       repositorio,
       orquestrador,
+      orientacoes,
       // Quem opera a clinica nao entra no funil como paciente.
       numerosInternos: configuracao.numerosInternos,
       leads: servicoDeLeads,
@@ -290,6 +301,7 @@ function criarAplicacao(dependencias = {}) {
 
   const conversas = criarRotasDeConversas({
     repositorio, atendimento, emissorDeConversas, storage: clienteStorage, limiteAnexoBytes: configuracao.anexos.tamanhoMaximoBytes,
+    orientacoes,
   });
   const auth = criarRotasDeAutenticacao({ repositorio, autenticacao, contas, google, configuracao });
   const rotasDeLeads = criarRotasDeLeads({ repositorio, leads: servicoDeLeads });
@@ -464,6 +476,9 @@ function criarAplicacao(dependencias = {}) {
     temperatura: 'conversas:etiquetar',
     prioridade: 'conversas:priorizar',
     notas: 'conversas:responder',
+    // Orientar é falar com o paciente por intermédio da assistente: mesma
+    // permissão de responder.
+    orientacao: 'conversas:responder',
     ficha: 'contatos:editar',
     // Encerrar é resolver com resumo interno: mesma permissão de resolver.
     encerrar: 'conversas:resolver',
@@ -1946,6 +1961,7 @@ function criarAplicacao(dependencias = {}) {
       estado: (corpo) => conversas.definirEstado(conversaId, corpo),
       temperatura: (corpo) => conversas.definirTemperatura(conversaId, corpo),
       notas: async (corpo) => conversas.criarNota(conversaId, corpo, { escopo: usuario ? await escopoDoUsuario() : null }),
+      orientacao: (corpo) => conversas.responderOrientacao(conversaId, corpo),
       encerrar: (corpo) => servicoDeFluxo.encerrarConversa(conversaId, { usuarioId: corpo.usuario_id ?? null }),
     };
 
@@ -1961,6 +1977,28 @@ function criarAplicacao(dependencias = {}) {
 
     // Quem agiu fica registrado na própria ação, não só na auditoria.
     const corpo = await lerJson(req);
+
+    // Escritas que a aplicação grava ELEVADA ao papel de sistema (ver o
+    // comentário de `registrarMensagem`): a nota interna e a resposta compilada
+    // de uma orientação. Elevar tira `can_access_conversa` da jogada, então a
+    // mesma regra precisa ser aplicada aqui, antes — senão um atendente
+    // mandando `{"privada": true}` escreveria na conversa de um colega, que é
+    // exatamente o que a policy impedia.
+    //
+    // `podeAcessarConversaAoVivo` é o espelho de `can_access_conversa` já usado
+    // pelo chat ao vivo; admin e gestor passam, atendente só na conversa dele
+    // ou numa sem dono.
+    const elevaAoGravar = partes[3] === 'orientacao' || (partes[3] === 'mensagens' && Boolean(corpo?.privada));
+    if (elevaAoGravar && repositorio.obterConversa) {
+      const alvo = await repositorio.obterConversa(Number(conversaId));
+      if (alvo && !podeAcessarConversaAoVivo(usuario.papel, usuario.id, alvo.atribuido_a ?? null)) {
+        // Mesma resposta de "não existe": confirmar a conversa já contaria algo
+        // sobre o atendimento de outra pessoa.
+        responderJson(res, 404, { erro: 'conversa não encontrada' });
+        return true;
+      }
+    }
+
     responderJson(res, 200, await acao({ ...corpo, usuario_id: usuario.id, autor: usuario.nome }));
     return true;
   }
@@ -2457,11 +2495,22 @@ function criarAplicacao(dependencias = {}) {
         if (tratouLenta) return;
       }
 
+      // Responder uma orientação é a mesma história das rotas acima: compila o
+      // texto num modelo de IA (segundos) e depois entrega pelo WhatsApp (até o
+      // timeout do canal). Dentro da transação com identidade, isso prenderia
+      // uma conexão do pool esse tempo todo — e conexão é justamente o recurso
+      // que falta aqui (`EMAXCONNSESSION`, pool_size 15). As escritas dela são
+      // elevadas a sistema e a guarda de acesso roda na aplicação, então não
+      // depende do papel declarado na transação.
+      const ehOrientacao = metodo === 'POST' && /^\/api\/conversas\/\d+\/orientacao$/.test(rota);
+
       // Daqui para baixo, tudo que toca o banco corre numa transação com o
       // usuário declarado — inbox, contatos, leads e agenda.
-      const tratou = await comIdentidade(usuario, () => (
-        tratarRotasDeConversas(req, res, rota, metodo, url, usuario, escopoDoUsuario)
-      ));
+      const tratou = ehOrientacao
+        ? await tratarRotasDeConversas(req, res, rota, metodo, url, usuario, escopoDoUsuario)
+        : await comIdentidade(usuario, () => (
+          tratarRotasDeConversas(req, res, rota, metodo, url, usuario, escopoDoUsuario)
+        ));
       if (tratou) return;
 
       const arquivo = ARQUIVOS_PUBLICOS.get(rota);

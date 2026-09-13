@@ -836,6 +836,14 @@ async function abrirConversa(conversaId) {
 
     desenharThread(mensagens);
     desenharFicha(conversa, ficha, detalhe.temperatura);
+    desenharOrientacao(detalhe.orientacao_pendente);
+
+    // No celular as três partes ficam empilhadas: tocar numa conversa deixava
+    // a viewport na lista, e a conversa aberta ficava abaixo da dobra. No
+    // computador as três estão lado a lado e não há para onde rolar.
+    if (window.matchMedia('(max-width: 980px)').matches) {
+      seletor('.thread')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
 
     seletor('#seletor-prioridade').value = conversa.prioridade || '';
     seletor('#seletor-temperatura').value = detalhe.temperatura || '';
@@ -850,6 +858,7 @@ async function abrirConversa(conversaId) {
     if (veClinica()) carregarAgendaDaConversa(conversaId);
     else definirTexto('#agenda-da-conversa', '');
   } catch (erro) {
+    desenharOrientacao(null);
     seletor('#thread-mensagens').innerHTML = '';
     definirTexto('#thread-nome', 'Não foi possível abrir');
     definirTexto('#thread-detalhe', erro.status === 404 ? 'Conversa não encontrada.' : 'Tente novamente.');
@@ -1663,6 +1672,61 @@ async function prepararEEnviarAnexo(arquivo, conversaId) {
   return { caminho: preparo.caminho, tipo: preparo.tipo, nome: preparo.nome };
 }
 
+/**
+ * O bloco da dúvida que a assistente deixou para a clínica.
+ *
+ * Some quando não há pendência — inclusive ao trocar de conversa, senão a
+ * dúvida de uma apareceria na thread da outra.
+ */
+function desenharOrientacao(pendente) {
+  const bloco = seletor('#bloco-orientacao');
+  if (!bloco) return;
+
+  bloco.hidden = !pendente;
+  definirTexto('#orientacao-estado', '');
+  const campo = seletor('#orientacao-texto');
+  if (campo) campo.value = '';
+  if (!pendente) return;
+
+  // `textContent`: a dúvida é texto que veio de um modelo de linguagem sobre a
+  // mensagem de um paciente — nunca entra como HTML.
+  definirTexto('#orientacao-duvida', pendente.duvida || 'A assistente não soube responder.');
+}
+
+seletor('#form-orientacao')?.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  const campo = seletor('#orientacao-texto');
+  const orientacao = campo.value.trim();
+  if (!orientacao || !conversaAberta) return;
+
+  const botao = evento.target.querySelector('button[type="submit"]');
+  botao.disabled = true;
+  definirTexto('#orientacao-estado', 'Enviando…');
+
+  try {
+    const resultado = await pedirJson(`/api/conversas/${conversaAberta}/orientacao`, {
+      metodo: 'POST',
+      corpo: { orientacao },
+    });
+    // A barreira pode ter barrado a resposta compilada: a orientação fica
+    // registrada, mas quem fala com o paciente é uma pessoa. Dizer isso é o
+    // que evita a equipe achar que a mensagem saiu.
+    if (resultado?.enviada === false) {
+      definirTexto('#orientacao-estado', 'Registrado, mas a resposta automática não saiu — responda por aqui.');
+      seletor('#bloco-orientacao').hidden = true;
+    } else {
+      await abrirConversa(conversaAberta);
+    }
+  } catch (erro) {
+    definirTexto(
+      '#orientacao-estado',
+      erro.status === 409 ? 'Alguém já respondeu esta dúvida.' : 'Não foi possível enviar. Tente de novo.',
+    );
+  } finally {
+    botao.disabled = false;
+  }
+});
+
 seletor('#form-resposta')?.addEventListener('submit', async (evento) => {
   evento.preventDefault();
   const campo = seletor('#resposta');
@@ -2289,8 +2353,12 @@ async function verificarNovaVersao() {
   try {
     saude = await pedirJson('/health');
   } catch {
-    // /health falhar não pode quebrar a tela — só não avisamos desta vez.
-    return;
+    // /health falhar não pode quebrar a tela — só não avisamos desta vez. Mas
+    // o cartão não pode ficar pendurado em "Conferindo…" para sempre: sem esta
+    // linha, quem abre Meu perfil com o servidor fora do ar vê uma checagem
+    // que nunca termina, e conclui que o CRM travou.
+    definirTexto('#perfil-versao-estado', 'Não foi possível conferir agora. Tente de novo em instantes.');
+    return false;
   }
 
   const versaoLegivel = `v${saude.versao}${saude.commit ? ` · ${saude.commit.slice(0, 7)}` : ''}`;
@@ -2311,7 +2379,7 @@ async function verificarNovaVersao() {
     // verificação que acontece antes de a pessoa abrir a tela, e deixá-lo
     // pendurado faz parecer que o CRM travou na checagem.
     definirTexto('#perfil-versao-estado', 'Esta é a versão carregada agora neste aparelho.');
-    return;
+    return false;
   }
 
   // Sem `commit` (rodando fora da Vercel — VPS, local) não há como comparar
@@ -2325,9 +2393,16 @@ async function verificarNovaVersao() {
   const aviso = seletor('#aviso-versao-nova');
   if (aviso) aviso.hidden = !temVersaoNova;
 
-  definirTexto('#perfil-versao-estado', temVersaoNova
-    ? 'Tem uma versão nova disponível. Toque em "Procurar atualização" para carregá-la.'
-    : 'Você está com a versão mais recente.');
+  // Sem `commit` não dá para afirmar que está atualizado — só que não há como
+  // comparar. Dizer "você está com a versão mais recente" nesse caso seria uma
+  // afirmação sem base, e é exatamente onde a pessoa deixaria de procurar.
+  definirTexto('#perfil-versao-estado', (() => {
+    if (temVersaoNova) return 'Tem uma versão nova disponível. Toque em "Procurar atualização" para carregá-la.';
+    if (!saude.commit) return 'Esta é a versão carregada neste aparelho. Este servidor não informa qual é a versão no ar.';
+    return 'Você está com a versão mais recente.';
+  })());
+
+  return temVersaoNova;
 }
 
 /**
@@ -2346,13 +2421,16 @@ function atualizarAgora() {
 seletor('#banner-atualizar')?.addEventListener('click', atualizarAgora);
 seletor('#aviso-versao-atualizar')?.addEventListener('click', atualizarAgora);
 
-// Em Meu perfil: confere na hora e, se houver versão nova, carrega. Sem versão
-// nova, recarregar mesmo assim é o que a pessoa espera de um botão chamado
-// "Procurar atualização" — e é inofensivo.
+// Em Meu perfil: confere na hora e SÓ recarrega se houver versão nova.
+//
+// Recarregar sempre não era inofensivo como parecia: o CRM é uma página só,
+// com as seções escondidas, então um rascunho digitado no composer de uma
+// conversa sobrevive à troca de tela — e morria no `location.replace`. Quem
+// não tem versão nova recebe a resposta no próprio cartão.
 seletor('#perfil-procurar-versao')?.addEventListener('click', async () => {
   definirTexto('#perfil-versao-estado', 'Conferindo…');
-  await verificarNovaVersao().catch(() => {});
-  atualizarAgora();
+  const temVersaoNova = await verificarNovaVersao().catch(() => false);
+  if (temVersaoNova) atualizarAgora();
 });
 
 // Voltar para a aba e o momento em que a pessoa REALMENTE vai usar a tela —

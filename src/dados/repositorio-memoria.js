@@ -875,13 +875,15 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return achada ? { ...achada } : null;
     },
 
+    // Devolve se FOI ESTA chamada que marcou — ver o comentário no repositório
+    // de verdade: é o que impede dois atendentes de mandarem duas mensagens.
     async responderOrientacao(id, { orientacao, usuarioId, respondidaEm }) {
       const achada = orientacoes.find((o) => o.id === Number(id) && o.estado === 'pendente');
-      if (achada) {
-        Object.assign(achada, {
-          estado: 'respondida', orientacao, respondida_por: usuarioId, respondida_em: respondidaEm,
-        });
-      }
+      if (!achada) return false;
+      Object.assign(achada, {
+        estado: 'respondida', orientacao, respondida_por: usuarioId, respondida_em: respondidaEm,
+      });
+      return true;
     },
 
     async listarOrientacoesSemAviso(limiteIso) {

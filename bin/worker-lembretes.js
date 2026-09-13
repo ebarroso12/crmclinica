@@ -48,6 +48,7 @@ const { criarClienteEvolucaoEnvio } = require('../src/integracoes/evolution-envi
 const { criarResumoDeAtendimento } = require('../src/dominio/resumo-atendimento');
 const { criarGeradorDeResumo } = require('../src/dominio/resumo-ia');
 const { criarGatewayDeIA } = require('../src/ia/gateway');
+const { criarOrientacoes, compiladorPeloGateway } = require('../src/dominio/orientacao');
 const { criarServicoDeFluxo } = require('../src/dominio/crm-fluxo');
 const { criarClienteGateway, carregarOuCriarIdentidade, ESCOPOS_DE_CANAL } = require('../src/integracoes/openclaw-gateway');
 const { OBJETOS_ESPERADOS } = require('../src/servidor/rotas-diagnostico');
@@ -275,6 +276,13 @@ async function main() {
       }),
       atendimento: criarAtendimento({
         repositorio,
+        // Mesma razao do worker-outbox: sem isto a duvida da assistente
+        // nao vira registro, e a promessa feita ao lead nao chega a
+        // ninguem (db/052).
+        orientacoes: criarOrientacoes({
+          repositorio,
+          ia: compiladorPeloGateway(criarGatewayDeIA({ configuracao, repositorio })),
+        }),
         numerosInternos: configuracao.numerosInternos,
         orquestrador: crmDespachaWhatsapp ? criarClienteOpenClaw(configuracao.openclaw) : null,
         leads: criarServicoDeLeads({ repositorio }),
@@ -413,6 +421,66 @@ async function main() {
       console.error(`[ia] retenção falhou: ${erro.message}`);
     }
   }
+  // Ninguem orientou em vinte minutos: a assistente avisa o lead e a
+  // conversa volta a andar (src/dominio/orientacao.js).
+  //
+  // Fica aqui porque este e o unico processo que vive de pe: a Vercel dorme
+  // entre requisicoes e nunca acordaria sozinha para conferir um prazo. O
+  // ciclo e de um minuto, entao o atraso maximo sobre os vinte e de um.
+  //
+  // `enviarNaConversa` LANCA quando a entrega falha, de proposito: e o que
+  // faz `avisarQuemEspera` nao marcar como avisado e tentar de novo no
+  // ciclo seguinte, em vez de dar o lead por atendido sem ele ter recebido
+  // nada.
+  const orientacoesDoAviso = criarOrientacoes({ repositorio });
+  const atendimentoDoAviso = criarAtendimento({
+    repositorio,
+    numerosInternos: configuracao.numerosInternos,
+    serena: servicoDaSerena,
+    canal: criarCanalDeConversas(configuracao.openclaw.canalClinica, viasDeEntrega),
+  });
+
+  // A assistente pode falar nesta conversa agora? A conversa esta assumida de
+  // proposito (foi `entregarParaAClinica`), entao esses tres campos sao
+  // neutralizados na pergunta -- o que interessa aqui e o que vale para TODA
+  // conversa: interruptor, PARAR SERENA, grade de horario, canal desligado e
+  // ativacao gradual.
+  async function assistentePodeFalar(conversaId) {
+    const conversa = await repositorio.obterConversa(conversaId);
+    if (!conversa) return false;
+    const decisao = await servicoDaSerena.podeResponder({
+      ...conversa, assumida_por_humano: false, atribuido_a: null, ia_pausada_ate: null, status: 'aberta',
+    });
+    if (!decisao.responder) {
+      console.log(`[orientacao] aviso adiado na conversa ${conversaId}: ${decisao.motivo}`);
+    }
+    return decisao.responder === true;
+  }
+
+  async function avisarQuemEsperaOrientacao() {
+    if (!repositorio.listarOrientacoesSemAviso) return;
+    try {
+      const { avisados } = await orientacoesDoAviso.avisarQuemEspera({
+        assistentePodeFalar,
+        enviarNaConversa: async (conversaId, texto, { chave = null } = {}) => {
+          const saida = await atendimentoDoAviso.responderComoAssistente(conversaId, texto, {
+            devolverAAutomacao: false,
+            // Sem a chave, cada retentativa gravaria uma linha nova na thread.
+            chave,
+          });
+          if (saida.enviada === false) throw new Error(saida.motivo_falha || "entrega falhou");
+        },
+        liberarConversa: (conversaId) => atendimentoDoAviso.liberar(conversaId),
+      });
+      if (avisados > 0) console.log(`[orientacao] ${avisados} lead(s) avisado(s) apos 20 minutos sem resposta`);
+    } catch (erro) {
+      // Tabela ausente (migration 052 nao rodou) ou banco piscando: o
+      // proximo ciclo tenta de novo. Derrubar o worker por isto pararia a
+      // fila de lembretes, que e a razao de ele existir.
+      console.error(`[orientacao] varredura falhou: ${erro.message}`);
+    }
+  }
+
   async function umLote() {
     // Um lote por vez. Sem isto, um lote lento e um intervalo curto fariam dois
     // ciclos se sobreporem dentro do mesmo processo.
@@ -461,6 +529,7 @@ async function main() {
       await umLote();
       await enviarResumos();
       await gerarSino();
+      await avisarQuemEsperaOrientacao();
       await manterRetencaoDeIA();
     } finally {
       cicloEmAndamento = false;

@@ -49,6 +49,7 @@ const { criarEmissorDeConversas } = require('../src/servidor/eventos-conversas')
 const { criarAvisos } = require('../src/dominio/avisos');
 const { criarWebPush } = require('../src/seguranca/webpush');
 const { criarGatewayDeIA } = require('../src/ia/gateway');
+const { criarOrientacoes, compiladorPeloGateway } = require('../src/dominio/orientacao');
 const { criarMotorDeAgentes } = require('../src/dominio/agentes/motor');
 
 function lerArgumento(nome, padrao = null) {
@@ -149,7 +150,15 @@ async function main() {
   // Agentes configuráveis (docs/AGENTES.md): quem gera a resposta de uma
   // conversa de agente é este worker, pelo gateway multi-IA — então as chaves
   // de IA precisam existir no .env DESTE processo (o do VPS), não só na Vercel.
-  const motorDeAgentes = criarMotorDeAgentes({ gateway: criarGatewayDeIA({ configuracao, repositorio }) });
+  const gatewayDeIA = criarGatewayDeIA({ configuracao, repositorio });
+  const motorDeAgentes = criarMotorDeAgentes({ gateway: gatewayDeIA });
+
+  // Quando a assistente nao sabe e pergunta para a clinica (db/052).
+  // Precisa existir AQUI tambem: e este worker que gera a resposta da
+  // Serena. Sem `orientacoes`, a duvida nao vira registro nenhum -- ela
+  // promete ao lead "vou confirmar com um profissional" e ninguem e
+  // chamado.
+  const orientacoes = criarOrientacoes({ repositorio, ia: compiladorPeloGateway(gatewayDeIA) });
 
   // Aviso no celular: sem VAPID configurado no .env deste processo, o
   // `criarWebPush` nasce desligado e nenhum empurrão sai — o atendimento roda
@@ -167,6 +176,7 @@ async function main() {
   const atendimento = criarAtendimento({
     repositorio,
     avisos,
+    orientacoes,
     orquestrador: criarClienteOpenClaw(configuracao.openclaw),
     // Quem opera a clinica nao entra no funil como paciente.
     numerosInternos: configuracao.numerosInternos,

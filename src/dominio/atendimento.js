@@ -375,7 +375,7 @@ function criarAtendimento({
           conteudo: MENSAGEM_CONTATO_BLOQUEADO,
           autor_tipo: 'sistema',
           autor_nome: 'Sistema',
-        });
+        }, { comoSistema: true });
         emissor?.publicarMensagem(conversaId, mensagem);
 
         // Nunca o motivo do bloqueio (pode carregar relato sensível do
@@ -691,10 +691,7 @@ function criarAtendimento({
         if (duvidaParaAClinica && orientacoes) {
           const pedida = await orientacoes.pedir({ conversaId, duvida: duvidaParaAClinica });
           if (pedida.pedida) {
-            // Vai para a equipe: a automação não deve seguir respondendo sobre
-            // um assunto que ela mesma disse não conhecer. O escalonamento é o
-            // que faz o celular de quem pode orientar tocar.
-            await escalonar(conversaId, 'orientacao_pedida');
+            await entregarParaAClinica(conversaId);
             return {
               acao: 'respondida_e_pediu_orientacao',
               conversa_id: conversaId,
@@ -709,6 +706,26 @@ function criarAtendimento({
           conversa_id: conversaId,
           duplicada,
           entregue: entrega.enviada,
+        };
+      }
+
+      // Resposta que é SÓ o marcador: depois de limpá-lo não sobra nada para
+      // enviar, mas a dúvida existe e não pode sumir. Sem este bloco, o caminho
+      // caía em `automacao_sem_resposta` lá embaixo — a conversa ia para a
+      // equipe, o que é certo, só que sem ninguém saber DO QUE se trata.
+      if (duvidaParaAClinica && orientacoes) {
+        const pedida = await orientacoes.pedir({ conversaId, duvida: duvidaParaAClinica });
+        // Só cala a conversa se a dúvida ficou REGISTRADA. Calar sem registro
+        // deixaria a conversa parada sem nada para soltá-la: os vinte minutos
+        // só enxergam pendência gravada, e a única saída seria alguém notar à
+        // mão. Sem registro, o escalonamento comum já entrega para a equipe.
+        if (pedida.pedida) await entregarParaAClinica(conversaId);
+        else await escalonar(conversaId, 'orientacao_nao_registrada');
+        return {
+          acao: 'pediu_orientacao_sem_resposta',
+          conversa_id: conversaId,
+          orientacao_id: pedida.id ?? null,
+          entregue: false,
         };
       }
 
@@ -781,7 +798,7 @@ function criarAtendimento({
       conteudo: 'Conversa assumida pela equipe. A resposta automática está pausada.',
       autor_tipo: 'sistema',
       privada: true,
-    });
+    }, { comoSistema: true });
     emissor?.publicarMensagem(conversaId, avisoDeAssumir);
     // Evento distinto de "chegou mensagem": quem está com a tela de
     // Conversas aberta precisa reagir a "assumida" (ex.: mover a conversa de
@@ -813,8 +830,22 @@ function criarAtendimento({
    */
   async function liberarEmMassa() {
     const ids = await repositorio.listarConversasEscalonadasSemDono();
-    for (const id of ids) await liberar(id);
-    return { liberadas: ids.length };
+
+    // "Assumida sem dono" deixou de significar só "travada por falha": desde a
+    // orientação (db/052), `entregarParaAClinica` usa o mesmo estado para calar
+    // a assistente enquanto a clínica não responde. Soltar essas aqui devolvia
+    // à automação uma conversa com a pergunta em aberto — e, pior, o índice
+    // único de uma pendente por conversa faria o próximo `pedir()` devolver
+    // `ja_existe_pendente`: a Serena repetiria a promessa de retorno e ninguém
+    // seria chamado de novo. Quem solta essas é o prazo de vinte minutos.
+    const liberadas = [];
+    for (const id of ids) {
+      const pendente = await repositorio.obterOrientacaoPendente?.(id).catch(() => null);
+      if (pendente) continue;
+      await liberar(id);
+      liberadas.push(id);
+    }
+    return { liberadas: liberadas.length, aguardando_orientacao: ids.length - liberadas.length };
   }
 
   /** Devolve a conversa à automação. */
@@ -853,7 +884,13 @@ function criarAtendimento({
       autor_tipo: privada ? 'sistema' : 'equipe',
       autor_nome: autorNome,
       privada,
-    });
+      // Nota interna é `sistema` + `privada`, e a policy só deixa o papel do
+      // usuário gravar mensagem de `equipe`, visível. Sem elevar, TODA nota
+      // interna pela tela era recusada pelo banco (mesmo defeito do "assumir").
+      // Quem pode escrever nesta conversa já foi decidido antes, na aplicação
+      // (`exigirAcessoAConversa` em http.js) — é o que substitui a guarda que a
+      // policy fazia aqui.
+    }, { comoSistema: privada });
     // Publica assim que a mensagem existe, mesmo antes de tentar entregar ao
     // paciente: outra tela da equipe olhando a mesma conversa precisa ver a
     // resposta na hora, e não deve esperar pelo canal externo para isso.
@@ -901,6 +938,75 @@ function criarAtendimento({
     }
 
     return mensagem;
+  }
+
+  /**
+   * A resposta compilada a partir da orientação da clínica.
+   *
+   * Vai assinada pela assistente, e não pela pessoa, porque é a voz dela que o
+   * lead conhece — quem orientou fica registrado na orientação e na auditoria,
+   * onde a equipe precisa ver. A entrega usa `origem: 'equipe'` de propósito: a
+   * barreira final existe para o caso da automação, em que passam dezenas de
+   * segundos entre decidir e enviar; aqui a pessoa acabou de clicar, e a
+   * conversa está DELIBERADAMENTE calada (`entregarParaAClinica`) — a barreira
+   * recusaria exatamente a mensagem que essa pausa estava esperando.
+   *
+   * Devolver a conversa à automação é o último passo, e só depois do envio: se
+   * a entrega falhar, ela continua com a equipe, que é onde precisa estar.
+   */
+  async function responderComoAssistente(conversaId, texto, {
+    usuarioId = null, orientacaoId = null, devolverAAutomacao = true, chave = null,
+  } = {}) {
+    const conversa = await repositorio.obterConversa(conversaId);
+    const chaveDaMensagem = chave ?? null;
+    const { mensagem, duplicada } = await repositorio.registrarMensagem(conversaId, {
+      direcao: 'saida',
+      conteudo: texto,
+      autor_tipo: 'automacao',
+      autor_nome: conversa?.agente_id ? (await nomeDoAgente(conversa.agente_id)) : 'Serena',
+      // Chave determinística: é ela que impede o aviso dos vinte minutos de
+      // virar uma linha nova na thread a cada ciclo do worker quando a entrega
+      // falha (ver `avisarQuemEspera`). O índice único de `id_externo` absorve
+      // a repetição no banco, não na boa vontade de quem chama.
+      id_externo: chaveDaMensagem,
+      // `automacao` não é `equipe`: a policy de INSERT recusaria esta linha com
+      // o papel do usuário, e a transação inteira iria junto — incluindo o
+      // UPDATE que marcou a orientação como respondida. Quem pode escrever
+      // nesta conversa foi decidido antes, na aplicação.
+    }, { comoSistema: true });
+    if (duplicada) return { ...mensagem, enviada: true, duplicada: true };
+    emissor?.publicarMensagem(conversaId, mensagem);
+
+    const entrega = await entregarAoPaciente(conversa, texto, mensagem.id, { origem: 'equipe' });
+
+    await repositorio.registrarAuditoria({
+      entidade: 'conversa',
+      entidadeId: conversaId,
+      acao: 'orientacao_respondida',
+      // Nunca o texto: nem a orientação interna, nem o que saiu ao paciente.
+      detalhe: { mensagem_id: mensagem.id, orientacao_id: orientacaoId, entregue: entrega.enviada },
+      usuarioId,
+    }).catch(() => {});
+
+    // O aviso dos vinte minutos passa `devolverAAutomacao: false` porque lá
+    // quem manda na ordem é `avisarQuemEspera`: ele marca "avisado" ANTES de
+    // liberar, para que uma falha na liberação não faça o lead receber a mesma
+    // mensagem de novo no ciclo seguinte.
+    if (devolverAAutomacao && (entrega.enviada || entrega.motivo === 'canal_nao_configurado')) {
+      await liberar(conversaId);
+    }
+
+    return { ...mensagem, enviada: entrega.enviada, motivo_falha: entrega.enviada ? null : entrega.motivo };
+  }
+
+  /** Nome do agente para assinar a mensagem; na falha, a assinatura padrão. */
+  async function nomeDoAgente(agenteId) {
+    try {
+      const agente = await repositorio.obterAgente?.(agenteId);
+      return agente?.nome || 'Serena';
+    } catch {
+      return 'Serena';
+    }
   }
 
   /**
@@ -1142,7 +1248,7 @@ function criarAtendimento({
       conteudo: `Conversa encaminhada para a equipe (${motivo}).`,
       autor_tipo: 'sistema',
       privada: true,
-    });
+    }, { comoSistema: true });
     emissor?.publicarMensagem(conversaId, avisoDeEscalonamento);
     await repositorio.registrarAuditoria({
       entidade: 'conversa',
@@ -1163,6 +1269,26 @@ function criarAtendimento({
         agenteId: conversa?.agente_id ?? null,
       });
     }
+  }
+
+  /**
+   * A dúvida foi registrada: a conversa passa para a clínica e a assistente
+   * cala até alguém orientar (ou até os vinte minutos).
+   *
+   * `escalonar` sozinho não basta, e isso é de propósito da parte dele: ele
+   * atende sobretudo FALHA TÉCNICA, onde a próxima mensagem do paciente deve
+   * poder ser respondida se a causa já passou — o comentário dele diz isso com
+   * todas as letras. Aqui é o caso oposto: ela mesma declarou não saber do
+   * assunto. Sem calar, a próxima mensagem do lead recebia OUTRA promessa de
+   * retorno, e o índice único de uma pendente por conversa impedia até que a
+   * dúvida nova fosse registrada — promessa repetida, ninguém avisado.
+   *
+   * O contrário disto é `liberar()`, que é o que o aviso de vinte minutos usa
+   * para devolver a conversa à automação.
+   */
+  async function entregarParaAClinica(conversaId) {
+    await escalonar(conversaId, 'orientacao_pedida');
+    await repositorio.assumirConversaSeNecessario?.(conversaId, { usuarioId: null, pausaAte: null });
   }
 
   /** Define a temperatura manualmente, preservando as demais etiquetas. */
@@ -1272,6 +1398,7 @@ function criarAtendimento({
     liberar,
     liberarEmMassa,
     responderComoEquipe,
+    responderComoAssistente,
     registrarEnvioExternoDoWhatsapp,
     escalonar,
     processarInatividadeDeAgentes: (opcoes) => fluxoDeAgentes.processarInatividade(opcoes),

@@ -828,7 +828,7 @@ function criarRepositorio(pool) {
      * As duas coisas em uma transação: uma mensagem sem `ultima_msg_em` atualizado
      * some do topo da lista e a equipe não a vê.
      */
-    async registrarMensagem(conversaId, mensagem) {
+    async registrarMensagem(conversaId, mensagem, { comoSistema: escritaDoSistema = false } = {}) {
       const gravar = async (cliente) => {
         // Migration 042: ON CONFLICT sem alvo — pega tanto id_externo (chave
         // de entrada / determinística da Serena) quanto id_provedor (ID
@@ -921,7 +921,38 @@ function criarRepositorio(pool) {
         return { mensagem: montarMensagem(rows[0]), duplicada: false };
       };
 
-      return executarNaTransacao(gravar);
+      // Escrita da APLICAÇÃO, não da pessoa: "Conversa assumida pela equipe",
+      // "Conversa encaminhada para a equipe (motivo)", o resumo de
+      // encerramento, a nota interna, a resposta compilada de uma orientação.
+      // A policy de INSERT em `mensagens` (`crm008_m_i`) só aceita, do papel do
+      // usuário, mensagem de `equipe`, de saída e NÃO privada — que é a regra
+      // certa para o que a pessoa digita. Aquelas não se parecem com isso, e
+      // batiam na policy: `POST /api/conversas/:id/assumir` respondia 500 com
+      // "new row violates row-level security policy for table mensagens", e
+      // como o PostgreSQL aborta a transação inteira, a tomada de posse ia
+      // junto no rollback — a equipe clicava em "assumir" e nada acontecia
+      // (achado em produção em 13/09/2026; `audit_log` tinha UM
+      // `assumida_por_humano` desde 13/08).
+      //
+      // Mesma elevação da auditoria (ver `comoSistema`), e pelo mesmo motivo: a
+      // aplicação escreve dentro da transação do usuário, que declarou o papel
+      // dele.
+      //
+      // OPT-IN EXPLÍCITO, e isso é a parte que importa. A primeira versão desta
+      // correção deduzia a elevação de `autor_tipo === 'sistema'`, e revisão
+      // independente mostrou que aquilo era alcançável de fora: `privada` VEM
+      // do corpo da requisição (rotas-conversas.js, `responder`) e decide o
+      // `autor_tipo` em `responderComoEquipe`. Um atendente mandando
+      // `{"privada": true}` numa conversa de um colega passava a escrever nela
+      // — `can_access_conversa`, que era quem barrava, deixava de ser avaliada.
+      //
+      // Quem eleva agora diz isso na chamada, e quem chama a partir de uma ação
+      // da pessoa confere o acesso ANTES, na aplicação (`exigirAcessoAConversa`
+      // em http.js, que espelha `can_access_conversa`). A regra nunca deixa de
+      // ser aplicada: ou o banco decide, ou a aplicação decidiu primeiro.
+      return executarNaTransacao((cliente) => (
+        escritaDoSistema ? comoSistema(() => gravar(cliente)) : gravar(cliente)
+      ));
     },
 
     /**
@@ -1253,13 +1284,24 @@ function criarRepositorio(pool) {
       return { ...rows[0], id: Number(rows[0].id), conversa_id: Number(rows[0].conversa_id) };
     },
 
+    /**
+     * Marca a orientação como respondida — e diz se FOI ESTA chamada que a
+     * marcou.
+     *
+     * O `AND estado = 'pendente'` já impedia a segunda gravação, mas em
+     * silêncio: dois atendentes respondendo ao mesmo tempo passavam os dois
+     * pela leitura inicial, os dois compilavam e os dois mandavam mensagem ao
+     * paciente. Quem devolve `false` aqui é quem perdeu a corrida e não deve
+     * enviar nada.
+     */
     async responderOrientacao(id, { orientacao, usuarioId, respondidaEm }) {
-      await consultar(`
+      const { rowCount } = await consultar(`
         UPDATE orientacoes
            SET estado = 'respondida', orientacao = $2, respondida_por = $3,
                respondida_em = $4, atualizado_em = now()
          WHERE id = $1 AND estado = 'pendente'
       `, [id, orientacao, usuarioId, respondidaEm]);
+      return rowCount === 1;
     },
 
     /** Pendentes de antes do limite que ainda não receberam o aviso de espera. */

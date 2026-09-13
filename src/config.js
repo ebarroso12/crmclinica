@@ -168,10 +168,30 @@ function carregarConfiguracao(ambiente = process.env) {
       //
       // Uma invocação atende UMA requisição por vez, e dentro de uma transação
       // todas as consultas reusam o mesmo client (ver `consultar` e
-      // `executarNaTransacao` em repositorio.js) — três é folga, não aperto.
-      // Fora do serverless (worker no VPS, processo longo e único) 10 continua
-      // certo. `CRMCLINICA_DB_POOL_MAX` sobrescreve os dois.
-      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, serverless ? 3 : 10),
+      // `executarNaTransacao` em repositorio.js).
+      //
+      // 13/09/2026 — o mesmo `EMAXCONNSESSION` voltou, dezenas de vezes, e
+      // desta vez derrubando quase toda rota (`/api/conversas`, `/api/leads`,
+      // `/api/auth/refresh`, o retorno do Google). A conta de 05/09 tinha uma
+      // premissa que deixou de valer: "worker no VPS, processo longo e ÚNICO".
+      // Não é mais único — são CINCO serviços systemd lá (outbox, lembretes,
+      // e-mail, google-outbox, heartbeat), todos em /opt/crmclinica-ponte e
+      // todos lendo o mesmo `.env`, que traz `CRMCLINICA_DB_POOL_MAX=3`.
+      // Cinco × 3 = 15: exatamente o pooler inteiro, ZERO sobrando para a
+      // Vercel. Daí o erro aparecer em toda rota da tela e em nenhum log de
+      // worker — quem perde a disputa é sempre quem chega depois.
+      //
+      // Dois por processo é o que cabe: os workers consultam em sequência (um
+      // lote por vez, por construção), e dois é também o MÍNIMO que o resumo
+      // diário exige (`problemaDoPoolParaResumo`) — a trava segura uma conexão
+      // e as consultas precisam de outra. Cinco × 2 = 10, deixando 5 lugares
+      // para a tela. `CRMCLINICA_DB_POOL_MAX` continua sobrescrevendo, e é
+      // preciso baixá-lo no `.env` do VPS: valor explícito lá ganha daqui.
+      //
+      // Isto REDUZ a pressão; não a elimina: cada instância serverless a mais
+      // ainda soma. O teto do pooler em si (pool_size 15, modo sessão) é
+      // ajuste de painel do Supabase, fora do alcance do código.
+      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, 2),
       tempoLimiteMs: inteiro(ambiente.CRMCLINICA_DB_TIMEOUT_MS, 10000),
     },
     openclaw: {

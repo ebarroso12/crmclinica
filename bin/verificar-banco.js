@@ -226,6 +226,37 @@ const ESPERADO = {
       ['instagram_comentarios_processados', 'conta_comercial_id'],
     ],
   },
+  // As três abaixo tinham ficado de fora da sonda (achado em revisão
+  // independente, 13/09/2026). Todas falham do mesmo jeito: o código sobe, a
+  // rota responde, e o recurso simplesmente não acontece — sem nada aceso.
+  //
+  // Sem ela, nenhum aparelho fica inscrito e o celular nunca toca.
+  '050_avisos_no_celular': {
+    tabelas: ['notificacoes_inscricoes'],
+    colunas: [
+      ['notificacoes_inscricoes', 'endpoint'],
+      ['notificacoes_inscricoes', 'usuario_id'],
+    ],
+  },
+  // Sem ela, "Esqueci minha senha" responde "enviado" e o e-mail não sai:
+  // a rota enfileira, e a fila é esta tabela.
+  '051_email_outbox': {
+    tabelas: ['email_outbox'],
+    colunas: [
+      ['email_outbox', 'estado'],
+      ['email_outbox', 'disponivel_em'],
+    ],
+  },
+  // Sem ela, a assistente promete ao lead "vou confirmar com um profissional"
+  // e a dúvida não é registrada em lugar nenhum.
+  '052_orientacoes': {
+    tabelas: ['orientacoes'],
+    colunas: [
+      ['orientacoes', 'duvida'],
+      ['orientacoes', 'estado'],
+      ['orientacoes', 'avisado_em'],
+    ],
+  },
 };
 
 // Constraints sem as quais uma garantia inteira deixa de existir. Índice
