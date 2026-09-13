@@ -89,6 +89,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const agenteEquipe = [];
   // Aparelhos inscritos para receber aviso no celular (push).
   const inscricoesDeNotificacao = new Map();
+  // Fila de e-mail (db/051): a rota grava, o worker entrega.
+  const filaDeEmail = [];
   let ultimoIdDeInscricao = 0;
   const proximoIdDeInscricao = () => { ultimoIdDeInscricao += 1; return ultimoIdDeInscricao; };
   // O catálogo em memória espelha o seed da migration 027.
@@ -833,6 +835,36 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return [...contatosBloqueados.values()].sort((a, b) => (a.criado_em < b.criado_em ? 1 : -1));
     },
 
+
+
+    // ------------------------------------------------------- fila de e-mail
+
+    async enfileirarEmail({ para, assunto, texto }) {
+      const id = filaDeEmail.length + 1;
+      filaDeEmail.push({
+        id, para, assunto, texto, estado: 'pendente', tentativas: 0, max_tentativas: 5,
+      });
+      return { id };
+    },
+
+    async reivindicarEmails({ limite = 10 } = {}) {
+      const alvo = filaDeEmail.filter((item) => item.estado === 'pendente').slice(0, limite);
+      for (const item of alvo) {
+        item.estado = 'enviando';
+        item.tentativas += 1;
+      }
+      return alvo.map((item) => ({ ...item }));
+    },
+
+    async marcarEmailEnviado(id) {
+      const item = filaDeEmail.find((e) => e.id === Number(id));
+      if (item) Object.assign(item, { estado: 'enviado', texto: null });
+    },
+
+    async marcarEmailFalhou(id, { erro, desistir = false } = {}) {
+      const item = filaDeEmail.find((e) => e.id === Number(id));
+      if (item) Object.assign(item, { estado: desistir ? 'falhou' : 'pendente', ultimo_erro: String(erro) });
+    },
 
     // ------------------------------------------------- aviso no celular (push)
 

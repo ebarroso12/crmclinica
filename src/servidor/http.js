@@ -276,7 +276,10 @@ function criarAplicacao(dependencias = {}) {
   });
 
   const google = dependencias.google || criarClienteGoogle(configuracao.google, dependencias);
-  const remetente = dependencias.remetente || criarRemetente(configuracao.email, dependencias);
+  // Com o repositório, o remetente enfileira quando este processo não tem SMTP
+  // (o caso da Vercel) em vez de só registrar no log e o e-mail nunca sair.
+  const remetente = dependencias.remetente
+    || criarRemetente(configuracao.email, { ...dependencias, repositorio });
   const limitador = dependencias.limitador === null
     ? null
     : dependencias.limitador || criarLimitador({ repositorio });

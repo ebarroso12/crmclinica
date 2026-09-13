@@ -19,6 +19,7 @@
     "lembretes:worker": "node bin/worker-lembretes.js",
     "google:worker": "node bin/worker-google-outbox.js",
     "outbox:worker": "node bin/worker-outbox.js",
+    "email:worker": "node bin/worker-email.js",
     "smoke-google": "node ferramentas/smoke-google-sync.js",
     "smoke-instagram": "node ferramentas/smoke-instagram.js",
     "checar-drift": "node ferramentas/checar-drift-configuracao.js",
