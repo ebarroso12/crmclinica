@@ -781,9 +781,23 @@ function montarLinhaDaLista(conversa) {
   return linha;
 }
 
+/**
+ * Liga e desliga os controles da conversa.
+ *
+ * `textarea` está na lista porque o campo de resposta É um — e não era: ele
+ * virou `<textarea>` quando ganhou várias linhas (Shift+Enter), e este seletor
+ * ficou para trás procurando `input`. O único `input` dentro do formulário é o
+ * seletor de arquivo, que é oculto.
+ *
+ * O efeito em produção foi o pior tipo de defeito de interface: a caixa de
+ * resposta APARECIA, o botão "Enviar" habilitava, e o campo de texto continuava
+ * travado. Quem assumia uma conversa via tudo no lugar e simplesmente não
+ * conseguia digitar — relato do Dr. Édson na conversa da Rose Oliveira,
+ * 13/09/2026. Sem poder responder pela tela, o atendimento humano não existia.
+ */
 function alternarAcoes(habilitado) {
   const controles = document.querySelectorAll(
-    '.acoes-conversa .acao, #form-resposta input, #form-resposta button, #botao-nota',
+    '.acoes-conversa .acao, #form-resposta textarea, #form-resposta input, #form-resposta button, #botao-nota',
   );
   for (const controle of controles) controle.disabled = !habilitado;
   seletor('#thread-nome').disabled = !habilitado;
