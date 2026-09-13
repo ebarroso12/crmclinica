@@ -279,16 +279,33 @@ test('estratégia de WhatsApp inventada é recusada', () => {
 
 // --------------------------------------------------- conexões por instância
 
-test('na Vercel o pool de conexões nasce pequeno; no VPS continua 10', () => {
+test('o pool nasce pequeno em TODO processo, serverless ou não', () => {
   // Incidente de 05/09: o login parou com `EMAXCONNSESSION — max clients are
   // limited to pool_size: 15`. Não havia defeito de código: cada instância de
   // função abre o próprio pool, e com o padrão de 10 DUAS instâncias
   // simultâneas já estouram o teto do pooler.
+  //
+  // Voltou em 13/09, dezenas de vezes, derrubando quase toda rota. A correção
+  // de 05/09 tinha tratado só o lado serverless, apoiada numa premissa que
+  // deixou de valer: "worker no VPS, processo longo e ÚNICO". São CINCO
+  // serviços systemd lá (outbox, lembretes, e-mail, google-outbox,
+  // heartbeat), nenhum deles definindo `CRMCLINICA_DB_POOL_MAX` — cinco × 10
+  // = 50 conexões possíveis contra as 15 do pooler, antes de a Vercel pedir a
+  // primeira. Por isso o padrão agora é o mesmo dos dois lados.
   const base = { CRMCLINICA_DATABASE_URL: 'postgres://exemplo' };
 
-  assert.equal(carregarConfiguracao(base).banco.poolMax, 10, 'processo longo (worker no VPS)');
-  assert.equal(carregarConfiguracao({ ...base, VERCEL: '1' }).banco.poolMax, 3);
-  assert.equal(carregarConfiguracao({ ...base, AWS_LAMBDA_FUNCTION_NAME: 'fn' }).banco.poolMax, 3);
+  assert.equal(carregarConfiguracao(base).banco.poolMax, 2, 'worker no VPS — e são cinco deles');
+  assert.equal(carregarConfiguracao({ ...base, VERCEL: '1' }).banco.poolMax, 2);
+  assert.equal(carregarConfiguracao({ ...base, AWS_LAMBDA_FUNCTION_NAME: 'fn' }).banco.poolMax, 2);
+});
+
+test('conexão ociosa devolve o lugar do pooler depressa', () => {
+  // Cada conexão parada segura um dos 15 lugares pelo mesmo tempo, e instância
+  // serverless que atendeu uma requisição e ficou ociosa é o caso mais comum.
+  const fonte = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'dados', 'pool.js'), 'utf8',
+  );
+  assert.match(fonte, /idleTimeoutMillis: 10000/);
 });
 
 test('CRMCLINICA_DB_POOL_MAX continua mandando nos dois ambientes', () => {

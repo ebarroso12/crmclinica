@@ -43,7 +43,12 @@ function criarPool(configuracaoDoBanco) {
     options: `-c request.jwt.claims=${CLAIMS_DE_BACKEND}`,
     max: configuracaoDoBanco.poolMax,
     connectionTimeoutMillis: configuracaoDoBanco.tempoLimiteMs,
-    idleTimeoutMillis: 30000,
+    // Era 30 s. Uma conexão parada segura um dos 15 lugares do pooler em modo
+    // sessão pelo mesmo tempo — e instância serverless que atendeu UMA
+    // requisição e ficou ociosa é o caso mais comum de todos. Dez segundos
+    // ainda aproveitam a conexão entre requisições próximas da mesma
+    // instância, e devolvem o lugar três vezes mais rápido.
+    idleTimeoutMillis: 10000,
     // Supabase e a maioria dos provedores gerenciados exigem TLS, mas usam
     // certificado de cadeia própria — a verificação estrita quebraria a conexão.
     ssl: /supabase|amazonaws|render|neon/i.test(configuracaoDoBanco.url)

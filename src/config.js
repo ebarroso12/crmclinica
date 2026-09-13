@@ -168,10 +168,26 @@ function carregarConfiguracao(ambiente = process.env) {
       //
       // Uma invocação atende UMA requisição por vez, e dentro de uma transação
       // todas as consultas reusam o mesmo client (ver `consultar` e
-      // `executarNaTransacao` em repositorio.js) — três é folga, não aperto.
-      // Fora do serverless (worker no VPS, processo longo e único) 10 continua
-      // certo. `CRMCLINICA_DB_POOL_MAX` sobrescreve os dois.
-      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, serverless ? 3 : 10),
+      // `executarNaTransacao` em repositorio.js).
+      //
+      // 13/09/2026 — o mesmo `EMAXCONNSESSION` voltou, dezenas de vezes, e
+      // desta vez derrubando quase toda rota (`/api/conversas`, `/api/leads`,
+      // `/api/auth/refresh`, o retorno do Google). A conta de 05/09 tinha uma
+      // premissa que deixou de valer: "worker no VPS, processo longo e ÚNICO".
+      // Não é mais único — são CINCO serviços systemd lá (outbox, lembretes,
+      // e-mail, google-outbox, heartbeat), e nenhum deles define
+      // `CRMCLINICA_DB_POOL_MAX`. Cinco × 10 = 50 conexões possíveis contra as
+      // 15 do pooler, antes de a Vercel pedir a primeira.
+      //
+      // Dois por processo é o que cabe: os workers consultam em sequência (um
+      // lote por vez, por construção), então o segundo slot é folga para o
+      // health check e a reivindicação da fila, não uso simultâneo real.
+      // `CRMCLINICA_DB_POOL_MAX` continua sobrescrevendo os dois.
+      //
+      // Isto REDUZ a pressão; não a elimina: cada instância serverless a mais
+      // ainda soma. O teto do pooler em si (pool_size 15, modo sessão) é
+      // ajuste de painel do Supabase, fora do alcance do código.
+      poolMax: inteiro(ambiente.CRMCLINICA_DB_POOL_MAX, 2),
       tempoLimiteMs: inteiro(ambiente.CRMCLINICA_DB_TIMEOUT_MS, 10000),
     },
     openclaw: {
