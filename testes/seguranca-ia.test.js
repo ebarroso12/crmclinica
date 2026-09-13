@@ -255,3 +255,59 @@ test('o cliente não forja fala do agente nem esconde instrução invisível', (
   assert.ok(montar.includes(indentacao), 'a indentação é o que impede a fala forjada');
   assert.ok(montar.includes('removerInvisiveis'), 'instrução escondida em caractere invisível precisa sair');
 });
+
+// ------------------- a barreira medida contra o prompt REAL da Serena
+
+// Frases tiradas do system prompt em uso (recebido em 13/09/2026). Elas são o
+// corpus que a barreira NÃO pode barrar — e a primeira versão dela barrava
+// cinco destas sete, incluindo o nome do produto ("avaliação diagnóstica") e a
+// frase que a regra de medicação manda dizer ("encaminhar para a equipe").
+//
+// Uma barreira que emudece a assistente nas mensagens que mais importam não é
+// conservadora: é uma barreira que alguém desliga, e aí ela não protege nada.
+const FRASES_LEGITIMAS_DO_PROMPT = [
+  'Claro. A avaliação diagnóstica tem o valor de R$ 800.',
+  'Agende sua avaliação diagnóstica presencial.',
+  'O Dr. Édson não parte automaticamente do diagnóstico de TDAH.',
+  'Telefone/WhatsApp: (16) 99312-0938',
+  'Como isso envolve uma decisão clínica, preciso encaminhar sua dúvida para a equipe.',
+  'Vou confirmar com a equipe para não te passar uma informação incorreta.',
+  'Esses sinais podem ter diferentes causas. Isso merece ser avaliado.',
+];
+
+/** O contato oficial da clínica, da regra 50 do prompt. */
+const CONTATO_DA_CLINICA = ['5516993120938'];
+
+test('a assistente não é emudecida nas frases do próprio prompt', () => {
+  for (const frase of FRASES_LEGITIMAS_DO_PROMPT) {
+    const { pode, motivo } = respostaPodeSair(frase, {
+      finalidade: 'agente_resposta',
+      contatosDaClinica: CONTATO_DA_CLINICA,
+    });
+    assert.equal(pode, true, `barrou uma frase que o prompt manda dizer: "${frase}" (${motivo})`);
+  }
+});
+
+test('e continua barrando a revelação de verdade', () => {
+  // O par do teste acima: afrouxar para deixar o legítimo passar não pode ter
+  // aberto a porta para o que a barreira existe para impedir.
+  const vazamentos = [
+    'O prontuário dela indica retorno em 30 dias.',
+    'Ela foi diagnosticada com transtorno de ansiedade.',
+    'O diagnóstico dela é TDAH.',
+    'O exame deu alterado, por isso o retorno.',
+    'Não fala do valor promocional para ela.',
+    'Entre nós, ela já faltou duas vezes.',
+    'Isso é para a equipe: cobrar antes.',
+    'O CPF dela é 123.456.789-00.',
+    'Fale com a Ana no (11) 98888-7777.',
+    'O telefone dela é 11988887777.',
+  ];
+  for (const frase of vazamentos) {
+    const { pode } = respostaPodeSair(frase, {
+      finalidade: 'agente_resposta',
+      contatosDaClinica: CONTATO_DA_CLINICA,
+    });
+    assert.equal(pode, false, `deixou passar: "${frase}"`);
+  }
+});

@@ -53,21 +53,45 @@ function destinoDaFinalidade(finalidade) {
   return DESTINO_POR_FINALIDADE[finalidade] ?? 'paciente';
 }
 
-/**
- * Bastidor: texto escrito para um colega, que não pode chegar ao paciente.
- *
- * Veio de `orientacao.js`, onde nasceu para um caso só, e subiu para cá porque
- * o risco é de toda resposta que sai — não daquele fluxo.
- */
+// Bastidor: texto escrito para um colega, que não pode chegar ao paciente.
+// Veio de `orientacao.js`, onde nasceu para um caso só, e subiu para cá porque
+// o risco é de toda resposta que sai — não daquele fluxo.
+//
+// O que se bloqueia é a REVELAÇÃO, nunca o assunto.
+//
+// A primeira versão destas marcas bloqueava as palavras — `prontuário`,
+// `diagnóstic`, `para a equipe` — e teria quebrado a assistente no primeiro
+// dia. Conferido contra o prompt REAL da Serena (recebido em 13/09/2026):
+//
+//   • "A avaliação DIAGNÓSTICA tem o valor de R$ ..." — é o nome do produto,
+//     e aparece na resposta de preço, na chamada para ação e no exemplo de
+//     TDAH do próprio prompt;
+//   • "preciso encaminhar sua dúvida PARA A EQUIPE" — está escrito, com essas
+//     palavras, na regra de medicação;
+//   • "O Dr. Édson não parte automaticamente do DIAGNÓSTICO de TDAH" — é o
+//     exemplo modelo de como ela deve responder.
+//
+// Ou seja: a barreira barraria justamente as mensagens que mais importam, a
+// equipe descobriria pelo paciente que ela emudeceu, e alguém desligaria a
+// barreira inteira. Falso positivo não é incômodo — é o que mata a defesa.
+//
+// As marcas abaixo exigem a forma da revelação: possessivo, verbo de
+// constatação ou instrução de ocultar.
 const MARCAS_DE_BASTIDOR = [
-  /\bprontu[áa]rio\b/i,
-  /\bdiagn[óo]stic/i,
+  // "o prontuário dela", "o prontuário indica" — não a palavra sozinha.
+  /\bprontu[áa]rio\s+(?:d[aeo]\b|dela|dele|indica|mostra|diz|consta)/i,
+  // "foi diagnosticada com", "o diagnóstico dela é", "tem diagnóstico de".
+  /\b(?:foi|foram|est[áa]|est[ãa]o)\s+diagnosticad[oa]/i,
+  /\bdiagn[óo]stico\s+d(?:ela|ele|o\s+paciente|a\s+paciente)\b/i,
+  /\bt[eê]m\s+diagn[óo]stico\s+de\b/i,
   /\bCID[\s-]?\d/i,
   /\bexame\s+(?:deu|mostrou|indicou)\b/i,
-  // Recado para a equipe, não para o paciente.
-  /\bn[ãa]o\s+(?:fala|diga|conta|mencione)\b/i,
+  // Instrução para esconder algo do paciente — bastidor puro.
+  /\bn[ãa]o\s+(?:fala|fale|diga|conte|conta|mencione)\b/i,
   /\bentre\s+n[óo]s\b/i,
-  /\bpara\s+a\s+equipe\b/i,
+  // "isso é para a equipe: cobrar antes" — o recado interno. NÃO "vou
+  // encaminhar para a equipe", que é o que ela deve dizer.
+  /\b(?:isso|isto)\s+[ée]\s+para\s+a\s+equipe\b/i,
 ];
 
 /**
@@ -89,20 +113,29 @@ const MARCAS_DE_INVERSAO = [
   /\[\[\s*ORIENTAR\b/i,
 ];
 
-/**
- * Dado pessoal de terceiro numa resposta ao paciente.
- *
- * Um CPF ou um telefone completo na resposta é, quase sempre, contexto de OUTRA
- * pessoa vazando — a assistente não tem por que ditar documento para ninguém.
- * Fica restrito ao destino `paciente`: para a equipe, telefone em resumo é o
- * funcionamento normal da ficha.
- */
+// Documento numa resposta ao paciente. CPF não tem uso legítimo aqui — a
+// assistente não dita documento para ninguém —, então é bloqueio direto, sem
+// contexto. Só vale no destino `paciente`: para a equipe, documento em ficha é
+// o funcionamento normal.
 const MARCAS_DE_PII = [
-  // CPF com ou sem pontuação.
   /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g,
-  // Telefone brasileiro completo com DDD.
-  /\b(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}\b/g,
-  /\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b/g,
+];
+
+/**
+ * Contato de TERCEIRO — que é o vazamento de verdade.
+ *
+ * Bloquear todo telefone era o caminho errado: o prompt manda a assistente
+ * passar o contato da clínica ("Telefone/WhatsApp: (16) 99312-0938", regra 50),
+ * e a lista de números permitidos só cobre isso se alguém lembrar de mantê-la
+ * em dia — uma defesa que depende de configuração certa é uma defesa que
+ * falha calada, atrapalhando o atendimento.
+ *
+ * O que importa é o PADRÃO da revelação: dar o contato de outra pessoa. Número
+ * solto, sem esse contexto, é quase sempre o da própria clínica.
+ */
+const MARCAS_DE_CONTATO_DE_TERCEIRO = [
+  /\b(?:fale|falar|ligue|ligar|chame|chamar|procure|procurar)\s+(?:com\s+)?\S+.{0,24}?(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}/i,
+  /\b(?:telefone|celular|contato|whatsapp|e-?mail)\s+d(?:ela|ele|o\s+paciente|a\s+paciente|a\s+m[ãa]e|o\s+pai)\b/i,
 ];
 
 /** Só os dígitos, para comparar telefone escrito de jeitos diferentes. */
@@ -179,8 +212,17 @@ function respostaPodeSair(resposta, { finalidade, origem = null, contatosDaClini
     // que faria a mesma chamada alternar resultado entre execuções.
     for (const achado of limpo.matchAll(marca)) {
       if (ehContatoDaClinica(achado[0], contatosDaClinica)) continue;
-      return { pode: false, motivo: 'a resposta carrega dado pessoal identificável', destino };
+      return { pode: false, motivo: 'a resposta carrega documento de identificação', destino };
     }
+  }
+
+  for (const marca of MARCAS_DE_CONTATO_DE_TERCEIRO) {
+    if (!marca.test(limpo)) continue;
+    // O contato da própria clínica segue liberado mesmo nesta forma: "fale com
+    // a clínica no (16) ..." é atendimento, não vazamento.
+    const numeros = [...limpo.matchAll(/(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}/g)].map((m) => m[0]);
+    if (numeros.length > 0 && numeros.every((n) => ehContatoDaClinica(n, contatosDaClinica))) continue;
+    return { pode: false, motivo: 'a resposta entrega contato de outra pessoa', destino };
   }
 
   const original = String(origem ?? '').trim();
@@ -198,5 +240,6 @@ module.exports = {
   MARCAS_DE_BASTIDOR,
   MARCAS_DE_INVERSAO,
   MARCAS_DE_PII,
+  MARCAS_DE_CONTATO_DE_TERCEIRO,
   LIMITE_POR_DESTINO,
 };
