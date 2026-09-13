@@ -91,6 +91,8 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const inscricoesDeNotificacao = new Map();
   // Fila de e-mail (db/051): a rota grava, o worker entrega.
   const filaDeEmail = [];
+  // Dúvidas que a assistente mandou para a clínica (db/052).
+  const orientacoes = [];
   let ultimoIdDeInscricao = 0;
   const proximoIdDeInscricao = () => { ultimoIdDeInscricao += 1; return ultimoIdDeInscricao; };
   // O catálogo em memória espelha o seed da migration 027.
@@ -836,6 +838,62 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
     },
 
 
+
+
+    // ------------------------------------------- orientações (db/052)
+
+    async criarOrientacao({ conversaId, agenteId = null, duvida }) {
+      const pendente = orientacoes.find((o) => o.conversa_id === Number(conversaId) && o.estado === 'pendente');
+      if (pendente) {
+        const erro = new Error('já existe orientação pendente nesta conversa');
+        erro.code = '23505';
+        throw erro;
+      }
+      const registro = {
+        id: orientacoes.length + 1,
+        conversa_id: Number(conversaId),
+        agente_id: agenteId === null ? null : Number(agenteId),
+        duvida,
+        orientacao: null,
+        estado: 'pendente',
+        respondida_por: null,
+        respondida_em: null,
+        avisado_em: null,
+        criado_em: new Date().toISOString(),
+      };
+      orientacoes.push(registro);
+      return { ...registro };
+    },
+
+    async obterOrientacao(id) {
+      const achada = orientacoes.find((o) => o.id === Number(id));
+      return achada ? { ...achada } : null;
+    },
+
+    async obterOrientacaoPendente(conversaId) {
+      const achada = orientacoes.find((o) => o.conversa_id === Number(conversaId) && o.estado === 'pendente');
+      return achada ? { ...achada } : null;
+    },
+
+    async responderOrientacao(id, { orientacao, usuarioId, respondidaEm }) {
+      const achada = orientacoes.find((o) => o.id === Number(id) && o.estado === 'pendente');
+      if (achada) {
+        Object.assign(achada, {
+          estado: 'respondida', orientacao, respondida_por: usuarioId, respondida_em: respondidaEm,
+        });
+      }
+    },
+
+    async listarOrientacoesSemAviso(limiteIso) {
+      return orientacoes
+        .filter((o) => o.estado === 'pendente' && !o.avisado_em && o.criado_em <= limiteIso)
+        .map((o) => ({ id: o.id, conversa_id: o.conversa_id }));
+    },
+
+    async marcarOrientacaoAvisada(id, quando) {
+      const achada = orientacoes.find((o) => o.id === Number(id));
+      if (achada) achada.avisado_em = quando;
+    },
 
     // ------------------------------------------------------- fila de e-mail
 

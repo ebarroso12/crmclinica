@@ -1214,6 +1214,69 @@ function criarRepositorio(pool) {
 
 
 
+
+    // ------------------------------------------- orientações (db/052)
+
+    /**
+     * A assistente registra o que não soube responder.
+     *
+     * O índice único parcial deixa UMA pendente por conversa: se a pessoa
+     * perguntar de novo antes de a clínica responder, isso não pode virar duas
+     * notificações e duas respostas. O 23503 (conversa apagada no meio) e o
+     * 23505 (já existe pendente) sobem para quem chamou decidir.
+     */
+    async criarOrientacao({ conversaId, agenteId = null, duvida }) {
+      const { rows } = await consultar(`
+        INSERT INTO orientacoes (conversa_id, agente_id, duvida)
+        VALUES ($1, $2, $3)
+        RETURNING id, conversa_id, agente_id, duvida, estado, criado_em
+      `, [conversaId, agenteId, duvida]);
+      return rows[0] ? { ...rows[0], id: Number(rows[0].id), conversa_id: Number(rows[0].conversa_id) } : null;
+    },
+
+    async obterOrientacao(id) {
+      const { rows } = await consultar(
+        'SELECT id, conversa_id, agente_id, duvida, orientacao, estado, respondida_por, respondida_em, criado_em FROM orientacoes WHERE id = $1',
+        [id],
+      );
+      if (!rows[0]) return null;
+      return { ...rows[0], id: Number(rows[0].id), conversa_id: Number(rows[0].conversa_id) };
+    },
+
+    /** A pendência desta conversa — é ela que a tela mostra para a equipe. */
+    async obterOrientacaoPendente(conversaId) {
+      const { rows } = await consultar(
+        "SELECT id, conversa_id, duvida, criado_em FROM orientacoes WHERE conversa_id = $1 AND estado = 'pendente'",
+        [conversaId],
+      );
+      if (!rows[0]) return null;
+      return { ...rows[0], id: Number(rows[0].id), conversa_id: Number(rows[0].conversa_id) };
+    },
+
+    async responderOrientacao(id, { orientacao, usuarioId, respondidaEm }) {
+      await consultar(`
+        UPDATE orientacoes
+           SET estado = 'respondida', orientacao = $2, respondida_por = $3,
+               respondida_em = $4, atualizado_em = now()
+         WHERE id = $1 AND estado = 'pendente'
+      `, [id, orientacao, usuarioId, respondidaEm]);
+    },
+
+    /** Pendentes de antes do limite que ainda não receberam o aviso de espera. */
+    async listarOrientacoesSemAviso(limiteIso) {
+      const { rows } = await consultar(`
+        SELECT id, conversa_id FROM orientacoes
+         WHERE estado = 'pendente' AND avisado_em IS NULL AND criado_em <= $1
+         ORDER BY criado_em
+         LIMIT 50
+      `, [limiteIso]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id), conversa_id: Number(linha.conversa_id) }));
+    },
+
+    async marcarOrientacaoAvisada(id, quando) {
+      await consultar('UPDATE orientacoes SET avisado_em = $2, atualizado_em = now() WHERE id = $1', [id, quando]);
+    },
+
     // ------------------------------------------------------- fila de e-mail
 
     /** A rota grava e responde na hora; quem entrega é o worker. */
