@@ -811,7 +811,7 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
      inteiro para baixo conforme a conversa cresce — a página fica cada vez
      mais comprida em vez de rolar só a lista de mensagens internamente.
      `min-height` sozinho não travava altura máxima nenhuma. */
-  height: calc(100vh - 230px);
+  height: calc(100dvh - 230px);
   min-height: 480px;
   max-height: 860px;
   background: var(--superficie);
@@ -1202,6 +1202,35 @@ nav button[aria-current="page"] .icone-menu { opacity: 1; }
   .grade, .inbox, .kanban { grid-template-columns: minmax(0, 1fr); }
   .lista, .thread { border-right: 0; border-bottom: 1px solid var(--linha); }
   .ficha { border-bottom: 0; }
+
+  /* O ATENDIMENTO NO CELULAR (13/09/2026).
+     
+     Em uma coluna, as três partes do inbox (lista de conversas, conversa e
+     ficha) passam a ficar EMPILHADAS — e a altura fixa de `.inbox`, pensada
+     para as três lado a lado no computador, virava uma caixa de 480px com tudo
+     dentro. Resultado: a conversa ficava espremida e a caixa de resposta (o
+     composer) caía fora da área visível. No app instalado, onde não há barra do
+     navegador para rolar, era como se o CRM não tivesse como responder.
+
+     Aqui a altura passa a ser do conteúdo, e quem rola é a lista de mensagens
+     dentro da conversa. */
+  .inbox {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    overflow: visible;
+  }
+  .thread {
+    /* Espaço suficiente para ler as últimas mensagens sem empurrar o composer
+       para fora; o resto rola dentro de `.mensagens`. */
+    min-height: 60dvh;
+    overflow: visible;
+  }
+  .mensagens { max-height: 46dvh; }
+  /* A caixa de resposta é o motivo de a tela existir no celular: ela fica no
+     fim da conversa e acompanha o polegar. */
+  .composer { position: sticky; bottom: 0; background: var(--superficie); padding-top: 8px; }
+  .composer textarea { min-height: 44px; }
 }
 
 @media (max-width: 560px) {
