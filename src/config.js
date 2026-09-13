@@ -175,14 +175,18 @@ function carregarConfiguracao(ambiente = process.env) {
       // `/api/auth/refresh`, o retorno do Google). A conta de 05/09 tinha uma
       // premissa que deixou de valer: "worker no VPS, processo longo e ÚNICO".
       // Não é mais único — são CINCO serviços systemd lá (outbox, lembretes,
-      // e-mail, google-outbox, heartbeat), e nenhum deles define
-      // `CRMCLINICA_DB_POOL_MAX`. Cinco × 10 = 50 conexões possíveis contra as
-      // 15 do pooler, antes de a Vercel pedir a primeira.
+      // e-mail, google-outbox, heartbeat), todos em /opt/crmclinica-ponte e
+      // todos lendo o mesmo `.env`, que traz `CRMCLINICA_DB_POOL_MAX=3`.
+      // Cinco × 3 = 15: exatamente o pooler inteiro, ZERO sobrando para a
+      // Vercel. Daí o erro aparecer em toda rota da tela e em nenhum log de
+      // worker — quem perde a disputa é sempre quem chega depois.
       //
       // Dois por processo é o que cabe: os workers consultam em sequência (um
-      // lote por vez, por construção), então o segundo slot é folga para o
-      // health check e a reivindicação da fila, não uso simultâneo real.
-      // `CRMCLINICA_DB_POOL_MAX` continua sobrescrevendo os dois.
+      // lote por vez, por construção), e dois é também o MÍNIMO que o resumo
+      // diário exige (`problemaDoPoolParaResumo`) — a trava segura uma conexão
+      // e as consultas precisam de outra. Cinco × 2 = 10, deixando 5 lugares
+      // para a tela. `CRMCLINICA_DB_POOL_MAX` continua sobrescrevendo, e é
+      // preciso baixá-lo no `.env` do VPS: valor explícito lá ganha daqui.
       //
       // Isto REDUZ a pressão; não a elimina: cada instância serverless a mais
       // ainda soma. O teto do pooler em si (pool_size 15, modo sessão) é

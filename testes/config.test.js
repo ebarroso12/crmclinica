@@ -289,9 +289,9 @@ test('o pool nasce pequeno em TODO processo, serverless ou não', () => {
   // de 05/09 tinha tratado só o lado serverless, apoiada numa premissa que
   // deixou de valer: "worker no VPS, processo longo e ÚNICO". São CINCO
   // serviços systemd lá (outbox, lembretes, e-mail, google-outbox,
-  // heartbeat), nenhum deles definindo `CRMCLINICA_DB_POOL_MAX` — cinco × 10
-  // = 50 conexões possíveis contra as 15 do pooler, antes de a Vercel pedir a
-  // primeira. Por isso o padrão agora é o mesmo dos dois lados.
+  // heartbeat), todos lendo o mesmo `.env`, que traz
+  // `CRMCLINICA_DB_POOL_MAX=3` — cinco × 3 = 15, o pooler inteiro, zero
+  // sobrando para a tela. Por isso o padrão agora é o mesmo dos dois lados.
   const base = { CRMCLINICA_DATABASE_URL: 'postgres://exemplo' };
 
   assert.equal(carregarConfiguracao(base).banco.poolMax, 2, 'worker no VPS — e são cinco deles');
