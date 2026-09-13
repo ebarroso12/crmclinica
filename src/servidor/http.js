@@ -56,6 +56,9 @@ const { criarServicoDaSerena } = require('../dominio/serena-servico');
 const { criarServicoDeVoz } = require('../dominio/serena-voz-servico');
 const { criarRotasDeContatos } = require('./rotas-contatos');
 const { criarRotasDeBloqueios } = require('./rotas-bloqueios');
+const { criarRotasDeAvisosNoCelular } = require('./rotas-avisos');
+const { criarWebPush } = require('../seguranca/webpush');
+const { criarAvisos } = require('../dominio/avisos');
 const { criarRotasDeDiagnostico } = require('./rotas-diagnostico');
 const { criarRotasDeAuditoria } = require('./rotas-auditoria');
 const { criarRotasDoAgente } = require('./rotas-agente');
@@ -397,6 +400,14 @@ function criarAplicacao(dependencias = {}) {
   });
   const rotasDeContatos = criarRotasDeContatos({ repositorio });
   const rotasDeBloqueios = criarRotasDeBloqueios({ repositorio });
+  // Aviso no celular: sem VAPID configurado, `configurado` é falso e a tela
+  // nem oferece a inscrição.
+  const webpush = criarWebPush({
+    chavePublica: configuracao.avisos?.vapidPublica,
+    chavePrivada: configuracao.avisos?.vapidPrivada,
+    assunto: configuracao.avisos?.assunto,
+  });
+  const rotasDeAvisos = criarRotasDeAvisosNoCelular({ repositorio, webpush });
   const rotasDeAuditoria = criarRotasDeAuditoria({ repositorio });
 
   // Agentes configuráveis (docs/AGENTES.md): cadastro, treinamentos, canais e
@@ -1417,6 +1428,40 @@ function criarAplicacao(dependencias = {}) {
     return false;
   }
 
+  /**
+   * Aviso no celular: o aparelho da própria pessoa se inscreve.
+   *
+   * Sem permissão especial de propósito — qualquer conta logada inscreve o
+   * PRÓPRIO aparelho. A inscrição é sempre do usuário da sessão; o corpo não
+   * escolhe de quem ela é, e é isso que impede inscrever um aparelho para
+   * receber os avisos de outra pessoa.
+   */
+  async function tratarRotasDeAvisosNoCelular(req, res, rota, metodo, usuario) {
+    if (!rota.startsWith('/api/aparelhos')) return false;
+    const semCache = { 'cache-control': 'no-store' };
+
+    if (rota === '/api/aparelhos' && metodo === 'GET') {
+      responderJson(res, 200, await rotasDeAvisos.estado(usuario), semCache);
+      return true;
+    }
+
+    if (rota === '/api/aparelhos') {
+      if (metodo === 'POST') {
+        responderJson(res, 201, await rotasDeAvisos.inscrever(usuario, await lerJson(req)), semCache);
+        return true;
+      }
+      if (metodo === 'DELETE') {
+        responderJson(res, 200, await rotasDeAvisos.desinscrever(usuario, await lerJson(req)), semCache);
+        return true;
+      }
+      responderJson(res, 405, { erro: 'método não permitido' }, { allow: 'POST, DELETE' });
+      return true;
+    }
+
+    responderJson(res, 404, { erro: 'rota não encontrada' });
+    return true;
+  }
+
   // Rotas da lista de bloqueio de contato (db/040_contatos_bloqueados.sql).
   async function tratarRotasDeBloqueios(req, res, rota, metodo, url, usuario) {
     if (!rota.startsWith('/api/bloqueios')) return false;
@@ -1698,6 +1743,7 @@ function criarAplicacao(dependencias = {}) {
     if (await tratarRotasDeInstagram(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeUsuarios(req, res, rota, metodo, url, usuario)) return true;
     if (await tratarRotasDeBloqueios(req, res, rota, metodo, url, usuario)) return true;
+    if (await tratarRotasDeAvisosNoCelular(req, res, rota, metodo, usuario)) return true;
     if (await tratarRotasDeSincronia(req, res, rota, metodo, url, usuario)) return true;
     if (await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario, escopoDoUsuario)) return true;
 

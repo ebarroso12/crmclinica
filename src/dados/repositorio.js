@@ -1212,6 +1212,82 @@ function criarRepositorio(pool) {
       return rows.map((linha) => ({ ...linha, id: Number(linha.id), criado_por: linha.criado_por ? Number(linha.criado_por) : null }));
     },
 
+
+    // ------------------------------------------------- aviso no celular (push)
+
+    /**
+     * Um aparelho por linha. A chave é o endpoint: o navegador troca o endereço
+     * de tempos em tempos e reinscreve — sem o ON CONFLICT, o mesmo celular
+     * viraria linha nova a cada troca e receberia o aviso repetido.
+     */
+    async salvarInscricaoDeNotificacao({ usuarioId, endpoint, p256dh, auth, agente = null }) {
+      const { rows } = await consultar(`
+        INSERT INTO notificacoes_inscricoes (usuario_id, endpoint, p256dh, auth, agente)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (endpoint) DO UPDATE
+           SET usuario_id = EXCLUDED.usuario_id,
+               p256dh = EXCLUDED.p256dh,
+               auth = EXCLUDED.auth,
+               agente = EXCLUDED.agente,
+               atualizado_em = now()
+        RETURNING id, usuario_id, endpoint
+      `, [usuarioId, endpoint, p256dh, auth, agente]);
+      return { ...rows[0], id: Number(rows[0].id), usuario_id: Number(rows[0].usuario_id) };
+    },
+
+    async listarInscricoesDeNotificacao(usuarioId) {
+      const { rows } = await consultar(`
+        SELECT id, endpoint, agente, criado_em, ultimo_envio_em
+          FROM notificacoes_inscricoes
+         WHERE usuario_id = $1
+         ORDER BY criado_em
+      `, [usuarioId]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id) }));
+    },
+
+    /** Só apaga do próprio dono: endpoint de outra pessoa não é apagável por aqui. */
+    async removerInscricaoDeNotificacao(usuarioId, endpoint) {
+      const { rows } = await consultar(
+        'DELETE FROM notificacoes_inscricoes WHERE usuario_id = $1 AND endpoint = $2 RETURNING id',
+        [usuarioId, endpoint],
+      );
+      return rows.length;
+    },
+
+    /** Inscrição morta (o serviço de push respondeu 404/410) sai da lista. */
+    async apagarInscricaoPorEndpoint(endpoint) {
+      const { rows } = await consultar(
+        'DELETE FROM notificacoes_inscricoes WHERE endpoint = $1 RETURNING id',
+        [endpoint],
+      );
+      return rows.length;
+    },
+
+    async marcarEnvioDeNotificacao(endpoint) {
+      await consultar('UPDATE notificacoes_inscricoes SET ultimo_envio_em = now() WHERE endpoint = $1', [endpoint]);
+    },
+
+    /**
+     * Para quem avisar. Só quem pediu para receber (tem aparelho inscrito) e
+     * pode ver a conversa: a clínica para quem vê a clínica, e a equipe do
+     * agente quando a conversa é de agente — o mesmo recorte dos resumos.
+     */
+    async listarInscricoesParaAviso({ agenteId = null } = {}) {
+      const { rows } = await consultar(`
+        SELECT i.id, i.endpoint, i.usuario_id
+          FROM notificacoes_inscricoes i
+          JOIN usuarios u ON u.id = i.usuario_id
+         WHERE u.situacao = 'ativo'
+           AND (
+             ($1::bigint IS NULL AND (u.papel = 'admin' OR u.ve_clinica = true))
+             OR ($1::bigint IS NOT NULL AND (u.papel = 'admin' OR EXISTS (
+                  SELECT 1 FROM agente_equipe e WHERE e.agente_id = $1::bigint AND e.usuario_id = u.id
+                )))
+           )
+      `, [agenteId]);
+      return rows.map((linha) => ({ ...linha, id: Number(linha.id), usuario_id: Number(linha.usuario_id) }));
+    },
+
     /** Chamado no caminho quente do atendimento — precisa ser rápido (índice único em telefone). */
     async obterBloqueioPorTelefone(telefone) {
       if (!telefone) return null;

@@ -87,6 +87,10 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
   const agenteCanais = [];
   // Migration 047: quem atende cada agente.
   const agenteEquipe = [];
+  // Aparelhos inscritos para receber aviso no celular (push).
+  const inscricoesDeNotificacao = new Map();
+  let ultimoIdDeInscricao = 0;
+  const proximoIdDeInscricao = () => { ultimoIdDeInscricao += 1; return ultimoIdDeInscricao; };
   // O catálogo em memória espelha o seed da migration 027.
   const iaModelos = [
     { id: 1, provedor: 'openai', modelo: 'gpt-4o-mini', rotulo: 'GPT-4o Mini', ativo: true, padrao: false, custo_entrada_usd_mi: 0.15, custo_saida_usd_mi: 0.6 },
@@ -827,6 +831,68 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
 
     async listarContatosBloqueados() {
       return [...contatosBloqueados.values()].sort((a, b) => (a.criado_em < b.criado_em ? 1 : -1));
+    },
+
+
+    // ------------------------------------------------- aviso no celular (push)
+
+    async salvarInscricaoDeNotificacao({ usuarioId, endpoint, p256dh, auth, agente = null }) {
+      const existente = [...inscricoesDeNotificacao.values()].find((i) => i.endpoint === endpoint);
+      if (existente) {
+        Object.assign(existente, { usuario_id: Number(usuarioId), p256dh, auth, agente });
+        return { ...existente };
+      }
+      const id = proximoIdDeInscricao();
+      const registro = {
+        id, usuario_id: Number(usuarioId), endpoint, p256dh, auth, agente,
+        criado_em: new Date().toISOString(), ultimo_envio_em: null,
+      };
+      inscricoesDeNotificacao.set(id, registro);
+      return { ...registro };
+    },
+
+    async listarInscricoesDeNotificacao(usuarioId) {
+      return [...inscricoesDeNotificacao.values()]
+        .filter((i) => i.usuario_id === Number(usuarioId))
+        .map((i) => ({ ...i }));
+    },
+
+    async removerInscricaoDeNotificacao(usuarioId, endpoint) {
+      let removidas = 0;
+      for (const [id, i] of inscricoesDeNotificacao) {
+        if (i.usuario_id === Number(usuarioId) && i.endpoint === endpoint) {
+          inscricoesDeNotificacao.delete(id);
+          removidas += 1;
+        }
+      }
+      return removidas;
+    },
+
+    async apagarInscricaoPorEndpoint(endpoint) {
+      let removidas = 0;
+      for (const [id, i] of inscricoesDeNotificacao) {
+        if (i.endpoint === endpoint) { inscricoesDeNotificacao.delete(id); removidas += 1; }
+      }
+      return removidas;
+    },
+
+    async marcarEnvioDeNotificacao(endpoint) {
+      for (const i of inscricoesDeNotificacao.values()) {
+        if (i.endpoint === endpoint) i.ultimo_envio_em = new Date().toISOString();
+      }
+    },
+
+    async listarInscricoesParaAviso({ agenteId = null } = {}) {
+      const equipes = agenteId !== null
+        ? agenteEquipe.filter((vinculo) => vinculo.agente_id === Number(agenteId)).map((v) => v.usuario_id)
+        : [];
+      return [...inscricoesDeNotificacao.values()].filter((i) => {
+        const usuario = usuarios.get(i.usuario_id);
+        if (!usuario || usuario.situacao !== 'ativo') return false;
+        if (usuario.papel === 'admin') return true;
+        if (agenteId === null) return usuario.ve_clinica === true;
+        return equipes.includes(i.usuario_id);
+      }).map((i) => ({ ...i }));
     },
 
     async obterBloqueioPorTelefone(telefone) {

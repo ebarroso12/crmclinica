@@ -49,7 +49,11 @@ test('a tela declara ícone, ícone do iPhone e manifesto', () => {
   assert.match(HTML, /<link rel="icon" href="\/favicon\.png" type="image\/png"/);
   assert.match(HTML, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/);
   assert.match(HTML, /<link rel="manifest" href="\/manifest\.webmanifest">/);
-  assert.match(HTML, /<meta name="theme-color" content="#0d1930">/);
+  // A cor da barra do sistema passou a acompanhar o tema (12/09/2026): navy no
+  // claro, quase preto no escuro. Sem os dois, o app instalado fica com a barra
+  // de cima clara sobre uma tela escura.
+  assert.match(HTML, /<meta name="theme-color" media="\(prefers-color-scheme: light\)" content="#0d1930">/);
+  assert.match(HTML, /<meta name="theme-color" media="\(prefers-color-scheme: dark\)" content="#0a0f1c">/);
 });
 
 test('a marca aparece no menu e na tela de entrada, com texto alternativo coerente', () => {
