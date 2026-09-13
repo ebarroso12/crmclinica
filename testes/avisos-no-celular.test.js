@@ -347,20 +347,102 @@ test('quem já autorizou é inscrito em silêncio; quem bloqueou não é incomod
   const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\nseletor(', inicio));
 
   // Trocou de navegador ou reinstalou o app: pedir de novo seria burocracia.
-  assert.match(funcao, /Notification\.permission === 'granted'[\s\S]{0,120}silencioso: true/);
+  assert.match(funcao, /Notification\.permission === 'granted'[\s\S]{0,400}silencioso: true/);
   // Bloqueado no aparelho: só o dono reverte, e insistir leva a pessoa a
   // bloquear o site de vez.
   assert.match(funcao, /Notification\.permission === 'denied'\) return;/);
-  // Já inscrito: nada a oferecer.
-  assert.match(funcao, /if \(await inscricaoDesteAparelho\(\)\) return;/);
+  // E essa saída vem ANTES de qualquer pedido ao servidor: requisição que não
+  // pode mudar nada é desperdício em todo login.
+  const posicaoDoDenied = funcao.indexOf("Notification.permission === 'denied'");
+  const posicaoDoPedido = funcao.indexOf("pedirJson('/api/aparelhos')");
+  assert.ok(
+    posicaoDoDenied >= 0 && posicaoDoPedido > posicaoDoDenied,
+    'a guarda de "bloqueado" precisa vir antes da chamada à API',
+  );
 });
 
 test('dispensar o convite dá três dias de sossego, não some para sempre', () => {
   const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   assert.match(APP_JS, /const DIAS_DE_SOSSEGO = 3;/);
-  assert.match(APP_JS, /CHAVE_CONVITE_AVISOS/);
+  assert.match(APP_JS, /chaveDoConvite\(\)/);
   // Some para sempre seria perder quem clicou em "agora não" sem pensar.
   const inicio = APP_JS.indexOf('function dispensarConviteDeAvisos(');
   const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\n}', inicio));
   assert.match(funcao, /Date\.now\(\) \+ DIAS_DE_SOSSEGO/);
+});
+
+// ---------------------------------------------------------------------------
+// Achados da revisão de 13/09/2026 — o computador do balcão.
+//
+// Todos têm a mesma raiz: a inscrição é do NAVEGADOR, e o CRM é usado por mais
+// de uma pessoa no mesmo aparelho. Desde que o aviso passou a levar nome de
+// paciente e o começo da mensagem, confundir "este navegador" com "esta pessoa"
+// virou vazamento entre usuários.
+
+test('com a permissão já dada, a inscrição é REENVIADA — a posse vai para quem entrou agora', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const inicio = APP_JS.indexOf('async function oferecerAvisosNoCelular(');
+  const funcao = APP_JS.slice(inicio, APP_JS.indexOf('\nseletor(', inicio));
+
+  // O retorno antecipado por "já existe inscrição neste navegador" era o bug:
+  // A ativava, saía, B entrava, e o aparelho seguia entregando os avisos de A.
+  assert.ok(
+    !/if \(await inscricaoDesteAparelho\(\)\) return;/.test(funcao),
+    'não pode sair cedo por causa da inscrição do navegador: ela pode ser de outra pessoa',
+  );
+  assert.match(funcao, /Notification\.permission === 'granted'[\s\S]{0,400}silencioso: true/);
+});
+
+test('sair desliga os avisos deste aparelho', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const inicio = APP_JS.indexOf("seletor('#sair')?.addEventListener");
+  const handler = APP_JS.slice(inicio, APP_JS.indexOf('encerrarSessaoNaTela()', inicio));
+  assert.match(handler, /desligarAvisosDoCelular\(\{ silencioso: true \}\)/);
+});
+
+test('a dispensa do convite é por pessoa, não por navegador', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  // Com chave global, um "Agora não" no balcão calava o convite para todo mundo
+  // que usasse aquela máquina por três dias.
+  assert.match(APP_JS, /function chaveDoConvite\(\)[\s\S]{0,200}usuarioAtual\?\.id/);
+  assert.ok(!/const CHAVE_CONVITE_AVISOS = 'crmclinica:avisos:dispensado-ate';/.test(APP_JS));
+});
+
+test('a faixa só some quando a inscrição aconteceu, e o erro aparece nela mesma', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+
+  // Antes ela sumia de qualquer jeito — inclusive quando a pessoa só fechava a
+  // caixa de permissão — e o erro ia para dentro de Meu perfil, escondido.
+  assert.match(APP_JS, /const \{ ligado, motivo \} = await ligarAvisosDoCelular\(\);/);
+  assert.match(APP_JS, /if \(ligado\) \{[\s\S]{0,120}convite\.hidden = true;/);
+  assert.match(APP_JS, /#convite-avisos-erro/);
+  assert.match(HTML, /id="convite-avisos-erro"[^>]*hidden/);
+
+  // E dois cliques não disparam dois fluxos de inscrição.
+  assert.match(APP_JS, /if \(botao\.disabled\) return;\s*\n\s*botao\.disabled = true;/);
+});
+
+test('a espera pelo service worker tem teto: ele nunca rejeita sozinho', () => {
+  const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  // Sem o teto, um registro falho deixa a promessa pendente para sempre, o
+  // `finally` não roda e o botão fica desabilitado o resto da sessão.
+  assert.match(APP_JS, /Promise\.race\(\[\s*\n\s*navigator\.serviceWorker\.ready/);
+  assert.match(APP_JS, /o service worker não ficou pronto/);
+  // E no modo silencioso o botão de Meu perfil não é tocado.
+  assert.match(APP_JS, /const botao = silencioso \? null : seletor\('#avisos-ligar'\);/);
+});
+
+test('a tela não promete privacidade que o aviso não tem mais', () => {
+  const HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const SW = fs.readFileSync(path.join(__dirname, '..', 'public', 'sw.js'), 'utf8');
+
+  // O service worker mostra título e corpo vindos do push; dizer "não mostra
+  // nome nem o que foi dito" seria mentir para quem decide ligar o aviso.
+  assert.match(SW, /body: aviso\.corpo/);
+  assert.ok(
+    !/O aviso não mostra nome nem o que foi dito/.test(HTML),
+    'o texto de Meu perfil não pode contradizer o que a notificação mostra',
+  );
+  assert.match(HTML, /mostra quem falou e o começo da mensagem/);
 });
