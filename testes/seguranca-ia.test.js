@@ -218,3 +218,40 @@ test('a tabela de destinos cobre todas as finalidades em uso', () => {
     );
   }
 });
+
+// ------------------------- a cerca aplicada onde o texto do paciente entra
+
+test('a conversa com o cliente entra no prompt do agente CERCADA', () => {
+  // Sem isto, `prompt-seguro.js` seria mais um módulo bonito e inerte — o
+  // defeito mais caro deste repositório, e já cometido neste mesmo PR.
+  const { montarPromptDeResposta } = require('../src/dominio/agentes/motor');
+  if (typeof montarPromptDeResposta !== 'function') {
+    // O motor não expõe o montador: confere na fonte, que é o que existe.
+    const fonte = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', 'src', 'dominio', 'agentes', 'motor.js'), 'utf8',
+    );
+    const funcao = fonte.slice(fonte.indexOf('function promptDaConversa'));
+    assert.match(funcao.slice(0, 600), /cercarConteudoExterno\(conversa/);
+    assert.match(fonte, /removerInvisiveis\(mensagem\.conteudo\)/);
+    return;
+  }
+  assert.fail('teste precisa ser atualizado: o motor passou a exportar o montador');
+});
+
+test('o cliente não forja fala do agente nem esconde instrução invisível', () => {
+  const fonte = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'src', 'dominio', 'agentes', 'motor.js'), 'utf8',
+  );
+  const montar = fonte.slice(fonte.indexOf('function montarConversa'), fonte.indexOf('function promptDaConversa'));
+
+  // Duas defesas que se completam: a indentação impede a linha forjada
+  // ("\nAgente: ..."), e a limpeza impede a instrução escondida em caractere
+  // que o humano que audita a conversa não enxerga.
+  //
+  // Comparação literal, montada por concatenação: escrever esta regex dentro
+  // de outra exigiria escapar barra e contrabarra, e escape perdido em edição
+  // é armadilha conhecida deste repositório (ver CLAUDE.md).
+  const indentacao = "replace(/\\r?\\n/g, '\\n  ')";
+  assert.ok(montar.includes(indentacao), 'a indentação é o que impede a fala forjada');
+  assert.ok(montar.includes('removerInvisiveis'), 'instrução escondida em caractere invisível precisa sair');
+});
