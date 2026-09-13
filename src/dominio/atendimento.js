@@ -1,6 +1,7 @@
 'use strict';
 
 const { decidirAutomacao, montarContextoMinimo, aplicarTemperatura } = require('./conversas');
+const { separarPedidoDeOrientacao } = require('./orientacao');
 const { sugerirTemperatura, origemDoCanal } = require('./leads');
 const { proximaPergunta, camposPendentes, proximaAcao } = require('./qualificacao');
 const { ehPedidoDeOptOut } = require('./lembretes');
@@ -86,6 +87,9 @@ function criarAtendimento({
   // Aviso no celular (src/dominio/avisos.js), opcional. Sem ele o atendimento
   // roda igual — só ninguém é avisado.
   avisos = null,
+  // Orientações (src/dominio/orientacao.js), opcional. Sem elas a assistente
+  // responde igual; só não tem como pedir ajuda à clínica.
+  orientacoes = null,
 }) {
   // Quem opera a clínica não é atendido por ela. A lista sai de
   // `CRMCLINICA_NUMEROS_INTERNOS` + `CRMCLINICA_RESUMO_DESTINATARIOS` +
@@ -594,7 +598,15 @@ function criarAtendimento({
         });
       }
 
-      const texto = resposta?.resposta || resposta?.texto;
+      // A assistente pode responder E pedir orientação no mesmo passo: o
+      // marcador vai no fim do texto e sai daqui antes de qualquer coisa ser
+      // gravada ou entregue — o paciente nunca o vê. É o caso da pergunta sobre
+      // publicação do Instagram: ela avisa que vai confirmar, e a clínica é
+      // chamada para dizer o que responder.
+      const separado = separarPedidoDeOrientacao(resposta?.resposta || resposta?.texto || '');
+      const texto = separado.texto;
+      const duvidaParaAClinica = separado.duvida;
+
       if (texto) {
         // A resposta da IA entra no mesmo histórico que a equipe lê. Não há
         // registro paralelo: quem abre a conversa vê tudo em ordem. O
@@ -672,6 +684,26 @@ function criarAtendimento({
           acao: 'respondida_pela_automacao',
           detalhe: { mensagem_id: gravada.id, entregue: entrega.enviada, duplicada },
         });
+
+        // A resposta já saiu; agora a clínica é chamada. A ordem importa: o
+        // paciente não pode ficar esperando o registro da dúvida, e um erro
+        // aqui não pode desfazer uma mensagem que já foi entregue.
+        if (duvidaParaAClinica && orientacoes) {
+          const pedida = await orientacoes.pedir({ conversaId, duvida: duvidaParaAClinica });
+          if (pedida.pedida) {
+            // Vai para a equipe: a automação não deve seguir respondendo sobre
+            // um assunto que ela mesma disse não conhecer. O escalonamento é o
+            // que faz o celular de quem pode orientar tocar.
+            await escalonar(conversaId, 'orientacao_pedida');
+            return {
+              acao: 'respondida_e_pediu_orientacao',
+              conversa_id: conversaId,
+              orientacao_id: pedida.id,
+              entregue: entrega.enviada,
+            };
+          }
+        }
+
         return {
           acao: 'respondida_pela_automacao',
           conversa_id: conversaId,
