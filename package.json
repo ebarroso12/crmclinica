@@ -13,6 +13,7 @@
     "start": "node src/index.js",
     "criar-admin": "node bin/criar-admin.js",
     "verificar-banco": "node bin/verificar-banco.js",
+    "seguranca:segredos": "node bin/verificar-segredos.js",
     "smoke": "node ferramentas/smoke-fluxo.js",
     "smoke-lembretes": "node ferramentas/smoke-lembretes.js",
     "lembretes": "node bin/lembretes.js",

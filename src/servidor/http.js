@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { carregarConfiguracao } = require('../config');
+const { carregarConfiguracao, validarConfiguracao } = require('../config');
 const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
 const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
@@ -38,6 +38,7 @@ const { criarAutenticacao } = require('../seguranca/sessoes');
 const { criarContas } = require('../seguranca/contas');
 const { criarLimitador } = require('../seguranca/limite');
 const { descobrirIp } = require('./ip');
+const { criarLimiteDeIA } = require('../seguranca/limite-ia');
 const { criarClienteGoogle } = require('../seguranca/google');
 const { criarRemetente } = require('../seguranca/email');
 const { criarRotasDeConversas } = require('./rotas-conversas');
@@ -107,6 +108,17 @@ const ARQUIVOS_PUBLICOS = new Map([
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
 ]);
 
+// `ws:` (sem TLS) só existe para desenvolvimento local.
+//
+// Em produção ele seria um canal de saída aberto para QUALQUER host, em texto
+// claro — e a interface abre WebSocket de verdade (o gateway de voz, em
+// `public/serena-voz.js`), então `wss:` precisa continuar. Tirar só o `ws:`
+// fecha a metade que nunca é usada lá e não mexe no que funciona.
+//
+// Lido de `process.env` na carga do módulo, como o `commit` do /health logo
+// abaixo: `responder()` é usada em todo lugar e não recebe a configuração.
+const CONEXOES_PERMITIDAS = process.env.NODE_ENV === 'production' ? "'self' wss:" : "'self' ws: wss:";
+
 const CABECALHOS_SEGURANCA = Object.freeze({
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
@@ -115,8 +127,34 @@ const CABECALHOS_SEGURANCA = Object.freeze({
   // A interface só carrega recursos do próprio domínio: sem CDN, sem script inline, sem iframe.
   'content-security-policy':
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self' ws: wss:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    `connect-src ${CONEXOES_PERMITIDAS}; form-action 'self'; frame-ancestors 'none'; `
+    + "base-uri 'none'; object-src 'none'",
 });
+
+/**
+ * As rotas que gastam modelo de linguagem, e sob qual cota cada uma corre.
+ *
+ * Manter a lista aqui, e não espalhada pelas rotas, é o que permite responder
+ * num lugar só à pergunta "o que neste sistema custa dinheiro por clique?".
+ *
+ * Ficam de fora, de propósito, os caminhos que NÃO nascem de um clique: o
+ * webhook do WhatsApp e do Instagram (a resposta da Serena sai da outbox, no
+ * VPS) e os workers. Limitar por IP ali puniria o provedor do canal, não o
+ * abusador — e quem paga a conta seria o paciente, sem resposta.
+ */
+const ACOES_DE_IA = Object.freeze([
+  { metodo: 'POST', padrao: /^\/api\/ia\/relatorio$/, acao: 'ia_assistente' },
+  { metodo: 'POST', padrao: /^\/api\/ia\/assistente$/, acao: 'ia_assistente' },
+  { metodo: 'POST', padrao: /^\/api\/ia\/avaliacoes\/varrer$/, acao: 'ia_assistente' },
+  { metodo: 'POST', padrao: /^\/api\/serena\/teste(\/mensagem)?$/, acao: 'ia_teste' },
+  { metodo: 'POST', padrao: /^\/api\/agentes\/[^/]+\/teste$/, acao: 'ia_teste' },
+  { metodo: 'POST', padrao: /^\/api\/agentes\/[^/]+\/treinamentos$/, acao: 'ia_treinamento' },
+  { metodo: 'POST', padrao: /^\/api\/conversas\/\d+\/orientacao$/, acao: 'ia_orientacao' },
+]);
+
+function acaoDeIADaRota(rota, metodo) {
+  return ACOES_DE_IA.find((regra) => regra.metodo === metodo && regra.padrao.test(rota))?.acao ?? null;
+}
 
 // Teto de bilhetes de SSE por usuário, por minuto (janela deslizante) — ver
 // o comentário na rota `/api/conversas/eventos/ticket`. 60/min = folga
@@ -294,6 +332,16 @@ function criarAplicacao(dependencias = {}) {
   const limitador = dependencias.limitador === null
     ? null
     : dependencias.limitador || criarLimitador({ repositorio });
+
+  // Limite das rotas que gastam modelo de linguagem. Segue a mesma convenção
+  // do `limitador` acima: `null` explícito desliga (os testes que não estão
+  // exercitando limite passam `limiteDeIA: null`).
+  const limiteDeIA = dependencias.limiteDeIA === null
+    ? null
+    : dependencias.limiteDeIA || criarLimiteDeIA({
+      repositorio,
+      tetoDiarioUsd: configuracao.ia?.tetoDiarioUsd ?? undefined,
+    });
   const contas = dependencias.contas
     || criarContas({ repositorio, configuracao, remetente, google, limitador });
   const autenticacao = dependencias.autenticacao
@@ -2025,6 +2073,27 @@ function criarAplicacao(dependencias = {}) {
      * `exigirPermissao` de qualquer jeito, e abrir transação para isso só
      * ocuparia conexão do pool à toa.
      */
+    /**
+     * Exige cota antes de qualquer rota que gaste modelo de linguagem.
+     *
+     * Registra o uso na MESMA passagem, não depois: se a contagem dependesse
+     * de a rota terminar bem, uma chamada que falha no provedor (ou um laço da
+     * interface batendo em erro) passaria por baixo do limite para sempre — e
+     * é justamente o laço que queima dinheiro sem ninguém perceber. Tentativa
+     * que falhou também custou tokens de entrada.
+     */
+    async function exigirCotaDeIA({ rota: alvo, metodo: verbo, usuario: quem, req: requisicao }) {
+      if (!limiteDeIA) return;
+      const acao = acaoDeIADaRota(alvo, verbo);
+      if (!acao) return;
+
+      const ip = descobrirIp(requisicao, configuracao.proxiesConfiaveis);
+      const email = quem?.email ?? null;
+
+      await limiteDeIA.exigirCota({ acao, email, ip });
+      await limiteDeIA.registrarUso({ acao, email, ip });
+    }
+
     // O usuário inteiro, não só o id: o papel vai junto para o banco, e é dele
     // que as políticas dependem para decidir o que a requisição pode escrever.
     const comIdentidade = (quem, acao) => (
@@ -2077,6 +2146,18 @@ function criarAplicacao(dependencias = {}) {
           commit: process.env.VERCEL_GIT_COMMIT_SHA || null,
           instante: new Date().toISOString(),
           banco,
+          // Quantos problemas de segurança a configuração deste processo tem.
+          //
+          // Só a CONTAGEM, nunca as mensagens: elas descrevem a forma da
+          // configuração ("o gateway do WhatsApp da clínica está faltando") e
+          // isto aqui responde sem autenticação nenhuma. O detalhe vive no log
+          // do deploy, onde só quem tem acesso lê.
+          //
+          // Existe para tornar verificável, de fora, se é seguro ligar o modo
+          // estrito (`CRMCLINICA_CONFIG_ESTRITA`) — ligar um portão que
+          // derruba a subida sem antes saber se a configuração passa é trocar
+          // um risco silencioso por uma queda certa.
+          configuracao: { problemas: validarConfiguracao(configuracao).length },
         });
         return;
       }
@@ -2482,6 +2563,15 @@ function criarAplicacao(dependencias = {}) {
         return;
       }
 
+      // Cota de IA, num ponto só, antes de qualquer rota que gaste modelo.
+      //
+      // Ficar aqui e não dentro de cada rota é o mesmo princípio da barreira no
+      // gateway: rota nova que gaste LLM entra na tabela de `ACOES_DE_IA` e
+      // passa a ser limitada; não há como esquecer numa delas. E roda ANTES do
+      // despacho pela mesma razão que o limitador de login roda antes de
+      // conferir a senha — quem estourou não consome o recurso caro.
+      await exigirCotaDeIA({ rota, metodo, usuario, req });
+
       if (rota.startsWith('/api/serena/teste')) {
         const tratouTeste = await tratarRotasDaSerena(req, res, rota, metodo, url, usuario);
         if (tratouTeste) return;
@@ -2490,6 +2580,11 @@ function criarAplicacao(dependencias = {}) {
       // Agentes: a conversa de teste chama a IA e o treinamento por website
       // busca a página — segundos de rede, pela mesma razão do teste da Serena
       // logo acima ficam fora da transação.
+      //
+      // A cota de IA é exigida ANTES daqui (ver `exigirCotaDeIA`, chamado logo
+      // acima do despacho de rotas), pelo mesmo motivo de o limitador de login
+      // rodar antes de conferir a senha: quem estourou não deve nem consumir o
+      // recurso caro que vem depois.
       if (despachoDeAgentes.ehRotaLenta(rota, metodo)) {
         const tratouLenta = await despachoDeAgentes.tratar(req, res, rota, metodo, url, usuario, escopoDoUsuario);
         if (tratouLenta) return;

@@ -1977,6 +1977,13 @@ function criarRepositorioEmMemoria({ agora = () => new Date(), batimentos: batim
       return { registrado: true };
     },
 
+    // Paridade com repositorio.js: gasto real desde um instante.
+    async somarCustoDeIADesde(desdeIso) {
+      return iaChamadas
+        .filter((chamada) => String(chamada.criado_em) >= String(desdeIso))
+        .reduce((total, chamada) => total + Number(chamada.custo_estimado_usd ?? 0), 0);
+    },
+
     async listarChamadasDeIA({ limite = 100 } = {}) {
       return [...iaChamadas]
         .sort((a, b) => b.id - a.id)

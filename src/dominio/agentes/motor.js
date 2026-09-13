@@ -3,6 +3,7 @@
 const { decidirAutomacao } = require('../conversas');
 const { dentroDoHorario } = require('../serena');
 const { normalizarConfiguracoes, CONFIGURACOES_PADRAO } = require('./regras');
+const { cercarConteudoExterno, removerInvisiveis } = require('../../seguranca/prompt-seguro');
 
 // Motor dos agentes configuráveis (docs/AGENTES.md).
 //
@@ -22,6 +23,9 @@ const { normalizarConfiguracoes, CONFIGURACOES_PADRAO } = require('./regras');
 // qualidade da resposta de um modelo real.
 
 const LIMITE_MENSAGENS_NO_PROMPT = 20;
+// Teto da transcricao dentro da cerca. Conteudo enorme e, por si so, uma
+// tecnica de injecao: enterra a instrucao de sistema no meio do contexto.
+const LIMITE_CARACTERES_CONVERSA = 12000;
 const LIMITE_CARACTERES_TREINAMENTO = 12000;
 const MAXIMO_POR_PARTE_DIVIDIDA = 600;
 const LIMITE_POR_PARTE = 4000;
@@ -194,19 +198,44 @@ function montarInstrucoes({ agente, treinamentos = [], contato = null, agora = n
  * Transcrição da conversa para o prompt. Linhas de continuação são indentadas:
  * sem isso, um cliente que escreve "\nAgente: ..." forjaria uma fala do agente
  * no começo de uma linha, indistinguível das verdadeiras.
+ *
+ * `removerInvisiveis` entra na mesma linha de defesa, contra o truque que a
+ * indentação não pega: instrução escondida em caractere de largura zero ou em
+ * marca de direção de texto. O modelo lê; a pessoa que audita a conversa
+ * depois, não — e é a assimetria que faz esse truque valer a pena para quem
+ * tenta.
  */
 function montarConversa(mensagens = []) {
   return (Array.isArray(mensagens) ? mensagens : [])
     .filter((mensagem) => mensagem && !mensagem.privada && mensagem.tipo !== 'sistema' && mensagem.autor_tipo !== 'sistema'
       && typeof mensagem.conteudo === 'string' && mensagem.conteudo.trim())
     .slice(-LIMITE_MENSAGENS_NO_PROMPT)
-    .map((mensagem) => `${ROTULOS[mensagem.autor_tipo] ?? 'Equipe'}: ${mensagem.conteudo.trim().replace(/\r?\n/g, '\n  ')}`)
+    .map((mensagem) => {
+      const limpo = removerInvisiveis(mensagem.conteudo).trim().replace(/\r?\n/g, '\n  ');
+      return `${ROTULOS[mensagem.autor_tipo] ?? 'Equipe'}: ${limpo}`;
+    })
     .join('\n');
 }
 
+/**
+ * A transcrição vai CERCADA.
+ *
+ * As regras já dizem em texto que a mensagem do cliente é dado e não ordem
+ * (ver `montarRegras`). A cerca torna isso estrutural em vez de só dito: o
+ * conteúdo não consegue fechar a própria cerca — `cercarConteudoExterno`
+ * remove qualquer coisa que se pareça com o marcador antes de montar —, então
+ * não há como "sair" do bloco de dados e continuar como instrução.
+ *
+ * As duas camadas juntas, e nenhuma delas sozinha: instrução em texto é
+ * ignorável por um modelo suficientemente confuso; cerca sem instrução não
+ * explica o que fazer com o que está dentro.
+ */
 function promptDaConversa(mensagens, pedido) {
   const conversa = montarConversa(mensagens);
-  return `${conversa ? `Conversa até agora (mais antiga primeiro):\n${conversa}` : 'A conversa ainda não tem mensagens.'}\n\n${pedido}`;
+  if (!conversa) return `A conversa ainda não tem mensagens.\n\n${pedido}`;
+
+  const { bloco } = cercarConteudoExterno(conversa, 'conversa com o cliente', LIMITE_CARACTERES_CONVERSA);
+  return `Conversa até agora (mais antiga primeiro):\n${bloco}\n\n${pedido}`;
 }
 
 function extrairCampos(objeto) {
