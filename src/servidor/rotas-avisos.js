@@ -13,6 +13,22 @@ const { ErroDeContrato } = require('../contratos/erros');
 // não escolhe de quem ela é. Isso é o que impede alguém inscrever o aparelho
 // dele para receber os avisos de outra pessoa.
 
+/**
+ * Sessão obrigatória.
+ *
+ * Estas rotas não exigem permissão de papel — qualquer conta logada inscreve o
+ * PRÓPRIO aparelho — e foi justamente por não passar por `exigirPermissao`
+ * (que já trata sessão ausente) que a primeira versão explodiu com
+ * "Cannot read properties of null" em quem chamasse sem token: 500 onde devia
+ * ser 401. Achado em produção, minutos depois de publicar.
+ */
+function exigirSessao(usuario) {
+  if (usuario?.id) return usuario;
+  const erro = new Error('autenticação obrigatória');
+  erro.status = 401;
+  throw erro;
+}
+
 const LIMITE_ENDPOINT = 1000;
 const LIMITE_CHAVE = 200;
 
@@ -50,6 +66,7 @@ function criarRotasDeAvisosNoCelular({ repositorio, webpush }) {
      * pública para a inscrição, e quantos aparelhos esta pessoa já inscreveu.
      */
     async estado(usuario) {
+      exigirSessao(usuario);
       const inscricoes = await repositorio.listarInscricoesDeNotificacao(usuario.id);
       return {
         // Inscrever precisa só da chave pública; quem empurra é o worker.
@@ -61,6 +78,8 @@ function criarRotasDeAvisosNoCelular({ repositorio, webpush }) {
 
     /** POST /api/aparelhos — este aparelho quer receber avisos. */
     async inscrever(usuario, corpo) {
+      exigirSessao(usuario);
+      // Inscrever precisa só da chave pública; quem empurra é o worker no VPS.
       if (!webpush.podeInscrever) {
         const erro = new Error('aviso no celular não está configurado neste servidor');
         erro.status = 503;
@@ -97,6 +116,7 @@ function criarRotasDeAvisosNoCelular({ repositorio, webpush }) {
 
     /** DELETE /api/aparelhos — este aparelho não quer mais. */
     async desinscrever(usuario, corpo) {
+      exigirSessao(usuario);
       const endpoint = exigirEndpoint(corpo?.endpoint);
       // Só apaga inscrição do próprio usuário: o endpoint de outra pessoa,
       // mesmo que alguém o descubra, não é apagável por aqui.

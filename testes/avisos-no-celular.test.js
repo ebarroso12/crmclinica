@@ -300,3 +300,24 @@ test('a chave pública tem padrão no código: a Vercel inscreve sem variável d
   });
   assert.equal(comEnv.avisos.vapidPublica, 'outra-chave-qualquer');
 });
+
+test('sem sessão, as rotas respondem 401 — não 500', async (t) => {
+  // Bug real, achado em produção minutos depois de publicar: estas rotas não
+  // passam por `exigirPermissao` (qualquer conta logada inscreve o próprio
+  // aparelho), e era `exigirPermissao` que tratava sessão ausente. Sem ele,
+  // `usuario.id` estourava em quem chamasse sem token.
+  const { ambiente } = await servidorComVapid(t);
+
+  const estado = await ambiente.pedirSemAuth('/api/aparelhos');
+  assert.equal(estado.status, 401, 'listar aparelhos sem sessão é 401');
+
+  const inscricao = await ambiente.pedirSemAuth('/api/aparelhos', {
+    method: 'POST', headers: JSON_H, body: JSON.stringify(INSCRICAO),
+  });
+  assert.equal(inscricao.status, 401, 'inscrever sem sessão é 401');
+
+  const remocao = await ambiente.pedirSemAuth('/api/aparelhos', {
+    method: 'DELETE', headers: JSON_H, body: JSON.stringify({ endpoint: INSCRICAO.endpoint }),
+  });
+  assert.equal(remocao.status, 401, 'desinscrever sem sessão é 401');
+});
