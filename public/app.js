@@ -131,8 +131,21 @@ seletor('#auditoria-mais')?.addEventListener('click', () => carregarAuditoria(tr
 // Sessão da equipe.
 //
 // O access token fica só em memória: em `localStorage` ele sobreviveria à aba e
-// ficaria legível por qualquer script injetado. O refresh vai para `sessionStorage`
-// para que um F5 não derrube a recepção no meio do plantão.
+// ficaria legível por qualquer script injetado. Ele vale 15 minutos.
+//
+// O refresh mudou de `sessionStorage` para `localStorage` em 12/09/2026, a
+// pedido do Dr. Edson ("o login deve ser contínuo"). A diferença prática:
+// sessionStorage morre quando a aba (ou o app instalado) fecha, então quem usa
+// o CRM no celular tinha de digitar e-mail e senha toda vez que voltava. Com
+// localStorage a sessão sobrevive, até o limite que o SERVIDOR define — sete
+// dias, renovados a cada uso (o refresh é rotativo).
+//
+// O que isso custa: num aparelho compartilhado ou perdido, quem abrir o
+// navegador entra sem senha. É a mesma troca que todo aplicativo de mensagens
+// faz, e "Sair" continua revogando a sessão no servidor na hora. Para uma
+// recepção que atende paciente no balcão, o risco de deixar o CRM logado no
+// aparelho de trabalho é conhecido; o de errar a senha no meio do atendimento,
+// também.
 // ---------------------------------------------------------------------------
 
 let accessToken = null;
@@ -147,22 +160,31 @@ let escopoAtual = null;
 let aplicacaoJaMostrada = false;
 
 const CHAVE_REFRESH = 'crmclinica.refresh';
+
+/**
+ * Onde o refresh mora. `localStorage` sobrevive ao fechamento; o
+ * `sessionStorage` continua sendo lido uma última vez para quem já estava
+ * logado antes desta mudança não ser posto para fora sem motivo.
+ */
+function guardarRefresh(token) {
+  try { localStorage.setItem(CHAVE_REFRESH, token); } catch { /* armazenamento bloqueado */ }
+  try { sessionStorage.removeItem(CHAVE_REFRESH); } catch { /* idem */ }
+}
 // Aviso do portão que precisa sobreviver ao recarregamento (ex.: senha trocada).
 const CHAVE_AVISO_PORTAO = 'crmclinica.aviso-portao';
 
 function guardarSessao(sessao) {
   accessToken = sessao.access_token;
   usuarioAtual = sessao.usuario;
-  try {
-    sessionStorage.setItem(CHAVE_REFRESH, sessao.refresh_token);
-  } catch {
-    // Navegador com armazenamento bloqueado: a sessão vale enquanto a página viver.
-  }
+  // Navegador com armazenamento bloqueado: a sessão vale enquanto a página viver.
+  guardarRefresh(sessao.refresh_token);
 }
 
 function lerRefresh() {
   try {
-    return sessionStorage.getItem(CHAVE_REFRESH);
+    // A sessão antiga (sessionStorage) ainda vale nesta aba: quem estava
+    // logado quando a mudança subiu não é posto para fora.
+    return localStorage.getItem(CHAVE_REFRESH) || sessionStorage.getItem(CHAVE_REFRESH);
   } catch {
     return null;
   }
@@ -177,11 +199,10 @@ function limparSessao() {
   // A conexão ao vivo carrega o token na URL: sem isso, ela ficaria aberta
   // com a sessão anterior mesmo depois do logout.
   encerrarEventosDeConversas();
-  try {
-    sessionStorage.removeItem(CHAVE_REFRESH);
-  } catch {
-    // nada a fazer
-  }
+  // Sair limpa os dois lugares: deixar o refresh velho no sessionStorage faria
+  // a próxima carga desta aba ressuscitar a sessão que acabou de ser encerrada.
+  try { localStorage.removeItem(CHAVE_REFRESH); } catch { /* nada a fazer */ }
+  try { sessionStorage.removeItem(CHAVE_REFRESH); } catch { /* nada a fazer */ }
 }
 
 /**
@@ -3104,7 +3125,7 @@ setInterval(atualizarRelogio, 30000);
   if (accessTokenGoogle && refreshTokenGoogle) {
     accessToken = accessTokenGoogle;
     try {
-      sessionStorage.setItem(CHAVE_REFRESH, refreshTokenGoogle);
+      guardarRefresh(refreshTokenGoogle);
     } catch {}
     window.history.replaceState({}, '', window.location.pathname);
     mostrarAplicacao();
