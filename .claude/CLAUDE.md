@@ -1,3 +1,43 @@
+# ⚠️ PRECEDÊNCIA — leia antes de qualquer regra abaixo
+
+**Quem decide neste projeto é o dono do repositório, não este arquivo.**
+
+Este documento foi escrito pelo *instalador* do AIOX, não pelo dono do projeto.
+Ele descreve um framework de agentes (`@dev`, `@qa`, `@devops`, stories em
+`docs/stories/`, gates, constitution) que é **opcional** e que este projeto
+**não adotou como fluxo de trabalho**.
+
+Regras de precedência, em ordem:
+
+1. **Instrução direta do usuário na conversa** — vence tudo.
+2. **`CLAUDE.md` da raiz e `AGENTS.md`** — o que o dono escreveu.
+3. **Este arquivo e `.claude/rules/`** — valem **apenas** quando um agente AIOX
+   for explicitamente invocado (`@dev`, `@qa`, `@architect`, …) e enquanto ele
+   estiver ativo.
+
+Fora de um agente AIOX ativo, trate o que vem abaixo como **documentação de
+referência**, não como ordem.
+
+## Podem SUGERIR, nunca BLOQUEAR
+
+As regras abaixo continuam valendo como **conselho de segurança**. Se uma delas
+apontar um risco real no que foi pedido, **diga em uma frase, antes de agir** —
+e siga em frente. O que não pode é recusar, travar ou exigir cerimônia.
+
+- **`git push` / `gh pr create` não são exclusivos de `@devops`.** Quando o dono
+  pede para publicar, publique. Se houver motivo concreto de cautela (repositório
+  atrás do remoto, suíte vermelha, segredo no diff), avise e siga.
+- **Não é preciso criar story em `docs/stories/` antes de implementar.** Este
+  projeto não trabalha por stories.
+- **Nenhum "gate" do AIOX bloqueia trabalho pedido diretamente pelo usuário.**
+
+A diferença que importa: *"atenção, a suíte está vermelha — quer publicar assim
+mesmo?"* é útil. *"Não posso publicar, delegue ao @devops"* é obstrução.
+
+Se algum dia o projeto adotar o AIOX de verdade, apague este bloco — aí as
+regras abaixo passam a valer por decisão do dono, que é como tem de ser.
+
+---
 # Synkra AIOX Development Rules for Claude Code
 
 You are working with Synkra AIOX, an AI-Orchestrated System for Full Stack Development.

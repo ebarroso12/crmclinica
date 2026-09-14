@@ -1,3 +1,15 @@
+> **ESCOPO — leia antes.** Esta matriz vale **apenas** quando um agente AIOX
+> estiver explicitamente ativo (`@dev`, `@devops`, `@qa`, …). Em sessão comum,
+> quem decide é o dono do repositório: instrução direta dele vence esta tabela.
+>
+> Em particular, **`git push` e `gh pr create` NÃO são exclusivos de `@devops`**
+> fora do fluxo AIOX. Quando o dono pede para publicar, publique.
+>
+> Estas regras podem **SUGERIR**, nunca **BLOQUEAR**. Apontar um risco concreto
+> em uma frase, antes de agir, é útil. Recusar a execução é obstrução.
+>
+> Ver o bloco de PRECEDÊNCIA no topo de `.claude/CLAUDE.md`.
+
 # Agent Authority — Detailed Rules
 
 ## Delegation Matrix
