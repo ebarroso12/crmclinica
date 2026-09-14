@@ -8,6 +8,7 @@ const { ehPedidoDeOptOut } = require('./lembretes');
 const { criarNumerosInternos, criarNumerosInternosDoCadastro } = require('./numeros-internos');
 const { ErroDeEstrategia } = require('../contratos/erros');
 const { criarFluxoDeAgentes } = require('./agentes/fluxo');
+const { respostaPodeSair } = require('../seguranca/barreira-ia');
 
 // Comando 7, achado A-3 da auditoria: a barreira final (`podeEntregarAgora`)
 // bloqueia por vários motivos, mas até aqui NENHUM deles escalonava — a
@@ -608,6 +609,50 @@ function criarAtendimento({
       const duvidaParaAClinica = separado.duvida;
 
       if (texto) {
+        // BARREIRA DE SAÍDA — achado de 14/09/2026: `orquestrador` aqui é
+        // SEMPRE `criarClienteOpenClaw` (ver src/servidor/http.js e
+        // bin/worker-outbox.js) — o texto que chega em `resposta.resposta`
+        // foi gerado dentro do PRÓPRIO OpenClaw (`chat.send`, em
+        // src/integracoes/openclaw.js), fora de src/ia/gateway.js. A
+        // barreira que bloqueia revelar prontuário/diagnóstico/contato de
+        // terceiro (`respostaPodeSair`, src/seguranca/barreira-ia.js) só
+        // protegia quem passa por aquele gateway — orientação, resumo,
+        // qualificação. Esta era, literalmente, a resposta que o paciente
+        // recebe de verdade, e ela nunca tinha barreira nenhuma. O comentário
+        // de src/ia/gateway.js já previa o risco: "chamador novo nasce
+        // protegido... não existe caminho esquecido" — este era o caminho
+        // esquecido, porque nem é chamador daquele gateway.
+        const conferencia = respostaPodeSair(texto, {
+          finalidade: 'agente_resposta',
+          contatosDaClinica: numerosInternos,
+        });
+        if (!conferencia.pode) {
+          // Nunca o texto barrado no log — é o próprio dado que se suspeita
+          // não poder circular (mesmo cuidado de src/ia/gateway.js). Silêncio
+          // da automação + equipe avisada, o mesmo desfecho de qualquer outra
+          // falha do orquestrador nesta função — nunca uma mensagem
+          // alternativa gerada às pressas, que teria o mesmo risco.
+          console.error(JSON.stringify({
+            level: 'error',
+            evento: 'resposta_da_serena_barrada',
+            conversa_id: conversaId,
+            motivo: conferencia.motivo,
+          }));
+          await repositorio.registrarAuditoria({
+            entidade: 'conversa',
+            entidadeId: conversaId,
+            acao: 'resposta_barrada_pela_barreira',
+            detalhe: { motivo: conferencia.motivo },
+          }).catch(() => {});
+          await escalonar(conversaId, 'resposta_barrada_pela_barreira');
+          return {
+            acao: 'escalonada_por_barreira',
+            conversa_id: conversaId,
+            motivo: conferencia.motivo,
+            entregue: false,
+          };
+        }
+
         // A resposta da IA entra no mesmo histórico que a equipe lê. Não há
         // registro paralelo: quem abre a conversa vê tudo em ordem. O
         // `id_externo` determinístico faz o índice único do banco garantir que
