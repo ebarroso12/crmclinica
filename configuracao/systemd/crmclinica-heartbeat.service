@@ -1,0 +1,28 @@
+[Unit]
+Description=crmclinica — batimento de saude dos componentes (heartbeat)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/crmclinica-ponte
+ExecStart=/root/.nvm/versions/node/v24.18.0/bin/node bin/worker-heartbeat.js
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/crmclinica-ponte
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
