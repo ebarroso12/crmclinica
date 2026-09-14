@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { carregarConfiguracao, validarConfiguracao } = require('../config');
+const { carregarConfiguracao, validarConfiguracao, haViaDeEntrega } = require('../config');
 const { validarEvento, exigirEstrategiaDoAdaptador } = require('../contratos/evento');
 const { ErroDeContrato, ErroDeEstrategia } = require('../contratos/erros');
 const { criarRegistroEmMemoria } = require('../armazenamento/idempotencia');
@@ -241,11 +241,13 @@ function criarAplicacao(dependencias = {}) {
   const clienteStorage = dependencias.clienteStorage
     || criarClienteStorage(configuracao.anexos);
 
-  // O canal existe se houver PELO MENOS UMA via de envio configurada — antes
-  // só o gateway do OpenClaw contava; agora a Evolution sozinha também basta,
-  // e "canal_nao_configurado" só volta a aparecer se nenhuma das duas estiver.
+  // O canal existe se houver PELO MENOS UMA via de envio configurada — a
+  // mesma regra de `haViaDeEntrega` (src/config.js), usada também na
+  // validação de configuração e no diagnóstico, para as três nunca mais
+  // divergirem sobre o que conta como "via de entrega".
+  // "canal_nao_configurado" só volta a aparecer se nenhuma via estiver.
   const canalDeConversas = dependencias.canalDeConversas
-    || ((configuracao.openclaw.canalClinica.url || clienteEvolucaoEnvio.disponivel || clienteInstagramEnvio.disponivel)
+    || (haViaDeEntrega(configuracao)
       ? criarCanalDeConversas(configuracao.openclaw.canalClinica, { evolucao: clienteEvolucaoEnvio, instagram: clienteInstagramEnvio })
       : null);
 

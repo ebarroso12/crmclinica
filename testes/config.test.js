@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   carregarConfiguracao, validarConfiguracao, avisosDeConfiguracao, descreverConfiguracao,
+  haViaDeEntrega,
 } = require('../src/config');
 
 test('valores padrão são seguros quando o ambiente está vazio', () => {
@@ -224,12 +225,18 @@ test('entrega real exige o gateway — não as variáveis do cliente HTTP antigo
   assert.deepEqual(validarConfiguracao(completo), []);
 });
 
-test('Arquitetura B só liga com sessão interna e os dois gateways', () => {
-  const incompleta = carregarConfiguracao({ SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha' });
-  const problemas = validarConfiguracao(incompleta);
-  assert.ok(problemas.some((p) => /gateway de comando/.test(p)));
-  assert.ok(problemas.some((p) => /OPENCLAW_SESSION_ID/.test(p)));
-  assert.ok(problemas.some((p) => /gateway do WhatsApp/.test(p)));
+test('Arquitetura B sem nenhuma via de entrega acusa exatamente isso — não peças soltas do OpenClaw', () => {
+  // Nada configurado: nem Evolution, nem Instagram, nem gateway da clínica.
+  // A mensagem tem de dizer "não tem por onde entregar", não pedir peças
+  // específicas do OpenClaw que a pessoa pode nem pretender usar.
+  const semNada = carregarConfiguracao({ SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha' });
+  const problemas = validarConfiguracao(semNada);
+  assert.ok(problemas.some((p) => /ao menos uma via de entrega/.test(p)));
+  // E, como ninguém tocou em nenhuma peça do OpenClaw, as exigências
+  // específicas dele (que só fazem sentido para quem escolheu esse caminho)
+  // não devem aparecer — não há "caminho pela metade" a cobrar.
+  assert.ok(!problemas.some((p) => /gateway de comando/.test(p)));
+  assert.ok(!problemas.some((p) => /OPENCLAW_SESSION_ID/.test(p)));
 
   const completa = carregarConfiguracao({
     SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha',
@@ -241,6 +248,57 @@ test('Arquitetura B só liga com sessão interna e os dois gateways', () => {
     WHATSAPP_WEBHOOK_SECRET: 'segredo-sintetico-de-ingresso-com-mais-de-32-caracteres',
   });
   assert.deepEqual(validarConfiguracao(completa), []);
+});
+
+test('Arquitetura B com Evolution configurada e nada do OpenClaw: zero problemas', () => {
+  // Cenário real de produção (achado do incidente de 2026-09-13): a Vercel
+  // não alcança o gateway WebSocket do OpenClaw — que é endereço interno do
+  // Docker do VPS — mas a Evolution entrega normalmente. Antes desta
+  // correção, `validarTransporteWhatsapp` só conhecia o gateway do OpenClaw
+  // e acusava falta de configuração mesmo com a entrega funcionando de
+  // verdade (provado por mutação: as respostas ao paciente saíram com
+  // `canal_confirmou: true` pela função da Evolution na Vercel).
+  const comEvolution = carregarConfiguracao({
+    SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha',
+    EVOLUTION_API_URL: 'https://evolution.exemplo',
+    EVOLUTION_API_KEY: 'chave-sintetica',
+  });
+  assert.deepEqual(validarConfiguracao(comEvolution), []);
+});
+
+test('Arquitetura B com caminho do OpenClaw começado pela metade ainda acusa a peça que falta', () => {
+  // Diferente do caso acima: aqui a pessoa claramente pretende usar o
+  // gateway do OpenClaw (definiu o gateway da clínica) mas não terminou —
+  // isso continua sendo um erro real, mesmo com a Evolution disponível.
+  const pelaMetade = carregarConfiguracao({
+    SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha',
+    EVOLUTION_API_URL: 'https://evolution.exemplo',
+    EVOLUTION_API_KEY: 'chave-sintetica',
+    OPENCLAW_CLINICA_GATEWAY_URL: 'wss://clinica.exemplo/ws',
+    OPENCLAW_CLINICA_DEVICE_TOKEN: 'device-clinica',
+  });
+  const problemas = validarConfiguracao(pelaMetade);
+  assert.ok(problemas.some((p) => /gateway de comando/.test(p)));
+  assert.ok(problemas.some((p) => /OPENCLAW_SESSION_ID/.test(p)));
+  assert.ok(!problemas.some((p) => /ao menos uma via de entrega/.test(p)), 'a Evolution já resolve a via de entrega');
+});
+
+test('haViaDeEntrega é a mesma régua usada pela validação — as duas nunca podem discordar', () => {
+  // Causa raiz do incidente: a mesma pergunta ("dá pra entregar?") respondida
+  // por duas contas diferentes em validarTransporteWhatsapp e em
+  // src/servidor/http.js. Este teste trava as duas contra o mesmo conjunto
+  // de cenários para que uma futura edição em só um dos lados quebre aqui.
+  const cenarios = [
+    {},
+    { EVOLUTION_API_URL: 'https://evolution.exemplo', EVOLUTION_API_KEY: 'chave' },
+    { INSTAGRAM_ACCESS_TOKEN: 'token', INSTAGRAM_BUSINESS_ACCOUNT_ID: 'conta' },
+    { OPENCLAW_CLINICA_GATEWAY_URL: 'wss://clinica.exemplo/ws', OPENCLAW_CLINICA_DEVICE_TOKEN: 'device' },
+  ];
+  for (const ambiente of cenarios) {
+    const configuracao = carregarConfiguracao({ SERENA_TRANSPORTE_WHATSAPP: 'crm_despacha', ...ambiente });
+    const semVia = validarConfiguracao(configuracao).some((p) => /ao menos uma via de entrega/.test(p));
+    assert.equal(semVia, !haViaDeEntrega(configuracao), `divergência no cenário ${JSON.stringify(ambiente)}`);
+  }
 });
 
 test('extração de qualificação por IA nasce desligada e só liga com "sim" explícito', () => {
