@@ -63,6 +63,20 @@ const PERMITIDOS = [
   { arquivo: /(^|\/)testes\/seguranca-segredos\.test\.js$/, motivo: 'testa o detector com valores sintéticos' },
   // Documentação que ensina o formato da variável.
   { arquivo: /(^|\/)docs\//, motivo: 'documentação', apenas: ['segredo embutido no código'] },
+  // Framework de agentes de IA (AIOX, instalado em e288c3c) — vendorizado por
+  // terceiros, não é código nem documentação deste produto. Os templates dele
+  // trazem URL de banco de exemplo (`[PASSWORD]`, `${POSTGRES_PASSWORD}`, o
+  // `postgres:postgres@localhost` que o próprio CLI do Supabase imprime em
+  // modo local) — auditados linha a linha em 2026-09-14, nenhuma credencial
+  // real. Restrito a este padrão de propósito: um segredo de FORMA CONHECIDA
+  // (chave sk-, PEM, token do GitHub…) vendorizado aqui por acidente no
+  // futuro continua sendo achado — só a URL de banco de exemplo, que este
+  // detector nunca isenta nem em `docs/` próprio, é que fica de fora aqui.
+  {
+    arquivo: /^(\.aiox-core|\.codex|\.gemini|\.kimi|squads)\//,
+    motivo: 'framework de agentes de IA vendorizado, não é código nem doc do produto',
+    apenas: ['URL de banco com senha'],
+  },
 ];
 
 const EXTENSOES_BINARIAS = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|mp4|mp3|ogg)$/i;
