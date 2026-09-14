@@ -17,6 +17,13 @@ const { sondaDaEvolution } = require('../src/dominio/diagnostico-sondas');
 const INTERVALO_MS = Number(process.env.CRM_BATIMENTO_INTERVALO_MS) || 30000;
 const GATEWAY_HOST = '172.17.0.1';
 const GATEWAY_PORTA = 18790;
+// A própria ponte de ingresso (`crmclinica-ponte.service`, este mesmo
+// código rodando como servidor HTTP local — ver src/index.js). Ela e este
+// worker de batimento são processos systemd INDEPENDENTES: um cair não tira
+// o outro do ar. `configuracao.porta`/`configuracao.endereco` (do mesmo
+// .env que a ponte lê) são a via certa — se a porta mudar de lugar um dia,
+// os dois continuam de acordo sozinhos.
+const PONTE_TIMEOUT_MS = 3000;
 function checarPorta(host, porta, ms) {
   return new Promise(function (res) {
     const s = new net.Socket(); let d = false;
@@ -46,8 +53,19 @@ async function main() {
     try {
       const oc = await checarPorta(GATEWAY_HOST, GATEWAY_PORTA, 3000);
       const evolucao = await sondaEvolution();
-      await up(pool, 'serena', 'ok', { fonte: 'ponte' });
-      await up(pool, 'inbox', 'ok', { fonte: 'ponte' });
+      // Achado de 13/09/2026: até aqui isto gravava 'ok' incondicional, sem
+      // checar nada — o incidente de 12h com a ponte enabled+inactive+zero
+      // log ficou invisível a semana inteira porque o próprio batimento que
+      // deveria detectar a queda nunca olhava para a ponte, só existia.
+      // `endereco` pode nascer '0.0.0.0' (ver src/config.js) quando a ponte
+      // roda em produção sem HOST explícito — o bind aceita conexão local
+      // de qualquer forma, mas o SOCKET de teste tem de mirar loopback, não
+      // '0.0.0.0' (isso não é um host discável).
+      const enderecoDaPonte = configuracao.endereco === '0.0.0.0' ? '127.0.0.1' : configuracao.endereco;
+      const ponteViva = await checarPorta(enderecoDaPonte, configuracao.porta, PONTE_TIMEOUT_MS);
+      const detalhePonte = { fonte: 'ponte', porta: configuracao.porta, alcancavel: ponteViva };
+      await up(pool, 'serena', ponteViva ? 'ok' : 'degradado', detalhePonte);
+      await up(pool, 'inbox', ponteViva ? 'ok' : 'degradado', detalhePonte);
       await up(pool, 'openclaw', oc ? 'ok' : 'degradado', { gateway: GATEWAY_HOST + ':' + GATEWAY_PORTA, alcancavel: oc });
       // A Evolution é o canal PRIMÁRIO de entrega (Comando 1/3): sem
       // componente próprio no batimento, uma queda dela nunca aparecia aqui
