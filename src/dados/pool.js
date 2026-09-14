@@ -56,6 +56,22 @@ function criarPool(configuracaoDoBanco) {
       : undefined,
   });
 
+  // Achado de 14/09/2026: sem isto, o processo INTEIRO morre. `pg.Pool`
+  // emite `'error'` num CLIENTE OCIOSO sempre que o servidor derruba a
+  // conexão por trás — mudança de configuração do pooler no painel do
+  // Supabase (o caso de hoje: FATAL 57P01 "terminating connection due to
+  // administrator command" ao aumentar o pool_size), reinício do banco,
+  // rede piscando. `EventEmitter` do Node relança como exceção não tratada
+  // quando não há ouvinte para `'error'` — e três dos seis serviços do VPS
+  // (os que por acaso tinham uma conexão ociosa no instante exato) caíram
+  // ao mesmo tempo por isto, sem nenhuma falha de código deles: o worker
+  // não fez nada errado, só não havia ninguém ouvindo o pool avisar que uma
+  // conexão específica morreu. O pool descarta essa conexão sozinho e seca
+  // as próximas do zero — é seguro só logar e seguir vivo.
+  pool.on('error', (erro) => {
+    console.error(`[pool] conexão ociosa perdida (${erro.code || 'sem código'}): ${erro.message}`);
+  });
+
   return comPapelGarantido(pool);
 }
 
