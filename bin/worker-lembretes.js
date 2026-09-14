@@ -36,7 +36,9 @@ const { criarServicoDaSerena } = require('../src/dominio/serena-servico');
 const { criarSincronizadorDaSerena } = require('../src/dominio/sincronia-serena');
 const { criarPoliticaDoCanal } = require('../src/integracoes/openclaw-politica');
 const { executarDiagnostico } = require('../src/dominio/diagnostico');
-const { sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena } = require('../src/dominio/diagnostico-sondas');
+const {
+  sondaDoBanco, sondaDaFila, sondaDoCanal, sondaDaSerena, sondaDaEvolution,
+} = require('../src/dominio/diagnostico-sondas');
 const { decidirAtendimento } = require('../src/dominio/sincronia-serena');
 const { criarVinculoDeCanal } = require('../src/integracoes/openclaw-vinculo');
 const { conferirConexao } = require('../src/dados/conferir-conexao');
@@ -228,6 +230,15 @@ async function main() {
         fila: sondaDaFila(repositorio),
         canal: sondaDoCanal(configuracao.openclaw.canalClinica?.url
           ? criarVinculoDeCanal(configuracao.openclaw.canalClinica) : null),
+        // Achado de 13/09/2026: faltava aqui — só `rotas-diagnostico.js` (o
+        // painel) montava esta sonda. Sem ela, `sondas.evolucao` chega
+        // `undefined` em `executarDiagnostico`, `evolucaoAtendendo` em
+        // diagnostico.js nunca pode ficar `true`, e o log semanal deste
+        // worker sempre acusava "crítico: nenhum telefone conectado no
+        // WhatsApp" mesmo com a Evolution respondendo de verdade — a sonda
+        // em si (`sondaDaEvolution`) sempre esteve certa, só não era chamada
+        // daqui.
+        evolucao: sondaDaEvolution(configuracao.evolution, { repositorio }),
         serena: sondaDaSerena(servicoDaSerena, sincronia, decidirAtendimento),
       });
 

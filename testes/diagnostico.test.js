@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { executarDiagnostico } = require('../src/dominio/diagnostico');
 
@@ -59,6 +61,24 @@ test('WhatsApp desconectado é crítico — a clínica para de atender', async (
     canal: async () => ({ vinculado: false, conectado: false }),
   }));
   assert.equal(r.nivel, 'critico');
+});
+
+test('WhatsApp desconectado NÃO é crítico quando a Evolution está atendendo — é a sonda que faltava em bin/worker-lembretes.js', async () => {
+  // Achado de 13/09/2026: `bin/worker-lembretes.js` chamava executarDiagnostico
+  // sem passar `evolucao` — a mesma omissão que este teste prova errada aqui.
+  // Sem a sonda, `evolucaoAtendendo` (diagnostico.js) nunca pode ser `true`, e
+  // o worker relatava "crítico: nenhum telefone conectado" toda semana mesmo
+  // com a Evolution respondendo de verdade. A sonda (`sondaDaEvolution`)
+  // sempre esteve certa — o bug era não chamá-la.
+  const r = await executarDiagnostico(comFalha({
+    canal: async () => ({ vinculado: false, conectado: false }),
+    evolucao: async () => ({
+      configurada: true, instancia: 'clinica', alcancavel: true, instanciaExiste: true, fila: null,
+    }),
+  }));
+  assert.equal(r.nivel, 'aviso', 'a Evolution atendendo rebaixa de crítico para aviso');
+  const item = r.achados.find((a) => a.area === 'canal');
+  assert.match(item.titulo, /Evolution é quem atende/);
 });
 
 test('vinculado mas fora do ar é falha, não crítico', async () => {
@@ -244,4 +264,20 @@ test('todo achado diz o que fazer', async () => {
   for (const item of r.achados) {
     assert.ok(item.reparo, `achado sem reparo: ${item.titulo}`);
   }
+});
+
+test('bin/worker-lembretes.js chama sondaDaEvolution — sem isto, o diagnóstico semanal mente que ninguém atende', () => {
+  // Prova estrutural (o worker não é seguro de `require`-ar num teste: ele
+  // conecta ao banco e abre timers no topo do arquivo). Acompanha o teste
+  // acima ("NÃO é crítico quando a Evolution está atendendo"): aquele prova
+  // que a LÓGICA está certa quando a sonda é passada; este prova que
+  // bin/worker-lembretes.js de fato passa a sonda — os dois juntos fecham o
+  // achado de 13/09/2026.
+  const fonte = fs.readFileSync(path.join(__dirname, '..', 'bin', 'worker-lembretes.js'), 'utf8');
+  assert.match(fonte, /sondaDaEvolution/, 'a sonda precisa ser importada e usada');
+  assert.match(
+    fonte,
+    /evolucao:\s*sondaDaEvolution\(/,
+    'a sonda precisa estar de fato ligada ao objeto passado a executarDiagnostico, não só importada',
+  );
 });
