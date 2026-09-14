@@ -18,6 +18,14 @@ const PASTA_REFERENCIA = 'documentos';
 const PASTAS_IGNORADAS = new Set([
   'node_modules', '.git', '.vercel', 'dist', 'coverage', '.claude', PASTA_REFERENCIA,
   'crmkimi',
+  // Framework de agentes de IA (AIOX, instalado em e288c3c) e seus espelhos
+  // por ferramenta — vendorizado por terceiros, não é código, documentação
+  // nem interface deste produto, do mesmo jeito que `.claude` já não é. Os
+  // templates dele citam nomes de ferramenta genéricos (inclusive "n8n") e
+  // trazem URL de banco de exemplo com placeholder — auditados linha a linha
+  // em 2026-09-14, nenhuma credencial real, nenhum orquestrador de verdade
+  // sendo usado pelo crmclinica.
+  '.aiox-core', '.codex', '.gemini', '.kimi', 'squads',
 ]);
 const EXTENSOES = new Set(['.js', '.json', '.md', '.html', '.css', '.sql', '.yml', '.yaml', '.exemplo']);
 
