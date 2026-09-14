@@ -126,10 +126,71 @@ test('as frases que o próprio prompt manda dizer continuam saindo (mesmo corpus
 });
 
 test('o telefone da própria clínica na resposta não é barrado (é atendimento, não vazamento)', async () => {
-  const { canal, resultado } = await rodar(
-    'Telefone/WhatsApp: (16) 99312-0938',
-    { numerosInternos: ['5516993120938'] },
+  // Achado do code-review de 14/09/2026: a frase antiga aqui ("Telefone/
+  // WhatsApp: (16) 99312-0938") passa igual SEM a allowlist — ela nunca bate
+  // em nenhuma marca de contato de terceiro para começo de conversa, então
+  // o teste não provava nada sobre `numerosInternos` (um bug na fiação dessa
+  // lista passaria em branco). "Fale com a recepção no ..." bate na marca
+  // (verbo + telefone perto) e só passa por causa da allowlist — verificado
+  // nos dois sentidos abaixo antes de confiar na frase.
+  const frase = 'Fale com a recepção no (16) 99312-0938.';
+
+  const semAllowlist = await rodar(frase, { numerosInternos: [] });
+  assert.equal(semAllowlist.resultado.acao, 'escalonada_por_barreira', 'sem a allowlist, a frase precisa ser barrada — senão não prova nada');
+
+  const comAllowlist = await rodar(frase, { numerosInternos: ['5516993120938'] });
+  assert.equal(comAllowlist.resultado.acao, 'respondida_pela_automacao');
+  assert.equal(comAllowlist.canal.envios.length, 1);
+});
+
+test('retentativa de entrega também passa pela barreira — não só a "primeira vez"', async () => {
+  // Achado do code-review de 14/09/2026: o texto gravado ANTES deste commit
+  // (por código sem a barreira) e ainda pendente de entrega no momento do
+  // deploy reentregaria pelo caminho de retentativa (respostaAnterior, mais
+  // acima em responderSePossivel) sem NUNCA passar pela checagem nova — essa
+  // checagem só corria no caminho "de primeira". Simula exatamente isso:
+  // insere direto no repositório uma resposta já gravada, sem `entregue_em`
+  // (pendente), como o código de antes teria deixado — sem passar por
+  // `despacharEvento` nem pela barreira.
+  const repositorio = criarRepositorioEmMemoria();
+  const orquestrador = orquestradorFalso({ resposta: 'não deveria ser chamado nesta retentativa' });
+  const canal = canalFalso();
+  const atendimento = criarAtendimento({ repositorio, orquestrador, canal, numerosInternos: [] });
+
+  // Uma conversa/contato precisa existir antes de chamar responderSePossivel
+  // direto — usa uma mensagem limpa só para estabelecer a conversa, depois
+  // insere a entrada real do teste.
+  await atendimento.receberMensagem(EVENTO);
+  const [conversa] = await repositorio.listarConversas({});
+
+  const { mensagem: entrada } = await repositorio.registrarMensagem(conversa.id, {
+    direcao: 'entrada',
+    conteudo: 'segunda pergunta',
+    autor_tipo: 'contato',
+    id_externo: 'wa:barreira:retentativa',
+  });
+  await repositorio.registrarMensagem(conversa.id, {
+    direcao: 'saida',
+    conteudo: 'O prontuário dela indica retorno em 30 dias.',
+    autor_tipo: 'automacao',
+    autor_nome: 'Serena',
+    id_externo: `serena:resposta:${conversa.id}:${entrada.id}`,
+    // Sem entregue_em: pendente — é o estado que dispara o caminho de
+    // retentativa em vez do "já entregue, nem tenta de novo".
+  });
+
+  // `receberMensagem(EVENTO)` acima já entregou sua própria resposta limpa —
+  // o que importa daqui em diante é que a retentativa NÃO acrescente um novo
+  // envio, não que `canal.envios` esteja vazio.
+  const enviosAntes = canal.envios.length;
+  const despachosAntes = orquestrador.despachos.length;
+  const resultado = await atendimento.responderSePossivel(conversa.id, { mensagemEntradaId: entrada.id });
+
+  assert.equal(resultado.acao, 'escalonada_por_barreira');
+  assert.equal(resultado.entregue, false);
+  assert.equal(canal.envios.length, enviosAntes, 'o texto barrado gravado antes não pode ser entregue na retentativa');
+  assert.equal(
+    orquestrador.despachos.length, despachosAntes,
+    'a retentativa reaproveita o texto já gravado — não chama a IA de novo',
   );
-  assert.equal(resultado.acao, 'respondida_pela_automacao');
-  assert.equal(canal.envios.length, 1);
 });

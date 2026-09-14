@@ -92,11 +92,20 @@ test('o contato da PRÓPRIA clínica pode sair — senão alguém desliga a barr
   // Este é o falso positivo que decide se a defesa sobrevive: uma barreira que
   // impede a assistente de passar o telefone da clínica atrapalha o trabalho
   // legítimo, e barreira que atrapalha é barreira desligada.
-  const { pode } = respostaPodeSair('Nosso telefone é (16) 99999-0000, pode chamar.', {
-    finalidade: 'agente_resposta',
-    contatosDaClinica: ['5516999990000'],
-  });
-  assert.equal(pode, true);
+  //
+  // Achado do code-review de 14/09/2026: a frase original aqui ("Nosso
+  // telefone é ..., pode chamar.") passa igual SEM a allowlist — "chamar"
+  // vem DEPOIS do telefone, fora do alcance de MARCAS_DE_CONTATO_DE_TERCEIRO
+  // (que exige o verbo IMEDIATAMENTE antes do número). O teste não provava
+  // a exceção nenhuma; um bug futuro na fiação de `contatosDaClinica`
+  // passaria em branco aqui. "Fale com ... no ..." bate a marca de verdade.
+  const frase = 'Fale com a recepção no (16) 99999-0000.';
+
+  const semAllowlist = respostaPodeSair(frase, { finalidade: 'agente_resposta', contatosDaClinica: [] });
+  assert.equal(semAllowlist.pode, false, 'sem a allowlist a frase precisa ser barrada — senão não prova a exceção');
+
+  const comAllowlist = respostaPodeSair(frase, { finalidade: 'agente_resposta', contatosDaClinica: ['5516999990000'] });
+  assert.equal(comAllowlist.pode, true);
 });
 
 test('a equipe pode receber o que o paciente não pode', () => {

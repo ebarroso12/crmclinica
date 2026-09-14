@@ -490,6 +490,43 @@ function criarAtendimento({
         };
       }
 
+      // BARREIRA DE SAÍDA, também na retentativa — achado do code-review de
+      // 14/09/2026 sobre o commit que ligou a barreira no caminho "de
+      // primeira" (logo abaixo): `respostaAnterior.conteudo` é texto GRAVADO
+      // antes, e essa gravação só passa a exigir a barreira a partir do
+      // commit anterior — uma mensagem gravada pelo código de ANTES daquele
+      // commit, ainda pendente de entrega no momento do deploy (ex.: timeout
+      // da Evolution, aguardando retentativa), reentregaria sem NUNCA passar
+      // pela barreira nova. Rechecar aqui é redundante para o que já nasceu
+      // depois da barreira existir (custo desprezível) e fecha de vez essa
+      // janela de transição para o que nasceu antes.
+      const conferenciaRetentativa = respostaPodeSair(respostaAnterior.conteudo, {
+        finalidade: 'agente_resposta',
+        contatosDaClinica: numerosInternos,
+      });
+      if (!conferenciaRetentativa.pode) {
+        console.error(JSON.stringify({
+          level: 'error',
+          evento: 'resposta_da_serena_barrada',
+          conversa_id: conversaId,
+          motivo: conferenciaRetentativa.motivo,
+          retentativa: true,
+        }));
+        await repositorio.registrarAuditoria({
+          entidade: 'conversa',
+          entidadeId: conversaId,
+          acao: 'resposta_barrada_pela_barreira',
+          detalhe: { motivo: conferenciaRetentativa.motivo, retentativa: true },
+        }).catch(() => {});
+        await escalonar(conversaId, 'resposta_barrada_pela_barreira');
+        return {
+          acao: 'escalonada_por_barreira',
+          conversa_id: conversaId,
+          motivo: conferenciaRetentativa.motivo,
+          entregue: false,
+        };
+      }
+
       const entrega = await entregarAoPaciente(conversa, respostaAnterior.conteudo, respostaAnterior.id, {
         origem: 'serena',
       });
