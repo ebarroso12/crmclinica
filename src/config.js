@@ -522,6 +522,43 @@ function carregarConfiguracao(ambiente = process.env) {
   };
 }
 
+// FONTE ÚNICA da pergunta "o CRM tem por onde entregar uma mensagem?".
+//
+// Existia em três lugares com três respostas diferentes: o servidor
+// (`http.js`, monta o canal se houver QUALQUER via), o diagnóstico
+// (`descreverConfiguracao`, mesma regra) e a validação aqui, que só
+// conhecia o gateway do OpenClaw. A divergência produziu um falso
+// positivo real em produção: a Evolution entregava as mensagens
+// normalmente e o `/health` acusava `problemas: 1` acusando falta de
+// gateway — ruído que manda procurar defeito onde não há. Quem precisar
+// da resposta chama daqui; três cópias não podem discordar de novo.
+function viasDeEntrega(configuracao) {
+  return {
+    // `instancia` tem padrão ('clinica'), então url + chave já bastam.
+    evolution: Boolean(configuracao.evolution?.apiUrl && configuracao.evolution?.apiKey),
+    gatewayDaClinica: Boolean(configuracao.openclaw?.canalClinica?.url),
+    instagram: Boolean(configuracao.instagram?.accessToken && configuracao.instagram?.contaComercialId),
+  };
+}
+
+function haViaDeEntrega(configuracao) {
+  return Object.values(viasDeEntrega(configuracao)).some(Boolean);
+}
+
+// O caminho do OpenClaw está em jogo se QUALQUER peça dele foi
+// configurada. Serve para separar "nem uso OpenClaw" (Evolution pura,
+// nada a cobrar) de "uso o OpenClaw pela metade" (erro real, que
+// precisa aparecer).
+function usaCaminhoOpenclaw(configuracao) {
+  const openclaw = configuracao.openclaw || {};
+  return Boolean(
+    openclaw.gateway?.url
+    || openclaw.canalClinica?.url
+    || openclaw.sessao
+    || openclaw.segredoIngressoWhatsapp,
+  );
+}
+
 function validarTransporteWhatsapp(configuracao) {
   const problemas = [];
 
@@ -530,19 +567,26 @@ function validarTransporteWhatsapp(configuracao) {
   }
 
   if (configuracao.serena.transporteWhatsapp === 'crm_despacha') {
-    const comando = configuracao.openclaw.gateway;
-    const canal = configuracao.openclaw.canalClinica;
-    if (!comando.url || (!comando.token && !comando.deviceToken)) {
-      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige o gateway de comando do OpenClaw');
+    // O que `crm_despacha` realmente exige é ter POR ONDE entregar —
+    // gateway da clínica, Evolution ou Instagram, tanto faz.
+    if (!haViaDeEntrega(configuracao)) {
+      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige ao menos uma via de entrega (gateway do WhatsApp da clínica, Evolution ou Instagram)');
     }
-    if (!configuracao.openclaw.sessao) {
-      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige OPENCLAW_SESSION_ID');
-    }
-    if (!canal.url || (!canal.token && !canal.deviceToken)) {
-      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige o gateway do WhatsApp da clínica');
-    }
-    if (configuracao.openclaw.segredoIngressoWhatsapp.length < 32) {
-      problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige WHATSAPP_WEBHOOK_SECRET com ao menos 32 caracteres');
+
+    // As peças abaixo são do caminho do OpenClaw. Cobrá-las de quem não
+    // usa OpenClaw era o falso positivo; não cobrá-las de quem usa
+    // deixaria passar uma configuração pela metade.
+    if (usaCaminhoOpenclaw(configuracao)) {
+      const comando = configuracao.openclaw.gateway;
+      if (!comando.url || (!comando.token && !comando.deviceToken)) {
+        problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige o gateway de comando do OpenClaw');
+      }
+      if (!configuracao.openclaw.sessao) {
+        problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige OPENCLAW_SESSION_ID');
+      }
+      if (configuracao.openclaw.segredoIngressoWhatsapp.length < 32) {
+        problemas.push('SERENA_TRANSPORTE_WHATSAPP=crm_despacha exige WHATSAPP_WEBHOOK_SECRET com ao menos 32 caracteres');
+      }
     }
   }
 
@@ -678,16 +722,8 @@ function descreverConfiguracao(configuracao) {
     // ter POR ONDE entregar.
     atendimento: {
       nome: 'Serena',
-      integracao: (
-        Boolean(configuracao.evolution.apiUrl && configuracao.evolution.apiKey)
-        || Boolean(configuracao.openclaw.canalClinica?.url)
-        || Boolean(configuracao.instagram?.accessToken && configuracao.instagram?.contaComercialId)
-      ) ? 'configurada' : 'ausente',
-      viasDeEntrega: {
-        evolution: Boolean(configuracao.evolution.apiUrl && configuracao.evolution.apiKey),
-        gatewayDaClinica: Boolean(configuracao.openclaw.canalClinica?.url),
-        instagram: Boolean(configuracao.instagram?.accessToken && configuracao.instagram?.contaComercialId),
-      },
+      integracao: haViaDeEntrega(configuracao) ? 'configurada' : 'ausente',
+      viasDeEntrega: viasDeEntrega(configuracao),
       transporteWhatsapp: configuracao.serena.transporteWhatsapp,
       transporteWhatsappExplicito: configuracao.serena.transporteWhatsappExplicito,
     },
@@ -726,4 +762,6 @@ module.exports = {
   validarTransporteWhatsapp,
   avisosDeConfiguracao,
   descreverConfiguracao,
+  haViaDeEntrega,
+  viasDeEntrega,
 };
